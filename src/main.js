@@ -42,7 +42,7 @@ Rules:
 
 // ─── Twilio SMS ───────────────────────────────────────────────────────────────
 const TWILIO_ACCOUNT_SID = "ACd4213da922d42850ad40608260cfc305";
-const TWILIO_AUTH_TOKEN  = "7da1d4095fa21946ae81216aecf225fa";
+const TWILIO_AUTH_TOKEN  = "7a926e23cb3f448612f2289f5be5afbf";
 const TWILIO_FROM        = "+17252179941";
 
 async function sendSMS(to, body) {
