@@ -40,23 +40,18 @@ Rules:
 - For "delete" operations, "data" can be omitted.
 - Do not include any text, explanation, or formatting outside the JSON object.`;
 
-// ─── Twilio SMS ───────────────────────────────────────────────────────────────
-const TWILIO_ACCOUNT_SID = "ACd4213da922d42850ad40608260cfc305";
-const TWILIO_AUTH_TOKEN  = "7a926e23cb3f448612f2289f5be5afbf";
-const TWILIO_FROM        = "+17252179941";
+// ─── Twilio SMS (routed through Cloudflare Worker proxy) ─────────────────────
+const TWILIO_SMS_URL = "https://fleetr-ai-proxy.connor-0a5.workers.dev/sms";
 
 async function sendSMS(to, body) {
   if (!to) return;
   const digits = to.replace(/\D/g, "");
   const e164   = digits.length === 10 ? `+1${digits}` : `+${digits}`;
-  const url    = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
-  const creds  = btoa(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`);
-  const params = new URLSearchParams({ To: e164, From: TWILIO_FROM, Body: body });
   try {
-    const res  = await fetch(url, {
-      method: "POST",
-      headers: { Authorization: `Basic ${creds}`, "Content-Type": "application/x-www-form-urlencoded" },
-      body: params.toString(),
+    const res  = await fetch(TWILIO_SMS_URL, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ to: e164, body }),
     });
     const data = await res.json();
     if (res.ok) { console.log("SMS sent:", data.sid, "→", e164); }
