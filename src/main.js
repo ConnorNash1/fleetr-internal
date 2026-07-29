@@ -2170,6 +2170,7 @@ function NonDriveIntakeSection({ standalone }) {
 
 function DashboardPage() {
   const { reservations, setReservations, fleet, setFleet, setOpenRentalAgreementId, rentalAgreements } = React.useContext(AppContext);
+  const isMobile = useMobile();
   const readyReturns = fleet.filter((v) => v.status === "Ready Returns");
   const navigate = useNavigate();
   const [collectedOpenId, setCollectedOpenId] = React.useState(null);
@@ -2519,7 +2520,25 @@ function DashboardPage() {
             ),
             resFiltered.length === 0
               ? React.createElement("div", { className: "resvEmpty" }, "No reservations found.")
-              : React.createElement("table", { className: "dashboardTable" },
+              : isMobile
+                ? resFiltered.map((row) =>
+                    React.createElement("div", { key: row.resCode, className: "dashCard" },
+                      React.createElement("div", { className: "dashCard__header" },
+                        React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer }),
+                        React.createElement("span", { className: "dashCard__resCode" }, row.resCode)
+                      ),
+                      React.createElement("div", { className: "dashCard__meta" },
+                        React.createElement("span", { className: "dashCard__chip" }, fmtDate(row.date)),
+                        React.createElement("span", { className: "dashCard__chip" }, fmt12h(row.time)),
+                        React.createElement("span", { className: "dashCard__chip" }, row.location)
+                      ),
+                      React.createElement("div", { className: "dashCard__meta" },
+                        React.createElement("span", { className: "dashCard__chip" }, row.vehicleClass),
+                        row.winterTires === "Yes" && React.createElement("span", { className: "dashCard__chip dashCard__chip--winter" }, "Winter tires")
+                      )
+                    )
+                  )
+                : React.createElement("table", { className: "dashboardTable" },
                   React.createElement("thead", null,
                     React.createElement("tr", null,
                       ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Winter tires", "Notes"].map((col) =>
@@ -2583,9 +2602,38 @@ function DashboardPage() {
           React.createElement(
             "div",
             { className: "dashboardSection__body" },
-            React.createElement(
-              "table",
-              { className: "dashboardTable" },
+            isMobile
+              ? readyForRentalRows
+                  .slice()
+                  .sort((a, b) => a.addedOrder - b.addedOrder)
+                  .map((row) =>
+                    React.createElement("div", { key: row.id, className: "dashCard" },
+                      React.createElement("div", { className: "dashCard__header" },
+                        React.createElement(CustomerLink, { name: row.customerName, resCode: row.id, label: row.customerName })
+                      ),
+                      React.createElement("div", { className: "dashCard__meta" },
+                        React.createElement("span", { className: "dashCard__chip" }, row.reservedClass),
+                        React.createElement("span", { className: "dashCard__chip dashCard__chip--loc" }, row.pickupLocation)
+                      ),
+                      React.createElement("div", { className: "dashCard__meta" },
+                        React.createElement(
+                          "select",
+                          {
+                            className: "aiControl readyControl readyControl--status",
+                            value: row.status,
+                            onChange: (e) => handleReadyStatusChange(row.id, e.target.value),
+                            style: { fontSize: "12px" },
+                          },
+                          React.createElement("option", { value: "Waiting" }, "Waiting"),
+                          React.createElement("option", { value: "Pickup in progress" }, "Pickup in progress")
+                        ),
+                        React.createElement("span", { className: "dashCard__chip" }, `${getReadyWaitMins(row)} mins`)
+                      )
+                    )
+                  )
+              : React.createElement(
+                  "table",
+                  { className: "dashboardTable" },
               React.createElement(
                 "thead",
                 null,
@@ -4787,6 +4835,147 @@ function SettingsPage() {
   );
 }
 
+// ─── useMobile ───────────────────────────────────────────────────────────────
+
+function useMobile() {
+  const [isMobile, setIsMobile] = React.useState(
+    () => window.matchMedia("(max-width: 767px)").matches
+  );
+  React.useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const handler = (e) => setIsMobile(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+  return isMobile;
+}
+
+// ─── MobileNav ───────────────────────────────────────────────────────────────
+
+function MobileNav() {
+  const [open, setOpen] = React.useState(false);
+  const { signOut } = React.useContext(AppContext);
+  return React.createElement(
+    React.Fragment,
+    null,
+    React.createElement(
+      "header",
+      { className: "mobileTopbar" },
+      React.createElement(
+        "button",
+        {
+          type: "button",
+          className: "mobileHamburger",
+          "aria-label": open ? "Close menu" : "Open menu",
+          onClick: () => setOpen((o) => !o),
+        },
+        React.createElement(
+          "svg",
+          { width: "20", height: "20", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" },
+          open
+            ? React.createElement(React.Fragment, null,
+                React.createElement("line", { x1: "18", y1: "6", x2: "6", y2: "18" }),
+                React.createElement("line", { x1: "6", y1: "6", x2: "18", y2: "18" })
+              )
+            : React.createElement(React.Fragment, null,
+                React.createElement("line", { x1: "3", y1: "6", x2: "21", y2: "6" }),
+                React.createElement("line", { x1: "3", y1: "12", x2: "21", y2: "12" }),
+                React.createElement("line", { x1: "3", y1: "18", x2: "21", y2: "18" })
+              )
+        )
+      ),
+      React.createElement("span", { className: "mobileTopbar__wordmark" }, "fleetr"),
+      React.createElement(
+        "button",
+        {
+          type: "button",
+          className: "mobileTopbar__signOut",
+          onClick: signOut,
+        },
+        "Sign Out"
+      )
+    ),
+    open && React.createElement(
+      "div",
+      {
+        className: "mobileNavOverlay",
+        onClick: (e) => { if (e.target === e.currentTarget) setOpen(false); },
+      },
+      React.createElement(
+        "nav",
+        { className: "mobileNavDrawer" },
+        NAV_SECTIONS.map((section) =>
+          React.createElement(
+            "section",
+            { key: section.header, className: "mobileNavSection" },
+            React.createElement("h2", { className: "mobileNavSectionHeader" }, section.header),
+            section.items.map((item) =>
+              React.createElement(
+                NavLink,
+                {
+                  key: item.path,
+                  to: item.path,
+                  className: ({ isActive }) =>
+                    isActive ? "mobileNavItem mobileNavItem--active" : "mobileNavItem",
+                  onClick: () => setOpen(false),
+                },
+                item.label
+              )
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+// ─── MobileCommandBar ────────────────────────────────────────────────────────
+
+function MobileCommandBar() {
+  const [expanded, setExpanded] = React.useState(false);
+  return React.createElement(
+    "div",
+    { className: "mobileBottomBar" + (expanded ? " mobileBottomBar--expanded" : "") },
+    expanded
+      ? React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(
+            "button",
+            {
+              type: "button",
+              className: "mobileBottomBar__collapse",
+              "aria-label": "Collapse command bar",
+              onClick: () => setExpanded(false),
+            },
+            React.createElement(
+              "svg",
+              { width: "16", height: "16", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" },
+              React.createElement("polyline", { points: "18 15 12 9 6 15" })
+            )
+          ),
+          React.createElement(FleetrCommandBar)
+        )
+      : React.createElement(
+          "button",
+          {
+            type: "button",
+            className: "mobileBottomBar__pill",
+            onClick: () => setExpanded(true),
+          },
+          React.createElement(
+            "svg",
+            { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" },
+            React.createElement("rect", { x: "9", y: "2", width: "6", height: "12", rx: "3" }),
+            React.createElement("path", { d: "M5 10a7 7 0 0 0 14 0" }),
+            React.createElement("line", { x1: "12", y1: "19", x2: "12", y2: "22" }),
+            React.createElement("line", { x1: "8",  y1: "22", x2: "16", y2: "22" })
+          ),
+          React.createElement("span", null, "Ask fleetr ai…")
+        )
+  );
+}
+
 // ─── Topbar ──────────────────────────────────────────────────────────────────
 
 function Topbar() {
@@ -5286,6 +5475,16 @@ function FleetrCommandBar() {
 }
 
 function Layout() {
+  const isMobile = useMobile();
+  if (isMobile) {
+    return React.createElement(
+      "div",
+      { className: "app app--mobile" },
+      React.createElement(MobileNav),
+      React.createElement("main", { className: "content" }, React.createElement(AppRoutes)),
+      React.createElement(MobileCommandBar)
+    );
+  }
   return React.createElement(
     "div",
     { className: "app" },
@@ -8328,6 +8527,232 @@ body, * {
   .sidebar__sectionHeader{ display:none; }
   .nav__label{ display:none; }
   .nav__item{ justify-content:center; }
+}
+
+@media (max-width: 767px){
+  .app{
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+  .app--mobile{
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+  .sidebar{ display: none; }
+  .content{
+    padding: 16px;
+    padding-bottom: 80px;
+    flex: 1;
+    overflow-y: auto;
+  }
+
+  /* Mobile topbar */
+  .mobileTopbar{
+    height: 56px;
+    background: #1F1E1D;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .mobileHamburger{
+    background: none;
+    border: none;
+    color: rgba(255,255,255,0.84);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+    flex-shrink: 0;
+  }
+  .mobileTopbar__wordmark{
+    font-size: 17px;
+    font-weight: 800;
+    color: #fff;
+    letter-spacing: -0.02em;
+    flex: 1;
+  }
+  .mobileTopbar__signOut{
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.15);
+    color: rgba(255,255,255,0.45);
+    font-family: inherit;
+    font-size: 0.78rem;
+    font-weight: 500;
+    padding: 5px 12px;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  /* Nav drawer */
+  .mobileNavOverlay{
+    position: fixed;
+    inset: 56px 0 0 0;
+    z-index: 200;
+    background: rgba(0,0,0,0.45);
+  }
+  .mobileNavDrawer{
+    background: #1F1E1D;
+    width: 260px;
+    height: 100%;
+    overflow-y: auto;
+    padding: 16px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .mobileNavSection{
+    padding: 0 0 0 14px;
+  }
+  .mobileNavSectionHeader{
+    margin: 0 14px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: rgba(255,255,255,0.46);
+  }
+  .mobileNavItem{
+    display: flex;
+    align-items: center;
+    padding: 10px 14px;
+    border-radius: 6px 0 0 6px;
+    border-left: 3px solid transparent;
+    color: rgba(255,255,255,0.84);
+    font-size: 14px;
+    font-weight: 500;
+    background: transparent;
+    text-decoration: none;
+  }
+  .mobileNavItem:hover{ background: #0063bf; }
+  .mobileNavItem--active{
+    background: #0063bf;
+    border-left-color: #42a4ff;
+    color: #F9F9F7;
+  }
+
+  /* Fixed bottom command bar */
+  .mobileBottomBar{
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #1F1E1D;
+    border-top: 1px solid rgba(255,255,255,0.1);
+    padding: 8px 16px;
+    z-index: 300;
+    display: flex;
+    align-items: center;
+  }
+  .mobileBottomBar--expanded{
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 16px 16px;
+  }
+  .mobileBottomBar__pill{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    background: #F9F9F7;
+    border: 1.5px solid rgba(66,164,255,0.35);
+    border-radius: 999px;
+    padding: 8px 14px;
+    font-family: inherit;
+    font-size: 13px;
+    color: rgba(6,13,12,0.4);
+    cursor: pointer;
+    text-align: left;
+  }
+  .mobileBottomBar__pill svg{ color: #42a4ff; flex-shrink: 0; }
+  .mobileBottomBar__collapse{
+    background: none;
+    border: none;
+    color: rgba(255,255,255,0.5);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    align-self: flex-end;
+    padding: 2px 6px;
+  }
+  .mobileBottomBar--expanded .fleetrCommandBar{
+    background: #F9F9F7;
+    border-radius: 999px;
+  }
+  .mobileBottomBar--expanded .fleetrCommandBar__popover{
+    top: auto;
+    bottom: calc(100% + 10px);
+  }
+
+  /* Dashboard cards */
+  .dashCard{
+    background: #fff;
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .dashCard__header{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    color: #1F1E1D;
+  }
+  .dashCard__resCode{
+    font-size: 12px;
+    color: #7b8fa8;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .dashCard__meta{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+  .dashCard__chip{
+    background: #f0f5ff;
+    color: #1F1E1D;
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .dashCard__chip--winter{
+    background: #e0f2fe;
+    color: #0369a1;
+  }
+  .dashCard__chip--loc{
+    background: #f0f5ff;
+    font-size: 11px;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Make remaining tables scrollable rather than overflowing */
+  .dashboardSection .dashboardTable{
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 .fleetStatus--available { color: #42a4ff; font-weight: 700; }
