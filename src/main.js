@@ -7359,13 +7359,13 @@ function LoginScreen({ onSuccess }) {
 function App() {
   const [currentUser, setCurrentUser] = React.useState(() => {
     try {
-      const saved = localStorage.getItem("fleetr_session");
+      const saved = sessionStorage.getItem("fleetr_session");
       return saved ? JSON.parse(saved) : null;
     } catch (e) { return null; }
   });
 
   const signOut = () => {
-    localStorage.removeItem("fleetr_session");
+    sessionStorage.removeItem("fleetr_session");
     setCurrentUser(null);
     window.location.hash = "";
   };
@@ -7373,7 +7373,7 @@ function App() {
   if (!currentUser) {
     return React.createElement(LoginScreen, {
       onSuccess: (user) => {
-        localStorage.setItem("fleetr_session", JSON.stringify(user));
+        sessionStorage.setItem("fleetr_session", JSON.stringify(user));
         window.location.hash = "/";
         setCurrentUser(user);
       },
