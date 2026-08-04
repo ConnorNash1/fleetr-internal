@@ -19,13 +19,13 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
 // ─── Claude API ───────────────────────────────────────────────────────────────
 const CLAUDE_MODEL     = "claude-sonnet-4-5";
 const CLAUDE_API_URL   = "https://fleetr-ai-proxy.connor-0a5.workers.dev";
-const CLAUDE_SYSTEM    = `You are fleetr ai, an assistant built into a vehicle fleet rental management system. You have access to the current reservations, rental agreements, and fleet data passed in the user message.
+const CLAUDE_SYSTEM    = `You are fleetr ai, an assistant built into a vehicle fleet rental management system. You have access to the current reservations, rental agreements, fleet, and non-drive intake data passed in the user message.
 
 Always respond with a valid JSON object — no markdown, no code fences, no text outside the JSON. Use this exact structure:
 {
   "message": "Plain English description of what you found or what action you are about to take.",
   "action": {
-    "table": "reservations | rental_agreements | fleet",
+    "table": "reservations | rental_agreements | fleet | ndi_rows",
     "operation": "update | insert | delete",
     "match": { "fieldName": "value" },
     "data": { "fieldName": "newValue" }
@@ -35,7 +35,7 @@ Always respond with a valid JSON object — no markdown, no code fences, no text
 Rules:
 - "message" is always required. Write in plain conversational English.
 - "action" is optional. Only include it when the user is requesting a write operation (create, update, delete). For read/lookup requests omit "action" entirely.
-- For "match", use the record's primary identifier: resCode for reservations, id for rental_agreements, id for fleet.
+- For "match", use the record's primary identifier: resCode for reservations, id for rental_agreements, id for fleet, id for ndi_rows.
 - For "data", include only the fields that need to change.
 - For "delete" operations, "data" can be omitted.
 - Do not include any text, explanation, or formatting outside the JSON object.
@@ -52,7 +52,19 @@ Fleet operation rules:
 - When marking a "Ready Returns" vehicle as collected (changing its status to any other status), also include currentRenter: null, dueBack: null, fileType: null in data.
 - To add a vehicle to the fleet, use operation "insert". Required fields: plate, make, model, year. Optional: colour, vin, province (default "NL"), vehicleClass (default "Compact Car"). Do not include status or winterTires in data -- those defaults are applied automatically.
 - To retire a vehicle from the fleet, use operation "delete" with match on "id". Look up the vehicle id from the fleet data using the plate.
-- Use the fleet data passed in the user message to find vehicle ids.`;
+- Use the fleet data passed in the user message to find vehicle ids.
+
+Non-drive intake (ndi_rows) table fields:
+- id (primary key, do not modify), rescode, customer, phone, type, rate (read-only, not editable)
+- source: one of "Insurance", "AF", "FA", "CCS", "CSTAR", "CCTOP", "CA", "Janes", "Brian's"
+- aiDate (ISO date), aiTime (4 digit string, e.g. "1140"), aiMeridiem ("AM" or "PM")
+- agentRequested, requestedAtMs (read-only, not editable through this AI)
+
+Non-drive intake operation rules:
+- ndi_rows only supports "update" through this AI. Do not insert or delete ndi_rows records.
+- To change a row's source, use operation "update" with match on "id" and data containing the new "source".
+- To reschedule a row's pickup date or time, use operation "update" with match on "id" and data containing aiDate, aiTime, and/or aiMeridiem as needed.
+- Use the non-drive intake data passed in the user message to find row ids.`;
 
 // ─── Twilio SMS (routed through Cloudflare Worker proxy) ─────────────────────
 const TWILIO_SMS_URL = "https://fleetr-ai-proxy.connor-0a5.workers.dev/sms";
@@ -853,14 +865,17 @@ function AppProvider({ children, currentUser, signOut }) {
       }
 
       // ── 1b. Migrate ndi_rows codes to new format "ABC 123 456" ──────────────
-      const ndiNeedsMigration = ndiData.filter((r) => !RES_CODE_RE.test(r.resCode || ""));
+      // Note: the ndi_rows table column is the lowercase "rescode", not "resCode"
+      // like every other table. This is a one-off inconsistency in how the column
+      // was created (unquoted in SQL, so Postgres folded it to lowercase).
+      const ndiNeedsMigration = ndiData.filter((r) => !RES_CODE_RE.test(r.rescode || ""));
       if (ndiNeedsMigration.length > 0) {
         const LL2 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
         const r3L2 = () => Array.from({ length: 3 }, () => LL2[Math.floor(Math.random() * 26)]).join("");
         const r3D2 = () => String(Math.floor(Math.random() * 1000)).padStart(3, "0");
         const usedNdiCodes = new Set([
           ...resData.map((r) => r.resCode),
-          ...ndiData.map((r) => r.resCode),
+          ...ndiData.map((r) => r.rescode),
           ...nsData.map((r) => r.resCode),
         ].filter(Boolean));
         for (const r of ndiNeedsMigration) {
@@ -872,11 +887,11 @@ function AppProvider({ children, currentUser, signOut }) {
           if (!newCode) newCode = `${r3L2()} ${r3D2()} ${r3D2()}`;
           usedNdiCodes.add(newCode);
           try {
-            await supabase.from("ndi_rows").update({ resCode: newCode }).eq("id", r.id);
+            await supabase.from("ndi_rows").update({ rescode: newCode }).eq("id", r.id);
           } catch (e) {
             console.warn("ndi_rows resCode migration error:", e);
           }
-          r.resCode = newCode;
+          r.rescode = newCode;
         }
       }
 
@@ -1418,7 +1433,7 @@ async function generateUniqueResCode() {
     try {
       const [r1, r2, r3] = await Promise.all([
         supabase.from("reservations").select("*").eq("resCode", code).limit(1),
-        supabase.from("ndi_rows").select("resCode").eq("resCode", code),
+        supabase.from("ndi_rows").select("rescode").eq("rescode", code),
         supabase.from("no_shows").select("resCode").eq("resCode", code),
       ]);
       const exists = [r1, r2, r3].some((r) => r.data && r.data.length > 0);
@@ -1927,7 +1942,7 @@ function NonDriveIntakeSection({ standalone }) {
         date: target.aiDate,
         time: pickupTime,
         location: "CCS",
-        resCode: target.resCode,
+        resCode: target.rescode,
         customer: target.customer,
         vehicleClass: "Regular SUV",
         winterTires: "Yes",
@@ -2010,9 +2025,9 @@ function NonDriveIntakeSection({ standalone }) {
                 ? Math.max(0, Math.floor((now - row.requestedAtMs) / 60000))
                 : 0;
               return React.createElement("tr", { key: row.id }, [
-                React.createElement("td", { key: `${row.id}-res` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode || "—" })),
+                React.createElement("td", { key: `${row.id}-res` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.rescode, label: row.rescode || "—" })),
                 React.createElement("td", { key: `${row.id}-customer` },
-                  React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })
+                  React.createElement(CustomerLink, { name: row.customer, resCode: row.rescode, label: row.customer })
                 ),
                 React.createElement("td", { key: `${row.id}-source` },
                   React.createElement(
@@ -5085,7 +5100,7 @@ function PlaceholderPage({ title }) {
 // ─── Fleetr AI Command Bar ───────────────────────────────────────────────────
 
 function FleetrCommandBar() {
-  const { requirePin, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet } = React.useContext(AppContext);
+  const { requirePin, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, ndiRows, setNdiRows } = React.useContext(AppContext);
   const [command,        setCommand]        = React.useState("");
   const [aiMessage,      setAiMessage]      = React.useState("");
   const [pendingAction,  setPendingAction]  = React.useState(null);
@@ -5176,6 +5191,7 @@ function FleetrCommandBar() {
         `Reservations data: ${JSON.stringify(reservations)}\n\n` +
         `Rental agreements data: ${JSON.stringify(rentalAgreements)}\n\n` +
         `Fleet data: ${JSON.stringify(fleet)}\n\n` +
+        `Non-drive intake data: ${JSON.stringify(ndiRows)}\n\n` +
         `User command: ${trimmed}`;
       const res = await fetch(CLAUDE_API_URL, {
         method: "POST",
@@ -5243,6 +5259,11 @@ function FleetrCommandBar() {
             setFleet((prev) => prev.map((v) => {
               const matchKeys = Object.keys(match || {});
               return matchKeys.every((k) => String(v[k]) === String(match[k])) ? { ...v, ...data } : v;
+            }));
+          } else if (table === "ndi_rows") {
+            setNdiRows((prev) => prev.map((r) => {
+              const matchKeys = Object.keys(match || {});
+              return matchKeys.every((k) => String(r[k]) === String(match[k])) ? { ...r, ...data } : r;
             }));
           }
         }
