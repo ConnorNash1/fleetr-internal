@@ -19,13 +19,13 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
 // ─── Claude API ───────────────────────────────────────────────────────────────
 const CLAUDE_MODEL     = "claude-sonnet-4-5";
 const CLAUDE_API_URL   = "https://fleetr-ai-proxy.connor-0a5.workers.dev";
-const CLAUDE_SYSTEM    = `You are fleetr ai, an assistant built into a vehicle fleet rental management system. You have access to the current reservations and rental agreements data passed in the user message.
+const CLAUDE_SYSTEM    = `You are fleetr ai, an assistant built into a vehicle fleet rental management system. You have access to the current reservations, rental agreements, and fleet data passed in the user message.
 
 Always respond with a valid JSON object — no markdown, no code fences, no text outside the JSON. Use this exact structure:
 {
   "message": "Plain English description of what you found or what action you are about to take.",
   "action": {
-    "table": "reservations or rental_agreements",
+    "table": "reservations | rental_agreements | fleet",
     "operation": "update | insert | delete",
     "match": { "fieldName": "value" },
     "data": { "fieldName": "newValue" }
@@ -35,10 +35,24 @@ Always respond with a valid JSON object — no markdown, no code fences, no text
 Rules:
 - "message" is always required. Write in plain conversational English.
 - "action" is optional. Only include it when the user is requesting a write operation (create, update, delete). For read/lookup requests omit "action" entirely.
-- For "match", use the record's primary identifier (resCode for reservations, id for rental_agreements).
+- For "match", use the record's primary identifier: resCode for reservations, id for rental_agreements, id for fleet.
 - For "data", include only the fields that need to change.
 - For "delete" operations, "data" can be omitted.
-- Do not include any text, explanation, or formatting outside the JSON object.`;
+- Do not include any text, explanation, or formatting outside the JSON object.
+
+Fleet table fields:
+- id (primary key, do not modify), plate (e.g. "ABC-123"), make, model, year (number), colour, vin (17 chars), province (e.g. "NL")
+- vehicleClass: one of "Compact Car", "Regular Car", "Large Car", "Compact SUV", "Regular SUV", "Large SUV", "Minivan", "Truck"
+- status: one of "Available", "Needs Cleaning", "Ready for Pickup", "LOFR", "Damaged", "On Rent", "Ready Returns"
+- winterTires: "Yes" or "No"
+- currentRenter (customer name or null), dueBack (ISO date or null), fileType (string or null)
+
+Fleet operation rules:
+- To update a vehicle's status, use operation "update" with match on "id" and data containing the new "status".
+- When marking a "Ready Returns" vehicle as collected (changing its status to any other status), also include currentRenter: null, dueBack: null, fileType: null in data.
+- To add a vehicle to the fleet, use operation "insert". Required fields: plate, make, model, year. Optional: colour, vin, province (default "NL"), vehicleClass (default "Compact Car"). Do not include status or winterTires in data -- those defaults are applied automatically.
+- To retire a vehicle from the fleet, use operation "delete" with match on "id". Look up the vehicle id from the fleet data using the plate.
+- Use the fleet data passed in the user message to find vehicle ids.`;
 
 // ─── Twilio SMS (routed through Cloudflare Worker proxy) ─────────────────────
 const TWILIO_SMS_URL = "https://fleetr-ai-proxy.connor-0a5.workers.dev/sms";
@@ -5071,7 +5085,7 @@ function PlaceholderPage({ title }) {
 // ─── Fleetr AI Command Bar ───────────────────────────────────────────────────
 
 function FleetrCommandBar() {
-  const { requirePin, reservations, setReservations, rentalAgreements, setRentalAgreements } = React.useContext(AppContext);
+  const { requirePin, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet } = React.useContext(AppContext);
   const [command,        setCommand]        = React.useState("");
   const [aiMessage,      setAiMessage]      = React.useState("");
   const [pendingAction,  setPendingAction]  = React.useState(null);
@@ -5161,6 +5175,7 @@ function FleetrCommandBar() {
       const userMsg =
         `Reservations data: ${JSON.stringify(reservations)}\n\n` +
         `Rental agreements data: ${JSON.stringify(rentalAgreements)}\n\n` +
+        `Fleet data: ${JSON.stringify(fleet)}\n\n` +
         `User command: ${trimmed}`;
       const res = await fetch(CLAUDE_API_URL, {
         method: "POST",
@@ -5224,6 +5239,11 @@ function FleetrCommandBar() {
               const matchKeys = Object.keys(match || {});
               return matchKeys.every((k) => String(r[k]) === String(match[k])) ? { ...r, ...data } : r;
             }));
+          } else if (table === "fleet") {
+            setFleet((prev) => prev.map((v) => {
+              const matchKeys = Object.keys(match || {});
+              return matchKeys.every((k) => String(v[k]) === String(match[k])) ? { ...v, ...data } : v;
+            }));
           }
         }
       } else if (operation === "insert") {
@@ -5231,11 +5251,14 @@ function FleetrCommandBar() {
         if (table === "reservations") {
           const resCode = await generateUniqueResCode();
           insertData = { ...data, resCode };
+        } else if (table === "fleet") {
+          insertData = { status: "Available", winterTires: "No", currentRenter: null, dueBack: null, fileType: null, ...data };
         }
         ({ error } = await supabase.from(table).insert(insertData));
         if (!error) {
           if (table === "reservations") setReservations((prev) => [...prev, insertData]);
           else if (table === "rental_agreements") setRentalAgreements((prev) => [...prev, insertData]);
+          else if (table === "fleet") setFleet((prev) => [...prev, insertData]);
         }
       } else if (operation === "delete") {
         let q = supabase.from(table).delete();
@@ -5251,6 +5274,11 @@ function FleetrCommandBar() {
             setRentalAgreements((prev) => prev.filter((r) => {
               const matchKeys = Object.keys(match || {});
               return !matchKeys.every((k) => String(r[k]) === String(match[k]));
+            }));
+          } else if (table === "fleet") {
+            setFleet((prev) => prev.filter((v) => {
+              const matchKeys = Object.keys(match || {});
+              return !matchKeys.every((k) => String(v[k]) === String(match[k]));
             }));
           }
         }
@@ -7357,15 +7385,30 @@ function LoginScreen({ onSuccess }) {
 }
 
 function App() {
+  // Session strategy: localStorage holds the user data (survives browser quirks
+  // and page refreshes reliably). sessionStorage holds a per-tab token written
+  // at login. On init, both must match — a missing or mismatched sessionStorage
+  // token means the tab was closed/relaunched and sign-in is required again.
+  // This is more robust than pure sessionStorage, which Safari and PWA contexts
+  // can clear on page reload in certain configurations.
   const [currentUser, setCurrentUser] = React.useState(() => {
     try {
-      const saved = sessionStorage.getItem("fleetr_session");
-      return saved ? JSON.parse(saved) : null;
+      const saved = localStorage.getItem("fleetr_session");
+      if (!saved) return null;
+      const data = JSON.parse(saved);
+      const tabToken = sessionStorage.getItem("fleetr_tab_token");
+      if (!tabToken || tabToken !== data._tabToken) {
+        localStorage.removeItem("fleetr_session");
+        return null;
+      }
+      const { _tabToken: _t, ...user } = data;
+      return user;
     } catch (e) { return null; }
   });
 
   const signOut = () => {
-    sessionStorage.removeItem("fleetr_session");
+    localStorage.removeItem("fleetr_session");
+    sessionStorage.removeItem("fleetr_tab_token");
     setCurrentUser(null);
     window.location.hash = "";
   };
@@ -7373,7 +7416,9 @@ function App() {
   if (!currentUser) {
     return React.createElement(LoginScreen, {
       onSuccess: (user) => {
-        sessionStorage.setItem("fleetr_session", JSON.stringify(user));
+        const tabToken = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+        sessionStorage.setItem("fleetr_tab_token", tabToken);
+        localStorage.setItem("fleetr_session", JSON.stringify({ ...user, _tabToken: tabToken }));
         window.location.hash = "/";
         setCurrentUser(user);
       },
