@@ -19,14 +19,14 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
 // ─── Claude API ───────────────────────────────────────────────────────────────
 const CLAUDE_MODEL     = "claude-sonnet-4-5";
 const CLAUDE_API_URL   = "https://fleetr-ai-proxy.connor-0a5.workers.dev";
-const CLAUDE_SYSTEM    = `You are fleetr ai, an assistant built into a vehicle fleet rental management system. You have access to the current reservations, rental agreements, fleet, and non-drive intake data passed in the user message.
+const CLAUDE_SYSTEM    = `You are fleetr ai, an assistant built into a vehicle fleet rental management system. You have access to the current reservations, rental agreements, fleet, non-drive intake, and no-shows data passed in the user message.
 
 Always respond with a valid JSON object — no markdown, no code fences, no text outside the JSON. Use this exact structure:
 {
   "message": "Plain English description of what you found or what action you are about to take.",
   "action": {
-    "table": "reservations | rental_agreements | fleet | ndi_rows",
-    "operation": "update | insert | delete",
+    "table": "reservations | rental_agreements | fleet | ndi_rows | no_shows",
+    "operation": "update | insert | delete | confirmPickup",
     "match": { "fieldName": "value" },
     "data": { "fieldName": "newValue" }
   }
@@ -34,10 +34,10 @@ Always respond with a valid JSON object — no markdown, no code fences, no text
 
 Rules:
 - "message" is always required. Write in plain conversational English.
-- "action" is optional. Only include it when the user is requesting a write operation (create, update, delete). For read/lookup requests omit "action" entirely.
-- For "match", use the record's primary identifier: resCode for reservations, id for rental_agreements, id for fleet, id for ndi_rows.
+- "action" is optional. Only include it when the user is requesting a write operation (create, update, delete, confirmPickup). For read/lookup requests omit "action" entirely.
+- For "match", use the record's primary identifier: resCode for reservations, id for rental_agreements, id for fleet, id for ndi_rows, id for no_shows.
 - For "data", include only the fields that need to change.
-- For "delete" operations, "data" can be omitted.
+- For "delete" and "confirmPickup" operations, "data" can be omitted.
 - Do not include any text, explanation, or formatting outside the JSON object.
 
 Fleet table fields:
@@ -64,7 +64,16 @@ Non-drive intake operation rules:
 - ndi_rows only supports "update" through this AI. Do not insert or delete ndi_rows records.
 - To change a row's source, use operation "update" with match on "id" and data containing the new "source".
 - To reschedule a row's pickup date or time, use operation "update" with match on "id" and data containing aiDate, aiTime, and/or aiMeridiem as needed.
-- Use the non-drive intake data passed in the user message to find row ids.`;
+- Use the non-drive intake data passed in the user message to find row ids.
+
+No-shows (no_shows) table fields:
+- id (primary key, do not modify), rescode, customer, date, time, location, vehicleClass, phone (read-only, not editable)
+- called, status, stage (read-only, not editable through this AI)
+
+No-shows operation rules:
+- no_shows only supports "confirmPickup" through this AI. Do not update, insert, or delete no_shows records directly.
+- confirmPickup means the customer showed up after all. Use operation "confirmPickup" with match on "id" and no "data". This moves the row from no-shows back into an active reservation.
+- Use the no-shows data passed in the user message to find row ids.`;
 
 // ─── Twilio SMS (routed through Cloudflare Worker proxy) ─────────────────────
 const TWILIO_SMS_URL = "https://fleetr-ai-proxy.connor-0a5.workers.dev/sms";
@@ -5100,7 +5109,7 @@ function PlaceholderPage({ title }) {
 // ─── Fleetr AI Command Bar ───────────────────────────────────────────────────
 
 function FleetrCommandBar() {
-  const { requirePin, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, ndiRows, setNdiRows } = React.useContext(AppContext);
+  const { requirePin, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows } = React.useContext(AppContext);
   const [command,        setCommand]        = React.useState("");
   const [aiMessage,      setAiMessage]      = React.useState("");
   const [pendingAction,  setPendingAction]  = React.useState(null);
@@ -5192,6 +5201,7 @@ function FleetrCommandBar() {
         `Rental agreements data: ${JSON.stringify(rentalAgreements)}\n\n` +
         `Fleet data: ${JSON.stringify(fleet)}\n\n` +
         `Non-drive intake data: ${JSON.stringify(ndiRows)}\n\n` +
+        `No-shows data: ${JSON.stringify(noShows)}\n\n` +
         `User command: ${trimmed}`;
       const res = await fetch(CLAUDE_API_URL, {
         method: "POST",
@@ -5301,6 +5311,50 @@ function FleetrCommandBar() {
               const matchKeys = Object.keys(match || {});
               return !matchKeys.every((k) => String(v[k]) === String(match[k]));
             }));
+          }
+        }
+      } else if (operation === "confirmPickup" && table === "no_shows") {
+        const row = noShows.find((r) => String(r.id) === String(match?.id));
+        if (!row) {
+          error = { message: "No-show record not found." };
+        } else {
+          const nameParts = (row.customer || "").trim().split(/\s+/);
+          const newRes = {
+            resCode:               row.rescode,
+            customer:              row.customer || "",
+            firstName:             nameParts[0] || "",
+            lastName:              nameParts.slice(1).join(" ") || "",
+            date:                  row.date || "",
+            time:                  row.time || "",
+            location:              row.location || "",
+            vehicleClass:          row.vehicleClass || "",
+            phone:                 row.phone || "",
+            email:                 "",
+            returnDate:            "",
+            returnTime:            "",
+            winterTires:           "No",
+            source:                "",
+            sourceDetail:          "",
+            ratesVehicleClass:     "",
+            dailyRate:             "",
+            adjusterName:          "",
+            claimNumber:           "",
+            fileNumber:            "",
+            authNumber:            "",
+            poNumber:              "",
+            paymentMethod:         "",
+            preRentalCheck:        "NOT Pre-Rental Check'd",
+            notesLog:              [],
+            rentalAgreementStatus: "reservation",
+            pickupStatus:          "Confirmed",
+          };
+          ({ error } = await supabase.from("reservations").insert(newRes));
+          if (!error) {
+            setReservations((prev) => [...prev, newRes]);
+            ({ error } = await supabase.from("no_shows").delete().eq("id", row.id));
+            if (!error) {
+              setNoShows((prev) => prev.filter((r) => r.id !== row.id));
+            }
           }
         }
       }
