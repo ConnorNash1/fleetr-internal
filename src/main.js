@@ -79,7 +79,14 @@ Damage claims:
 - A damage claim is a reservation with hasDamage set to true. Its description, if any, is on the matching rental_agreements record (same resCode), in returnDamageDescription or damageNotes.
 - To resolve a damage claim, use table "reservations", operation "update", match on resCode, and data containing hasDamage: false.
 - Do not set hasDamage to true through this AI. Flagging new damage happens elsewhere in the app.
-- Use the reservations and rental agreements data passed in the user message to find open claims and their descriptions.`;
+- Use the reservations and rental agreements data passed in the user message to find open claims and their descriptions.
+
+Gas collections:
+- Gas balances live on rental_agreements, in gasOwed (a dollar amount) and gasCollected (a boolean, true once fully paid). There is no separate partial-payment status field.
+- To change how much a customer owes, use table "rental_agreements", operation "update", match on id, and data containing the new gasOwed amount as a string, e.g. "25.00".
+- To mark a balance as fully paid, use table "rental_agreements", operation "update", match on id, and data containing gasCollected: true and gasOwed: "0".
+- To mark a balance as unpaid again, use data containing gasCollected: false.
+- Use the rental agreements data passed in the user message to find records with an outstanding gasOwed balance and their ids.`;
 
 // ─── Twilio SMS (routed through Cloudflare Worker proxy) ─────────────────────
 const TWILIO_SMS_URL = "https://fleetr-ai-proxy.connor-0a5.workers.dev/sms";
@@ -4756,27 +4763,33 @@ function FleetDamageClaimsPage() {
 // ─── GasCollectionsPage ───────────────────────────────────────────────────────
 
 function GasCollectionsPage() {
-  const { reservations, setReservations } = React.useContext(AppContext);
+  // Note: gas balances live on rental_agreements (gasOwed, gasCollected), not
+  // reservations. reservations has no gas fields at all, and rental_agreements
+  // has no "Partial" status, only a gasCollected boolean, so payment status
+  // here is a plain Unpaid/Paid toggle rather than a three-state field.
+  const { rentalAgreements, setRentalAgreements } = React.useContext(AppContext);
 
   // Only show files with an outstanding balance (auto-removes when gasOwed hits 0)
-  const rows = reservations.filter((r) => parseFloat(r.gasOwed || 0) > 0);
+  const rows = rentalAgreements.filter((a) => parseFloat(a.gasOwed || 0) > 0);
 
-  const updateRow = (resCode, patch) => {
-    setReservations((prev) =>
-      prev.map((r) => r.resCode === resCode ? { ...r, ...patch } : r)
+  const updateRow = (id, patch) => {
+    setRentalAgreements((prev) =>
+      prev.map((a) => a.id === id ? { ...a, ...patch } : a)
     );
-    supabase.from("reservations").update(patch).eq("resCode", resCode).catch((e) => console.warn("reservations update:", e));
+    supabase.from("rental_agreements").update(patch).eq("id", id).then(({ error }) => {
+      if (error) console.warn("rental_agreements update failed:", id, error);
+    }).catch((e) => console.warn("rental_agreements update:", e));
   };
 
-  const handleGasChange = (resCode, value) => {
-    updateRow(resCode, { gasOwed: value });
+  const handleGasChange = (id, value) => {
+    updateRow(id, { gasOwed: value });
   };
 
-  const handleStatusChange = (resCode, value) => {
+  const handleStatusChange = (id, value) => {
     // Marking as Paid zeros out the balance → triggers auto-removal
-    updateRow(resCode, value === "Paid"
-      ? { gasPaymentStatus: "Paid", gasOwed: "0" }
-      : { gasPaymentStatus: value }
+    updateRow(id, value === "Paid"
+      ? { gasCollected: true, gasOwed: "0" }
+      : { gasCollected: false }
     );
   };
 
@@ -4796,17 +4809,17 @@ function GasCollectionsPage() {
                 )
               ),
               React.createElement("tbody", null,
-                rows.map((r) =>
-                  React.createElement("tr", { key: r.resCode },
+                rows.map((a) =>
+                  React.createElement("tr", { key: a.id },
                     React.createElement("td", null,
-                      React.createElement(CustomerLink, { name: r.customer, resCode: r.resCode, label: r.customer })
+                      React.createElement(CustomerLink, { name: a.customer, resCode: a.resCode, label: a.customer })
                     ),
                     React.createElement("td", null,
-                      React.createElement(CustomerLink, { name: r.customer, resCode: r.resCode, label: r.resCode, hideBadge: true })
+                      React.createElement(CustomerLink, { name: a.customer, resCode: a.resCode, label: a.resCode, hideBadge: true })
                     ),
                     React.createElement("td", null,
-                      r.rentalPlate
-                        ? React.createElement(PlateLink, { plate: r.rentalPlate })
+                      a.plate
+                        ? React.createElement(PlateLink, { plate: a.plate })
                         : "—"
                     ),
                     React.createElement("td", null,
@@ -4815,20 +4828,20 @@ function GasCollectionsPage() {
                         React.createElement("input", {
                           type: "number",
                           className: "gasOwedInput",
-                          value: r.gasOwed || "",
+                          value: a.gasOwed || "",
                           min: "0",
                           step: "0.01",
-                          onChange: (e) => handleGasChange(r.resCode, e.target.value),
+                          onChange: (e) => handleGasChange(a.id, e.target.value),
                         })
                       )
                     ),
                     React.createElement("td", null,
                       React.createElement("select", {
                         className: "gasStatusSelect",
-                        value: r.gasPaymentStatus || "Unpaid",
-                        onChange: (e) => handleStatusChange(r.resCode, e.target.value),
+                        value: a.gasCollected ? "Paid" : "Unpaid",
+                        onChange: (e) => handleStatusChange(a.id, e.target.value),
                       },
-                        ["Unpaid", "Partial", "Paid"].map((opt) =>
+                        ["Unpaid", "Paid"].map((opt) =>
                           React.createElement("option", { key: opt, value: opt }, opt)
                         )
                       )
