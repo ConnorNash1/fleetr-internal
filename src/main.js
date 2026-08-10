@@ -905,8 +905,12 @@ function AppProvider({ children, currentUser, signOut }) {
       }
 
       // ── 2. Move overdue "Pending arrival" reservations to no_shows ───────────
+      // Note: no_shows.id is a strict UUID column, so newly created rows must use
+      // crypto.randomUUID() rather than a custom string, and the same id must be
+      // reused in local state so later updates/deletes (eq("id", ...)) match the
+      // real row. no_shows.rescode is also lowercase, like ndi_rows.rescode.
       const loadTodayIso = new Date().toISOString().slice(0, 10);
-      const existingNsCodes = new Set(nsData.map((ns) => ns.resCode));
+      const existingNsCodes = new Set(nsData.map((ns) => ns.rescode));
       const overdueRes = resData.filter(
         (r) => r.date < loadTodayIso &&
                r.pickupStatus === "Pending arrival" &&
@@ -915,8 +919,8 @@ function AppProvider({ children, currentUser, signOut }) {
       const toMove = overdueRes.filter((r) => !existingNsCodes.has(r.resCode));
       if (toMove.length > 0) {
         const newNsEntries = toMove.map((r) => ({
-          id:           `NS-AUTO-${(r.resCode || "").replace(/\s/g, "")}`,
-          resCode:      r.resCode,
+          id:           crypto.randomUUID(),
+          rescode:      r.resCode,
           customer:     r.customer,
           time:         r.time || "",
           vehicleClass: r.vehicleClass || "",
@@ -929,7 +933,7 @@ function AppProvider({ children, currentUser, signOut }) {
         }));
         try {
           // Raw fetch bypasses Supabase JS v1 SDK's automatic `columns` URL param
-          await fetch(`${SUPABASE_URL}/rest/v1/no_shows`, {
+          const sweepRes = await fetch(`${SUPABASE_URL}/rest/v1/no_shows`, {
             method: "POST",
             headers: {
               "apikey": SUPABASE_ANON,
@@ -939,8 +943,13 @@ function AppProvider({ children, currentUser, signOut }) {
             },
             body: JSON.stringify(newNsEntries),
           });
-          for (const r of toMove) {
-            await supabase.from("reservations").delete().eq("resCode", r.resCode);
+          if (!sweepRes.ok) {
+            console.warn("No-shows sweep insert failed:", sweepRes.status, await sweepRes.text());
+          } else {
+            for (const r of toMove) {
+              const { error: delError } = await supabase.from("reservations").delete().eq("resCode", r.resCode);
+              if (delError) console.warn("No-shows sweep reservation delete failed:", r.resCode, delError);
+            }
           }
         } catch (e) {
           console.warn("No-shows sweep error:", e);
@@ -1472,6 +1481,8 @@ function ReservationsPage() {
   const [filterPickerMonth, setFilterPickerMonth] = React.useState(null);
 
   // ── Sweep: move past-due "Pending arrival" reservations into No Shows ────────
+  // Note: no_shows.id is a strict UUID column and no_shows.rescode is lowercase,
+  // same as the AppProvider load-time sweep. Keep both in sync if this changes.
   React.useEffect(() => {
     const overdue = reservations.filter(
       (r) => r.date < todayIso &&
@@ -1479,12 +1490,12 @@ function ReservationsPage() {
              r.rentalAgreementStatus === "reservation"
     );
     if (overdue.length === 0) return;
-    const existingCodes = new Set(noShows.map((ns) => ns.resCode));
+    const existingCodes = new Set(noShows.map((ns) => ns.rescode));
     const toAdd = overdue.filter((r) => !existingCodes.has(r.resCode));
     if (toAdd.length === 0) return;
     const newNsRows = toAdd.map((r) => ({
-      id:           `NS-${Date.now()}-${r.resCode}`,
-      resCode:      r.resCode,
+      id:           crypto.randomUUID(),
+      rescode:      r.resCode,
       customer:     r.customer,
       time:         r.time || "",
       vehicleClass: r.vehicleClass || "",
@@ -1497,12 +1508,16 @@ function ReservationsPage() {
     }));
     setNoShows((prev) => [...prev, ...newNsRows]);
     for (const ns of newNsRows) {
-      supabase.from("no_shows").insert(ns).catch((e) => console.warn("no_shows insert:", e));
+      supabase.from("no_shows").insert(ns).then(({ error }) => {
+        if (error) console.warn("no_shows insert failed:", ns.rescode, error);
+      }).catch((e) => console.warn("no_shows insert:", e));
     }
     const overdueCodes = new Set(overdue.map((r) => r.resCode));
     setReservations((prev) => prev.filter((r) => !overdueCodes.has(r.resCode)));
     for (const r of overdue) {
-      supabase.from("reservations").delete().eq("resCode", r.resCode).catch((e) => console.warn("reservations delete:", e));
+      supabase.from("reservations").delete().eq("resCode", r.resCode).then(({ error }) => {
+        if (error) console.warn("reservations delete failed:", r.resCode, error);
+      }).catch((e) => console.warn("reservations delete:", e));
     }
   }, [reservations, noShows]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -3156,6 +3171,10 @@ function NoShowsPage() {
   // 24-Hour tab → Abandoned   : 24 h after moving into the 24-Hour tab
   //                             (tracked via movedTo24HourAt; falls back to 48 h from pickup
   //                             for rows that pre-date this field).
+  // Note: movedTo24HourAt has no matching column in Supabase, so it is kept in
+  // local state only and is not sent in the update payload below. It resets to
+  // the fallback estimate on reload, which is an accepted limitation until the
+  // column is added.
   React.useEffect(() => {
     const now = Date.now();
     const HOUR = 3600000;
@@ -3183,13 +3202,17 @@ function NoShowsPage() {
         if (Number.isNaN(pickupMs)) return r;
         const elapsed = now - pickupMs;
         if (stage === "2hour" && elapsed >= 26 * HOUR) {
-          supabase.from("no_shows").update({ stage: "24hour", movedTo24HourAt: now }).eq("id", r.id).catch((e) => console.warn("no_shows update:", e));
+          supabase.from("no_shows").update({ stage: "24hour" }).eq("id", r.id).then(({ error }) => {
+            if (error) console.warn("no_shows stage update failed:", r.id, error);
+          }).catch((e) => console.warn("no_shows update:", e));
           return { ...r, stage: "24hour", movedTo24HourAt: now };
         }
         if (stage === "24hour") {
           const since = r.movedTo24HourAt || (pickupMs + 26 * HOUR);
           if (now - since >= 24 * HOUR) {
-            supabase.from("no_shows").update({ stage: "abandoned" }).eq("id", r.id).catch((e) => console.warn("no_shows update:", e));
+            supabase.from("no_shows").update({ stage: "abandoned" }).eq("id", r.id).then(({ error }) => {
+              if (error) console.warn("no_shows stage update failed:", r.id, error);
+            }).catch((e) => console.warn("no_shows update:", e));
             return { ...r, stage: "abandoned" };
           }
         }
