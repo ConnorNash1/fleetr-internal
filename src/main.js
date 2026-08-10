@@ -73,7 +73,13 @@ No-shows (no_shows) table fields:
 No-shows operation rules:
 - no_shows only supports "confirmPickup" through this AI. Do not update, insert, or delete no_shows records directly.
 - confirmPickup means the customer showed up after all. Use operation "confirmPickup" with match on "id" and no "data". This moves the row from no-shows back into an active reservation.
-- Use the no-shows data passed in the user message to find row ids.`;
+- Use the no-shows data passed in the user message to find row ids.
+
+Damage claims:
+- A damage claim is a reservation with hasDamage set to true. Its description, if any, is on the matching rental_agreements record (same resCode), in returnDamageDescription or damageNotes.
+- To resolve a damage claim, use table "reservations", operation "update", match on resCode, and data containing hasDamage: false.
+- Do not set hasDamage to true through this AI. Flagging new damage happens elsewhere in the app.
+- Use the reservations and rental agreements data passed in the user message to find open claims and their descriptions.`;
 
 // ─── Twilio SMS (routed through Cloudflare Worker proxy) ─────────────────────
 const TWILIO_SMS_URL = "https://fleetr-ai-proxy.connor-0a5.workers.dev/sms";
@@ -4611,7 +4617,7 @@ function FleetAdditionsPage() {
 // ─── FleetDamageClaimsPage ─────────────────────────────────────────────────────
 
 function FleetDamageClaimsPage() {
-  const { fleet, setOpenRentalAgreementId, damageClaims, setDamageClaims, reservations, setReservations } = React.useContext(AppContext);
+  const { fleet, setOpenRentalAgreementId, damageClaims, setDamageClaims, reservations, setReservations, rentalAgreements } = React.useContext(AppContext);
   const navigate = useNavigate();
   const { filtered, filterState } = useFleetFilter(fleet);
   const filteredPlates = React.useMemo(() => new Set(filtered.map((v) => v.plate)), [filtered]);
@@ -4624,22 +4630,28 @@ function FleetDamageClaimsPage() {
   };
 
   // Live claims: reservations flagged with hasDamage
+  // Note: reservations has no plate or description field of its own. The plate
+  // lives on reservations.plate (not rentalPlate) and the damage narrative lives
+  // on the matching rental_agreements row (returnDamageDescription or damageNotes).
   const liveClaims = reservations
     .filter((r) => r.hasDamage)
-    .map((r) => ({
-      id:                `DC-LIVE-${r.resCode}`,
-      plate:             r.rentalPlate || null,
-      vehicle:           [r.vehicleYear, r.vehicleMake, r.vehicleModel].filter(Boolean).join(" ") || r.vehicleClass || "—",
-      customer:          r.customer,
-      resCode:           r.resCode,
-      description:       r.damageDescription || "Damage flagged at return",
-      claimStatus:       "Open",
-      rentalAgreementId: r.resCode,
-      _isLive:           true,
-    }));
+    .map((r) => {
+      const ra = rentalAgreements.find((a) => a.resCode === r.resCode);
+      return {
+        id:                `DC-LIVE-${r.resCode}`,
+        plate:             r.plate || null,
+        vehicle:           [r.vehicleYear, r.vehicleMake, r.vehicleModel].filter(Boolean).join(" ") || r.vehicleClass || "—",
+        customer:          r.customer,
+        resCode:           r.resCode,
+        description:       ra?.returnDamageDescription || ra?.damageNotes || "Damage flagged at return",
+        claimStatus:       "Open",
+        rentalAgreementId: r.resCode,
+        _isLive:           true,
+      };
+    });
 
   // Seed claims filtered by current fleet filter; live claims shown regardless of filter
-  // (they may not have a fleet plate if rentalPlate was not set)
+  // (they may not have a fleet plate if plate was not set)
   const seedFiltered = damageClaims.filter((c) => filteredPlates.has(c.plate));
   const liveFiltered = liveClaims.filter((c) => !c.plate || filteredPlates.has(c.plate));
   const allClaims    = [...seedFiltered, ...liveFiltered];
@@ -4654,7 +4666,9 @@ function FleetDamageClaimsPage() {
       setReservations((prev) =>
         prev.map((r) => r.resCode === claim.resCode ? { ...r, hasDamage: false } : r)
       );
-      supabase.from("reservations").update({ hasDamage: false }).eq("resCode", claim.resCode).catch((e) => console.warn("reservations update:", e));
+      supabase.from("reservations").update({ hasDamage: false }).eq("resCode", claim.resCode).then(({ error }) => {
+        if (error) console.warn("reservations update failed:", claim.resCode, error);
+      }).catch((e) => console.warn("reservations update:", e));
     } else {
       setDamageClaims((prev) =>
         prev.map((c) => c.id === claim.id ? { ...c, claimStatus: "Settled" } : c)
