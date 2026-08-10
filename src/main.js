@@ -784,6 +784,22 @@ function AppProvider({ children, currentUser, signOut }) {
           raRef.current = updated;
           setRentalAgreementsState(updated);
         }
+
+        // Enforce vehicle status rules driven by RA status (first-time insert)
+        const plate = data?.plate || reservations.find((r) => r.resCode === resCode)?.plate;
+        if (plate) {
+          const newFleetStatus =
+            status === "open_rental_agreement" ? "On Rent" :
+            status === "close_pending"         ? "Ready Returns" : null;
+          if (newFleetStatus) {
+            setFleetState((prev) =>
+              prev.map((v) => v.plate === plate ? { ...v, status: newFleetStatus } : v)
+            );
+            supabase.from("fleet").update({ status: newFleetStatus }).eq("plate", plate)
+              .then((res) => console.log("fleet status sync:", res))
+              .catch((e) => console.warn("fleet status sync:", e));
+          }
+        }
       }
     } catch (e) {
       console.warn("rental_agreements status sync error:", e);
@@ -3181,7 +3197,7 @@ function NoShowsPage() {
 
   // Auto-advance stages based on elapsed time.
   // 2-Hour tab  → 24-Hour tab : 24 h after the 2-hour text was sent (≈ 26 h from pickup).
-  // 24-Hour tab → Abandoned   : 24 h after moving into the 24-Hour tab
+  // 24-Hour tab → Abandoned   : 7 days after moving into the 24-Hour tab
   //                             (tracked via movedTo24HourAt; falls back to 48 h from pickup
   //                             for rows that pre-date this field).
   // Note: movedTo24HourAt has no matching column in Supabase, so it is kept in
@@ -3201,7 +3217,7 @@ function NoShowsPage() {
       if (stage === "2hour" && elapsed >= 26 * HOUR) return true;
       if (stage === "24hour") {
         const since = r.movedTo24HourAt || (pickupMs + 26 * HOUR);
-        if (now - since >= 24 * HOUR) return true;
+        if (now - since >= 7 * 24 * HOUR) return true;
       }
       return false;
     });
@@ -3222,7 +3238,7 @@ function NoShowsPage() {
         }
         if (stage === "24hour") {
           const since = r.movedTo24HourAt || (pickupMs + 26 * HOUR);
-          if (now - since >= 24 * HOUR) {
+          if (now - since >= 7 * 24 * HOUR) {
             supabase.from("no_shows").update({ stage: "abandoned" }).eq("id", r.id).then(({ error }) => {
               if (error) console.warn("no_shows stage update failed:", r.id, error);
             }).catch((e) => console.warn("no_shows update:", e));
@@ -3412,7 +3428,8 @@ function NoShowsPage() {
 // ─── OverdueRentalsPage ───────────────────────────────────────────────────────
 
 function OverdueRentalsPage() {
-  const [rows, setRows] = React.useState(OVERDUE_SEED);
+  const { reservations, rentalAgreements } = React.useContext(AppContext);
+  const [callStatuses, setCallStatuses] = React.useState({});
 
   const fmtDate = (iso) => {
     if (!iso) return "—";
@@ -3421,21 +3438,48 @@ function OverdueRentalsPage() {
       : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
   };
 
+  // Derived: reservations with an open rental agreement whose return date has
+  // passed (same computation the automated overdue-rental SMS uses).
+  const rows = React.useMemo(() => {
+    const now = new Date();
+    return reservations
+      .filter((r) => {
+        if (!r.returnDate) return false;
+        const ra = rentalAgreements.find((a) => a.resCode === r.resCode);
+        const raStatus = ra?.rentalAgreementStatus || r.rentalAgreementStatus || "";
+        if (raStatus !== "open_rental_agreement") return false;
+        const returnDt = new Date(`${r.returnDate}T00:00:00`);
+        return !Number.isNaN(returnDt.getTime()) && now > returnDt;
+      })
+      .map((r) => {
+        const ra = rentalAgreements.find((a) => a.resCode === r.resCode);
+        return {
+          id: r.resCode,
+          resCode: r.resCode,
+          customer: r.customer || `${r.firstName || ""} ${r.lastName || ""}`.trim(),
+          phone: r.phone,
+          plate: r.plate || ra?.plate || null,
+          returnDate: r.returnDate,
+          callStatus: callStatuses[r.resCode],
+        };
+      });
+  }, [reservations, rentalAgreements, callStatuses]);
+
   const activeRows = rows.filter((r) => r.callStatus !== "LM");
   const manualRows = rows.filter((r) => r.callStatus === "LM");
 
   const handleAiCallAll = () => {
     if (activeRows.length === 0) return;
     let reached = 0, lm = 0;
-    setRows((prev) =>
-      prev.map((row) => {
-        if (row.callStatus === "LM") return row;
+    setCallStatuses((prev) => {
+      const next = { ...prev };
+      activeRows.forEach((row) => {
         const answered = Math.random() < 0.5;
-        if (answered) { reached++; return { ...row, callStatus: "Reached" }; }
-        lm++;
-        return { ...row, callStatus: "LM" };
-      })
-    );
+        if (answered) { reached++; next[row.resCode] = "Reached"; }
+        else { lm++; next[row.resCode] = "LM"; }
+      });
+      return next;
+    });
     window.alert(
       `Called ${activeRows.length} overdue rental${activeRows.length !== 1 ? "s" : ""}:\n• ${reached} reached\n• ${lm} no answer → moved to Manual Follow-Up`
     );
@@ -3462,7 +3506,7 @@ function OverdueRentalsPage() {
             React.createElement("td", null, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
             React.createElement("td", null, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })),
             React.createElement("td", null, row.phone),
-            React.createElement("td", null, React.createElement(PlateLink, { plate: row.plate })),
+            React.createElement("td", null, row.plate ? React.createElement(PlateLink, { plate: row.plate }) : "—"),
             React.createElement("td", null, fmtDate(row.returnDate)),
             React.createElement(
               "td", null,
@@ -4443,7 +4487,7 @@ function FleetAdditionsPage() {
         colour: addForm.colour || null,
         vin: addForm.vin || null,
         province: addForm.province || null,
-        winterTires: "No", status: "Available",
+        winterTires: "No", status: "Needs Cleaning",
         currentRenter: null, dueBack: null, fileType: null,
       };
       setFleet((prev) => [...prev, newVehicle]);
@@ -5333,7 +5377,7 @@ function FleetrCommandBar() {
           const resCode = await generateUniqueResCode();
           insertData = { ...data, resCode };
         } else if (table === "fleet") {
-          insertData = { status: "Available", winterTires: "No", currentRenter: null, dueBack: null, fileType: null, ...data };
+          insertData = { status: "Needs Cleaning", winterTires: "No", currentRenter: null, dueBack: null, fileType: null, ...data };
         }
         ({ error } = await supabase.from(table).insert(insertData));
         if (!error) {
