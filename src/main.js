@@ -19,13 +19,13 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
 // ─── Claude API ───────────────────────────────────────────────────────────────
 const CLAUDE_MODEL     = "claude-sonnet-4-5";
 const CLAUDE_API_URL   = "https://fleetr-ai-proxy.connor-0a5.workers.dev";
-const CLAUDE_SYSTEM    = `You are fleetr ai, an assistant built into a vehicle fleet rental management system. You have access to the current reservations, rental agreements, fleet, non-drive intake, and no-shows data passed in the user message.
+const CLAUDE_SYSTEM    = `You are fleetr ai, an assistant built into a vehicle fleet rental management system. You have access to the current reservations, rental agreements, fleet, non-drive intake, no-shows, and damage claims data passed in the user message.
 
 Always respond with a valid JSON object — no markdown, no code fences, no text outside the JSON. Use this exact structure:
 {
   "message": "Plain English description of what you found or what action you are about to take.",
   "action": {
-    "table": "reservations | rental_agreements | fleet | ndi_rows | no_shows",
+    "table": "reservations | rental_agreements | fleet | ndi_rows | no_shows | damage_claims",
     "operation": "update | insert | delete | confirmPickup",
     "match": { "fieldName": "value" },
     "data": { "fieldName": "newValue" }
@@ -35,7 +35,7 @@ Always respond with a valid JSON object — no markdown, no code fences, no text
 Rules:
 - "message" is always required. Write in plain conversational English.
 - "action" is optional. Only include it when the user is requesting a write operation (create, update, delete, confirmPickup). For read/lookup requests omit "action" entirely.
-- For "match", use the record's primary identifier: resCode for reservations, id for rental_agreements, id for fleet, id for ndi_rows, id for no_shows.
+- For "match", use the record's primary identifier: resCode for reservations, id for rental_agreements, id for fleet, id for ndi_rows, id for no_shows, id for damage_claims.
 - For "data", include only the fields that need to change.
 - For "delete" and "confirmPickup" operations, "data" can be omitted.
 - Do not include any text, explanation, or formatting outside the JSON object.
@@ -75,11 +75,15 @@ No-shows operation rules:
 - confirmPickup means the customer showed up after all. Use operation "confirmPickup" with match on "id" and no "data". This moves the row from no-shows back into an active reservation.
 - Use the no-shows data passed in the user message to find row ids.
 
-Damage claims:
-- A damage claim is a reservation with hasDamage set to true. Its description, if any, is on the matching rental_agreements record (same resCode), in returnDamageDescription or damageNotes.
-- To resolve a damage claim, use table "reservations", operation "update", match on resCode, and data containing hasDamage: false.
-- Do not set hasDamage to true through this AI. Flagging new damage happens elsewhere in the app.
-- Use the reservations and rental agreements data passed in the user message to find open claims and their descriptions.
+Damage claims (damage_claims) table fields:
+- id (primary key, do not modify), plate, rentalAgreementId (id of the matching rental_agreements record), description
+- status: one of "open", "in_review", "resolved" (read-only reportedAt/resolvedAt/photos, not editable through this AI)
+
+Damage claims operation rules:
+- To resolve a damage claim, use table "damage_claims", operation "update", match on id, and data containing status: "resolved".
+- To move a claim into review, use operation "update", match on id, and data containing status: "in_review".
+- Do not insert new damage_claims records through this AI. Flagging new damage happens elsewhere in the app (at vehicle return, or via the Flag Damage button on a rental agreement).
+- Use the damage claims data passed in the user message to find open claims, their ids, and their descriptions.
 
 Gas collections:
 - Gas balances live on rental_agreements, in gasOwed (a dollar amount) and gasCollected (a boolean, true once fully paid). There is no separate partial-payment status field.
@@ -88,27 +92,12 @@ Gas collections:
 - To mark a balance as unpaid again, use data containing gasCollected: false.
 - Use the rental agreements data passed in the user message to find records with an outstanding gasOwed balance and their ids.`;
 
-// ─── Twilio SMS (routed through Cloudflare Worker proxy) ─────────────────────
-const TWILIO_SMS_URL = "https://fleetr-ai-proxy.connor-0a5.workers.dev/sms";
-
-async function sendSMS(to, body) {
-  if (!to) return;
-  const digits = to.replace(/\D/g, "");
-  const e164   = digits.length === 10 ? `+1${digits}` : `+${digits}`;
-  try {
-    const res  = await fetch(TWILIO_SMS_URL, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ to: e164, body }),
-    });
-    const data = await res.json();
-    if (res.ok) { console.log("SMS sent:", data.sid, "→", e164); }
-    else        { console.warn("SMS error:", data.message || data); }
-    return data;
-  } catch (e) {
-    console.warn("sendSMS network error:", e);
-  }
-}
+// ─── Twilio SMS ──────────────────────────────────────────────────────────────
+// The client-side sendSMS helper was removed along with the automated texting
+// loop. Automated customer texts are now sent server-side by the Cloudflare Cron
+// Trigger in worker.js. The Worker's /sms proxy endpoint is still live, so this
+// helper can be reinstated if a staff-initiated "send text now" button is ever
+// added — but nothing in the app should text customers on a timer any more.
 
 // ─── One-time customer data cleanup ──────────────────────────────────────────
 // Runs once per device (gated by localStorage). Wipes all customer records from
@@ -391,13 +380,32 @@ const VEHICLE_DAMAGE_SEED = {
   ],
 };
 
-// ─── Damage claims seed ────────────────────────────────────────────────────────
+// ─── Damage claims ──────────────────────────────────────────────────────────────
+// damage_claims rows only carry plate, rentalAgreementId, and description — vehicle
+// and customer/resCode are derived by joining rentalAgreements/reservations here so
+// every view renders claims the same way.
 
-const DAMAGE_CLAIMS_SEED = [
-  { id: "DC-1", plate: "QPA-667", vehicle: "Kia Seltos",   customer: "Liam Burke",   resCode: "LBU 178 801", description: "Front bumper scuff and driver door dent",   claimStatus: "Open",      rentalAgreementId: "RA-1048" },
-  { id: "DC-2", plate: "BTM-663", vehicle: "Kia Forte",    customer: "Sarah Murphy", resCode: "SMU 171 202", description: "Rear bumper crack — passenger corner",       claimStatus: "In Review", rentalAgreementId: "RA-1033" },
-  { id: "DC-3", plate: "WKM-112", vehicle: "Nissan Rogue", customer: "Kevin Dwyer",  resCode: "KDW 165 503", description: "Hood stone chips (3)",                       claimStatus: "Settled",   rentalAgreementId: "RA-1021" },
-];
+const DAMAGE_CLAIM_STATUS_LABEL = { open: "Open", in_review: "In Review", resolved: "Settled" };
+const damageClaimStatusLabel = (status) => DAMAGE_CLAIM_STATUS_LABEL[status] || status || "Open";
+
+function enrichDamageClaim(claim, rentalAgreements, reservations) {
+  const ra  = rentalAgreements.find((a) => a.id === claim.rentalAgreementId) || null;
+  const res = ra ? reservations.find((r) => r.resCode === ra.resCode) : null;
+  const vehicle = res
+    ? [res.vehicleYear, res.vehicleMake, res.vehicleModel].filter(Boolean).join(" ") || res.vehicleClass
+    : (ra ? [ra.make, ra.model].filter(Boolean).join(" ") || ra.vehicleClass : null);
+  return {
+    id:                claim.id,
+    plate:             claim.plate || ra?.plate || null,
+    vehicle:           vehicle || "—",
+    customer:          res?.customer || "—",
+    resCode:           ra?.resCode || null,
+    description:       claim.description || "—",
+    claimStatus:       damageClaimStatusLabel(claim.status),
+    rentalAgreementId: claim.rentalAgreementId || null,
+    _status:           claim.status || "open",
+  };
+}
 
 // ─── Archived vehicles seed ────────────────────────────────────────────────────
 
@@ -694,7 +702,9 @@ function AppProvider({ children, currentUser, signOut }) {
   const raRef = React.useRef([]); // mirror of rentalAgreements for sync callbacks
 
   // ── Local UI state (seeded from constants; not synced to Supabase) ────────
-  const [damageClaims, setDamageClaims] = React.useState(DAMAGE_CLAIMS_SEED);
+  const [damageClaims, setDamageClaimsState] = React.useState([]);
+  // app_settings rows collapsed to a plain { key: value } object for the UI.
+  const [appSettings, setAppSettingsState] = React.useState({});
   const [readyReturns, setReadyReturns] = React.useState([]);
 
   // ── UI-only state (not persisted) ────────────────────────────────────────
@@ -814,17 +824,31 @@ function AppProvider({ children, currentUser, signOut }) {
   const setTorRows      = setTorRowsState;
   const setFleet        = setFleetState;
   const setNoShows      = setNoShowsState;
+  const setDamageClaims = setDamageClaimsState;
+
+  // Writes one app_settings key and mirrors it into local state. Used by the
+  // Settings page for the gas markup and per-region fuel prices.
+  const saveSetting = React.useCallback(async (key, value) => {
+    setAppSettingsState((prev) => ({ ...prev, [key]: value }));
+    const { error } = await supabase
+      .from("app_settings")
+      .upsert({ key, value, updatedAt: new Date().toISOString() }, { onConflict: "key" });
+    if (error) console.warn("app_settings upsert failed:", key, error);
+    return !error;
+  }, []);
 
   // ── Initial load from Supabase ───────────────────────────────────────────
   React.useEffect(() => {
     async function load() {
-      const [res, ndi, tor, fl, ns, ra] = await Promise.all([
+      const [res, ndi, tor, fl, ns, ra, dc, st] = await Promise.all([
         supabase.from("reservations").select("*"),
         supabase.from("ndi_rows").select("*"),
         supabase.from("tor_rows").select("*"),
         supabase.from("fleet").select("*"),
         supabase.from("no_shows").select("*"),
         supabase.from("rental_agreements").select("*"),
+        supabase.from("damage_claims").select("*"),
+        supabase.from("app_settings").select("*"),
       ]);
 
       // If a table is empty, seed it with the default data
@@ -1003,6 +1027,8 @@ function AppProvider({ children, currentUser, signOut }) {
       setNoShowsState(nsData);
       raRef.current = raData;
       setRentalAgreementsState(raData);
+      setDamageClaimsState(dc.data || []);
+      setAppSettingsState(Object.fromEntries((st.data || []).map((r) => [r.key, r.value])));
       setDbReady(true);
     }
 
@@ -1015,6 +1041,8 @@ function AppProvider({ children, currentUser, signOut }) {
       setNoShowsState(NO_SHOWS_SEED);
       raRef.current = [];
       setRentalAgreementsState([]);
+      setDamageClaimsState([]);
+      setAppSettingsState({});
       setDbReady(true);
     });
   }, []);
@@ -1072,6 +1100,16 @@ function AppProvider({ children, currentUser, signOut }) {
       if (data) setNoShowsState(data);
     };
 
+    const refetchDamageClaims = async () => {
+      const { data } = await supabase.from("damage_claims").select("*");
+      if (data) setDamageClaimsState(data);
+    };
+
+    const refetchAppSettings = async () => {
+      const { data } = await supabase.from("app_settings").select("*");
+      if (data) setAppSettingsState(Object.fromEntries(data.map((r) => [r.key, r.value])));
+    };
+
     const subs = [
       supabase.from("reservations").on("*", refetchReservations).subscribe(),
       supabase.from("rental_agreements").on("*", refetchRentalAgreements).subscribe(),
@@ -1079,84 +1117,19 @@ function AppProvider({ children, currentUser, signOut }) {
       supabase.from("ndi_rows").on("*", refetchNdiRows).subscribe(),
       supabase.from("tor_rows").on("*", refetchTorRows).subscribe(),
       supabase.from("no_shows").on("*", refetchNoShows).subscribe(),
+      supabase.from("damage_claims").on("*", refetchDamageClaims).subscribe(),
+      supabase.from("app_settings").on("*", refetchAppSettings).subscribe(),
     ];
 
     return () => subs.forEach((s) => s.unsubscribe());
   }, [dbReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Automated SMS ─────────────────────────────────────────────────────────
-  React.useEffect(() => {
-    if (!dbReady) return;
-
-    async function checkAndSendSMS() {
-      const now         = new Date();
-      const tomorrowISO = isoOffset(1);
-
-      // 1 ─ Pre-Rental Check (sent the day before pickup)
-      for (const r of reservations) {
-        if (r.date !== tomorrowISO) continue;
-        if (!r.phone) continue;
-        const status = r.rentalAgreementStatus || "";
-        if (status && status !== "reservation") continue;
-        const key = `sms_preRental_${r.resCode}`;
-        if (localStorage.getItem(key)) continue;
-        const name = r.firstName || r.customer || "there";
-        const msg  = `Hi ${name}, just a reminder that your rental pickup is tomorrow at our ${r.location} location. Remember to bring your driver’s license. What time can we expect you? Reply to this message with your estimated arrival time.`;
-        await sendSMS(r.phone, msg);
-        localStorage.setItem(key, Date.now().toString());
-      }
-
-      // 2 ─ No Show — 2-Hour Text (2 hrs past scheduled pickup, no show)
-      for (const ns of noShows) {
-        if (!ns.phone || !ns.date || !ns.time) continue;
-        const key = `sms_noshow2hr_${ns.resCode}`;
-        if (localStorage.getItem(key)) continue;
-        const pickupDt = new Date(`${ns.date}T${ns.time}:00`);
-        if (isNaN(pickupDt.getTime())) continue;
-        if (now < new Date(pickupDt.getTime() + 2 * 60 * 60 * 1000)) continue;
-        const name = ns.customer || "there";
-        const msg  = `Hi ${name}, we had your rental scheduled for ${ns.time} today but haven’t seen you yet. Are you still planning to pick up? Reply YES if you’re on your way, or RESCHEDULE if you need a new time. We’re happy to help.`;
-        await sendSMS(ns.phone, msg);
-        localStorage.setItem(key, Date.now().toString());
-      }
-
-      // 3 ─ No Show — 24-Hour Text (24 hrs after the 2-hour text was sent, no response)
-      for (const ns of noShows) {
-        if (!ns.phone) continue;
-        const key2hr  = `sms_noshow2hr_${ns.resCode}`;
-        const sent2hr = localStorage.getItem(key2hr);
-        if (!sent2hr) continue;
-        const key24hr = `sms_noshow24hr_${ns.resCode}`;
-        if (localStorage.getItem(key24hr)) continue;
-        if (now < new Date(parseInt(sent2hr, 10) + 24 * 60 * 60 * 1000)) continue;
-        const name = ns.customer || "there";
-        const msg  = `Hi ${name}, we still haven’t heard from you about your rental from yesterday. Please contact us as soon as possible to let us know your plans. You can reply to this message or call our location directly.`;
-        await sendSMS(ns.phone, msg);
-        localStorage.setItem(key24hr, Date.now().toString());
-      }
-
-      // 4 ─ Overdue Rental (return date has passed, RA still open)
-      for (const r of reservations) {
-        if (!r.phone || !r.returnDate) continue;
-        const ra       = rentalAgreements.find((a) => a.resCode === r.resCode);
-        const raStatus = ra?.rentalAgreementStatus || r.rentalAgreementStatus || "";
-        if (raStatus !== "open_rental_agreement") continue;
-        const returnDt = new Date(`${r.returnDate}T00:00:00`);
-        if (isNaN(returnDt.getTime()) || now <= returnDt) continue;
-        const key = `sms_overdue_${r.resCode}`;
-        if (localStorage.getItem(key)) continue;
-        const name    = r.firstName || r.customer || "there";
-        const fmtDate = returnDt.toLocaleDateString("en-CA", { month: "long", day: "numeric", year: "numeric" });
-        const msg     = `Hi ${name}, your rental was due back on ${fmtDate}. Please contact our ${r.location} location as soon as possible to arrange the return of your vehicle. Thank you.`;
-        await sendSMS(r.phone, msg);
-        localStorage.setItem(key, Date.now().toString());
-      }
-    }
-
-    checkAndSendSMS();
-    const interval = setInterval(checkAndSendSMS, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [dbReady, reservations, noShows, rentalAgreements]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Removed. All customer texting (pre-rental check, no-show 2hr/24hr, overdue,
+  // and the new 24h-before-return reminder) now runs from a Cloudflare Cron
+  // Trigger in the fleetr-ai-proxy Worker, so it no longer depends on a staff
+  // browser tab being open. Dedup lives in the notifications_sent table rather
+  // than this browser's localStorage. See worker.js -> scheduled().
 
   // ── Loading screen ───────────────────────────────────────────────────────
   if (!dbReady) {
@@ -1181,7 +1154,7 @@ function AppProvider({ children, currentUser, signOut }) {
 
   return React.createElement(
     AppContext.Provider,
-    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, readyReturns, setReadyReturns, requirePin, currentUser, signOut } },
+    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, readyReturns, setReadyReturns, appSettings, saveSetting, requirePin, currentUser, signOut } },
     children,
     pinModalOpen && React.createElement(PinConfirmModal, { onConfirm: confirmPin, onCancel: dismissPinModal })
   );
@@ -3582,7 +3555,7 @@ function OverdueRentalsPage() {
 // ─── VehicleDetailPage ──────────────────────────────────────────────────────────────────────────────
 
 function VehicleDetailPage() {
-  const { openVehiclePlate, fleet, setFleet, reservations, rentalAgreements, setOpenRentalAgreementId } = React.useContext(AppContext);
+  const { openVehiclePlate, fleet, setFleet, reservations, rentalAgreements, setOpenRentalAgreementId, damageClaims } = React.useContext(AppContext);
   const navigate = useNavigate();
 
   const plate   = openVehiclePlate || "";
@@ -3602,6 +3575,30 @@ function VehicleDetailPage() {
     : null;
 
   const [sect, setSect] = React.useState({ info: false, status: false, condition: false, maintenance: false, damageClaims: false, inspections: false });
+
+  // Tank size is entered by hand (no free API exposes capacity reliably) and is
+  // what makes automatic gas charges possible, so it stays editable here and is
+  // flagged wherever it's missing.
+  const [tankInput, setTankInput] = React.useState("");
+  React.useEffect(() => {
+    setTankInput(vehicle.tankSizeLiters != null ? String(vehicle.tankSizeLiters) : "");
+  }, [vehicle.tankSizeLiters, plate]);
+
+  const saveTankSize = () => {
+    const trimmed = tankInput.trim();
+    const parsed  = trimmed === "" ? null : parseFloat(trimmed);
+    if (parsed !== null && (!Number.isFinite(parsed) || parsed <= 0)) {
+      setTankInput(vehicle.tankSizeLiters != null ? String(vehicle.tankSizeLiters) : "");
+      return;
+    }
+    if (parsed === (vehicle.tankSizeLiters ?? null)) return;
+    setFleet((prev) => prev.map((v) => v.plate === plate ? { ...v, tankSizeLiters: parsed } : v));
+    if (vehicle.id) {
+      supabase.from("fleet").update({ tankSizeLiters: parsed }).eq("id", vehicle.id)
+        .then(({ error }) => { if (error) console.warn("fleet tankSizeLiters update failed:", error); })
+        .catch((err) => console.warn("fleet tankSizeLiters update:", err));
+    }
+  };
   const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
 
   const fmtDate = (iso) => {
@@ -3679,7 +3676,23 @@ function VehicleDetailPage() {
         detailRow("Odometer", latestRa?.mileage != null
           ? `${Number(latestRa.mileage).toLocaleString()} km`
           : extra.odometer != null ? `${extra.odometer.toLocaleString()} km` : "\u2014"),
-        detailRow("Fuel Level", latestRa?.fuelAtPickup || extra.fuelLevel)
+        detailRow("Fuel Level", latestRa?.fuelAtPickup || extra.fuelLevel),
+        React.createElement(
+          "div", { className: "vehicleDetailRow" },
+          React.createElement("span", { className: "vehicleDetailLabel" }, "Tank Size (L)"),
+          React.createElement("span", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+            React.createElement("input", {
+              type: "number", min: "1", step: "0.1", className: "tankSizeInput",
+              placeholder: "Not set",
+              value: tankInput,
+              onChange: (e) => setTankInput(e.target.value),
+              onBlur: saveTankSize,
+              onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
+            }),
+            vehicle.tankSizeLiters == null &&
+              React.createElement("span", { className: "tankSizeMissing", title: "Gas charges cannot be calculated automatically until this is set" }, "Not set")
+          )
+        )
       )
     ),
 
@@ -3764,7 +3777,9 @@ function VehicleDetailPage() {
 
     // \u2500\u2500 Section 5: Ongoing Damage Claims \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     mkSection("damageClaims", "Ongoing Damage Claims", (() => {
-      const claims = DAMAGE_CLAIMS_SEED.filter((c) => c.plate === plate && c.claimStatus !== "Settled" && c.claimStatus !== "Closed");
+      const claims = damageClaims
+        .filter((c) => (c.plate || "") === plate && c.status !== "resolved")
+        .map((c) => enrichDamageClaim(c, rentalAgreements, reservations));
       if (claims.length === 0) return React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "12px 0" } }, "No active damage claims for this vehicle.");
       return React.createElement(
         "table", { className: "dashboardTable" },
@@ -4297,6 +4312,23 @@ function FleetVehiclesPage() {
     React.createElement("h1", { className: "page__title" }, "Vehicles"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement(FleetFilterBar, { filterState }),
+
+    // Tank size is manual, so missing values are surfaced here rather than
+    // failing quietly at return time as a skipped gas charge.
+    (() => {
+      const missing = fleet.filter((v) => v.tankSizeLiters == null);
+      if (missing.length === 0) return null;
+      return React.createElement("div", { className: "tankSizeBanner" },
+        React.createElement("strong", null, `${missing.length} vehicle${missing.length === 1 ? "" : "s"} missing tank size — `),
+        "gas charges can't be calculated automatically for ",
+        missing.length === 1 ? "it" : "them",
+        ". Set it on each vehicle's detail page: ",
+        React.createElement("span", { className: "tankSizeBannerPlates" },
+          missing.map((v) => v.plate).join(", ")
+        )
+      );
+    })(),
+
     React.createElement(
       "section",
       { className: "dashboardSection" },
@@ -4464,7 +4496,7 @@ function FleetAdditionsPage() {
   const [activeTab,  setActiveTab]  = React.useState("add");
   const [archived,   setArchived]   = React.useState(ARCHIVED_VEHICLES_SEED);
 
-  const BLANK_ADD    = { plate: "", province: "NL", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: "Compact Car" };
+  const BLANK_ADD    = { plate: "", province: "NL", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: "Compact Car", tankSizeLiters: "" };
   const BLANK_RETIRE = { plateId: "", disposalDate: "", reason: "" };
   const [addForm,    setAddForm]    = React.useState(BLANK_ADD);
   const [addError,   setAddError]   = React.useState("");
@@ -4487,6 +4519,7 @@ function FleetAdditionsPage() {
         colour: addForm.colour || null,
         vin: addForm.vin || null,
         province: addForm.province || null,
+        tankSizeLiters: addForm.tankSizeLiters ? parseFloat(addForm.tankSizeLiters) : null,
         winterTires: "No", status: "Needs Cleaning",
         currentRenter: null, dueBack: null, fileType: null,
       };
@@ -4571,6 +4604,10 @@ function FleetAdditionsPage() {
             fi("Make",   "make",   "e.g. Toyota"),
             fi("Model",  "model",  "e.g. Corolla"),
             fi("Colour", "colour", "e.g. White"),
+            // Optional on purpose — a missing tank size never blocks adding a
+            // vehicle, it just disables automatic gas charges until it's filled
+            // in. The Vehicles list flags vehicles that are still missing it.
+            fi("Tank Size (L)", "tankSizeLiters", "e.g. 50 — needed for gas charges", "number"),
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Vehicle Class"),
               React.createElement("select", { className: "addVehicleInput", value: addForm.vehicleClass, onChange: (e) => onAdd("vehicleClass", e.target.value) },
@@ -4668,7 +4705,7 @@ function FleetAdditionsPage() {
 // ─── FleetDamageClaimsPage ─────────────────────────────────────────────────────
 
 function FleetDamageClaimsPage() {
-  const { fleet, setOpenRentalAgreementId, damageClaims, setDamageClaims, reservations, setReservations, rentalAgreements } = React.useContext(AppContext);
+  const { fleet, setOpenRentalAgreementId, damageClaims, setDamageClaims, reservations, rentalAgreements } = React.useContext(AppContext);
   const navigate = useNavigate();
   const { filtered, filterState } = useFleetFilter(fleet);
   const filteredPlates = React.useMemo(() => new Set(filtered.map((v) => v.plate)), [filtered]);
@@ -4680,51 +4717,22 @@ function FleetDamageClaimsPage() {
     "Closed":    "claimStatus claimStatus--settled",
   };
 
-  // Live claims: reservations flagged with hasDamage
-  // Note: reservations has no plate or description field of its own. The plate
-  // lives on reservations.plate (not rentalPlate) and the damage narrative lives
-  // on the matching rental_agreements row (returnDamageDescription or damageNotes).
-  const liveClaims = reservations
-    .filter((r) => r.hasDamage)
-    .map((r) => {
-      const ra = rentalAgreements.find((a) => a.resCode === r.resCode);
-      return {
-        id:                `DC-LIVE-${r.resCode}`,
-        plate:             r.plate || null,
-        vehicle:           [r.vehicleYear, r.vehicleMake, r.vehicleModel].filter(Boolean).join(" ") || r.vehicleClass || "—",
-        customer:          r.customer,
-        resCode:           r.resCode,
-        description:       ra?.returnDamageDescription || ra?.damageNotes || "Damage flagged at return",
-        claimStatus:       "Open",
-        rentalAgreementId: r.resCode,
-        _isLive:           true,
-      };
-    });
+  // Claims without a plate are shown regardless of the current fleet filter.
+  const allClaims = damageClaims
+    .filter((c) => !c.plate || filteredPlates.has(c.plate))
+    .map((c) => enrichDamageClaim(c, rentalAgreements, reservations));
 
-  // Seed claims filtered by current fleet filter; live claims shown regardless of filter
-  // (they may not have a fleet plate if plate was not set)
-  const seedFiltered = damageClaims.filter((c) => filteredPlates.has(c.plate));
-  const liveFiltered = liveClaims.filter((c) => !c.plate || filteredPlates.has(c.plate));
-  const allClaims    = [...seedFiltered, ...liveFiltered];
+  const openClaims   = allClaims.filter((c) => c._status !== "resolved");
+  const closedClaims = allClaims.filter((c) => c._status === "resolved");
 
-  const openClaims   = allClaims.filter((c) => c.claimStatus !== "Settled" && c.claimStatus !== "Closed");
-  const closedClaims = allClaims.filter((c) => c.claimStatus === "Settled" || c.claimStatus === "Closed");
-
-  // Mark as Resolved: live claims clear hasDamage on the reservation;
-  // seed claims move to Settled status in damageClaims state.
   const handleResolve = (claim) => {
-    if (claim._isLive) {
-      setReservations((prev) =>
-        prev.map((r) => r.resCode === claim.resCode ? { ...r, hasDamage: false } : r)
-      );
-      supabase.from("reservations").update({ hasDamage: false }).eq("resCode", claim.resCode).then(({ error }) => {
-        if (error) console.warn("reservations update failed:", claim.resCode, error);
-      }).catch((e) => console.warn("reservations update:", e));
-    } else {
-      setDamageClaims((prev) =>
-        prev.map((c) => c.id === claim.id ? { ...c, claimStatus: "Settled" } : c)
-      );
-    }
+    const now = new Date().toISOString();
+    setDamageClaims((prev) =>
+      prev.map((c) => c.id === claim.id ? { ...c, status: "resolved", resolvedAt: now, updatedAt: now } : c)
+    );
+    supabase.from("damage_claims").update({ status: "resolved", resolvedAt: now, updatedAt: now }).eq("id", claim.id).then(({ error }) => {
+      if (error) console.warn("damage_claims update failed:", claim.id, error);
+    }).catch((e) => console.warn("damage_claims update:", e));
   };
 
   const renderTable = (claims, showResolve) =>
@@ -4936,6 +4944,8 @@ function ReportsPage() {
 // ─── SettingsPage ──────────────────────────────────────────────────────────────
 
 function SettingsPage() {
+  const { appSettings, saveSetting, fleet } = React.useContext(AppContext);
+
   const SECTS = [
     { key: "branch",  title: "Branch Information",    body: "Branch name, address, phone number, operating hours, and SIPP codes." },
     { key: "users",   title: "User Accounts",         body: "Manage staff logins, roles (Agent, Manager, Admin), and PIN resets." },
@@ -4943,12 +4953,129 @@ function SettingsPage() {
     { key: "twilio",  title: "Twilio SMS Setup",      body: "Twilio Account SID, Auth Token, and sending phone number for AI call and text automation." },
     { key: "billing", title: "Billing Configuration", body: "Billing address, HST registration number, and invoice export settings." },
   ];
-  const [sect, setSect] = React.useState(Object.fromEntries(SECTS.map((s) => [s.key, true])));
+  const [sect, setSect] = React.useState({ gas: false, ...Object.fromEntries(SECTS.map((s) => [s.key, true])) });
   const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
+
+  // ── Gas collection settings ────────────────────────────────────────────────
+  // Regions offered are the provinces/states actually represented in the fleet,
+  // since a price is only ever looked up by a vehicle's province.
+  const fleetRegions = React.useMemo(() => {
+    const set = new Set(fleet.map((v) => v.province).filter(Boolean));
+    const dflt = appSettings.gasDefaultRegion;
+    if (dflt) set.add(dflt);
+    return [...set].sort();
+  }, [fleet, appSettings.gasDefaultRegion]);
+
+  const gasPrices = appSettings.gasPrices || {};
+
+  const [markupDraft, setMarkupDraft] = React.useState("");
+  const [priceDrafts, setPriceDrafts] = React.useState({});
+  const [savedFlash,  setSavedFlash]  = React.useState("");
+
+  React.useEffect(() => {
+    setMarkupDraft(appSettings.gasMarkupPercent != null ? String(appSettings.gasMarkupPercent) : "");
+  }, [appSettings.gasMarkupPercent]);
+
+  React.useEffect(() => {
+    setPriceDrafts(Object.fromEntries(fleetRegions.map((r) => [r, gasPrices[r] != null ? String(gasPrices[r]) : ""])));
+  }, [fleetRegions.join(","), JSON.stringify(gasPrices)]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const flash = (msg) => { setSavedFlash(msg); setTimeout(() => setSavedFlash(""), 2000); };
+
+  const commitMarkup = async () => {
+    const raw = markupDraft.trim();
+    const n   = raw === "" ? null : parseFloat(raw);
+    if (n === null || !Number.isFinite(n) || n < 0) {
+      setMarkupDraft(appSettings.gasMarkupPercent != null ? String(appSettings.gasMarkupPercent) : "");
+      return;
+    }
+    if (n === appSettings.gasMarkupPercent) return;
+    if (await saveSetting("gasMarkupPercent", n)) flash("Markup saved.");
+  };
+
+  const commitPrice = async (region) => {
+    const raw = (priceDrafts[region] || "").trim();
+    const n   = raw === "" ? null : parseFloat(raw);
+    if (raw !== "" && (!Number.isFinite(n) || n <= 0)) {
+      setPriceDrafts((p) => ({ ...p, [region]: gasPrices[region] != null ? String(gasPrices[region]) : "" }));
+      return;
+    }
+    if (n === (gasPrices[region] ?? null)) return;
+    const next = { ...gasPrices };
+    if (n === null) delete next[region]; else next[region] = n;
+    if (await saveSetting("gasPrices", next)) flash(`${region} price saved.`);
+  };
+
+  const missingTank = fleet.filter((v) => v.tankSizeLiters == null).length;
+
+  const gasBody = React.createElement(React.Fragment, null,
+    React.createElement("p", { className: "aiTabDesc" },
+      "On return, if the vehicle comes back with less fuel than it left with, the charge is calculated as ",
+      React.createElement("em", null, "litres short × price per litre × (1 + markup)"),
+      " and written to Gas Collections automatically. Any missing value below leaves the charge blank for manual entry."
+    ),
+
+    React.createElement("div", { className: "gasSettingRow" },
+      React.createElement("label", { className: "gasSettingLabel" }, "Markup"),
+      React.createElement("div", { className: "gasSettingControl" },
+        React.createElement("input", {
+          type: "number", min: "0", step: "1", className: "gasSettingInput",
+          placeholder: "e.g. 15", value: markupDraft,
+          onChange: (e) => setMarkupDraft(e.target.value),
+          onBlur: commitMarkup,
+          onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
+        }),
+        React.createElement("span", { className: "gasSettingUnit" }, "%")
+      )
+    ),
+
+    React.createElement("div", { className: "gasSettingSubhead" }, "Price per litre by region"),
+    fleetRegions.length === 0
+      ? React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "10px 0" } },
+          "No vehicle regions yet — add a vehicle with a province to set its fuel price.")
+      : fleetRegions.map((region) =>
+          React.createElement("div", { className: "gasSettingRow", key: region },
+            React.createElement("label", { className: "gasSettingLabel" }, region),
+            React.createElement("div", { className: "gasSettingControl" },
+              React.createElement("span", { className: "gasSettingUnit" }, "$"),
+              React.createElement("input", {
+                type: "number", min: "0", step: "0.001", className: "gasSettingInput",
+                placeholder: "Not set", value: priceDrafts[region] ?? "",
+                onChange: (e) => setPriceDrafts((p) => ({ ...p, [region]: e.target.value })),
+                onBlur: () => commitPrice(region),
+                onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
+              }),
+              React.createElement("span", { className: "gasSettingUnit" }, "/ L"),
+              gasPrices[region] == null &&
+                React.createElement("span", { className: "tankSizeMissing" }, "Not set")
+            )
+          )
+        ),
+
+    missingTank > 0 && React.createElement("div", { className: "tankSizeBanner", style: { marginTop: "14px", marginBottom: 0 } },
+      React.createElement("strong", null, `${missingTank} vehicle${missingTank === 1 ? "" : "s"} still missing a tank size`),
+      " — gas charges stay manual for ", missingTank === 1 ? "it" : "them",
+      " until set on the vehicle's detail page."
+    ),
+
+    savedFlash && React.createElement("div", { className: "addVehicleSuccess", style: { marginTop: "12px" } }, savedFlash)
+  );
   return React.createElement(
     "div", { className: "page" },
     React.createElement("h1", { className: "page__title" }, "Settings"),
     React.createElement("div", { className: "page__titleUnderline" }),
+
+    React.createElement(
+      "section", { className: "dashboardSection", style: { marginBottom: "16px" } },
+      React.createElement("div", { className: "dashboardSection__header" },
+        React.createElement("div", { className: "dashboardSection__headerRow" },
+          React.createElement("span", null, "Gas Collection"),
+          React.createElement("button", { type: "button", className: "sectionToggleCircle", onClick: () => toggle("gas") }, sect.gas ? "+" : "−")
+        )
+      ),
+      !sect.gas && React.createElement("div", { className: "dashboardSection__body" }, gasBody)
+    ),
+
     SECTS.map(({ key, title, body }) =>
       React.createElement(
         "section", { key, className: "dashboardSection", style: { marginBottom: "16px" } },
@@ -5203,7 +5330,7 @@ function PlaceholderPage({ title }) {
 // ─── Fleetr AI Command Bar ───────────────────────────────────────────────────
 
 function FleetrCommandBar() {
-  const { requirePin, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows } = React.useContext(AppContext);
+  const { requirePin, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows, damageClaims, setDamageClaims } = React.useContext(AppContext);
   const [command,        setCommand]        = React.useState("");
   const [aiMessage,      setAiMessage]      = React.useState("");
   const [pendingAction,  setPendingAction]  = React.useState(null);
@@ -5296,6 +5423,7 @@ function FleetrCommandBar() {
         `Fleet data: ${JSON.stringify(fleet)}\n\n` +
         `Non-drive intake data: ${JSON.stringify(ndiRows)}\n\n` +
         `No-shows data: ${JSON.stringify(noShows)}\n\n` +
+        `Damage claims data: ${JSON.stringify(damageClaims)}\n\n` +
         `User command: ${trimmed}`;
       const res = await fetch(CLAUDE_API_URL, {
         method: "POST",
@@ -5341,7 +5469,14 @@ function FleetrCommandBar() {
     if (!pendingAction) return;
     setActionLoading(true);
     const { table, operation, match } = pendingAction;
-    const data = editableData; // use user-edited values
+    let data = editableData; // use user-edited values
+
+    // Resolving a damage claim through the AI should stamp resolvedAt/updatedAt
+    // the same way the "Mark as Resolved" button does.
+    if (table === "damage_claims" && ["resolved", "settled", "closed"].includes(data.status)) {
+      const now = new Date().toISOString();
+      data = { ...data, resolvedAt: now, updatedAt: now };
+    }
     try {
       let error = null;
       if (operation === "update") {
@@ -5368,6 +5503,11 @@ function FleetrCommandBar() {
             setNdiRows((prev) => prev.map((r) => {
               const matchKeys = Object.keys(match || {});
               return matchKeys.every((k) => String(r[k]) === String(match[k])) ? { ...r, ...data } : r;
+            }));
+          } else if (table === "damage_claims") {
+            setDamageClaims((prev) => prev.map((c) => {
+              const matchKeys = Object.keys(match || {});
+              return matchKeys.every((k) => String(c[k]) === String(match[k])) ? { ...c, ...data } : c;
             }));
           }
         }
@@ -6179,7 +6319,7 @@ const RATES_VCLASS_CATS = {
 // ─── CustomerPage ─────────────────────────────────────────────────────────────
 
 function CustomerPage() {
-  const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, requirePin } = React.useContext(AppContext);
+  const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, requirePin, setDamageClaims } = React.useContext(AppContext);
   const navigate = useNavigate();
   const name   = openCustomer?.name   || "Customer";
   const resCode = openCustomer?.resCode || null;
@@ -6591,11 +6731,25 @@ function CustomerPage() {
     disabled: isDamaged,
     onClick: () => {
       if (!resCode || isDamaged) return;
+      const description = window.prompt("Describe the damage:") || "";
       setLocalRecord((prev) => prev ? { ...prev, hasDamage: true } : prev);
       setReservations((prev) =>
         prev.map((r) => r.resCode === resCode ? { ...r, hasDamage: true } : r)
       );
       supabase.from("reservations").update({ hasDamage: true }).eq("resCode", resCode).catch((e) => console.warn("reservations update:", e));
+
+      // Flagging damage here is a manual, standalone report (no return flow,
+      // no photos) — it still creates a real damage_claims row.
+      const claim = {
+        id:                crypto.randomUUID(),
+        plate:             ra?.plate || null,
+        rentalAgreementId: ra?.id || null,
+        description:       description || null,
+        photos:            [],
+        status:            "open",
+      };
+      setDamageClaims((prev) => [...prev, { ...claim, reportedAt: new Date().toISOString() }]);
+      supabase.from("damage_claims").insert(claim).catch((e) => console.warn("damage_claims insert:", e));
     },
   }, isDamaged ? "Damage Flagged" : "Flag Damage");
 
@@ -9142,6 +9296,96 @@ body, * {
   cursor: pointer;
 }
 .vehicleStatusSelect:focus { outline: none; border-color: #42a4ff; }
+
+.tankSizeInput {
+  width: 110px;
+  border: 1.5px solid rgba(6,13,12,0.12);
+  border-radius: 7px;
+  background: #F9F9F7;
+  color: #1F1E1D;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
+  padding: 4px 10px;
+  text-align: right;
+}
+.tankSizeInput:focus { outline: none; border-color: #42a4ff; }
+.tankSizeInput::-webkit-inner-spin-button,
+.tankSizeInput::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
+.tankSizeMissing {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tankSizeBanner {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border: 1px solid #fcd34d;
+  border-left: 4px solid #f59e0b;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #78350f;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.tankSizeBannerPlates { font-weight: 700; }
+
+.gasSettingRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(6,13,12,0.07);
+}
+.gasSettingRow:last-child { border-bottom: none; }
+.gasSettingLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1F1E1D;
+}
+.gasSettingControl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.gasSettingInput {
+  width: 110px;
+  border: 1.5px solid rgba(6,13,12,0.12);
+  border-radius: 7px;
+  background: #F9F9F7;
+  color: #1F1E1D;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
+  padding: 5px 10px;
+  text-align: right;
+}
+.gasSettingInput:focus { outline: none; border-color: #42a4ff; }
+.gasSettingInput::-webkit-inner-spin-button,
+.gasSettingInput::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.gasSettingUnit {
+  font-size: 13px;
+  color: #6b7280;
+  font-weight: 500;
+}
+.gasSettingSubhead {
+  margin: 18px 0 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #42a4ff;
+}
 .customerPlaceholder {
   padding: 16px 18px;
   color: #7b8fa8;
