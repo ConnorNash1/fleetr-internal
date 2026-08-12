@@ -9685,6 +9685,10 @@ body, * {
   border: 1.5px solid rgba(6,13,12,0.12);
   border-radius: 7px;
   overflow: hidden;
+  /* Never shrink. As a flex item this defaulted to flex-shrink:1, so in a
+     narrow column the browser squeezed it and overflow:hidden silently clipped
+     the label ("Miles" rendered as "M"). Sizing is now driven by the text. */
+  flex: 0 0 auto;
 }
 .unitToggleBtn {
   border: none;
@@ -9697,19 +9701,25 @@ body, * {
   padding: 4px 9px;
   cursor: pointer;
   transition: background 0.12s, color 0.12s;
+  white-space: nowrap;
 }
 .unitToggleBtn + .unitToggleBtn { border-left: 1px solid rgba(6,13,12,0.12); }
 .unitToggleBtn:hover { background: #eef1f5; }
 .unitToggleBtn--active { background: #42a4ff; color: #fff; }
 .unitToggleBtn--active:hover { background: #2f93ef; }
 
+/* Header of a field that carries a unit toggle. Height is pinned to match the
+   plain-label fields (see .addVehicleField > .addVehicleLabel) so that every
+   input in a grid row starts on the same line. The label is kept on one line
+   because wrapping it was what pushed these two inputs out of alignment. */
 .addVehicleLabelRow {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 4px;
+  min-height: 26px;
 }
+.addVehicleLabelRow .addVehicleLabel { white-space: nowrap; }
 .addVehicleReq { color: #dc2626; margin-left: 3px; font-weight: 700; }
 
 .vehicleDetailControl {
@@ -10314,7 +10324,11 @@ body, * {
 }
 .addVehicleGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  /* auto-fill adds columns rather than widening them, so the column width is
+     effectively this minimum at every screen size. 200px could not hold
+     "Needs PM Every" beside a Kilometers/Miles toggle (227px), which is what
+     clipped the toggle. Raised so the widest field fits with room to spare. */
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 12px 20px;
 }
 .addVehicleField {
@@ -10331,6 +10345,15 @@ body, * {
   text-transform: uppercase;
   letter-spacing: 0.07em;
   color: #55657b;
+}
+/* A plain label is 13px tall but a label sitting beside a unit toggle is 26px,
+   which left the inputs in a row starting at three different heights. Giving
+   every field header the same height lines all the inputs up. Direct child
+   only, so the labels inside .addVehicleLabelRow are not double counted. */
+.addVehicleField > .addVehicleLabel {
+  display: flex;
+  align-items: center;
+  min-height: 26px;
 }
 .addVehicleInput {
   padding: 7px 10px;
