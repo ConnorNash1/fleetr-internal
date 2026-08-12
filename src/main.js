@@ -26,7 +26,7 @@ Always respond with a valid JSON object — no markdown, no code fences, no text
   "message": "Plain English description of what you found or what action you are about to take.",
   "action": {
     "table": "reservations | rental_agreements | fleet | ndi_rows | no_shows | damage_claims",
-    "operation": "update | insert | delete | confirmPickup",
+    "operation": "update | insert | delete | confirmPickup | addNote",
     "match": { "fieldName": "value" },
     "data": { "fieldName": "newValue" }
   }
@@ -34,7 +34,7 @@ Always respond with a valid JSON object — no markdown, no code fences, no text
 
 Rules:
 - "message" is always required. Write in plain conversational English.
-- "action" is optional. Only include it when the user is requesting a write operation (create, update, delete, confirmPickup). For read/lookup requests omit "action" entirely.
+- "action" is optional. Only include it when the user is requesting a write operation (create, update, delete, confirmPickup, addNote). For read/lookup requests omit "action" entirely.
 - For "match", use the record's primary identifier: resCode for reservations, id for rental_agreements, id for fleet, id for ndi_rows, id for no_shows, id for damage_claims.
 - For "data", include only the fields that need to change.
 - For "delete" and "confirmPickup" operations, "data" can be omitted.
@@ -51,9 +51,21 @@ Fleet table fields:
 Fleet operation rules:
 - To update a vehicle's status, use operation "update" with match on "id" and data containing the new "status".
 - When marking a "Ready Returns" vehicle as collected (changing its status to any other status), also include currentRenter: null, dueBack: null, fileType: null in data.
-- To add a vehicle to the fleet, use operation "insert". Required fields: plate, make, model, year. Optional: colour, vin, province (default "NL"), vehicleClass (default "Compact Car"). Do not include status or winterTires in data -- those defaults are applied automatically.
-- To retire a vehicle from the fleet, use operation "delete" with match on "id". Look up the vehicle id from the fleet data using the plate.
+- To add a vehicle to the fleet, use operation "insert". ALL of these are required and the action is rejected without them: plate, province, year, make, model, colour, tankSizeLiters, pmIntervalKm, vehicleClass, vin. Do not include status or winterTires in data -- those defaults are applied automatically.
+- tankSizeLiters is the fuel tank size in LITRES and pmIntervalKm is the service interval in KILOMETRES. If the user gives gallons or miles, convert before sending: 1 gallon = 3.785411784 litres, 1 mile = 1.609344 km. Both must be positive numbers.
+- If the user has not given every required field, do NOT emit an insert action. Ask for the missing ones in "message" instead.
+- To retire a vehicle from the fleet, use operation "delete" with match on "id", and data containing disposalDate (ISO date) and reason. Both are required: the archive keeps them and the action is rejected without them. Look up the vehicle id from the fleet data using the plate.
+- Vehicles flagged needsPm are due for service. Changing such a vehicle to Available, Needs Cleaning or Ready for Pickup is automatically converted to PM, so say so rather than promising the requested status.
 - Use the fleet data passed in the user message to find vehicle ids.
+
+Notes:
+- Every notes field in this system (notesLog on reservations and on rental_agreements) is an append-only log, not a text field.
+- To add a note use operation "addNote" with the table, match on the record's identifier (resCode for reservations, id for rental_agreements), and data containing "text". Example: {"table":"reservations","operation":"addNote","match":{"resCode":"ABC 123 456"},"data":{"text":"Customer called to confirm"}}
+- NEVER write notesLog through an "update" operation. That replaces the whole log and erases every earlier note. Use addNote.
+
+Reservations operation rules:
+- To create a reservation, use operation "insert". Required: customer, date, time, location, vehicleClass. The resCode is generated automatically, never supply one.
+- If any required field is missing, ask for it in "message" rather than emitting the action.
 
 Non-drive intake (ndi_rows) table fields:
 - id (primary key, do not modify), rescode, customer, phone, type, rate (read-only, not editable)
@@ -135,6 +147,96 @@ Gas collections:
 })();
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─── Action gating policy ────────────────────────────────────────────────────
+// One registry, two tiers, deliberately declarative so that re-tiering an action
+// is a one line edit here rather than a hunt through event handlers.
+//
+//   "pin"     Full PIN confirmation. Anything that deletes, moves money, changes
+//             a vehicle's status or PM state, or drives the rental agreement
+//             lifecycle.
+//   "confirm" The affirmative interaction the user already performs is the
+//             confirmation: pressing a button, committing an inline edit, or
+//             approving the command bar's action card. No PIN, no extra modal.
+//             Reserved for reversible changes with no money or safety weight.
+//
+// The tier is about consequence, not effort. A note can be edited away; a
+// deleted reservation and a vehicle released from PM cannot.
+const ACTION_POLICY = {
+  // Deletes, and composites that contain one.
+  "reservation.delete":   { tier: "pin", label: "Delete reservation" },
+  "reservation.noShow":   { tier: "pin", label: "Mark reservation as a no-show" },
+  "noShow.confirmPickup": { tier: "pin", label: "Confirm the customer showed up" },
+  "vehicle.retire":       { tier: "pin", label: "Retire vehicle" },
+
+  // Money.
+  "gas.amount":       { tier: "pin", label: "Change the amount owed" },
+  "gas.collected":    { tier: "pin", label: "Change gas payment status" },
+  "gas.markup":       { tier: "pin", label: "Change the gas markup" },
+  "gas.regionPrice":  { tier: "pin", label: "Change a regional fuel price" },
+  "damage.flag":      { tier: "pin", label: "Flag damage" },
+  "damage.resolve":   { tier: "pin", label: "Resolve a damage claim" },
+  // Tank size is a money input: it is the divisor in every gas charge.
+  "vehicle.tankSize": { tier: "pin", label: "Set tank size" },
+
+  // Vehicle status and PM.
+  "vehicle.status":     { tier: "pin", label: "Change vehicle status" },
+  "vehicle.collected":  { tier: "pin", label: "Mark vehicle collected" },
+  "vehicle.pmComplete": { tier: "pin", label: "Record preventative maintenance as complete" },
+  "vehicle.pmInterval": { tier: "pin", label: "Set the PM interval" },
+  "vehicle.add":        { tier: "pin", label: "Add a vehicle to the fleet" },
+
+  // Rental agreement lifecycle.
+  "ra.open":    { tier: "pin", label: "Open a rental agreement" },
+  "ra.advance": { tier: "pin", label: "Change rental agreement status" },
+
+  // Reversible, no money or safety weight.
+  "reservation.add":  { tier: "confirm", label: "Add reservation" },
+  "reservation.edit": { tier: "confirm", label: "Save reservation changes" },
+  "note.add":         { tier: "confirm", label: "Add a note" },
+  "ndi.edit":         { tier: "confirm", label: "Edit an intake row" },
+  "tor.confirmDate":  { tier: "confirm", label: "Confirm the repair date" },
+};
+
+const actionTier = (key) => ACTION_POLICY[key]?.tier || "pin"; // unknown defaults to the safer tier
+const actionLabel = (key) => ACTION_POLICY[key]?.label || "this action";
+
+// Maps a command bar action onto the same registry, so the AI is gated by
+// consequence rather than uniformly. Reads the payload because the tier of a
+// reservations update depends on which fields it touches.
+const MONEY_FIELDS   = ["gasOwed", "gasCollected", "dailyRate"];
+const PIN_RA_FIELDS  = ["rentalAgreementStatus"];
+function commandBarActionKey({ table, operation, data }) {
+  const fields = Object.keys(data || {});
+  const touches = (list) => fields.some((f) => list.includes(f));
+
+  if (operation === "delete") {
+    return table === "fleet" ? "vehicle.retire" : "reservation.delete";
+  }
+  if (operation === "confirmPickup") return "noShow.confirmPickup";
+  if (table === "fleet") {
+    if (operation === "insert") return "vehicle.add";
+    if (fields.includes("tankSizeLiters")) return "vehicle.tankSize";
+    if (fields.includes("pmIntervalKm"))   return "vehicle.pmInterval";
+    if (fields.includes("needsPm") || fields.includes("lastPmOdometer")) return "vehicle.pmComplete";
+    return "vehicle.status";
+  }
+  if (table === "damage_claims") return "damage.resolve";
+  if (table === "rental_agreements") {
+    if (touches(MONEY_FIELDS))  return "gas.amount";
+    if (touches(PIN_RA_FIELDS)) return "ra.advance";
+    return "note.add";
+  }
+  if (table === "reservations") {
+    if (operation === "insert") return "reservation.add";
+    if (touches(MONEY_FIELDS))  return "gas.amount";
+    if (touches(PIN_RA_FIELDS)) return "ra.advance";
+    if (fields.includes("hasDamage")) return "damage.flag";
+    if (fields.length === 1 && fields[0] === "notesLog") return "note.add";
+    return "reservation.edit";
+  }
+  if (table === "ndi_rows") return "ndi.edit";
+  return "reservation.edit";
+}
 
 const NAV_SECTIONS = [
   {
@@ -725,6 +827,16 @@ function AppProvider({ children, currentUser, signOut }) {
     setPinModalOpen(true);
   };
 
+  // The single entry point every write should go through. Looks the action up in
+  // ACTION_POLICY and either raises the PIN gate or runs it straight away,
+  // because for the "confirm" tier the click that got here IS the confirmation.
+  // Callers pass an action key rather than a boolean so the policy stays in one
+  // place and cannot drift per call site.
+  const guardAction = (actionKey, fn) => {
+    if (actionTier(actionKey) === "pin") { requirePin(fn); return; }
+    fn();
+  };
+
   // Called by PinConfirmModal on submit — verifies against the PIN stored in session state at login.
   const confirmPin = async (enteredPin) => {
     if (!currentUser) return false;
@@ -1155,7 +1267,7 @@ function AppProvider({ children, currentUser, signOut }) {
 
   return React.createElement(
     AppContext.Provider,
-    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, readyReturns, setReadyReturns, appSettings, saveSetting, requirePin, currentUser, signOut } },
+    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, readyReturns, setReadyReturns, appSettings, saveSetting, requirePin, guardAction, currentUser, signOut } },
     children,
     pinModalOpen && React.createElement(PinConfirmModal, { onConfirm: confirmPin, onCancel: dismissPinModal })
   );
@@ -1164,7 +1276,7 @@ function AppProvider({ children, currentUser, signOut }) {
 // ─── NotesCell component ──────────────────────────────────────────────────────
 
 function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote }) {
-  const notesLog = Array.isArray(notesLogRaw) ? notesLogRaw : [];
+  const notesLog = parseNotesLog(notesLogRaw);
   const { openNotesId, setOpenNotesId } = React.useContext(AppContext);
   const [viewOpen, setViewOpen] = React.useState(false);
   const [viewAnchor, setViewAnchor] = React.useState({ x: 0, y: 0 });
@@ -1572,8 +1684,21 @@ function ReservationsPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    // One rule, shared with the command bar. Checked before a resCode is burned.
+    // "Unknown" used to be silently substituted for a blank name, which is how
+    // unusable reservations reached the list.
+    const customerName = [form.firstName, form.lastName].filter(Boolean).join(" ");
+    const resCheck = validateReservation({
+      customer:     customerName,
+      date:         form.date,
+      time:         form.time,
+      location:     form.location,
+      vehicleClass: form.vehicleClass,
+    });
+    if (!resCheck.ok) { window.alert(resCheck.error); return; }
+
     const resCode = await generateUniqueResCode();
-    const customer = [form.firstName, form.lastName].filter(Boolean).join(" ") || "Unknown";
+    const customer = customerName;
     const newRow = {
       date: form.date, time: form.time, location: form.location,
       resCode, customer,
@@ -1733,9 +1858,9 @@ function ReservationsPage() {
                       React.createElement(NotesCell, {
                         noteId: row.resCode,
                         preRentalCheck: row.preRentalCheck,
-                        notesLog: row.notesLog || [],
+                        notesLog: parseNotesLog(row.notesLog),
                         onAddNote: (note) => {
-                          const newLog = [...(row.notesLog || []), note];
+                          const newLog = [...parseNotesLog(row.notesLog), note];
                           setReservations((prev) =>
                             prev.map((r) => r.resCode === row.resCode ? { ...r, notesLog: newLog } : r)
                           );
@@ -1896,7 +2021,7 @@ function ReservationsPage() {
 // ─── NonDriveIntakeSection component ────────────────────────────────────────────────────
 
 function NonDriveIntakeSection({ standalone }) {
-  const { ndiRows, setNdiRows, setReservations, setOpenRentalAgreementId } = React.useContext(AppContext);
+  const { ndiRows, setNdiRows, setReservations, setOpenRentalAgreementId, guardAction } = React.useContext(AppContext);
   const navigate = useNavigate();
   const [now, setNow] = React.useState(Date.now());
   const [openDatePickerId, setOpenDatePickerId] = React.useState(null);
@@ -1954,28 +2079,50 @@ function NonDriveIntakeSection({ standalone }) {
     }
   };
 
-  const handleAiCall = (id) => {
+  // Requests an agent call and starts the SLA clock. Nothing more.
+  //
+  // This used to flip a coin: heads it INVENTED a booking, inserted a real
+  // reservation with a made up vehicle class and location, and deleted the
+  // intake row; tails it set agentRequested. Half of every click fabricated a
+  // customer booking. The coin flip is gone, and converting an intake row into a
+  // reservation is now an explicit staff action (Mark as Booked) taken once the
+  // booking is real.
+  const handleRequestCall = (id) => {
     const target = ndiRows.find((row) => row.id === id);
     if (!target) return;
-    const isBooked = Math.random() < 0.5;
+    const updates = { agentRequested: true, requestedAtMs: target.requestedAtMs || Date.now() };
+    setNdiRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...updates } : row)));
+    supabase.from("ndi_rows").update(updates).eq("id", id)
+      .then(({ error }) => { if (error) console.warn("ndi_rows request-call update failed:", id, error); })
+      .catch((e) => console.warn("ndi_rows update:", e));
+  };
 
-    if (isBooked) {
-      const displayTime = toDisplayTime(target.aiTime);
-      const pickupTime =
-        parseTimeToMinutes(`${displayTime} ${target.aiMeridiem}`) !== Number.POSITIVE_INFINITY
-          ? `${displayTime} ${target.aiMeridiem}`
-          : "09:00 AM";
-      const newRes = {
-        date: target.aiDate,
-        time: pickupTime,
-        location: "CCS",
-        resCode: target.rescode,
-        customer: target.customer,
-        vehicleClass: "Regular SUV",
-        winterTires: "Yes",
-        preRentalCheck: "NOT Pre-Rental Check'd",
-        notesLog: [{ author: "ADJ", text: `From red car intake (${target.aiDate})` }],
-      };
+  // Converts an intake row into a real reservation, once a human knows it is
+  // booked. Goes through the shared validator, so an intake row missing a date
+  // or a customer cannot quietly become an unusable reservation.
+  const handleMarkBooked = (id) => {
+    const target = ndiRows.find((row) => row.id === id);
+    if (!target) return;
+    const displayTime = toDisplayTime(target.aiTime);
+    const pickupTime =
+      parseTimeToMinutes(`${displayTime} ${target.aiMeridiem}`) !== Number.POSITIVE_INFINITY
+        ? `${displayTime} ${target.aiMeridiem}`
+        : "09:00 AM";
+    const newRes = {
+      date: target.aiDate,
+      time: pickupTime,
+      location: "CCS",
+      resCode: target.rescode,
+      customer: target.customer,
+      vehicleClass: "Regular SUV",
+      winterTires: "Yes",
+      preRentalCheck: "NOT Pre-Rental Check'd",
+      notesLog: [{ author: "ADJ", text: `From red car intake (${target.aiDate})` }],
+    };
+    const check = validateReservation(newRes);
+    if (!check.ok) { window.alert(`This intake row cannot be booked yet. ${check.error}`); return; }
+    // Deletes the intake row, so it takes the PIN.
+    guardAction("noShow.confirmPickup", () => {
       setReservations((prev) => {
         const next = [...prev, newRes];
         next.sort((a, b) => parseTimeToMinutes(a.time) - parseTimeToMinutes(b.time));
@@ -1984,13 +2131,7 @@ function NonDriveIntakeSection({ standalone }) {
       supabase.from("reservations").insert(newRes).then((res) => console.log("reservations insert response:", res)).catch((e) => console.warn("reservations insert:", e));
       setNdiRows((prev) => prev.filter((row) => row.id !== id));
       supabase.from("ndi_rows").delete().eq("id", id).catch((e) => console.warn("ndi_rows delete:", e));
-    } else {
-      const updates = { agentRequested: true, requestedAtMs: target.requestedAtMs || Date.now() };
-      setNdiRows((prev) =>
-        prev.map((row) => row.id === id ? { ...row, ...updates } : row)
-      );
-      supabase.from("ndi_rows").update(updates).eq("id", id).catch((e) => console.warn("ndi_rows update:", e));
-    }
+    });
   };
 
   const formatSla = (value) => {
@@ -2197,9 +2338,20 @@ function NonDriveIntakeSection({ standalone }) {
                           {
                             type: "button",
                             className: "aiCallButton",
-                            onClick: () => handleAiCall(row.id),
+                            title: "Request an agent call and start the SLA clock",
+                            onClick: () => handleRequestCall(row.id),
                           },
-                          "Text"
+                          "Request Call"
+                        ),
+                        React.createElement(
+                          "button",
+                          {
+                            type: "button",
+                            className: "aiCallButton aiCallButton--booked",
+                            title: "The customer is booked: turn this into a reservation",
+                            onClick: () => handleMarkBooked(row.id),
+                          },
+                          "Mark as Booked"
                         )
                       )
                 ),
@@ -2225,7 +2377,7 @@ function NonDriveIntakeSection({ standalone }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function DashboardPage() {
-  const { reservations, setReservations, fleet, setFleet, setOpenRentalAgreementId, rentalAgreements } = React.useContext(AppContext);
+  const { reservations, setReservations, fleet, setFleet, setOpenRentalAgreementId, rentalAgreements, guardAction } = React.useContext(AppContext);
   const isMobile = useMobile();
   const readyReturns = fleet.filter((v) => v.status === "Ready Returns");
   const navigate = useNavigate();
@@ -2236,12 +2388,14 @@ function DashboardPage() {
     // handed out unserviced.
     const vehicle = fleet.find((fv) => fv.plate === entry.plate) || entry;
     const { status: finalStatus, forced, message } = resolvePmStatus(vehicle, status);
-    setFleet((prev) => prev.map((fv) =>
-      fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
-    ));
-    supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
-    setCollectedOpenId(null);
-    if (forced) window.alert(message);
+    guardAction("vehicle.collected", () => {
+      setFleet((prev) => prev.map((fv) =>
+        fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
+      ));
+      supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
+      setCollectedOpenId(null);
+      if (forced) window.alert(message);
+    });
   };
   const [now, setNow] = React.useState(Date.now());
   const [openReadyFleetMenuId, setOpenReadyFleetMenuId] = React.useState(null);
@@ -2455,8 +2609,21 @@ function DashboardPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    // One rule, shared with the command bar. Checked before a resCode is burned.
+    // "Unknown" used to be silently substituted for a blank name, which is how
+    // unusable reservations reached the list.
+    const customerName = [form.firstName, form.lastName].filter(Boolean).join(" ");
+    const resCheck = validateReservation({
+      customer:     customerName,
+      date:         form.date,
+      time:         form.time,
+      location:     form.location,
+      vehicleClass: form.vehicleClass,
+    });
+    if (!resCheck.ok) { window.alert(resCheck.error); return; }
+
     const resCode = await generateUniqueResCode();
-    const customer = [form.firstName, form.lastName].filter(Boolean).join(" ") || "Unknown";
+    const customer = customerName;
     const newRow = {
       date: form.date, time: form.time, location: form.location,
       resCode, customer,
@@ -2622,9 +2789,9 @@ function DashboardPage() {
                           React.createElement(NotesCell, {
                             noteId: row.resCode,
                             preRentalCheck: row.preRentalCheck,
-                            notesLog: row.notesLog || [],
+                            notesLog: parseNotesLog(row.notesLog),
                             onAddNote: (note) => {
-                              const newLog = [...(row.notesLog || []), note];
+                              const newLog = [...parseNotesLog(row.notesLog), note];
                               setReservations((prev) =>
                                 prev.map((r) => r.resCode === row.resCode ? { ...r, notesLog: newLog } : r)
                               );
@@ -3165,7 +3332,7 @@ function NonDriveIntakePage() {
 // ─── NoShowsPage ──────────────────────────────────────────────────────────────
 
 function NoShowsPage() {
-  const { noShows, setNoShows, setReservations } = React.useContext(AppContext);
+  const { noShows, setNoShows, setReservations, guardAction } = React.useContext(AppContext);
 
   const TABS = [
     { key: "2hour",     label: "2-Hour Text",  desc: "Reservations where the customer has not arrived 2 hours past pickup time. Text triggers automatically." },
@@ -3265,34 +3432,30 @@ function NoShowsPage() {
       rentalAgreementStatus: "reservation",
       pickupStatus:          "Confirmed",
     };
-    setReservations((prev) => [...prev, newRes]);
-    supabase.from("reservations").insert(newRes).then((res) => console.log("reservations insert response:", res)).catch((e) => console.warn("reservations insert:", e));
-    setNoShows((prev) => prev.filter((r) => r.id !== row.id));
-    supabase.from("no_shows").delete().eq("id", row.id).catch((e) => console.warn("no_shows delete:", e));
+    // Deletes the no-show row, so it takes the PIN.
+    guardAction("noShow.confirmPickup", () => {
+      setReservations((prev) => [...prev, newRes]);
+      supabase.from("reservations").insert(newRes).then((res) => console.log("reservations insert response:", res)).catch((e) => console.warn("reservations insert:", e));
+      setNoShows((prev) => prev.filter((r) => r.id !== row.id));
+      supabase.from("no_shows").delete().eq("id", row.id).catch((e) => console.warn("no_shows delete:", e));
+    });
   };
 
-  const handleAiCallAll = () => {
-    if (tabRows.length === 0) return;
-    const nextStage = activeTab === "2hour" ? "24hour" : "abandoned";
-    const nextLabel = activeTab === "2hour" ? "24-Hour Text" : "Abandoned";
-    let reached = 0, lm = 0;
-    setNoShows((prev) =>
-      prev.map((row) => {
-        if ((row.stage || "2hour") !== activeTab) return row;
-        const answered = Math.random() < 0.5;
-        if (answered) {
-          reached++;
-          supabase.from("no_shows").update({ called: true, status: "Reached" }).eq("id", row.id).catch((e) => console.warn("no_shows update:", e));
-          return { ...row, called: true, status: "Reached" };
-        }
-        lm++;
-        supabase.from("no_shows").update({ called: true, status: "LM", stage: nextStage }).eq("id", row.id).catch((e) => console.warn("no_shows update:", e));
-        return { ...row, called: true, status: "LM", stage: nextStage };
-      })
-    );
-    window.alert(
-      `Called ${tabRows.length} customer${tabRows.length !== 1 ? "s" : ""}:\n\u2022 ${reached} reached\n\u2022 ${lm} left message \u2192 moved to ${nextLabel}`
-    );
+  // Texting these customers is handled entirely by the Cloudflare cron (see
+  // worker.js, REMINDER.NO_SHOW_2HR and NO_SHOW_24HR). This used to be a
+  // "Text All" button that flipped a coin per customer and wrote the invented
+  // result to Supabase, so the Reached and LM figures on this page were fiction.
+  // Staff now record what actually happened.
+  const recordOutcome = (row, outcome) => {
+    const patch = outcome === "Reached"
+      ? { called: true, status: "Reached" }
+      // No answer moves the row along the escalation ladder, the same
+      // progression the cron uses to decide which reminder to send next.
+      : { called: true, status: "LM", stage: (row.stage || "2hour") === "2hour" ? "24hour" : "abandoned" };
+    setNoShows((prev) => prev.map((r) => (r.id === row.id ? { ...r, ...patch } : r)));
+    supabase.from("no_shows").update(patch).eq("id", row.id)
+      .then(({ error }) => { if (error) console.warn("no_shows outcome update failed:", row.id, error); })
+      .catch((e) => console.warn("no_shows outcome update:", e));
   };
 
   const activeTabObj = TABS.find((t) => t.key === activeTab);
@@ -3329,12 +3492,7 @@ function NoShowsPage() {
           "div",
           { className: "dashboardSection__headerRow" },
           React.createElement("span", null, activeTabObj.label),
-          activeTab !== "abandoned" && tabRows.length > 0 &&
-            React.createElement(
-              "button",
-              { type: "button", className: "resvInlineBtn", onClick: handleAiCallAll },
-              "Text All"
-            )
+          React.createElement("span", { className: "autoTextNote" }, "Reminders are texted automatically")
         )
       ),
       React.createElement(
@@ -3373,7 +3531,21 @@ function NoShowsPage() {
                               ? React.createElement("span", { className: "preRentalCheckDone" }, "Reached")
                               : row.status === "LM"
                                 ? React.createElement("span", { className: "preRentalCheckLm" }, "LM")
-                                : React.createElement("span", null, ""),
+                                // Nothing recorded yet. The reminder text has gone out
+                                // automatically; these record what the customer actually did.
+                                : React.createElement(React.Fragment, null,
+                                    React.createElement("button", {
+                                      type: "button", className: "aiControl",
+                                      title: "The customer replied or we spoke to them",
+                                      onClick: () => recordOutcome(row, "Reached"),
+                                    }, "Reached"),
+                                    React.createElement("button", {
+                                      type: "button", className: "aiControl",
+                                      style: { marginLeft: "6px" },
+                                      title: "No reply. Moves to the next escalation stage",
+                                      onClick: () => recordOutcome(row, "LM"),
+                                    }, "No Reply")
+                                  ),
                             React.createElement("button", {
                               type: "button",
                               className: "aiControl",
@@ -3440,7 +3612,9 @@ function OverdueRentalsPage() {
           phone: r.phone,
           plate: r.plate || ra?.plate || null,
           returnDate: r.returnDate,
-          callStatus: callStatuses[r.resCode],
+          // Persisted outcome wins; local state only covers the moment between
+          // the click and the next load.
+          callStatus: callStatuses[r.resCode] ?? r.callOutcome,
         };
       });
   }, [reservations, rentalAgreements, callStatuses]);
@@ -3448,21 +3622,16 @@ function OverdueRentalsPage() {
   const activeRows = rows.filter((r) => r.callStatus !== "LM");
   const manualRows = rows.filter((r) => r.callStatus === "LM");
 
-  const handleAiCallAll = () => {
-    if (activeRows.length === 0) return;
-    let reached = 0, lm = 0;
-    setCallStatuses((prev) => {
-      const next = { ...prev };
-      activeRows.forEach((row) => {
-        const answered = Math.random() < 0.5;
-        if (answered) { reached++; next[row.resCode] = "Reached"; }
-        else { lm++; next[row.resCode] = "LM"; }
-      });
-      return next;
-    });
-    window.alert(
-      `Called ${activeRows.length} overdue rental${activeRows.length !== 1 ? "s" : ""}:\n• ${reached} reached\n• ${lm} no answer → moved to Manual Follow-Up`
-    );
+  // Overdue customers are texted automatically by the cron (worker.js,
+  // REMINDER.OVERDUE). This was a coin flip that only ever wrote to local React
+  // state, so the outcome was both invented and lost on refresh. It now records
+  // what actually happened, to Supabase.
+  const recordOutcome = (row, outcome) => {
+    const patch = { callOutcome: outcome, callOutcomeAt: new Date().toISOString() };
+    setCallStatuses((prev) => ({ ...prev, [row.resCode]: outcome }));
+    supabase.from("reservations").update(patch).eq("resCode", row.resCode)
+      .then(({ error }) => { if (error) console.warn("overdue outcome update failed:", row.resCode, error); })
+      .catch((e) => console.warn("overdue outcome update:", e));
   };
 
   const renderTable = (tableRows, lastColHeader, isManual) =>
@@ -3494,7 +3663,21 @@ function OverdueRentalsPage() {
                 ? React.createElement("span", { className: "overdueManual" }, "Manual Follow-Up Required")
                 : row.callStatus === "Reached"
                   ? React.createElement("span", { className: "preRentalCheckDone" }, "Reached")
-                  : React.createElement("span", { className: "preRentalCheckNot" }, "Pending")
+                  : row.callStatus === "LM"
+                    ? React.createElement("span", { className: "preRentalCheckLm" }, "LM")
+                    : React.createElement("div", { className: "readyStatusWrap" },
+                        React.createElement("button", {
+                          type: "button", className: "aiControl",
+                          title: "The customer replied or we spoke to them",
+                          onClick: () => recordOutcome(row, "Reached"),
+                        }, "Reached"),
+                        React.createElement("button", {
+                          type: "button", className: "aiControl",
+                          style: { marginLeft: "6px" },
+                          title: "No reply to the automatic reminder",
+                          onClick: () => recordOutcome(row, "LM"),
+                        }, "No Reply")
+                      )
             )
           )
         )
@@ -3521,12 +3704,7 @@ function OverdueRentalsPage() {
           "div",
           { className: "dashboardSection__headerRow" },
           React.createElement("span", null, "Overdue"),
-          activeRows.length > 0 &&
-            React.createElement(
-              "button",
-              { type: "button", className: "resvInlineBtn", onClick: handleAiCallAll },
-              "Text All"
-            )
+          React.createElement("span", { className: "autoTextNote" }, "Reminders are texted automatically")
         )
       ),
       React.createElement(
@@ -3610,12 +3788,18 @@ function VehicleDetailPage() {
       return;
     }
     if (parsed === (currentCanonical ?? null)) return;
-    setFleet((prev) => prev.map((v) => v.plate === plate ? { ...v, [column]: parsed } : v));
-    if (vehicle.id) {
-      supabase.from("fleet").update({ [column]: parsed }).eq("id", vehicle.id)
-        .then(({ error }) => { if (error) console.warn(`fleet ${column} update failed:`, error); })
-        .catch((err) => console.warn(`fleet ${column} update:`, err));
-    }
+    // Tank size feeds every gas charge and the PM interval drives the service
+    // schedule, so both sit in the PIN tier. Cancelling the PIN restores the
+    // displayed value rather than leaving the field showing an unsaved number.
+    const key = column === "tankSizeLiters" ? "vehicle.tankSize" : "vehicle.pmInterval";
+    guardAction(key, () => {
+      setFleet((prev) => prev.map((v) => v.plate === plate ? { ...v, [column]: parsed } : v));
+      if (vehicle.id) {
+        supabase.from("fleet").update({ [column]: parsed }).eq("id", vehicle.id)
+          .then(({ error }) => { if (error) console.warn(`fleet ${column} update failed:`, error); })
+          .catch((err) => console.warn(`fleet ${column} update:`, err));
+      }
+    });
   };
 
   const saveTankSize = () =>
@@ -3827,13 +4011,15 @@ function VehicleDetailPage() {
               onChange: (e) => {
                 if (activeRa) return;
                 const { status: newStatus, forced, message } = resolvePmStatus(vehicle, e.target.value);
-                setFleet((prev) =>
-                  prev.map((v) => v.plate === plate ? { ...v, status: newStatus } : v)
-                );
-                if (vehicle.id) {
-                  supabase.from("fleet").update({ status: newStatus }).eq("id", vehicle.id).catch((err) => console.warn("fleet update:", err));
-                }
-                if (forced) window.alert(message);
+                guardAction("vehicle.status", () => {
+                  setFleet((prev) =>
+                    prev.map((v) => v.plate === plate ? { ...v, status: newStatus } : v)
+                  );
+                  if (vehicle.id) {
+                    supabase.from("fleet").update({ status: newStatus }).eq("id", vehicle.id).catch((err) => console.warn("fleet update:", err));
+                  }
+                  if (forced) window.alert(message);
+                });
               },
             },
             FLEET_STATUS_OPTS
@@ -3935,7 +4121,7 @@ function VehicleDetailPage() {
 // ─── FleetPage ────────────────────────────────────────────────────────────────
 
 function FleetPage() {
-  const { fleet, setFleet, rentalAgreements } = React.useContext(AppContext);
+  const { fleet, setFleet, rentalAgreements, guardAction } = React.useContext(AppContext);
   const readyReturns = fleet.filter((v) => v.status === "Ready Returns");
   const [collectedOpenId, setCollectedOpenId] = React.useState(null);
   const handleCollected = (entry, status) => {
@@ -3944,12 +4130,14 @@ function FleetPage() {
     // handed out unserviced.
     const vehicle = fleet.find((fv) => fv.plate === entry.plate) || entry;
     const { status: finalStatus, forced, message } = resolvePmStatus(vehicle, status);
-    setFleet((prev) => prev.map((fv) =>
-      fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
-    ));
-    supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
-    setCollectedOpenId(null);
-    if (forced) window.alert(message);
+    guardAction("vehicle.collected", () => {
+      setFleet((prev) => prev.map((fv) =>
+        fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
+      ));
+      supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
+      setCollectedOpenId(null);
+      if (forced) window.alert(message);
+    });
   };
   const [collapsed, setCollapsed] = React.useState(false);
   const [fleetGroupCollapsed, setFleetGroupCollapsed] = React.useState({
@@ -4385,6 +4573,121 @@ function confirmRentalDespitePm(vehicle) {
   );
 }
 
+// ─── Shared write rules ──────────────────────────────────────────────────────
+// These used to live inside React event handlers, which meant the command bar
+// could reach the same tables without them. They are plain functions now so the
+// UI and the AI executor apply one rule rather than two copies that drift.
+
+// notesLog is not reliably an array. Some rows hold a JSON STRING instead, and
+// the display code coerced anything non-array to [], which meant appending a
+// note to such a row rewrote the log as a single entry and lost the history.
+// Everything that reads notesLog goes through here.
+function parseNotesLog(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (e) { /* not JSON, fall through to empty rather than guessing */ }
+  }
+  return [];
+}
+
+// Statuses that mean the rental is over. Closing stamps the return time, so a
+// closed agreement always carries when it came back.
+const RA_CLOSING_STATUSES = ["close_pending", "closed"];
+
+// The return timestamp written at the moment of close. Split out of
+// CustomerPage so the command bar cannot close an agreement without it.
+function raCloseStamp(now = new Date()) {
+  let h = now.getHours();
+  const m = now.getMinutes();
+  const meridiem = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return {
+    returnDate:     now.toISOString().slice(0, 10),
+    returnTime:     String(h).padStart(2, "0") + String(m).padStart(2, "0"),
+    returnMeridiem: meridiem,
+  };
+}
+
+// Field rules for adding a vehicle. Every field is required. Returns the list of
+// missing labels in form order plus a ready-to-show message, so the form and the
+// command bar cannot disagree about what a complete vehicle looks like.
+// Accepts canonical values: tankSizeLiters in litres, pmIntervalKm in km.
+const VEHICLE_REQUIRED_FIELDS = [
+  ["Plate Number",     "plate"],
+  ["Province / State", "province"],
+  ["Year",             "year"],
+  ["Make",             "make"],
+  ["Model",            "model"],
+  ["Colour",           "colour"],
+  ["Tank Size",        "tankSizeLiters"],
+  ["Needs PM Every",   "pmIntervalKm"],
+  ["Vehicle Class",    "vehicleClass"],
+  ["VIN",              "vin"],
+];
+
+function validateVehicle(v) {
+  const missing = VEHICLE_REQUIRED_FIELDS
+    .filter(([, key]) => String(v?.[key] ?? "").trim() === "")
+    .map(([label]) => label);
+  if (missing.length) {
+    return {
+      ok: false,
+      missing,
+      error: missing.length === 1
+        ? `${missing[0]} is required.`
+        : `These fields are required: ${missing.join(", ")}.`,
+    };
+  }
+  // Both are canonical numbers by this point, so anything non-positive is a bad
+  // value rather than a blank field.
+  const tank = parseFloat(v.tankSizeLiters);
+  const pm   = parseFloat(v.pmIntervalKm);
+  if (!Number.isFinite(tank) || tank <= 0) return { ok: false, missing: [], error: "Tank size must be a positive number." };
+  if (!Number.isFinite(pm)   || pm   <= 0) return { ok: false, missing: [], error: "Needs PM Every must be a positive number." };
+  return { ok: true, missing: [], error: null };
+}
+
+// Field rules for retiring a vehicle. The UI archives plate, disposal date and
+// reason; a bare delete loses all of that, so both paths require them.
+function validateRetirement(r) {
+  const missing = [
+    ["Disposal Date", "disposalDate"],
+    ["Reason",        "reason"],
+  ].filter(([, key]) => String(r?.[key] ?? "").trim() === "").map(([label]) => label);
+  return missing.length
+    ? { ok: false, missing, error: `Retiring a vehicle needs a ${missing.join(" and a ").toLowerCase()}.` }
+    : { ok: true, missing: [], error: null };
+}
+
+// Field rules for a reservation. Deliberately short: a reservation is often
+// taken over the phone with partial information, so this is the minimum that
+// makes a row findable and actionable rather than everything on the form.
+const RESERVATION_REQUIRED_FIELDS = [
+  ["Customer",      "customer"],
+  ["Pickup Date",   "date"],
+  ["Pickup Time",   "time"],
+  ["Location",      "location"],
+  ["Vehicle Class", "vehicleClass"],
+];
+
+function validateReservation(r) {
+  const missing = RESERVATION_REQUIRED_FIELDS
+    .filter(([, key]) => String(r?.[key] ?? "").trim() === "")
+    .map(([label]) => label);
+  return missing.length
+    ? {
+        ok: false,
+        missing,
+        error: missing.length === 1
+          ? `${missing[0]} is required.`
+          : `These fields are required: ${missing.join(", ")}.`,
+      }
+    : { ok: true, missing: [], error: null };
+}
+
 const FLEET_STATUS_OPTS = [
   { value: "All",             label: "All Statuses",    bg: null,      fg: null      },
   { value: "Available",       label: "Available",        bg: "#d1fae5", fg: "#065f46" },
@@ -4493,7 +4796,7 @@ function FleetFilterBar({ filterState }) {
 // ─── FleetVehiclesPage ─────────────────────────────────────────────────────────
 
 function FleetVehiclesPage() {
-  const { fleet, setFleet, rentalAgreements } = React.useContext(AppContext);
+  const { fleet, setFleet, rentalAgreements, guardAction } = React.useContext(AppContext);
   const { filtered, filterState } = useFleetFilter(fleet);
   const [collectedOpenId, setCollectedOpenId] = React.useState(null);
   const handleCollected = (entry, status) => {
@@ -4502,20 +4805,24 @@ function FleetVehiclesPage() {
     // handed out unserviced.
     const vehicle = fleet.find((fv) => fv.plate === entry.plate) || entry;
     const { status: finalStatus, forced, message } = resolvePmStatus(vehicle, status);
-    setFleet((prev) => prev.map((fv) =>
-      fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
-    ));
-    supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
-    setCollectedOpenId(null);
-    if (forced) window.alert(message);
+    guardAction("vehicle.collected", () => {
+      setFleet((prev) => prev.map((fv) =>
+        fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
+      ));
+      supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
+      setCollectedOpenId(null);
+      if (forced) window.alert(message);
+    });
   };
 
   // Status dropdown change: update fleet state immediately then persist
   const handleStatusChange = (vehicle, newStatus) => {
     const { status: finalStatus, forced, message } = resolvePmStatus(vehicle, newStatus);
-    setFleet((prev) => prev.map((fv) => fv.id === vehicle.id ? { ...fv, status: finalStatus } : fv));
-    supabase.from("fleet").update({ status: finalStatus }).eq("id", vehicle.id).catch((e) => console.warn("fleet status update:", e));
-    if (forced) window.alert(message);
+    guardAction("vehicle.status", () => {
+      setFleet((prev) => prev.map((fv) => fv.id === vehicle.id ? { ...fv, status: finalStatus } : fv));
+      supabase.from("fleet").update({ status: finalStatus }).eq("id", vehicle.id).catch((e) => console.warn("fleet status update:", e));
+      if (forced) window.alert(message);
+    });
   };
 
   const [sectionCollapsed, setSectionCollapsed] = React.useState(false);
@@ -4771,47 +5078,27 @@ function FleetAdditionsPage() {
     e.preventDefault();
     const plate = normalizePlate(addForm.plate);
 
-    // Every field is required. Listed in the order they appear on the form so
-    // the error reads top to bottom and matches what the user is looking at.
-    // Province and Vehicle Class are selects that ship with a default and so
-    // cannot really be empty, but they are checked anyway rather than trusting
-    // that to stay true.
-    const missing = [
-      ["Plate Number",     plate],
-      ["Province / State", addForm.province],
-      ["Year",             addForm.year],
-      ["Make",             addForm.make],
-      ["Model",            addForm.model],
-      ["Colour",           addForm.colour],
-      ["Tank Size",        addForm.tankSize],
-      ["Needs PM Every",   addForm.pmInterval],
-      ["Vehicle Class",    addForm.vehicleClass],
-      ["VIN",              addForm.vin],
-    ].filter(([, value]) => String(value ?? "").trim() === "").map(([label]) => label);
-
-    if (missing.length) {
-      setAddError(missing.length === 1
-        ? `${missing[0]} is required.`
-        : `These fields are required: ${missing.join(", ")}.`);
-      return;
-    }
-    if (fleet.some((v) => normalizePlate(v.plate) === plate)) { setAddError("A vehicle with this plate already exists."); return; }
-
     // Canonical values tracked alongside the inputs, so a unit toggle can't
     // have introduced rounding drift into what gets stored.
     const tankLiters = tankCanonical;
     const pmKm       = pmCanonical;
 
-    // Both are filled in by this point, so anything non-positive here is a bad
-    // number rather than a blank field.
-    if (tankLiters == null || tankLiters <= 0) {
-      setAddError(`Tank size must be a positive number of ${tankUnit === "L" ? "litres" : "gallons"}.`);
-      return;
-    }
-    if (pmKm == null || pmKm <= 0) {
-      setAddError(`Needs PM Every must be a positive number of ${pmUnit === "km" ? "kilometers" : "miles"}.`);
-      return;
-    }
+    // One rule, shared with the command bar. See validateVehicle.
+    const candidate = {
+      plate,
+      province:       addForm.province,
+      year:           addForm.year,
+      make:           addForm.make,
+      model:          addForm.model,
+      colour:         addForm.colour,
+      tankSizeLiters: tankLiters,
+      pmIntervalKm:   pmKm,
+      vehicleClass:   addForm.vehicleClass,
+      vin:            addForm.vin,
+    };
+    const check = validateVehicle(candidate);
+    if (!check.ok) { setAddError(check.error); return; }
+    if (fleet.some((v) => normalizePlate(v.plate) === plate)) { setAddError("A vehicle with this plate already exists."); return; }
 
     requirePin(() => {
       const newVehicle = {
@@ -5047,7 +5334,7 @@ function FleetAdditionsPage() {
 // ─── FleetDamageClaimsPage ─────────────────────────────────────────────────────
 
 function FleetDamageClaimsPage() {
-  const { fleet, setOpenRentalAgreementId, damageClaims, setDamageClaims, reservations, rentalAgreements } = React.useContext(AppContext);
+  const { fleet, setOpenRentalAgreementId, damageClaims, setDamageClaims, reservations, rentalAgreements, guardAction } = React.useContext(AppContext);
   const navigate = useNavigate();
   const { filtered, filterState } = useFleetFilter(fleet);
   const filteredPlates = React.useMemo(() => new Set(filtered.map((v) => v.plate)), [filtered]);
@@ -5068,13 +5355,15 @@ function FleetDamageClaimsPage() {
   const closedClaims = allClaims.filter((c) => c._status === "resolved");
 
   const handleResolve = (claim) => {
-    const now = new Date().toISOString();
-    setDamageClaims((prev) =>
-      prev.map((c) => c.id === claim.id ? { ...c, status: "resolved", resolvedAt: now, updatedAt: now } : c)
-    );
-    supabase.from("damage_claims").update({ status: "resolved", resolvedAt: now, updatedAt: now }).eq("id", claim.id).then(({ error }) => {
-      if (error) console.warn("damage_claims update failed:", claim.id, error);
-    }).catch((e) => console.warn("damage_claims update:", e));
+    guardAction("damage.resolve", () => {
+      const now = new Date().toISOString();
+      setDamageClaims((prev) =>
+        prev.map((c) => c.id === claim.id ? { ...c, status: "resolved", resolvedAt: now, updatedAt: now } : c)
+      );
+      supabase.from("damage_claims").update({ status: "resolved", resolvedAt: now, updatedAt: now }).eq("id", claim.id).then(({ error }) => {
+        if (error) console.warn("damage_claims update failed:", claim.id, error);
+      }).catch((e) => console.warn("damage_claims update:", e));
+    });
   };
 
   const renderTable = (claims, showResolve) =>
@@ -5161,22 +5450,26 @@ function GasCollectionsPage() {
   // reservations. reservations has no gas fields at all, and rental_agreements
   // has no "Partial" status, only a gasCollected boolean, so payment status
   // here is a plain Unpaid/Paid toggle rather than a three-state field.
-  const { rentalAgreements, setRentalAgreements } = React.useContext(AppContext);
+  const { rentalAgreements, setRentalAgreements, guardAction } = React.useContext(AppContext);
 
   // Only show files with an outstanding balance (auto-removes when gasOwed hits 0)
   const rows = rentalAgreements.filter((a) => parseFloat(a.gasOwed || 0) > 0);
 
-  const updateRow = (id, patch) => {
-    setRentalAgreements((prev) =>
-      prev.map((a) => a.id === id ? { ...a, ...patch } : a)
-    );
-    supabase.from("rental_agreements").update(patch).eq("id", id).then(({ error }) => {
-      if (error) console.warn("rental_agreements update failed:", id, error);
-    }).catch((e) => console.warn("rental_agreements update:", e));
+  // Every write on this page moves money, so both the amount field and the
+  // paid toggle funnel through here and take the PIN.
+  const updateRow = (id, patch, actionKey) => {
+    guardAction(actionKey, () => {
+      setRentalAgreements((prev) =>
+        prev.map((a) => a.id === id ? { ...a, ...patch } : a)
+      );
+      supabase.from("rental_agreements").update(patch).eq("id", id).then(({ error }) => {
+        if (error) console.warn("rental_agreements update failed:", id, error);
+      }).catch((e) => console.warn("rental_agreements update:", e));
+    });
   };
 
   const handleGasChange = (id, value) => {
-    updateRow(id, { gasOwed: value });
+    updateRow(id, { gasOwed: value }, "gas.amount");
   };
 
   const handleStatusChange = (id, value) => {
@@ -5184,7 +5477,7 @@ function GasCollectionsPage() {
     updateRow(id, value === "Paid"
       ? { gasCollected: true, gasOwed: "0" }
       : { gasCollected: false }
-    );
+    , "gas.collected");
   };
 
   return React.createElement("div", { className: "page" },
@@ -5286,11 +5579,14 @@ function ReportsPage() {
 // ─── SettingsPage ──────────────────────────────────────────────────────────────
 
 function SettingsPage() {
-  const { appSettings, saveSetting, fleet } = React.useContext(AppContext);
+  const { appSettings, saveSetting, fleet, guardAction } = React.useContext(AppContext);
 
   const SECTS = [
     { key: "branch",  title: "Branch Information",    body: "Branch name, address, phone number, operating hours, and SIPP codes." },
-    { key: "users",   title: "User Accounts",         body: "Manage staff logins, roles (Agent, Manager, Admin), and PIN resets." },
+    // Roles are described here but nothing enforces them: there is no users
+    // table and the PIN is checked against the single signed-in user. Said
+    // plainly so the panel does not read as a working feature.
+    { key: "users",   title: "User Accounts",         body: "Manage staff logins, roles (Agent, Manager, Admin), and PIN resets. Roles are not active yet: every signed-in user currently has the same access, and confirmation is by PIN alone." },
     { key: "notifs",  title: "Notification Settings", body: "Configure which events trigger notifications and to which staff members." },
     { key: "twilio",  title: "Twilio SMS Setup",      body: "Twilio Account SID, Auth Token, and sending phone number for AI call and text automation." },
     { key: "billing", title: "Billing Configuration", body: "Billing address, HST registration number, and invoice export settings." },
@@ -5332,7 +5628,9 @@ function SettingsPage() {
       return;
     }
     if (n === appSettings.gasMarkupPercent) return;
-    if (await saveSetting("gasMarkupPercent", n)) flash("Markup saved.");
+    guardAction("gas.markup", async () => {
+      if (await saveSetting("gasMarkupPercent", n)) flash("Markup saved.");
+    });
   };
 
   const commitPrice = async (region) => {
@@ -5345,7 +5643,9 @@ function SettingsPage() {
     if (n === (gasPrices[region] ?? null)) return;
     const next = { ...gasPrices };
     if (n === null) delete next[region]; else next[region] = n;
-    if (await saveSetting("gasPrices", next)) flash(`${region} price saved.`);
+    guardAction("gas.regionPrice", async () => {
+      if (await saveSetting("gasPrices", next)) flash(`${region} price saved.`);
+    });
   };
 
   const missingTank = fleet.filter((v) => v.tankSizeLiters == null).length;
@@ -5672,7 +5972,7 @@ function PlaceholderPage({ title }) {
 // ─── Fleetr AI Command Bar ───────────────────────────────────────────────────
 
 function FleetrCommandBar() {
-  const { requirePin, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows, damageClaims, setDamageClaims } = React.useContext(AppContext);
+  const { requirePin, guardAction, currentUser, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows, damageClaims, setDamageClaims } = React.useContext(AppContext);
   const [command,        setCommand]        = React.useState("");
   const [aiMessage,      setAiMessage]      = React.useState("");
   const [pendingAction,  setPendingAction]  = React.useState(null);
@@ -5802,9 +6102,25 @@ function FleetrCommandBar() {
     }
   };
 
-  // Execute the pending Supabase action and update React state
+  // Execute the pending Supabase action and update React state.
+  //
+  // This used to raise the PIN for every operation without exception, which made
+  // the command bar stricter than the UI it is meant to mirror. It now resolves
+  // the same ACTION_POLICY the UI uses, so a note and a deletion are no longer
+  // treated alike. Pressing Confirm on the action card is itself the affirmative
+  // step, so the "confirm" tier runs directly from here.
+  //
+  // The tier is computed from the EDITED payload, not the model's original, so a
+  // staff member who types a money field into the card cannot land in the lighter
+  // tier than the field deserves.
   const confirmAction = () => {
-    requirePin(executeAction);
+    const key = commandBarActionKey({
+      table: pendingAction?.table,
+      operation: pendingAction?.operation,
+      data: editableData,
+    });
+    console.log("Fleetr command bar action tier:", key, actionTier(key));
+    guardAction(key, executeAction);
   };
 
   const executeAction = async () => {
@@ -5819,39 +6135,86 @@ function FleetrCommandBar() {
       const now = new Date().toISOString();
       data = { ...data, resolvedAt: now, updatedAt: now };
     }
+
+    // ── Shared write rules ────────────────────────────────────────────────────
+    // Everything below is the same guard the UI runs. It used to live only in
+    // React handlers, which is how the command bar was able to release a vehicle
+    // from PM, open a rental on a flagged vehicle, and close an agreement with no
+    // return time. Failing here aborts before any Supabase call.
+    // Reuses the same channel a failed Supabase write reports through, and drops
+    // the pending action so the Confirm button cannot be pressed again.
+    const abort = (msg) => {
+      console.warn("Fleetr AI action blocked by a write rule:", msg, { table, operation, data });
+      setAiMessage(msg);
+      setPendingAction(null);
+      setActionLoading(false);
+    };
+
+    if (table === "fleet" && operation === "insert") {
+      const check = validateVehicle(data);
+      if (!check.ok) return void abort(check.error);
+    }
+
+    if (table === "fleet" && operation === "delete") {
+      const check = validateRetirement(data);
+      if (!check.ok) return void abort(`${check.error} Retire it from Additions and Deletions so the archive keeps a record.`);
+    }
+
+    if (table === "reservations" && operation === "insert") {
+      const check = validateReservation(data);
+      if (!check.ok) return void abort(check.error);
+    }
+
+    // PM takes over a status change the same way it does in the UI.
+    if (table === "fleet" && operation === "update" && data.status) {
+      const target = fleet.find((v) => Object.entries(match || {}).every(([k, val]) => String(v[k]) === String(val)));
+      const { status: finalStatus, forced, message } = resolvePmStatus(target, data.status);
+      if (forced) {
+        data = { ...data, status: finalStatus };
+        window.alert(message);
+      }
+    }
+
+    // Opening or reopening a rental on a PM-flagged vehicle raises the same soft
+    // block, and cancelling it aborts rather than writing.
+    if (table === "reservations" && data.rentalAgreementStatus === "open_rental_agreement") {
+      const res   = reservations.find((r) => Object.entries(match || {}).every(([k, val]) => String(r[k]) === String(val)));
+      const ra    = rentalAgreements.find((x) => x.resCode === res?.resCode);
+      const plate = ra?.plate || res?.plate;
+      const veh   = plate ? fleet.find((v) => normalizePlate(v.plate) === normalizePlate(plate)) : null;
+      if (!confirmRentalDespitePm(veh)) return void abort("Cancelled. The vehicle is still flagged for preventative maintenance.");
+    }
+
+    // Closing stamps the return time, so a closed agreement always records when
+    // the vehicle came back.
+    if (table === "reservations" && RA_CLOSING_STATUSES.includes(data.rentalAgreementStatus)) {
+      data = { ...raCloseStamp(), ...data };
+    }
+
+    // One place that knows which React setter owns which table. The update,
+    // insert and delete branches each used to carry their own if/else chain over
+    // a DIFFERENT subset of tables, which is how deleting an ndi_rows, no_shows
+    // or damage_claims row could succeed in Supabase while the row stayed on
+    // screen until the next refresh.
+    const SETTERS = {
+      reservations:      setReservations,
+      rental_agreements: setRentalAgreements,
+      fleet:             setFleet,
+      ndi_rows:          setNdiRows,
+      no_shows:          setNoShows,
+      damage_claims:     setDamageClaims,
+    };
+    const setLocal = SETTERS[table];
+    const isMatch  = (row) => Object.keys(match || {}).every((k) => String(row[k]) === String(match[k]));
+
     try {
       let error = null;
       if (operation === "update") {
         let q = supabase.from(table).update(data);
         if (match) Object.entries(match).forEach(([k, v]) => { q = q.eq(k, v); });
         ({ error } = await q);
-        if (!error) {
-          if (table === "reservations") {
-            setReservations((prev) => prev.map((r) => {
-              const matchKeys = Object.keys(match || {});
-              return matchKeys.every((k) => String(r[k]) === String(match[k])) ? { ...r, ...data } : r;
-            }));
-          } else if (table === "rental_agreements") {
-            setRentalAgreements((prev) => prev.map((r) => {
-              const matchKeys = Object.keys(match || {});
-              return matchKeys.every((k) => String(r[k]) === String(match[k])) ? { ...r, ...data } : r;
-            }));
-          } else if (table === "fleet") {
-            setFleet((prev) => prev.map((v) => {
-              const matchKeys = Object.keys(match || {});
-              return matchKeys.every((k) => String(v[k]) === String(match[k])) ? { ...v, ...data } : v;
-            }));
-          } else if (table === "ndi_rows") {
-            setNdiRows((prev) => prev.map((r) => {
-              const matchKeys = Object.keys(match || {});
-              return matchKeys.every((k) => String(r[k]) === String(match[k])) ? { ...r, ...data } : r;
-            }));
-          } else if (table === "damage_claims") {
-            setDamageClaims((prev) => prev.map((c) => {
-              const matchKeys = Object.keys(match || {});
-              return matchKeys.every((k) => String(c[k]) === String(match[k])) ? { ...c, ...data } : c;
-            }));
-          }
+        if (!error && setLocal) {
+          setLocal((prev) => prev.map((row) => (isMatch(row) ? { ...row, ...data } : row)));
         }
       } else if (operation === "insert") {
         let insertData = data;
@@ -5862,31 +6225,36 @@ function FleetrCommandBar() {
           insertData = { status: "Needs Cleaning", winterTires: "No", currentRenter: null, dueBack: null, fileType: null, ...data };
         }
         ({ error } = await supabase.from(table).insert(insertData));
-        if (!error) {
-          if (table === "reservations") setReservations((prev) => [...prev, insertData]);
-          else if (table === "rental_agreements") setRentalAgreements((prev) => [...prev, insertData]);
-          else if (table === "fleet") setFleet((prev) => [...prev, insertData]);
-        }
+        if (!error && setLocal) setLocal((prev) => [...prev, insertData]);
       } else if (operation === "delete") {
         let q = supabase.from(table).delete();
         if (match) Object.entries(match).forEach(([k, v]) => { q = q.eq(k, v); });
         ({ error } = await q);
-        if (!error) {
-          if (table === "reservations") {
-            setReservations((prev) => prev.filter((r) => {
-              const matchKeys = Object.keys(match || {});
-              return !matchKeys.every((k) => String(r[k]) === String(match[k]));
-            }));
-          } else if (table === "rental_agreements") {
-            setRentalAgreements((prev) => prev.filter((r) => {
-              const matchKeys = Object.keys(match || {});
-              return !matchKeys.every((k) => String(r[k]) === String(match[k]));
-            }));
-          } else if (table === "fleet") {
-            setFleet((prev) => prev.filter((v) => {
-              const matchKeys = Object.keys(match || {});
-              return !matchKeys.every((k) => String(v[k]) === String(match[k]));
-            }));
+        if (!error && setLocal) setLocal((prev) => prev.filter((row) => !isMatch(row)));
+      } else if (operation === "addNote") {
+        // notesLog is an array and every UI path appends to it. A plain update
+        // would replace the whole log and erase the history, so this reads the
+        // current value first and pushes onto it. The read is the reason this is
+        // its own operation rather than a field on update.
+        const noteText = String(data?.text ?? data?.note ?? "").trim();
+        if (!noteText) {
+          error = { message: "A note needs some text." };
+        } else {
+          const idCol = table === "reservations" ? "resCode" : "id";
+          const idVal = match?.[idCol] ?? Object.values(match || {})[0];
+          const { data: rows, error: readErr } = await supabase
+            .from(table).select(`${idCol},notesLog`).eq(idCol, idVal).limit(1);
+          if (readErr) {
+            error = readErr;
+          } else if (!rows || rows.length === 0) {
+            error = { message: "Could not find that record to add a note to." };
+          } else {
+            const existing = parseNotesLog(rows[0].notesLog);
+            const newLog   = [...existing, { author: currentUser?.name || "fleetr ai", text: noteText }];
+            ({ error } = await supabase.from(table).update({ notesLog: newLog }).eq(idCol, idVal));
+            if (!error && setLocal) {
+              setLocal((prev) => prev.map((row) => (String(row[idCol]) === String(idVal) ? { ...row, notesLog: newLog } : row)));
+            }
           }
         }
       } else if (operation === "confirmPickup" && table === "no_shows") {
@@ -6036,10 +6404,12 @@ function FleetrCommandBar() {
               React.createElement("p", { className: "fleetrCommandBar__responseText" }, aiMessage),
               // Editable fields + Confirm — only when action is present and complete
               pendingAction && !actionDone && (() => {
-                const RES_REQUIRED = ["customer","date","time","returnDate","vehicleClass","location"];
-                const isResInsert  = pendingAction.table === "reservations" && pendingAction.operation === "insert";
-                const actionReady  = !isResInsert || RES_REQUIRED.every((f) => pendingAction.data?.[f]);
-                if (!actionReady) return null;
+                // Uses the shared validator rather than its own list. The old
+                // local list also demanded returnDate, which no reservation form
+                // has ever required, so the command bar was refusing bookings the
+                // UI accepts.
+                const isResInsert = pendingAction.table === "reservations" && pendingAction.operation === "insert";
+                if (isResInsert && !validateReservation(pendingAction.data).ok) return null;
                 return React.createElement(
                   React.Fragment,
                   null,
@@ -6267,7 +6637,7 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
   const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
 
   const [raNotesLog, setRaNotesLog] = React.useState(
-    Array.isArray(rentalAgreement.notesLog) ? rentalAgreement.notesLog : []
+    parseNotesLog(rentalAgreement.notesLog)
   );
   const [noteInput, setNoteInput] = React.useState("");
 
@@ -6661,7 +7031,7 @@ const RATES_VCLASS_CATS = {
 // ─── CustomerPage ─────────────────────────────────────────────────────────────
 
 function CustomerPage() {
-  const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, requirePin, setDamageClaims } = React.useContext(AppContext);
+  const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, requirePin, guardAction, setDamageClaims } = React.useContext(AppContext);
   const navigate = useNavigate();
   const name   = openCustomer?.name   || "Customer";
   const resCode = openCustomer?.resCode || null;
@@ -6843,7 +7213,7 @@ function CustomerPage() {
       make:  localRecord.vehicleMake  || "",
       model: localRecord.vehicleModel || "",
     });
-    setCustomerNotesLog(Array.isArray(localRecord.notesLog) ? localRecord.notesLog : []);
+    setCustomerNotesLog(parseNotesLog(localRecord.notesLog));
   }, [localRecord]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Hydrate lineItems and payments once from rental_agreements when the RA record first loads
@@ -7039,20 +7409,10 @@ function CustomerPage() {
       syncRAStatus(resCode, status);
 
       // Auto-stamp return date/time at the moment of close
-      if (status === "close_pending" || status === "closed") {
-        const now = new Date();
-        const newReturnDate = now.toISOString().slice(0, 10);
-        let h = now.getHours();
-        const m = now.getMinutes();
-        const newReturnMeridiem = h >= 12 ? "PM" : "AM";
-        h = h % 12 || 12;
-        const newReturnTime = String(h).padStart(2, "0") + String(m).padStart(2, "0");
-        setResInfoForm((p) => ({ ...p, returnDate: newReturnDate, returnTime: newReturnTime, returnMeridiem: newReturnMeridiem }));
-        supabase.from("reservations").update({
-          returnDate: newReturnDate,
-          returnTime: newReturnTime,
-          returnMeridiem: newReturnMeridiem,
-        }).eq("resCode", resCode)
+      if (RA_CLOSING_STATUSES.includes(status)) {
+        const stamp = raCloseStamp();
+        setResInfoForm((p) => ({ ...p, ...stamp }));
+        supabase.from("reservations").update(stamp).eq("resCode", resCode)
           .then((res) => console.log("reservations return date/time update:", res))
           .catch((e) => console.warn("reservations return date/time update:", e));
       }
@@ -7093,24 +7453,27 @@ function CustomerPage() {
     onClick: () => {
       if (!resCode || isDamaged) return;
       const description = window.prompt("Describe the damage:") || "";
-      setLocalRecord((prev) => prev ? { ...prev, hasDamage: true } : prev);
-      setReservations((prev) =>
-        prev.map((r) => r.resCode === resCode ? { ...r, hasDamage: true } : r)
-      );
-      supabase.from("reservations").update({ hasDamage: true }).eq("resCode", resCode).catch((e) => console.warn("reservations update:", e));
+      // Opens a claim that a customer can be billed against, so it takes the PIN.
+      guardAction("damage.flag", () => {
+        setLocalRecord((prev) => prev ? { ...prev, hasDamage: true } : prev);
+        setReservations((prev) =>
+          prev.map((r) => r.resCode === resCode ? { ...r, hasDamage: true } : r)
+        );
+        supabase.from("reservations").update({ hasDamage: true }).eq("resCode", resCode).catch((e) => console.warn("reservations update:", e));
 
-      // Flagging damage here is a manual, standalone report (no return flow,
-      // no photos), it still creates a real damage_claims row.
-      const claim = {
-        id:                crypto.randomUUID(),
-        plate:             ra?.plate || null,
-        rentalAgreementId: ra?.id || null,
-        description:       description || null,
-        photos:            [],
-        status:            "open",
-      };
-      setDamageClaims((prev) => [...prev, { ...claim, reportedAt: new Date().toISOString() }]);
-      supabase.from("damage_claims").insert(claim).catch((e) => console.warn("damage_claims insert:", e));
+        // Flagging damage here is a manual, standalone report (no return flow,
+        // no photos), it still creates a real damage_claims row.
+        const claim = {
+          id:                crypto.randomUUID(),
+          plate:             ra?.plate || null,
+          rentalAgreementId: ra?.id || null,
+          description:       description || null,
+          photos:            [],
+          status:            "open",
+        };
+        setDamageClaims((prev) => [...prev, { ...claim, reportedAt: new Date().toISOString() }]);
+        supabase.from("damage_claims").insert(claim).catch((e) => console.warn("damage_claims insert:", e));
+      });
     },
   }, isDamaged ? "Damage Flagged" : "Flag Damage");
 
@@ -9095,6 +9458,14 @@ body, * {
   border-bottom-color: #42a4ff;
 }
 /* New Reservation button inside the panel header */
+.autoTextNote{
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(255,255,255,0.62);
+}
+.aiCallButton--booked{ margin-left: 6px; }
 .resvInlineBtn{
   border: none;
   border-radius: 5px;
