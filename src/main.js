@@ -4770,20 +4770,46 @@ function FleetAdditionsPage() {
   const handleAddSubmit = (e) => {
     e.preventDefault();
     const plate = normalizePlate(addForm.plate);
-    if (!plate || !addForm.year || !addForm.make || !addForm.model) { setAddError("Plate, Year, Make, and Model are required."); return; }
+
+    // Every field is required. Listed in the order they appear on the form so
+    // the error reads top to bottom and matches what the user is looking at.
+    // Province and Vehicle Class are selects that ship with a default and so
+    // cannot really be empty, but they are checked anyway rather than trusting
+    // that to stay true.
+    const missing = [
+      ["Plate Number",     plate],
+      ["Province / State", addForm.province],
+      ["Year",             addForm.year],
+      ["Make",             addForm.make],
+      ["Model",            addForm.model],
+      ["Colour",           addForm.colour],
+      ["Tank Size",        addForm.tankSize],
+      ["Needs PM Every",   addForm.pmInterval],
+      ["Vehicle Class",    addForm.vehicleClass],
+      ["VIN",              addForm.vin],
+    ].filter(([, value]) => String(value ?? "").trim() === "").map(([label]) => label);
+
+    if (missing.length) {
+      setAddError(missing.length === 1
+        ? `${missing[0]} is required.`
+        : `These fields are required: ${missing.join(", ")}.`);
+      return;
+    }
     if (fleet.some((v) => normalizePlate(v.plate) === plate)) { setAddError("A vehicle with this plate already exists."); return; }
 
     // Canonical values tracked alongside the inputs, so a unit toggle can't
     // have introduced rounding drift into what gets stored.
-    const tankLiters = addForm.tankSize.trim() === ""    ? null : tankCanonical;
-    const pmKm       = addForm.pmInterval.trim() === ""  ? null : pmCanonical;
+    const tankLiters = tankCanonical;
+    const pmKm       = pmCanonical;
 
-    if (pmKm == null || pmKm <= 0) {
-      setAddError(`PM interval is required. Enter how often this vehicle needs preventative maintenance, in ${pmUnit === "km" ? "kilometers" : "miles"}.`);
+    // Both are filled in by this point, so anything non-positive here is a bad
+    // number rather than a blank field.
+    if (tankLiters == null || tankLiters <= 0) {
+      setAddError(`Tank size must be a positive number of ${tankUnit === "L" ? "litres" : "gallons"}.`);
       return;
     }
-    if (addForm.tankSize.trim() !== "" && (tankLiters == null || tankLiters <= 0)) {
-      setAddError("Tank size must be a positive number, or left blank.");
+    if (pmKm == null || pmKm <= 0) {
+      setAddError(`Needs PM Every must be a positive number of ${pmUnit === "km" ? "kilometers" : "miles"}.`);
       return;
     }
 
@@ -4847,13 +4873,13 @@ function FleetAdditionsPage() {
   // Numeric field with a unit switcher. The typed string is what the user sees;
   // setCanonical stores the converted value so the toggle can re-render the
   // number from it without a lossy string round trip.
-  const unitField = (label, field, placeholder, unit, setUnit, unitOpts, required, setCanonical) =>
+  // No required marker: every field on this form is required, so singling any
+  // one out would be misleading. Matches the Retire Vehicle form, which also
+  // requires everything and simply says so on submit.
+  const unitField = (label, field, placeholder, unit, setUnit, unitOpts, setCanonical) =>
     React.createElement("div", { className: "addVehicleField" },
       React.createElement("div", { className: "addVehicleLabelRow" },
-        React.createElement("label", { className: "addVehicleLabel" },
-          label,
-          required && React.createElement("span", { className: "addVehicleReq" }, "*")
-        ),
+        React.createElement("label", { className: "addVehicleLabel" }, label),
         React.createElement(UnitToggle, { unit, setUnit, options: unitOpts })
       ),
       React.createElement("input", {
@@ -4916,20 +4942,14 @@ function FleetAdditionsPage() {
             fi("Make",   "make",   "e.g. Toyota"),
             fi("Model",  "model",  "e.g. Corolla"),
             fi("Colour", "colour", "e.g. White"),
-            // Optional on purpose: a missing tank size never blocks adding a
-            // vehicle, it just disables automatic gas charges until it's filled
-            // in. The Vehicles list flags vehicles that are still missing it.
-            // Optional: a missing tank size never blocks adding a vehicle, it
-            // just leaves gas charges manual until it is filled in.
             unitField("Tank Size", "tankSize",
               tankUnit === "L" ? "e.g. 50, needed for gas charges" : "e.g. 13, needed for gas charges",
               tankUnit, (u) => switchUnit("tankSize", tankCanonical, u, setTankUnit),
-              VOLUME_UNITS, false, setTankCanonical),
-            // Required: the PM trigger cannot work without an interval.
+              VOLUME_UNITS, setTankCanonical),
             unitField("Needs PM Every", "pmInterval",
               pmUnit === "km" ? "e.g. 8000" : "e.g. 5000",
               pmUnit, (u) => switchUnit("pmInterval", pmCanonical, u, setPmUnit),
-              DISTANCE_UNITS, true, setPmCanonical),
+              DISTANCE_UNITS, setPmCanonical),
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Vehicle Class"),
               React.createElement("select", { className: "addVehicleInput", value: addForm.vehicleClass, onChange: (e) => onAdd("vehicleClass", e.target.value) },
@@ -9720,7 +9740,6 @@ body, * {
   min-height: 26px;
 }
 .addVehicleLabelRow .addVehicleLabel { white-space: nowrap; }
-.addVehicleReq { color: #dc2626; margin-left: 3px; font-weight: 700; }
 
 .vehicleDetailControl {
   display: flex;
