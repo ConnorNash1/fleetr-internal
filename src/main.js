@@ -730,6 +730,7 @@ function PinConfirmModal({ onConfirm, onCancel }) {
   const [pin,     setPin]     = React.useState("");
   const [error,   setError]   = React.useState(false);
   const [loading, setLoading] = React.useState(false);
+  const [focused, setFocused] = React.useState(true);
   const inputRef = React.useRef(null);
 
   React.useEffect(() => {
@@ -763,17 +764,59 @@ function PinConfirmModal({ onConfirm, onCancel }) {
           React.createElement("p", { style: { color: "#666", fontSize: "14px", marginBottom: "16px" } },
             "Enter your PIN to confirm this action."
           ),
-          React.createElement("input", {
-            ref: inputRef,
-            type: "password",
-            inputMode: "text",
-            maxLength: 4,
-            placeholder: "••••",
-            className: "loginInput",
-            style: { textAlign: "center", fontSize: "22px", letterSpacing: "10px" },
-            value: pin,
-            onChange: (e) => { setPin(e.target.value.slice(0, 4)); setError(false); },
-          }),
+          // Four rendered slots with our own caret, rather than one centred
+          // input faking dots with letter-spacing.
+          //
+          // The old version set text-align:center and letter-spacing:10px on a
+          // password input and used "••••" as the placeholder. The browser puts
+          // the caret at the text insertion point of the CENTRED text, which on
+          // an empty field is the middle of the box, so it appeared between the
+          // second and third placeholder dots. It then jumped around as the
+          // string re-centred on every keystroke. The caret position and the dot
+          // positions were computed by two different things and never agreed.
+          //
+          // The real input is still here and still receives every keystroke,
+          // paste and IME event; it is just invisible, with its native caret
+          // suppressed, so there is only one caret and we place it.
+          React.createElement(
+            "div",
+            {
+              className: `pinField${error ? " pinField--error" : ""}`,
+              onMouseDown: (e) => { e.preventDefault(); inputRef.current && inputRef.current.focus(); },
+            },
+            React.createElement("input", {
+              ref: inputRef,
+              type: "password",
+              inputMode: "text",
+              maxLength: 4,
+              className: "pinField__input",
+              "aria-label": "PIN",
+              autoComplete: "off",
+              value: pin,
+              onChange: (e) => { setPin(e.target.value.slice(0, 4)); setError(false); },
+              onFocus: () => setFocused(true),
+              onBlur:  () => setFocused(false),
+            }),
+            React.createElement(
+              "div",
+              { className: "pinField__slots", "aria-hidden": "true" },
+              [0, 1, 2, 3].map((i) =>
+                React.createElement(
+                  "span",
+                  { key: i, className: "pinSlot" },
+                  // Caret sits before the next empty slot, which is exactly
+                  // "after the last digit typed". At four it sits after the last.
+                  focused && i === pin.length &&
+                    React.createElement("i", { className: "pinCaret pinCaret--before" }),
+                  focused && pin.length === 4 && i === 3 &&
+                    React.createElement("i", { className: "pinCaret pinCaret--after" }),
+                  React.createElement("span", {
+                    className: `pinDot${i < pin.length ? "" : " pinDot--empty"}`,
+                  })
+                )
+              )
+            )
+          ),
           error && React.createElement(
             "div",
             { style: { color: "#e53e3e", marginTop: "8px", fontSize: "13px", textAlign: "center" } },
@@ -8529,6 +8572,83 @@ body, * {
 .loginInput:focus{
   border-color: #42a4ff;
   box-shadow: 0 0 0 3px rgba(5,150,105,0.12);
+}
+
+/* ── PIN field ──────────────────────────────────────────────────────────────
+   Four fixed slots, so a dot's position never depends on how the browser lays
+   out centred text. The caret is ours and is placed relative to a slot, which
+   is why it can track the typed length exactly. */
+.pinField{
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 52px;
+  border: 1px solid #d3dbe8;
+  border-radius: 8px;
+  background: #fff;
+  cursor: text;
+}
+.pinField:focus-within{
+  border-color: #42a4ff;
+  box-shadow: 0 0 0 3px rgba(66,164,255,0.15);
+}
+.pinField--error{ border-color: #e53e3e; }
+.pinField--error.pinField:focus-within{ box-shadow: 0 0 0 3px rgba(229,62,62,0.15); }
+
+/* Still a real input: keystrokes, paste, IME and maxLength all keep working.
+   Invisible rather than removed, with the native caret suppressed so ours is
+   the only one on screen. 16px avoids the iOS zoom-on-focus jump. */
+.pinField__input{
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  outline: none;
+  color: transparent;
+  caret-color: transparent;
+  font-size: 16px;
+  text-align: center;
+  letter-spacing: 0;
+}
+.pinField__slots{
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  pointer-events: none;
+}
+.pinSlot{
+  position: relative;
+  width: 12px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pinDot{
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #1F1E1D;
+}
+.pinDot--empty{ background: #d3dbe8; }
+.pinCaret{
+  position: absolute;
+  top: 1px;
+  width: 2px;
+  height: 22px;
+  border-radius: 1px;
+  background: #42a4ff;
+  animation: pinCaretBlink 1.06s steps(1, end) infinite;
+}
+.pinCaret--before{ left: -10px; }
+.pinCaret--after{ right: -10px; }
+@keyframes pinCaretBlink{ 0%, 49%{ opacity: 1 } 50%, 100%{ opacity: 0 } }
+@media (prefers-reduced-motion: reduce){
+  .pinCaret{ animation: none; }
 }
 .loginBtn{
   width: 100%;
