@@ -43,7 +43,8 @@ Rules:
 Fleet table fields:
 - id (primary key, do not modify), plate (e.g. "ABC-123"), make, model, year (number), colour, vin (17 chars), province (e.g. "NL")
 - vehicleClass: one of "Compact Car", "Regular Car", "Large Car", "Compact SUV", "Regular SUV", "Large SUV", "Minivan", "Truck"
-- status: one of "Available", "Needs Cleaning", "Ready for Pickup", "LOFR", "Damaged", "On Rent", "Ready Returns"
+- status: one of "Available", "Needs Cleaning", "Ready for Pickup", "PM", "Damaged", "On Rent", "Ready Returns"
+- "PM" means Preventative Maintenance (the vehicle is due for scheduled service).
 - winterTires: "Yes" or "No"
 - currentRenter (customer name or null), dueBack (ISO date or null), fileType (string or null)
 
@@ -97,7 +98,7 @@ Gas collections:
 // loop. Automated customer texts are now sent server-side by the Cloudflare Cron
 // Trigger in worker.js. The Worker's /sms proxy endpoint is still live, so this
 // helper can be reinstated if a staff-initiated "send text now" button is ever
-// added — but nothing in the app should text customers on a timer any more.
+// added, but nothing in the app should text customers on a timer any more.
 
 // ─── One-time customer data cleanup ──────────────────────────────────────────
 // Runs once per device (gated by localStorage). Wipes all customer records from
@@ -381,7 +382,7 @@ const VEHICLE_DAMAGE_SEED = {
 };
 
 // ─── Damage claims ──────────────────────────────────────────────────────────────
-// damage_claims rows only carry plate, rentalAgreementId, and description — vehicle
+// damage_claims rows only carry plate, rentalAgreementId, and description. Vehicle
 // and customer/resCode are derived by joining rentalAgreements/reservations here so
 // every view renders claims the same way.
 
@@ -397,10 +398,10 @@ function enrichDamageClaim(claim, rentalAgreements, reservations) {
   return {
     id:                claim.id,
     plate:             claim.plate || ra?.plate || null,
-    vehicle:           vehicle || "—",
-    customer:          res?.customer || "—",
+    vehicle:           vehicle || "Unknown",
+    customer:          res?.customer || "Unknown",
     resCode:           ra?.resCode || null,
-    description:       claim.description || "—",
+    description:       claim.description || "No description",
     claimStatus:       damageClaimStatusLabel(claim.status),
     rentalAgreementId: claim.rentalAgreementId || null,
     _status:           claim.status || "open",
@@ -2230,11 +2231,17 @@ function DashboardPage() {
   const navigate = useNavigate();
   const [collectedOpenId, setCollectedOpenId] = React.useState(null);
   const handleCollected = (entry, status) => {
+    // Advancing a vehicle out of Ready Returns is the point where a pending PM
+    // takes over: the requested status is replaced with PM so it cannot be
+    // handed out unserviced.
+    const vehicle = fleet.find((fv) => fv.plate === entry.plate) || entry;
+    const { status: finalStatus, forced, message } = resolvePmStatus(vehicle, status);
     setFleet((prev) => prev.map((fv) =>
-      fv.plate === entry.plate ? { ...fv, status, currentRenter: null, dueBack: null, fileType: null } : fv
+      fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
     ));
-    supabase.from("fleet").update({ status, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
+    supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
     setCollectedOpenId(null);
+    if (forced) window.alert(message);
   };
   const [now, setNow] = React.useState(Date.now());
   const [openReadyFleetMenuId, setOpenReadyFleetMenuId] = React.useState(null);
@@ -2247,7 +2254,7 @@ function DashboardPage() {
     fleetAvailability: true,
   });
   const [fleetGroupCollapsed, setFleetGroupCollapsed] = React.useState({
-    available: true, needsCleaning: true, readyReturns: true, lofr: true, damaged: true, onRent: true,
+    available: true, needsCleaning: true, readyReturns: true, pm: true, damaged: true, onRent: true,
   });
   const toggleFleetGroup = (key) =>
     setFleetGroupCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -2898,7 +2905,7 @@ function DashboardPage() {
                           const statusClass =
                             v.status === "Available" ? "fleetStatus--available"
                             : v.status === "Needs Cleaning" ? "fleetStatus--cleaning"
-                            : v.status === "LOFR" ? "fleetStatus--lofr"
+                            : v.status === "PM" ? "fleetStatus--pm"
                             : v.status === "Damaged" ? "fleetStatus--damaged"
                             : v.status === "On Rent" ? "fleetStatus--onRent"
                             : "";
@@ -2915,7 +2922,7 @@ function DashboardPage() {
 
               const avail    = fleet.filter((v) => v.status === "Available");
               const cleaning = fleet.filter((v) => v.status === "Needs Cleaning");
-              const lofr     = fleet.filter((v) => v.status === "LOFR");
+              const pm     = fleet.filter((v) => v.needsPm);
               const damaged  = fleet.filter((v) => v.status === "Damaged");
               const onRent   = fleet.filter((v) => v.status === "On Rent");
 
@@ -2997,7 +3004,7 @@ function DashboardPage() {
                     ),
                   ] : [])
                 ),
-                group("LOFR", "lofr", "lofr", lofr, false),
+                group("Preventative Maintenance", "pm", "pm", pm, false),
                 group("Damaged", "damaged", "damaged", damaged, false),
                 group("On Rent", "onRent", "onRent", onRent, true)
               );
@@ -3555,7 +3562,7 @@ function OverdueRentalsPage() {
 // ─── VehicleDetailPage ──────────────────────────────────────────────────────────────────────────────
 
 function VehicleDetailPage() {
-  const { openVehiclePlate, fleet, setFleet, reservations, rentalAgreements, setOpenRentalAgreementId, damageClaims } = React.useContext(AppContext);
+  const { openVehiclePlate, fleet, setFleet, reservations, rentalAgreements, setOpenRentalAgreementId, damageClaims, requirePin } = React.useContext(AppContext);
   const navigate = useNavigate();
 
   const plate   = openVehiclePlate || "";
@@ -3574,30 +3581,76 @@ function VehicleDetailPage() {
         .sort((a, b) => new Date(b.inspectedAt) - new Date(a.inspectedAt))[0] || null
     : null;
 
-  const [sect, setSect] = React.useState({ info: false, status: false, condition: false, maintenance: false, damageClaims: false, inspections: false });
+  const [sect, setSect] = React.useState({ info: false, status: false, pm: false, condition: false, maintenance: false, damageClaims: false, inspections: false });
 
-  // Tank size is entered by hand (no free API exposes capacity reliably) and is
-  // what makes automatic gas charges possible, so it stays editable here and is
-  // flagged wherever it's missing.
+  // Tank size and PM interval are entered by hand (no free API exposes either
+  // reliably). Both are stored canonically (litres / kilometres) and only
+  // converted for display, so the unit toggle can never affect the gas charge
+  // maths or the PM threshold comparison.
+  const [tankUnit, setTankUnit] = React.useState("L");
+  const [pmUnit,   setPmUnit]   = React.useState("km");
   const [tankInput, setTankInput] = React.useState("");
-  React.useEffect(() => {
-    setTankInput(vehicle.tankSizeLiters != null ? String(vehicle.tankSizeLiters) : "");
-  }, [vehicle.tankSizeLiters, plate]);
+  const [pmInput,   setPmInput]   = React.useState("");
 
-  const saveTankSize = () => {
-    const trimmed = tankInput.trim();
-    const parsed  = trimmed === "" ? null : parseFloat(trimmed);
-    if (parsed !== null && (!Number.isFinite(parsed) || parsed <= 0)) {
-      setTankInput(vehicle.tankSizeLiters != null ? String(vehicle.tankSizeLiters) : "");
+  React.useEffect(() => {
+    setTankInput(toDisplayUnits(vehicle.tankSizeLiters, tankUnit));
+  }, [vehicle.tankSizeLiters, plate, tankUnit]);
+
+  React.useEffect(() => {
+    setPmInput(toDisplayUnits(vehicle.pmIntervalKm, pmUnit));
+  }, [vehicle.pmIntervalKm, plate, pmUnit]);
+
+  // Shared writer: converts from the displayed unit back to canonical before
+  // persisting, and restores the previous value if the input is not usable.
+  const saveNumericField = (column, rawInput, canonicalUnit, currentCanonical, resetter) => {
+    const trimmed = String(rawInput).trim();
+    const parsed  = trimmed === "" ? null : toCanonicalUnits(trimmed, canonicalUnit);
+    if (trimmed !== "" && (parsed == null || parsed <= 0)) {
+      resetter(toDisplayUnits(currentCanonical, canonicalUnit));
       return;
     }
-    if (parsed === (vehicle.tankSizeLiters ?? null)) return;
-    setFleet((prev) => prev.map((v) => v.plate === plate ? { ...v, tankSizeLiters: parsed } : v));
+    if (parsed === (currentCanonical ?? null)) return;
+    setFleet((prev) => prev.map((v) => v.plate === plate ? { ...v, [column]: parsed } : v));
     if (vehicle.id) {
-      supabase.from("fleet").update({ tankSizeLiters: parsed }).eq("id", vehicle.id)
-        .then(({ error }) => { if (error) console.warn("fleet tankSizeLiters update failed:", error); })
-        .catch((err) => console.warn("fleet tankSizeLiters update:", err));
+      supabase.from("fleet").update({ [column]: parsed }).eq("id", vehicle.id)
+        .then(({ error }) => { if (error) console.warn(`fleet ${column} update failed:`, error); })
+        .catch((err) => console.warn(`fleet ${column} update:`, err));
     }
+  };
+
+  const saveTankSize = () =>
+    saveNumericField("tankSizeLiters", tankInput, tankUnit, vehicle.tankSizeLiters, setTankInput);
+  const savePmInterval = () =>
+    saveNumericField("pmIntervalKm", pmInput, pmUnit, vehicle.pmIntervalKm, setPmInput);
+
+  // ── PM status ──────────────────────────────────────────────────────────────
+  const kmSincePm = (vehicle.currentOdometer != null && vehicle.lastPmOdometer != null)
+    ? vehicle.currentOdometer - vehicle.lastPmOdometer
+    : null;
+  const kmUntilPm = (kmSincePm != null && vehicle.pmIntervalKm)
+    ? vehicle.pmIntervalKm - kmSincePm
+    : null;
+
+  // Records that PM was performed: the interval restarts from the odometer
+  // reading now, and the vehicle leaves PM status so it can be rented again.
+  const completePm = () => {
+    if (!vehicle.id) return;
+    const odo = vehicle.currentOdometer;
+    if (odo == null) {
+      window.alert("No odometer reading on file for this vehicle yet, so PM cannot be recorded. The odometer is captured when a rental is returned.");
+      return;
+    }
+    requirePin(() => {
+      // Clearing the flag is what actually releases the vehicle. Status is only
+      // reset when PM had already taken it over; if it is still sitting in
+      // Ready Returns, that state is left for staff to finish normally.
+      const patch = { lastPmOdometer: odo, needsPm: false };
+      if (vehicle.status === "PM") patch.status = "Available";
+      setFleet((prev) => prev.map((v) => v.plate === plate ? { ...v, ...patch } : v));
+      supabase.from("fleet").update(patch).eq("id", vehicle.id)
+        .then(({ error }) => { if (error) console.warn("fleet PM complete failed:", error); })
+        .catch((err) => console.warn("fleet PM complete:", err));
+    });
   };
   const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
 
@@ -3679,19 +3732,82 @@ function VehicleDetailPage() {
         detailRow("Fuel Level", latestRa?.fuelAtPickup || extra.fuelLevel),
         React.createElement(
           "div", { className: "vehicleDetailRow" },
-          React.createElement("span", { className: "vehicleDetailLabel" }, "Tank Size (L)"),
-          React.createElement("span", { style: { display: "flex", alignItems: "center", gap: "8px" } },
+          React.createElement("span", { className: "vehicleDetailLabel" }, "Tank Size"),
+          React.createElement("span", { className: "vehicleDetailControl" },
+            React.createElement(UnitToggle, { unit: tankUnit, setUnit: setTankUnit, options: VOLUME_UNITS }),
             React.createElement("input", {
-              type: "number", min: "1", step: "0.1", className: "tankSizeInput",
+              type: "number", min: "0", step: "0.1", className: "tankSizeInput",
               placeholder: "Not set",
               value: tankInput,
               onChange: (e) => setTankInput(e.target.value),
               onBlur: saveTankSize,
               onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
             }),
+            React.createElement("span", { className: "unitSuffix" }, tankUnit === "L" ? "L" : "gal"),
             vehicle.tankSizeLiters == null &&
               React.createElement("span", { className: "tankSizeMissing", title: "Gas charges cannot be calculated automatically until this is set" }, "Not set")
           )
+        )
+      )
+    ),
+
+    // ── Preventative Maintenance ──────────────────────────────────────────────
+    mkSection("pm", "Preventative Maintenance",
+      React.createElement(React.Fragment, null,
+        React.createElement(
+          "div", { className: "vehicleDetailRow" },
+          React.createElement("span", { className: "vehicleDetailLabel" }, "Needs PM Every"),
+          React.createElement("span", { className: "vehicleDetailControl" },
+            React.createElement(UnitToggle, { unit: pmUnit, setUnit: setPmUnit, options: DISTANCE_UNITS }),
+            React.createElement("input", {
+              type: "number", min: "0", step: "1", className: "tankSizeInput",
+              placeholder: "Not set",
+              value: pmInput,
+              onChange: (e) => setPmInput(e.target.value),
+              onBlur: savePmInterval,
+              onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
+            }),
+            React.createElement("span", { className: "unitSuffix" }, pmUnit),
+            vehicle.pmIntervalKm == null &&
+              React.createElement("span", { className: "tankSizeMissing", title: "PM cannot be triggered automatically until this is set" }, "Not set")
+          )
+        ),
+        detailRow("Current Odometer", vehicle.currentOdometer != null
+          ? `${Number(toDisplayUnits(vehicle.currentOdometer, pmUnit)).toLocaleString()} ${pmUnit}`
+          : "Not recorded yet"),
+        detailRow("Odometer at Last PM", vehicle.lastPmOdometer != null
+          ? `${Number(toDisplayUnits(vehicle.lastPmOdometer, pmUnit)).toLocaleString()} ${pmUnit}`
+          : "No PM on record"),
+        detailRow("Since Last PM", kmSincePm != null
+          ? `${Number(toDisplayUnits(kmSincePm, pmUnit)).toLocaleString()} ${pmUnit}`
+          : "Not enough data"),
+        React.createElement(
+          "div", { className: "vehicleDetailRow" },
+          React.createElement("span", { className: "vehicleDetailLabel" }, "PM Due"),
+          React.createElement("span", { className: "vehicleDetailControl" },
+            vehicle.needsPm
+              ? React.createElement("span", { className: "pmDueBadge pmDueBadge--due" },
+                  vehicle.status === "PM" ? "DUE NOW" : `DUE NOW (also ${vehicle.status})`)
+              : kmUntilPm != null
+                ? React.createElement("span", { className: kmUntilPm <= 0 ? "pmDueBadge pmDueBadge--due" : "pmDueBadge pmDueBadge--ok" },
+                    kmUntilPm <= 0
+                      ? "DUE NOW"
+                      : `in ${Number(toDisplayUnits(kmUntilPm, pmUnit)).toLocaleString()} ${pmUnit}`)
+                : React.createElement("span", { className: "pmDueBadge" }, "Not enough data")
+          )
+        ),
+        React.createElement("div", { style: { marginTop: "12px" } },
+          React.createElement("button", {
+            type: "button",
+            className: "pmCompleteBtn",
+            disabled: vehicle.currentOdometer == null || !vehicle.needsPm,
+            title: vehicle.currentOdometer == null
+              ? "An odometer reading is needed first. It is captured when a rental is returned."
+              : !vehicle.needsPm
+                ? "This vehicle is not currently due for preventative maintenance."
+                : "Record that PM was performed at the current odometer reading",
+            onClick: completePm,
+          }, "PM Complete")
         )
       )
     ),
@@ -3710,13 +3826,14 @@ function VehicleDetailPage() {
               title: activeRa ? "Status is locked while a rental agreement is open" : undefined,
               onChange: (e) => {
                 if (activeRa) return;
-                const newStatus = e.target.value;
+                const { status: newStatus, forced, message } = resolvePmStatus(vehicle, e.target.value);
                 setFleet((prev) =>
                   prev.map((v) => v.plate === plate ? { ...v, status: newStatus } : v)
                 );
                 if (vehicle.id) {
                   supabase.from("fleet").update({ status: newStatus }).eq("id", vehicle.id).catch((err) => console.warn("fleet update:", err));
                 }
+                if (forced) window.alert(message);
               },
             },
             FLEET_STATUS_OPTS
@@ -3822,15 +3939,21 @@ function FleetPage() {
   const readyReturns = fleet.filter((v) => v.status === "Ready Returns");
   const [collectedOpenId, setCollectedOpenId] = React.useState(null);
   const handleCollected = (entry, status) => {
+    // Advancing a vehicle out of Ready Returns is the point where a pending PM
+    // takes over: the requested status is replaced with PM so it cannot be
+    // handed out unserviced.
+    const vehicle = fleet.find((fv) => fv.plate === entry.plate) || entry;
+    const { status: finalStatus, forced, message } = resolvePmStatus(vehicle, status);
     setFleet((prev) => prev.map((fv) =>
-      fv.plate === entry.plate ? { ...fv, status, currentRenter: null, dueBack: null, fileType: null } : fv
+      fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
     ));
-    supabase.from("fleet").update({ status, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
+    supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
     setCollectedOpenId(null);
+    if (forced) window.alert(message);
   };
   const [collapsed, setCollapsed] = React.useState(false);
   const [fleetGroupCollapsed, setFleetGroupCollapsed] = React.useState({
-    available: true, needsCleaning: true, readyReturns: true, lofr: true, damaged: true, onRent: true,
+    available: true, needsCleaning: true, readyReturns: true, pm: true, damaged: true, onRent: true,
   });
   const toggleFleetGroup = (key) =>
     setFleetGroupCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -3890,7 +4013,7 @@ function FleetPage() {
                         const statusClass =
                           v.status === "Available" ? "fleetStatus--available"
                           : v.status === "Needs Cleaning" ? "fleetStatus--cleaning"
-                          : v.status === "LOFR" ? "fleetStatus--lofr"
+                          : v.status === "PM" ? "fleetStatus--pm"
                           : v.status === "Damaged" ? "fleetStatus--damaged"
                           : v.status === "On Rent" ? "fleetStatus--onRent"
                           : "";
@@ -3907,7 +4030,7 @@ function FleetPage() {
 
             const avail    = fleet.filter((v) => v.status === "Available");
             const cleaning = fleet.filter((v) => v.status === "Needs Cleaning");
-            const lofr     = fleet.filter((v) => v.status === "LOFR");
+            const pm     = fleet.filter((v) => v.needsPm);
             const damaged  = fleet.filter((v) => v.status === "Damaged");
             const onRent   = fleet.filter((v) => v.status === "On Rent");
 
@@ -3988,7 +4111,7 @@ function FleetPage() {
                   ),
                 ] : [])
               ),
-              group("LOFR", "lofr", "lofr", lofr, false),
+              group("Preventative Maintenance", "pm", "pm", pm, false),
               group("Damaged", "damaged", "damaged", damaged, false),
               group("On Rent", "onRent", "onRent", onRent, true)
             );
@@ -4171,12 +4294,103 @@ const PROV_STATE_LIST = [
   { value: "WY", label: "WY — Wyoming" },
 ];
 
+// ─── Unit conversion ──────────────────────────────────────────────────────────
+// Values are always STORED in the canonical unit (litres for tank size,
+// kilometres for PM interval and odometer) so the gas charge maths and the PM
+// threshold comparison never have to care what unit was typed. The toggles
+// below only change how a number is displayed and entered.
+
+const L_PER_GAL = 3.785411784;  // US liquid gallon
+const KM_PER_MI = 1.609344;
+
+const toDisplayUnits = (canonical, unit) => {
+  if (canonical == null || canonical === "") return "";
+  const n = parseFloat(canonical);
+  if (!Number.isFinite(n)) return "";
+  const converted = unit === "gal" ? n / L_PER_GAL
+                  : unit === "mi"  ? n / KM_PER_MI
+                  : n;
+  // Trim float noise (50 / 3.785… * 3.785… must round-trip to 50, not 49.999997)
+  return String(Math.round(converted * 100) / 100);
+};
+
+const toCanonicalUnits = (displayValue, unit) => {
+  if (displayValue == null || String(displayValue).trim() === "") return null;
+  const n = parseFloat(displayValue);
+  if (!Number.isFinite(n)) return null;
+  const canonical = unit === "gal" ? n * L_PER_GAL
+                  : unit === "mi"  ? n * KM_PER_MI
+                  : n;
+  return Math.round(canonical * 100) / 100;
+};
+
+// Two-button unit switcher. Purely presentational: the caller keeps the
+// canonical value in state and re-renders the input through toDisplayUnits.
+function UnitToggle({ unit, setUnit, options }) {
+  return React.createElement("span", { className: "unitToggle" },
+    options.map((o) =>
+      React.createElement("button", {
+        key: o.value,
+        type: "button",
+        className: `unitToggleBtn${unit === o.value ? " unitToggleBtn--active" : ""}`,
+        onClick: () => setUnit(o.value),
+      }, o.label)
+    )
+  );
+}
+
+const VOLUME_UNITS   = [{ value: "L",  label: "Litres" },   { value: "gal", label: "Gallons" }];
+const DISTANCE_UNITS = [{ value: "km", label: "Kilometers" }, { value: "mi",  label: "Miles" }];
+
+// ─── Preventative Maintenance gating ──────────────────────────────────────────
+// PM is a flag (fleet.needsPm), not a status. A vehicle can be both
+// 'Ready Returns' and PM-due at once, so it shows in both lists after a return.
+//
+// The moment staff advance it out of Ready Returns to a normal working status,
+// PM takes over: the requested status is replaced with 'PM' so the vehicle
+// cannot be handed out before it is serviced. It then lives only in the PM list
+// until PM Complete clears the flag.
+const PM_BLOCKED_STATUSES = ["Available", "Needs Cleaning", "Ready for Pickup"];
+
+function resolvePmStatus(vehicle, requestedStatus) {
+  if (!vehicle?.needsPm) return { status: requestedStatus, forced: false, message: null };
+  if (!PM_BLOCKED_STATUSES.includes(requestedStatus)) {
+    // Damaged / On Rent / PM are left alone: they are either more urgent or
+    // already correct, and overriding them would hide a real problem.
+    return { status: requestedStatus, forced: false, message: null };
+  }
+  return {
+    status: "PM",
+    forced: true,
+    message: `${vehicle.plate} is due for preventative maintenance, so it has been set to PM instead of ${requestedStatus}. Use PM Complete on its detail page once serviced.`,
+  };
+}
+
+// Soft block on renting out a vehicle that is due for preventative maintenance.
+// Deliberately not a hard block: whether a flagged vehicle can still go out is
+// an operator judgement, not something the system should decide. But it must
+// never happen silently, and the safe choice is the default, since dismissing
+// the dialog (Escape or Cancel) cancels the rental rather than allowing it.
+//
+// Overriding changes status only. needsPm is untouched, so the vehicle stays in
+// the Preventative Maintenance list and in the reminder banner. PM Complete is
+// still the only thing that clears the flag.
+function confirmRentalDespitePm(vehicle) {
+  if (!vehicle?.needsPm) return true;
+  return window.confirm(
+    `${vehicle.plate} is flagged for preventative maintenance.\n\n` +
+    `It is due for service and should normally be sent to PM before going out again.\n\n` +
+    `OK: rent it anyway. The PM flag stays on and the vehicle keeps showing under Preventative Maintenance.\n` +
+    `Cancel: do not open the rental.`
+  );
+}
+
 const FLEET_STATUS_OPTS = [
   { value: "All",             label: "All Statuses",    bg: null,      fg: null      },
   { value: "Available",       label: "Available",        bg: "#d1fae5", fg: "#065f46" },
   { value: "Needs Cleaning",  label: "Needs Cleaning",   bg: "#fef3c7", fg: "#92400e" },
   { value: "Ready for Pickup",label: "Ready for Pickup", bg: "#fed7aa", fg: "#7c2d12" },
-  { value: "LOFR",            label: "LOFR",             bg: "#ede9fe", fg: "#4c1d95" },
+  { value: "PM",              label: "PM",               bg: "#ede9fe", fg: "#4c1d95" },
   { value: "Damaged",         label: "Damaged",          bg: "#fee2e2", fg: "#991b1b" },
   { value: "On Rent",         label: "On Rent",          bg: "#dbeafe", fg: "#1e3a8a" },
 ];
@@ -4283,22 +4497,30 @@ function FleetVehiclesPage() {
   const { filtered, filterState } = useFleetFilter(fleet);
   const [collectedOpenId, setCollectedOpenId] = React.useState(null);
   const handleCollected = (entry, status) => {
+    // Advancing a vehicle out of Ready Returns is the point where a pending PM
+    // takes over: the requested status is replaced with PM so it cannot be
+    // handed out unserviced.
+    const vehicle = fleet.find((fv) => fv.plate === entry.plate) || entry;
+    const { status: finalStatus, forced, message } = resolvePmStatus(vehicle, status);
     setFleet((prev) => prev.map((fv) =>
-      fv.plate === entry.plate ? { ...fv, status, currentRenter: null, dueBack: null, fileType: null } : fv
+      fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
     ));
-    supabase.from("fleet").update({ status, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
+    supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
     setCollectedOpenId(null);
+    if (forced) window.alert(message);
   };
 
   // Status dropdown change: update fleet state immediately then persist
   const handleStatusChange = (vehicle, newStatus) => {
-    setFleet((prev) => prev.map((fv) => fv.id === vehicle.id ? { ...fv, status: newStatus } : fv));
-    supabase.from("fleet").update({ status: newStatus }).eq("id", vehicle.id).catch((e) => console.warn("fleet status update:", e));
+    const { status: finalStatus, forced, message } = resolvePmStatus(vehicle, newStatus);
+    setFleet((prev) => prev.map((fv) => fv.id === vehicle.id ? { ...fv, status: finalStatus } : fv));
+    supabase.from("fleet").update({ status: finalStatus }).eq("id", vehicle.id).catch((e) => console.warn("fleet status update:", e));
+    if (forced) window.alert(message);
   };
 
   const [sectionCollapsed, setSectionCollapsed] = React.useState(false);
   const [fleetGroupCollapsed, setFleetGroupCollapsed] = React.useState({
-    available: true, needsCleaning: true, readyReturns: true, lofr: true, damaged: true, onRent: true,
+    available: true, needsCleaning: true, readyReturns: true, pm: true, damaged: true, onRent: true,
   });
   const toggleFleetGroup = (key) =>
     setFleetGroupCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
@@ -4319,13 +4541,44 @@ function FleetVehiclesPage() {
       const missing = fleet.filter((v) => v.tankSizeLiters == null);
       if (missing.length === 0) return null;
       return React.createElement("div", { className: "tankSizeBanner" },
-        React.createElement("strong", null, `${missing.length} vehicle${missing.length === 1 ? "" : "s"} missing tank size — `),
+        React.createElement("strong", null, `${missing.length} vehicle${missing.length === 1 ? "" : "s"} missing tank size: `),
         "gas charges can't be calculated automatically for ",
         missing.length === 1 ? "it" : "them",
         ". Set it on each vehicle's detail page: ",
         React.createElement("span", { className: "tankSizeBannerPlates" },
           missing.map((v) => v.plate).join(", ")
         )
+      );
+    })(),
+
+    // Same treatment for a missing PM interval: without it the automatic
+    // trigger can never fire for that vehicle.
+    (() => {
+      const missing = fleet.filter((v) => v.pmIntervalKm == null);
+      if (missing.length === 0) return null;
+      return React.createElement("div", { className: "tankSizeBanner" },
+        React.createElement("strong", null, `${missing.length} vehicle${missing.length === 1 ? "" : "s"} missing a PM interval: `),
+        "preventative maintenance won't be flagged automatically for ",
+        missing.length === 1 ? "it" : "them",
+        ". Set it on each vehicle's detail page: ",
+        React.createElement("span", { className: "tankSizeBannerPlates" },
+          missing.map((v) => v.plate).join(", ")
+        )
+      );
+    })(),
+
+    // Vehicles that came back already due for PM skip the Ready Returns queue,
+    // because status is single-valued and PM takes precedence to stop the car
+    // going straight back out. Surfaced here so that step is not silently lost.
+    (() => {
+      const duePm = fleet.filter((v) => v.needsPm);
+      if (duePm.length === 0) return null;
+      return React.createElement("div", { className: "pmBanner" },
+        React.createElement("strong", null, `${duePm.length} vehicle${duePm.length === 1 ? "" : "s"} due for preventative maintenance: `),
+        React.createElement("span", { className: "pmBannerPlates" }, duePm.map((v) => v.plate).join(", ")),
+        ". ",
+        duePm.length === 1 ? "It keeps its current status " : "They keep their current status ",
+        "until moved on, then switches to PM automatically. Use PM Complete on the vehicle's detail page once serviced."
       );
     })(),
 
@@ -4394,7 +4647,7 @@ function FleetVehiclesPage() {
 
             const avail    = filtered.filter((v) => v.status === "Available");
             const cleaning = filtered.filter((v) => v.status === "Needs Cleaning");
-            const lofr     = filtered.filter((v) => v.status === "LOFR");
+            const pm     = filtered.filter((v) => v.needsPm);
             const damaged  = filtered.filter((v) => v.status === "Damaged");
             const onRent   = filtered.filter((v) => v.status === "On Rent");
             const filteredRR = filtered.filter((v) => v.status === "Ready Returns");
@@ -4478,7 +4731,7 @@ function FleetVehiclesPage() {
                   ),
                 ] : [])
               ),
-              group("LOFR", "lofr", "lofr", lofr),
+              group("Preventative Maintenance", "pm", "pm", pm),
               group("Damaged", "damaged", "damaged", damaged),
               group("On Rent", "onRent", "onRent", onRent)
             );
@@ -4496,7 +4749,15 @@ function FleetAdditionsPage() {
   const [activeTab,  setActiveTab]  = React.useState("add");
   const [archived,   setArchived]   = React.useState(ARCHIVED_VEHICLES_SEED);
 
-  const BLANK_ADD    = { plate: "", province: "NL", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: "Compact Car", tankSizeLiters: "" };
+  // tankSize / pmInterval are held in the CURRENTLY SELECTED display unit while
+  // typing, and converted to canonical litres/km only at submit.
+  const BLANK_ADD    = { plate: "", province: "NL", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: "Compact Car", tankSize: "", pmInterval: "" };
+  const [tankUnit, setTankUnit] = React.useState("L");
+  const [pmUnit,   setPmUnit]   = React.useState("km");
+  // Canonical litres / kilometres, kept alongside the displayed string so that
+  // toggling units re-renders the number without ever rewriting the value.
+  const [tankCanonical, setTankCanonical] = React.useState(null);
+  const [pmCanonical,   setPmCanonical]   = React.useState(null);
   const BLANK_RETIRE = { plateId: "", disposalDate: "", reason: "" };
   const [addForm,    setAddForm]    = React.useState(BLANK_ADD);
   const [addError,   setAddError]   = React.useState("");
@@ -4511,6 +4772,21 @@ function FleetAdditionsPage() {
     const plate = normalizePlate(addForm.plate);
     if (!plate || !addForm.year || !addForm.make || !addForm.model) { setAddError("Plate, Year, Make, and Model are required."); return; }
     if (fleet.some((v) => normalizePlate(v.plate) === plate)) { setAddError("A vehicle with this plate already exists."); return; }
+
+    // Canonical values tracked alongside the inputs, so a unit toggle can't
+    // have introduced rounding drift into what gets stored.
+    const tankLiters = addForm.tankSize.trim() === ""    ? null : tankCanonical;
+    const pmKm       = addForm.pmInterval.trim() === ""  ? null : pmCanonical;
+
+    if (pmKm == null || pmKm <= 0) {
+      setAddError(`PM interval is required. Enter how often this vehicle needs preventative maintenance, in ${pmUnit === "km" ? "kilometers" : "miles"}.`);
+      return;
+    }
+    if (addForm.tankSize.trim() !== "" && (tankLiters == null || tankLiters <= 0)) {
+      setAddError("Tank size must be a positive number, or left blank.");
+      return;
+    }
+
     requirePin(() => {
       const newVehicle = {
         plate, make: addForm.make, model: addForm.model,
@@ -4519,13 +4795,18 @@ function FleetAdditionsPage() {
         colour: addForm.colour || null,
         vin: addForm.vin || null,
         province: addForm.province || null,
-        tankSizeLiters: addForm.tankSizeLiters ? parseFloat(addForm.tankSizeLiters) : null,
+        tankSizeLiters: tankLiters,
+        pmIntervalKm: pmKm,
+        lastPmOdometer: null,
+        currentOdometer: null,
         winterTires: "No", status: "Needs Cleaning",
         currentRenter: null, dueBack: null, fileType: null,
       };
       setFleet((prev) => [...prev, newVehicle]);
       supabase.from("fleet").insert(newVehicle).then((res) => { console.log("fleet insert response:", res); if (res.error) console.warn("fleet insert error:", res.error); }).catch((e) => console.warn("fleet insert:", e));
       setAddForm(BLANK_ADD);
+      setTankCanonical(null);
+      setPmCanonical(null);
       setAddSuccess(true);
     });
   };
@@ -4562,6 +4843,37 @@ function FleetAdditionsPage() {
         onChange: (e) => onAdd(field, e.target.value),
       })
     );
+
+  // Numeric field with a unit switcher. The typed string is what the user sees;
+  // setCanonical stores the converted value so the toggle can re-render the
+  // number from it without a lossy string round trip.
+  const unitField = (label, field, placeholder, unit, setUnit, unitOpts, required, setCanonical) =>
+    React.createElement("div", { className: "addVehicleField" },
+      React.createElement("div", { className: "addVehicleLabelRow" },
+        React.createElement("label", { className: "addVehicleLabel" },
+          label,
+          required && React.createElement("span", { className: "addVehicleReq" }, "*")
+        ),
+        React.createElement(UnitToggle, { unit, setUnit, options: unitOpts })
+      ),
+      React.createElement("input", {
+        type: "number", min: "0", step: "0.1", className: "addVehicleInput",
+        placeholder, value: addForm[field],
+        onChange: (e) => {
+          onAdd(field, e.target.value);
+          setCanonical(toCanonicalUnits(e.target.value, unit));
+        },
+      })
+    );
+
+  // Switching units must never change the stored value. Converting the typed
+  // string and writing it back drifts on every round trip (50 L -> 13.21 gal ->
+  // 50.01 L), so the canonical number is kept separately and the displayed
+  // string is re-derived from it instead.
+  const switchUnit = (field, canonical, toUnit, setUnit) => {
+    setUnit(toUnit);
+    onAdd(field, canonical == null ? "" : toDisplayUnits(canonical, toUnit));
+  };
 
   return React.createElement(
     "div", { className: "page" },
@@ -4604,10 +4916,20 @@ function FleetAdditionsPage() {
             fi("Make",   "make",   "e.g. Toyota"),
             fi("Model",  "model",  "e.g. Corolla"),
             fi("Colour", "colour", "e.g. White"),
-            // Optional on purpose — a missing tank size never blocks adding a
+            // Optional on purpose: a missing tank size never blocks adding a
             // vehicle, it just disables automatic gas charges until it's filled
             // in. The Vehicles list flags vehicles that are still missing it.
-            fi("Tank Size (L)", "tankSizeLiters", "e.g. 50 — needed for gas charges", "number"),
+            // Optional: a missing tank size never blocks adding a vehicle, it
+            // just leaves gas charges manual until it is filled in.
+            unitField("Tank Size", "tankSize",
+              tankUnit === "L" ? "e.g. 50, needed for gas charges" : "e.g. 13, needed for gas charges",
+              tankUnit, (u) => switchUnit("tankSize", tankCanonical, u, setTankUnit),
+              VOLUME_UNITS, false, setTankCanonical),
+            // Required: the PM trigger cannot work without an interval.
+            unitField("Needs PM Every", "pmInterval",
+              pmUnit === "km" ? "e.g. 8000" : "e.g. 5000",
+              pmUnit, (u) => switchUnit("pmInterval", pmCanonical, u, setPmUnit),
+              DISTANCE_UNITS, true, setPmCanonical),
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Vehicle Class"),
               React.createElement("select", { className: "addVehicleInput", value: addForm.vehicleClass, onChange: (e) => onAdd("vehicleClass", e.target.value) },
@@ -4770,7 +5092,7 @@ function FleetDamageClaimsPage() {
             React.createElement("td", null,
               React.createElement("span", { className: CLAIM_CLS[c.claimStatus] || "claimStatus" }, c.claimStatus)
             ),
-            React.createElement("td", null, c.rentalAgreementId || "—"),
+            React.createElement("td", null, c.rentalAgreementId || "N/A"),
             showResolve && React.createElement("td", null,
               React.createElement("button", {
                 type: "button",
@@ -5032,7 +5354,7 @@ function SettingsPage() {
     React.createElement("div", { className: "gasSettingSubhead" }, "Price per litre by region"),
     fleetRegions.length === 0
       ? React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "10px 0" } },
-          "No vehicle regions yet — add a vehicle with a province to set its fuel price.")
+          "No vehicle regions yet. Add a vehicle with a province to set its fuel price.")
       : fleetRegions.map((region) =>
           React.createElement("div", { className: "gasSettingRow", key: region },
             React.createElement("label", { className: "gasSettingLabel" }, region),
@@ -5054,7 +5376,7 @@ function SettingsPage() {
 
     missingTank > 0 && React.createElement("div", { className: "tankSizeBanner", style: { marginTop: "14px", marginBottom: 0 } },
       React.createElement("strong", null, `${missingTank} vehicle${missingTank === 1 ? "" : "s"} still missing a tank size`),
-      " — gas charges stay manual for ", missingTank === 1 ? "it" : "them",
+      ". Gas charges stay manual for ", missingTank === 1 ? "it" : "them",
       " until set on the vehicle's detail page."
     ),
 
@@ -6659,7 +6981,21 @@ function CustomerPage() {
 
   const rentalAgreementStatus = localRecord?.rentalAgreementStatus || "reservation";
 
+  // The vehicle this reservation will actually go out on. Checked before a
+  // rental agreement is opened so a PM-due vehicle cannot be rented silently.
+  const pmVehicle = React.useMemo(() => {
+    const plate = ra?.plate || localRecord?.plate || rentalVehicle.plate;
+    if (!plate) return null;
+    return fleet.find((v) => normalizePlate(v.plate) === normalizePlate(plate)) || null;
+  }, [ra, localRecord, rentalVehicle.plate, fleet]);
+
   const openRentalAgreement = () => {
+    // Warn before the PIN prompt so staff are not asked to authenticate an
+    // action they are about to cancel.
+    if (!confirmRentalDespitePm(pmVehicle)) {
+      console.log("rental open cancelled: vehicle flagged for PM", pmVehicle?.plate);
+      return;
+    }
     requirePin(() => {
       setLocalRecord((prev) => prev ? { ...prev, rentalAgreementStatus: "open_rental_agreement" } : prev);
       setReservations((prev) =>
@@ -6670,6 +7006,11 @@ function CustomerPage() {
   };
 
   const updateRentalAgreementStatus = (status) => {
+    // Reopening a rental agreement is the same soft block as opening one.
+    if (status === "open_rental_agreement" && !confirmRentalDespitePm(pmVehicle)) {
+      console.log("rental reopen cancelled: vehicle flagged for PM", pmVehicle?.plate);
+      return;
+    }
     requirePin(() => {
       setLocalRecord((prev) => prev ? { ...prev, rentalAgreementStatus: status } : prev);
       setReservations((prev) =>
@@ -6739,7 +7080,7 @@ function CustomerPage() {
       supabase.from("reservations").update({ hasDamage: true }).eq("resCode", resCode).catch((e) => console.warn("reservations update:", e));
 
       // Flagging damage here is a manual, standalone report (no return flow,
-      // no photos) — it still creates a real damage_claims row.
+      // no photos), it still creates a real damage_claims row.
       const claim = {
         id:                crypto.randomUUID(),
         plate:             ra?.plate || null,
@@ -9126,7 +9467,7 @@ body, * {
 .fleetStatus--available { color: #42a4ff; font-weight: 700; }
 .fleetStatus--onRent    { color: #4a6fa5; font-weight: 700; }
 .fleetStatus--cleaning  { color: #c0392b; font-weight: 700; }
-.fleetStatus--lofr      { color: #7b5ea7; font-weight: 700; }
+.fleetStatus--pm      { color: #7b5ea7; font-weight: 700; }
 .fleetStatus--damaged   { color: #c0392b; font-weight: 700; }
 
 .fleetGroup {
@@ -9149,7 +9490,7 @@ body, * {
 .fleetGroupHeader--available    { background: #22c55e; }
 .fleetGroupHeader--cleaning     { background: #e6a800; }
 .fleetGroupHeader--readyReturns { background: #ea580c; }
-.fleetGroupHeader--lofr         { background: #7b5ea7; }
+.fleetGroupHeader--pm         { background: #7b5ea7; }
 .fleetGroupHeader--damaged      { background: #c0392b; }
 .fleetGroupHeader--onRent       { background: #4a6fa5; }
 .fleetGroupHeaderRight {
@@ -9338,6 +9679,89 @@ body, * {
   line-height: 1.5;
 }
 .tankSizeBannerPlates { font-weight: 700; }
+
+.unitToggle {
+  display: inline-flex;
+  border: 1.5px solid rgba(6,13,12,0.12);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.unitToggleBtn {
+  border: none;
+  background: #F9F9F7;
+  color: #6b7280;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 4px 9px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.unitToggleBtn + .unitToggleBtn { border-left: 1px solid rgba(6,13,12,0.12); }
+.unitToggleBtn:hover { background: #eef1f5; }
+.unitToggleBtn--active { background: #42a4ff; color: #fff; }
+.unitToggleBtn--active:hover { background: #2f93ef; }
+
+.addVehicleLabelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.addVehicleReq { color: #dc2626; margin-left: 3px; font-weight: 700; }
+
+.vehicleDetailControl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.unitSuffix { font-size: 12px; color: #6b7280; font-weight: 600; }
+
+.pmDueBadge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  color: #374151;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.pmDueBadge--ok  { background: #d1fae5; color: #065f46; }
+.pmDueBadge--due { background: #ede9fe; color: #4c1d95; }
+
+.pmCompleteBtn {
+  border: 1.5px solid #7b5ea7;
+  border-radius: 8px;
+  background: #7b5ea7;
+  color: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+.pmCompleteBtn:hover:not(:disabled) { background: #6b4e97; }
+.pmCompleteBtn:disabled { background: #d1d5db; border-color: #d1d5db; color: #6b7280; cursor: not-allowed; }
+
+.pmBanner {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border: 1px solid #c4b5fd;
+  border-left: 4px solid #7b5ea7;
+  border-radius: 8px;
+  background: #f5f3ff;
+  color: #4c1d95;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.pmBannerPlates { font-weight: 700; }
 
 .gasSettingRow {
   display: flex;
