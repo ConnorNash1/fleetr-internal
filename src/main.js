@@ -25,8 +25,8 @@ Always respond with a valid JSON object — no markdown, no code fences, no text
 {
   "message": "Plain English description of what you found or what action you are about to take.",
   "action": {
-    "table": "reservations | rental_agreements | fleet | ndi_rows | no_shows | damage_claims",
-    "operation": "update | insert | delete | confirmPickup | addNote",
+    "table": "reservations | rental_agreements | fleet | ndi_rows | no_shows | damage_claims | app_settings",
+    "operation": "update | insert | delete | confirmPickup | addNote | pmComplete | raStatus",
     "match": { "fieldName": "value" },
     "data": { "fieldName": "newValue" }
   }
@@ -34,7 +34,7 @@ Always respond with a valid JSON object — no markdown, no code fences, no text
 
 Rules:
 - "message" is always required. Write in plain conversational English.
-- "action" is optional. Only include it when the user is requesting a write operation (create, update, delete, confirmPickup, addNote). For read/lookup requests omit "action" entirely.
+- "action" is optional. Only include it when the user is requesting a write operation. For read/lookup requests omit "action" entirely.
 - For "match", use the record's primary identifier: resCode for reservations, id for rental_agreements, id for fleet, id for ndi_rows, id for no_shows, id for damage_claims.
 - For "data", include only the fields that need to change.
 - For "delete" and "confirmPickup" operations, "data" can be omitted.
@@ -58,6 +58,18 @@ Fleet operation rules:
 - Vehicles flagged needsPm are due for service. Changing such a vehicle to Available, Needs Cleaning or Ready for Pickup is automatically converted to PM, so say so rather than promising the requested status.
 - Use the fleet data passed in the user message to find vehicle ids.
 
+Editing an existing vehicle's tank size or PM interval:
+- tankSizeLiters and pmIntervalKm can be changed on a vehicle already in the fleet, using operation "update" with match on "id" or "plate" and data containing just the field being changed. Example: {"table":"fleet","operation":"update","match":{"plate":"ABC123"},"data":{"tankSizeLiters":55}}
+- Send the CANONICAL value: litres for tankSizeLiters, kilometres for pmIntervalKm. If the user speaks in gallons or miles, convert (1 gallon = 3.785411784 litres, 1 mile = 1.609344 km). Both must be positive numbers or the action is rejected.
+- Reply in whatever unit the person used. If they said "12 gallons", send 45.4 and say 12 gallons in "message". If they said litres, say litres.
+- Do not change any other fleet field in the same action as one of these two.
+
+PM Complete:
+- Use operation "pmComplete" on table "fleet", match on "id" or "plate", and no "data". Example: {"table":"fleet","operation":"pmComplete","match":{"plate":"ABC123"}}
+- This is the only thing that clears the needsPm flag. It restarts the service interval from the odometer currently on file and, if the vehicle was sitting in PM status, returns it to Available.
+- Never write needsPm or lastPmOdometer through an "update". Those values are computed from the vehicle's real odometer reading; setting them by hand rebaselines the service schedule to the wrong number.
+- It is rejected if the vehicle is not flagged needsPm, or if it has no odometer reading yet. The odometer is captured when a rental is returned.
+
 Notes:
 - Every notes field in this system (notesLog on reservations and on rental_agreements) is an append-only log, not a text field.
 - To add a note use operation "addNote" with the table, match on the record's identifier (resCode for reservations, id for rental_agreements), and data containing "text". Example: {"table":"reservations","operation":"addNote","match":{"resCode":"ABC 123 456"},"data":{"text":"Customer called to confirm"}}
@@ -66,6 +78,23 @@ Notes:
 Reservations operation rules:
 - To create a reservation, use operation "insert". Required: customer, date, time, location, vehicleClass. The resCode is generated automatically, never supply one.
 - If any required field is missing, ask for it in "message" rather than emitting the action.
+
+Rental agreement lifecycle:
+- A rental agreement moves through four statuses: "reservation" (not yet picked up), "open_rental_agreement" (the vehicle is out), "close_pending" (returned, paperwork not finished), "closed" (done).
+- To change it, use operation "raStatus" on table "reservations", match on "resCode", and data containing only rentalAgreementStatus. Example: {"table":"reservations","operation":"raStatus","match":{"resCode":"ABC 123 456"},"data":{"rentalAgreementStatus":"open_rental_agreement"}}
+- Never change rentalAgreementStatus through an "update", and never send any other field in the same action.
+- Opening sets the vehicle to On Rent. Moving to close_pending sets it to Ready Returns. Both happen automatically, do not also send a fleet status change.
+- Opening a rental on a vehicle flagged needsPm raises a confirmation for the staff member. They can rent it anyway, or cancel, in which case nothing is written. Say in "message" that the vehicle is flagged, rather than promising the rental is open.
+- Closing (close_pending or closed) stamps the return date and time automatically. Never supply returnDate, returnTime or returnMeridiem yourself.
+- Use the rental agreements data passed in the user message to find the current status of an agreement, and the reservations data to find the resCode.
+
+Settings (app_settings):
+- The current settings are passed in the user message as "App settings". Read them from there to answer questions; that needs no action.
+- gasMarkupPercent is the percentage added on top of every automatic gas charge. gasPrices is the price per litre by region, e.g. {"NL": 1.72}.
+- To change the markup: {"table":"app_settings","operation":"update","data":{"gasMarkupPercent":18}}. It must be zero or more. No "match" is needed.
+- To change a region's fuel price: {"table":"app_settings","operation":"update","data":{"gasPrices":{"NL":1.79}}}. Send ONLY the regions being changed; they are merged into the existing prices, so the others are kept. The price is per LITRE and must be positive.
+- A price can only be set for a region in the "Fleet regions" list passed in the user message. If the user names one that is not there, say so rather than emitting the action.
+- These are the only two settings that can be changed. Everything else on the Settings page is read-only to you.
 
 Non-drive intake (ndi_rows) table fields:
 - id (primary key, do not modify), rescode, customer, phone, type, rate (read-only, not editable)
@@ -213,6 +242,15 @@ function commandBarActionKey({ table, operation, data }) {
     return table === "fleet" ? "vehicle.retire" : "reservation.delete";
   }
   if (operation === "confirmPickup") return "noShow.confirmPickup";
+  if (operation === "pmComplete")    return "vehicle.pmComplete";
+  // Opening is called out separately from advancing because opening is what puts
+  // a vehicle on the road, and it is the one that can override a PM flag.
+  if (operation === "raStatus") {
+    return data?.rentalAgreementStatus === "open_rental_agreement" ? "ra.open" : "ra.advance";
+  }
+  if (table === "app_settings") {
+    return fields.includes("gasMarkupPercent") ? "gas.markup" : "gas.regionPrice";
+  }
   if (table === "fleet") {
     if (operation === "insert") return "vehicle.add";
     if (fields.includes("tankSizeLiters")) return "vehicle.tankSize";
@@ -917,15 +955,24 @@ function AppProvider({ children, currentUser, signOut }) {
       const existing = raRef.current.find((ra) => ra.resCode === resCode);
       if (existing) {
         if (existing.rentalAgreementStatus === status) return;
-        await supabase.from("rental_agreements").update({ rentalAgreementStatus: status }).eq("id", existing.id);
+
+        // An agreement created by the insert branch below carries only resCode
+        // and status, so existing.plate is null until the rental agreement page
+        // fills it in. Reading it blindly meant the vehicle silently failed to
+        // move to Ready Returns on close, so fall back to the reservation and
+        // backfill the row while we are writing to it anyway.
+        const plate = existing.plate || reservations.find((r) => r.resCode === resCode)?.plate || null;
+        const patch = { rentalAgreementStatus: status };
+        if (!existing.plate && plate) patch.plate = plate;
+
+        await supabase.from("rental_agreements").update(patch).eq("id", existing.id);
         const updated = raRef.current.map((ra) =>
-          ra.resCode === resCode ? { ...ra, rentalAgreementStatus: status } : ra
+          ra.resCode === resCode ? { ...ra, ...patch } : ra
         );
         raRef.current = updated;
         setRentalAgreementsState(updated);
 
         // Enforce vehicle status rules driven by RA status
-        const plate = existing.plate;
         if (plate) {
           const newFleetStatus =
             status === "open_rental_agreement" ? "On Rent" :
@@ -3826,7 +3873,9 @@ function VehicleDetailPage() {
   const saveNumericField = (column, rawInput, canonicalUnit, currentCanonical, resetter) => {
     const trimmed = String(rawInput).trim();
     const parsed  = trimmed === "" ? null : toCanonicalUnits(trimmed, canonicalUnit);
-    if (trimmed !== "" && (parsed == null || parsed <= 0)) {
+    // Blank clears the field. Anything else has to pass the same check the
+    // command bar runs, so the two paths cannot disagree about a valid number.
+    if (trimmed !== "" && !validateFleetNumerics({ [column]: parsed }).ok) {
       resetter(toDisplayUnits(currentCanonical, canonicalUnit));
       return;
     }
@@ -3862,17 +3911,14 @@ function VehicleDetailPage() {
   // reading now, and the vehicle leaves PM status so it can be rented again.
   const completePm = () => {
     if (!vehicle.id) return;
-    const odo = vehicle.currentOdometer;
-    if (odo == null) {
-      window.alert("No odometer reading on file for this vehicle yet, so PM cannot be recorded. The odometer is captured when a rental is returned.");
+    // The rule itself lives in resolvePmComplete so the command bar records PM
+    // the same way this button does.
+    const { ok, patch, error } = resolvePmComplete(vehicle);
+    if (!ok) {
+      window.alert(error);
       return;
     }
     requirePin(() => {
-      // Clearing the flag is what actually releases the vehicle. Status is only
-      // reset when PM had already taken it over; if it is still sitting in
-      // Ready Returns, that state is left for staff to finish normally.
-      const patch = { lastPmOdometer: odo, needsPm: false };
-      if (vehicle.status === "PM") patch.status = "Available";
       setFleet((prev) => prev.map((v) => v.plate === plate ? { ...v, ...patch } : v));
       supabase.from("fleet").update(patch).eq("id", vehicle.id)
         .then(({ error }) => { if (error) console.warn("fleet PM complete failed:", error); })
@@ -4729,6 +4775,137 @@ function validateReservation(r) {
           : `These fields are required: ${missing.join(", ")}.`,
       }
     : { ok: true, missing: [], error: null };
+}
+
+// Tank size and PM interval are also editable on an existing vehicle, one field
+// at a time, so they need a rule that checks only what was actually sent rather
+// than demanding the whole vehicle. Values arriving here are already canonical
+// (litres / kilometres); the unit conversion happens before this.
+const FLEET_NUMERIC_FIELDS = [
+  ["Tank Size",      "tankSizeLiters"],
+  ["Needs PM Every", "pmIntervalKm"],
+];
+
+function validateFleetNumerics(data) {
+  for (const [label, key] of FLEET_NUMERIC_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(data || {}, key)) continue;
+    const n = parseFloat(data[key]);
+    if (!Number.isFinite(n) || n <= 0) {
+      return { ok: false, error: `${label} must be a positive number.` };
+    }
+  }
+  return { ok: true, error: null };
+}
+
+// What "PM Complete" means, in one place. The interval restarts from the current
+// odometer reading and the flag clears, which is the only thing that releases a
+// vehicle from the Preventative Maintenance list.
+//
+// Status is reset only when PM had taken it over. A vehicle still sitting in
+// Ready Returns is left there for staff to finish the return normally.
+function resolvePmComplete(vehicle) {
+  if (!vehicle) {
+    return { ok: false, patch: null, error: "That vehicle is not in the fleet." };
+  }
+  if (!vehicle.needsPm) {
+    return { ok: false, patch: null, error: `${vehicle.plate} is not flagged for preventative maintenance, so there is nothing to record.` };
+  }
+  if (vehicle.currentOdometer == null) {
+    return { ok: false, patch: null, error: "No odometer reading on file for this vehicle yet, so PM cannot be recorded. The odometer is captured when a rental is returned." };
+  }
+  const patch = { lastPmOdometer: vehicle.currentOdometer, needsPm: false };
+  if (vehicle.status === "PM") patch.status = "Available";
+  return { ok: true, patch, error: null };
+}
+
+// ─── Gas settings rules ──────────────────────────────────────────────────────
+// The markup and the per-region price feed every automatic gas charge, so the
+// settings page and the command bar validate them identically.
+const GAS_SETTING_KEYS = ["gasMarkupPercent", "gasPrices"];
+
+function validateGasMarkup(raw) {
+  const n = typeof raw === "number" ? raw : parseFloat(String(raw ?? "").trim());
+  if (!Number.isFinite(n) || n < 0) {
+    return { ok: false, value: null, error: "The gas markup has to be a percentage of zero or more." };
+  }
+  return { ok: true, value: n, error: null };
+}
+
+function validateGasPrice(raw) {
+  const n = typeof raw === "number" ? raw : parseFloat(String(raw ?? "").trim());
+  if (!Number.isFinite(n) || n <= 0) {
+    return { ok: false, value: null, error: "a fuel price has to be a positive dollar amount per litre" };
+  }
+  return { ok: true, value: n, error: null };
+}
+
+// A price is only ever looked up by a vehicle's province, so one filed under a
+// region no vehicle is in would sit there and never apply to anything. Both
+// paths are limited to regions the fleet is actually in.
+function validateGasPriceRegion(region, knownRegions) {
+  const r = String(region ?? "").trim();
+  if (!r) return { ok: false, region: null, error: "That price needs a region." };
+  const hit = (knownRegions || []).find((k) => String(k).toLowerCase() === r.toLowerCase());
+  if (!hit) {
+    return {
+      ok: false,
+      region: null,
+      error: `There is no ${r} region. Fuel prices can only be set for regions the fleet is in: ${(knownRegions || []).join(", ") || "none yet"}.`,
+    };
+  }
+  return { ok: true, region: hit, error: null };
+}
+
+// Turns a settings payload into the list of app_settings writes it implies.
+//
+// gasPrices is MERGED into the current prices, never replaced. Sending the whole
+// object would drop every region the model did not happen to mention, which is
+// the same way a plain update to notesLog erases the earlier notes.
+function resolveGasSettingsUpdate(data, currentPrices, knownRegions) {
+  const keys = Object.keys(data || {});
+  if (!keys.length) return { ok: false, writes: [], error: "No setting was given to change." };
+  const unknown = keys.filter((k) => !GAS_SETTING_KEYS.includes(k));
+  if (unknown.length) {
+    return { ok: false, writes: [], error: `fleetr ai can only change these settings: ${GAS_SETTING_KEYS.join(", ")}.` };
+  }
+
+  const writes = [];
+  if (keys.includes("gasMarkupPercent")) {
+    const check = validateGasMarkup(data.gasMarkupPercent);
+    if (!check.ok) return { ok: false, writes: [], error: check.error };
+    writes.push(["gasMarkupPercent", check.value]);
+  }
+  if (keys.includes("gasPrices")) {
+    const incoming = data.gasPrices;
+    if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
+      return { ok: false, writes: [], error: 'Fuel prices are given per region, e.g. { "NL": 1.79 }.' };
+    }
+    const next = { ...(currentPrices || {}) };
+    for (const [region, price] of Object.entries(incoming)) {
+      const r = validateGasPriceRegion(region, knownRegions);
+      if (!r.ok) return { ok: false, writes: [], error: r.error };
+      const p = validateGasPrice(price);
+      if (!p.ok) return { ok: false, writes: [], error: `For ${r.region}, ${p.error}.` };
+      next[r.region] = p.value;
+    }
+    writes.push(["gasPrices", next]);
+  }
+  return { ok: true, writes, error: null };
+}
+
+// ─── Rental agreement lifecycle ──────────────────────────────────────────────
+// The status lives on rental_agreements, not on reservations. The column of the
+// same name on reservations is a stale mirror that gets overwritten from
+// rental_agreements at load, so writing it directly looks like it worked and
+// then silently reverts. Everything goes through syncRAStatus instead.
+const RA_STATUSES = ["reservation", "open_rental_agreement", "close_pending", "closed"];
+
+function validateRaStatus(status) {
+  const s = String(status ?? "").trim();
+  if (!RA_STATUSES.includes(s)) {
+    return { ok: false, status: null, error: `A rental agreement can only be set to: ${RA_STATUSES.join(", ")}.` };
+  }
+  return { ok: true, status: s, error: null };
 }
 
 const FLEET_STATUS_OPTS = [
@@ -5663,13 +5840,17 @@ function SettingsPage() {
 
   const flash = (msg) => { setSavedFlash(msg); setTimeout(() => setSavedFlash(""), 2000); };
 
+  // Both commits validate through the same shared rules the command bar uses, so
+  // a number the settings page rejects is a number fleetr ai rejects too. An
+  // unusable entry is reverted to the saved value rather than left on screen.
   const commitMarkup = async () => {
-    const raw = markupDraft.trim();
-    const n   = raw === "" ? null : parseFloat(raw);
-    if (n === null || !Number.isFinite(n) || n < 0) {
+    const raw   = markupDraft.trim();
+    const check = raw === "" ? { ok: false } : validateGasMarkup(raw);
+    if (!check.ok) {
       setMarkupDraft(appSettings.gasMarkupPercent != null ? String(appSettings.gasMarkupPercent) : "");
       return;
     }
+    const n = check.value;
     if (n === appSettings.gasMarkupPercent) return;
     guardAction("gas.markup", async () => {
       if (await saveSetting("gasMarkupPercent", n)) flash("Markup saved.");
@@ -5678,11 +5859,14 @@ function SettingsPage() {
 
   const commitPrice = async (region) => {
     const raw = (priceDrafts[region] || "").trim();
-    const n   = raw === "" ? null : parseFloat(raw);
-    if (raw !== "" && (!Number.isFinite(n) || n <= 0)) {
+    // Blank clears the price for that region, which is a real choice: it puts
+    // that region's gas charges back to manual entry.
+    const check = raw === "" ? { ok: true, value: null } : validateGasPrice(raw);
+    if (!check.ok) {
       setPriceDrafts((p) => ({ ...p, [region]: gasPrices[region] != null ? String(gasPrices[region]) : "" }));
       return;
     }
+    const n = check.value;
     if (n === (gasPrices[region] ?? null)) return;
     const next = { ...gasPrices };
     if (n === null) delete next[region]; else next[region] = n;
@@ -6015,7 +6199,7 @@ function PlaceholderPage({ title }) {
 // ─── Fleetr AI Command Bar ───────────────────────────────────────────────────
 
 function FleetrCommandBar() {
-  const { requirePin, guardAction, currentUser, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows, damageClaims, setDamageClaims } = React.useContext(AppContext);
+  const { requirePin, guardAction, currentUser, reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows, damageClaims, setDamageClaims, appSettings, saveSetting } = React.useContext(AppContext);
   const [command,        setCommand]        = React.useState("");
   const [aiMessage,      setAiMessage]      = React.useState("");
   const [pendingAction,  setPendingAction]  = React.useState(null);
@@ -6031,6 +6215,14 @@ function FleetrCommandBar() {
 
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const speechSupported   = !!SpeechRecognition;
+
+  // The regions a fuel price can be set for, computed the same way the Settings
+  // page computes them: the provinces the fleet is actually in, plus the default.
+  const gasRegions = React.useMemo(() => {
+    const set = new Set(fleet.map((v) => v.province).filter(Boolean));
+    if (appSettings.gasDefaultRegion) set.add(appSettings.gasDefaultRegion);
+    return [...set].sort();
+  }, [fleet, appSettings.gasDefaultRegion]);
 
   const stopMic = () => {
     clearTimeout(micTimeoutRef.current);
@@ -6109,6 +6301,10 @@ function FleetrCommandBar() {
         `Non-drive intake data: ${JSON.stringify(ndiRows)}\n\n` +
         `No-shows data: ${JSON.stringify(noShows)}\n\n` +
         `Damage claims data: ${JSON.stringify(damageClaims)}\n\n` +
+        // Settings are read straight from app_settings rather than a table dump,
+        // so the model can answer "what is the markup" without a write.
+        `App settings: ${JSON.stringify(appSettings)}\n\n` +
+        `Fleet regions with a fuel price that can be set: ${JSON.stringify(gasRegions)}\n\n` +
         `User command: ${trimmed}`;
       const res = await fetch(CLAUDE_API_URL, {
         method: "POST",
@@ -6156,21 +6352,51 @@ function FleetrCommandBar() {
   // The tier is computed from the EDITED payload, not the model's original, so a
   // staff member who types a money field into the card cannot land in the lighter
   // tier than the field deserves.
-  const confirmAction = () => {
-    const key = commandBarActionKey({
-      table: pendingAction?.table,
-      operation: pendingAction?.operation,
-      data: editableData,
-    });
-    console.log("Fleetr command bar action tier:", key, actionTier(key));
-    guardAction(key, executeAction);
+  // Reuses the same channel a failed Supabase write reports through, and drops
+  // the pending action so the Confirm button cannot be pressed again.
+  const abortAction = (msg, ctx) => {
+    console.warn("Fleetr AI action blocked by a write rule:", msg, ctx);
+    setAiMessage(msg);
+    setPendingAction(null);
+    setActionLoading(false);
   };
 
-  const executeAction = async () => {
-    if (!pendingAction) return;
-    setActionLoading(true);
-    const { table, operation, match } = pendingAction;
+  const confirmAction = () => {
+    // The rules run BEFORE the PIN, not inside the write. Asking someone to
+    // authenticate an action that was already going to be refused teaches them
+    // that the PIN prompt means nothing, and the two PM prompts are decisions to
+    // make before authenticating rather than after.
+    const plan = planAction();
+    if (!plan.ok) return void abortAction(plan.error, { pendingAction, data: editableData });
+
+    // The tier is computed from the RESOLVED plan, so it reflects the operation
+    // actually about to run rather than the model's original wording, and a
+    // staff member who types a money field into the card cannot land in a
+    // lighter tier than the field deserves.
+    const key = commandBarActionKey(plan);
+    console.log("Fleetr command bar action tier:", key, actionTier(key));
+    guardAction(key, () => executeAction(plan));
+  };
+
+  // Resolves the pending action against the shared write rules and returns the
+  // plan the write will follow, or the reason it cannot run. Touches no state
+  // and reaches no network, so it is safe to run before the PIN is raised.
+  const planAction = () => {
+    if (!pendingAction) return { ok: false, error: "There is nothing to confirm." };
+    const { table, match } = pendingAction;
+    let operation = pendingAction.operation;
     let data = editableData; // use user-edited values
+    const fail = (error) => ({ ok: false, error });
+
+    // rentalAgreementStatus on reservations is a stale mirror of the column on
+    // rental_agreements, refreshed from there at load. A plain update to it
+    // reported success and then reverted on the next refresh, and it never moved
+    // the vehicle to On Rent or Ready Returns. Anything asking for it is routed
+    // to the lifecycle path below, which is what the UI buttons use.
+    if (operation === "update" && data.rentalAgreementStatus &&
+        (table === "reservations" || table === "rental_agreements")) {
+      operation = "raStatus";
+    }
 
     // Resolving a damage claim through the AI should stamp resolvedAt/updatedAt
     // the same way the "Mark as Resolved" button does.
@@ -6183,29 +6409,30 @@ function FleetrCommandBar() {
     // Everything below is the same guard the UI runs. It used to live only in
     // React handlers, which is how the command bar was able to release a vehicle
     // from PM, open a rental on a flagged vehicle, and close an agreement with no
-    // return time. Failing here aborts before any Supabase call.
-    // Reuses the same channel a failed Supabase write reports through, and drops
-    // the pending action so the Confirm button cannot be pressed again.
-    const abort = (msg) => {
-      console.warn("Fleetr AI action blocked by a write rule:", msg, { table, operation, data });
-      setAiMessage(msg);
-      setPendingAction(null);
-      setActionLoading(false);
-    };
+    // return time. Failing here stops the action before the PIN, let alone
+    // before any Supabase call.
 
     if (table === "fleet" && operation === "insert") {
       const check = validateVehicle(data);
-      if (!check.ok) return void abort(check.error);
+      if (!check.ok) return fail(check.error);
     }
 
     if (table === "fleet" && operation === "delete") {
       const check = validateRetirement(data);
-      if (!check.ok) return void abort(`${check.error} Retire it from Additions and Deletions so the archive keeps a record.`);
+      if (!check.ok) return fail(`${check.error} Retire it from Additions and Deletions so the archive keeps a record.`);
     }
 
     if (table === "reservations" && operation === "insert") {
       const check = validateReservation(data);
-      if (!check.ok) return void abort(check.error);
+      if (!check.ok) return fail(check.error);
+    }
+
+    // Tank size and PM interval are editable on an existing vehicle too, and a
+    // zero or a stray word in either would quietly break the gas charge or the
+    // service schedule.
+    if (table === "fleet" && operation === "update") {
+      const check = validateFleetNumerics(data);
+      if (!check.ok) return fail(check.error);
     }
 
     // PM takes over a status change the same way it does in the UI.
@@ -6218,21 +6445,68 @@ function FleetrCommandBar() {
       }
     }
 
-    // Opening or reopening a rental on a PM-flagged vehicle raises the same soft
-    // block, and cancelling it aborts rather than writing.
-    if (table === "reservations" && data.rentalAgreementStatus === "open_rental_agreement") {
-      const res   = reservations.find((r) => Object.entries(match || {}).every(([k, val]) => String(r[k]) === String(val)));
-      const ra    = rentalAgreements.find((x) => x.resCode === res?.resCode);
-      const plate = ra?.plate || res?.plate;
-      const veh   = plate ? fleet.find((v) => normalizePlate(v.plate) === normalizePlate(plate)) : null;
-      if (!confirmRentalDespitePm(veh)) return void abort("Cancelled. The vehicle is still flagged for preventative maintenance.");
+    // ── Rental agreement lifecycle ────────────────────────────────────────────
+    // Resolved up front so the PM soft block is raised before the PIN, matching
+    // the order on the reservation page: staff are not asked to authenticate an
+    // action they are about to cancel.
+    let raResCode = null;
+    if (operation === "raStatus") {
+      const extra = Object.keys(data).filter((k) => k !== "rentalAgreementStatus");
+      if (extra.length) {
+        return fail(`A rental agreement status change cannot carry other fields (${extra.join(", ")}). Change those separately.`);
+      }
+      const check = validateRaStatus(data.rentalAgreementStatus);
+      if (!check.ok) return fail(check.error);
+      data = { rentalAgreementStatus: check.status };
+
+      // The status is keyed by resCode whichever table the request named, so a
+      // match on a rental agreement id resolves back to its reservation first.
+      const matches = (row) => Object.entries(match || {}).every(([k, val]) => String(row[k]) === String(val));
+      const raRow   = table === "rental_agreements" ? rentalAgreements.find(matches) : null;
+      const res     = table === "rental_agreements"
+        ? reservations.find((r) => r.resCode === raRow?.resCode)
+        : reservations.find(matches);
+      raResCode = res?.resCode || raRow?.resCode;
+      if (!raResCode) return fail("Could not find that rental agreement.");
+
+      if (check.status === "open_rental_agreement") {
+        const ra    = raRow || rentalAgreements.find((x) => x.resCode === raResCode);
+        const plate = ra?.plate || res?.plate;
+        const veh   = plate ? fleet.find((v) => normalizePlate(v.plate) === normalizePlate(plate)) : null;
+        if (!confirmRentalDespitePm(veh)) return fail("Cancelled. The vehicle is still flagged for preventative maintenance.");
+      }
     }
 
-    // Closing stamps the return time, so a closed agreement always records when
-    // the vehicle came back.
-    if (table === "reservations" && RA_CLOSING_STATUSES.includes(data.rentalAgreementStatus)) {
-      data = { ...raCloseStamp(), ...data };
+    // ── PM Complete ───────────────────────────────────────────────────────────
+    // The patch is computed here rather than taken from the model, so the new
+    // baseline is always the odometer actually on file.
+    let pmVehicle = null;
+    if (operation === "pmComplete") {
+      if (table !== "fleet") return fail("PM Complete only applies to a vehicle.");
+      pmVehicle = fleet.find((v) => Object.entries(match || {}).every(([k, val]) =>
+        k === "plate" ? normalizePlate(v.plate) === normalizePlate(val) : String(v[k]) === String(val)
+      ));
+      const check = resolvePmComplete(pmVehicle);
+      if (!check.ok) return fail(check.error);
+      data = check.patch;
     }
+
+    // ── Settings ──────────────────────────────────────────────────────────────
+    let settingWrites = null;
+    if (table === "app_settings") {
+      if (operation !== "update") return fail("Settings can only be changed, not added or removed.");
+      const check = resolveGasSettingsUpdate(data, appSettings.gasPrices, gasRegions);
+      if (!check.ok) return fail(check.error);
+      settingWrites = check.writes;
+    }
+
+    return { ok: true, table, operation, match, data, raResCode, pmVehicle, settingWrites };
+  };
+
+  const executeAction = async (plan) => {
+    if (!plan?.ok) return;
+    setActionLoading(true);
+    const { table, operation, match, data, raResCode, pmVehicle, settingWrites } = plan;
 
     // One place that knows which React setter owns which table. The update,
     // insert and delete branches each used to carry their own if/else chain over
@@ -6252,7 +6526,37 @@ function FleetrCommandBar() {
 
     try {
       let error = null;
-      if (operation === "update") {
+      if (operation === "raStatus") {
+        // syncRAStatus owns this: it writes rental_agreements, creates the
+        // agreement if the reservation has none yet, and moves the vehicle to
+        // On Rent or Ready Returns. Reproducing any of that here is how the two
+        // paths would drift.
+        await syncRAStatus(raResCode, data.rentalAgreementStatus);
+        setReservations((prev) => prev.map((r) =>
+          r.resCode === raResCode ? { ...r, rentalAgreementStatus: data.rentalAgreementStatus } : r
+        ));
+        // Closing stamps the return time, so a closed agreement always records
+        // when the vehicle came back.
+        if (RA_CLOSING_STATUSES.includes(data.rentalAgreementStatus)) {
+          const stamp = raCloseStamp();
+          ({ error } = await supabase.from("reservations").update(stamp).eq("resCode", raResCode));
+          if (!error) {
+            setReservations((prev) => prev.map((r) => (r.resCode === raResCode ? { ...r, ...stamp } : r)));
+          }
+        }
+      } else if (operation === "pmComplete") {
+        ({ error } = await supabase.from("fleet").update(data).eq("id", pmVehicle.id));
+        if (!error) setFleet((prev) => prev.map((v) => (v.id === pmVehicle.id ? { ...v, ...data } : v)));
+      } else if (table === "app_settings") {
+        // saveSetting mirrors into appSettings state itself, so there is no
+        // entry for app_settings in SETTERS.
+        for (const [key, value] of settingWrites) {
+          if (!(await saveSetting(key, value))) {
+            error = { message: `Could not save ${key}.` };
+            break;
+          }
+        }
+      } else if (operation === "update") {
         let q = supabase.from(table).update(data);
         if (match) Object.entries(match).forEach(([k, v]) => { q = q.eq(k, v); });
         ({ error } = await q);
