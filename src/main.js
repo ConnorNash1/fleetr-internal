@@ -60,11 +60,16 @@ Fleet operation rules:
 - Vehicles flagged needsPm are due for service. Changing such a vehicle to Available, Needs Cleaning or Ready for Pickup is automatically converted to PM, so say so rather than promising the requested status.
 - Use the fleet data passed in the user message to find vehicle ids.
 
-Editing an existing vehicle's tank size or PM interval:
-- tankSizeLiters and pmIntervalKm can be changed on a vehicle already in the fleet, using operation "update" with match on "id" or "plate" and data containing just the field being changed. Example: {"table":"fleet","operation":"update","match":{"plate":"ABC123"},"data":{"tankSizeLiters":55}}
-- Send the CANONICAL value: litres for tankSizeLiters, kilometres for pmIntervalKm. If the user speaks in gallons or miles, convert (1 gallon = 3.785411784 litres, 1 mile = 1.609344 km). Both must be positive numbers or the action is rejected.
-- Reply in whatever unit the person used. If they said "12 gallons", send 45.4 and say 12 gallons in "message". If they said litres, say litres.
-- Do not change any other fleet field in the same action as one of these two.
+Editing an existing vehicle:
+- Every field the Add Vehicle form collects can be corrected on a vehicle already in the fleet: plate, province, year, make, model, colour, tankSizeLiters, pmIntervalKm, vehicleClass, vin.
+- Use operation "update" with match on "id" or "plate", and data containing only the fields being changed. Example: {"table":"fleet","operation":"update","match":{"plate":"ABC123"},"data":{"colour":"Blue","year":2025}}
+- Put ALL the fields the user asked to change into ONE action. Never split a single request into several actions; the staff member confirms one card once.
+- None of these may be set to blank. If the user wants a field emptied, say it cannot be blank rather than sending an empty value.
+- tankSizeLiters is in LITRES and pmIntervalKm is in KILOMETRES. If the user speaks in gallons or miles, convert (1 gallon = 3.785411784 litres, 1 mile = 1.609344 km). Both must be positive. Reply in whatever unit the person used: if they said "12 gallons", send 45.4 and say 12 gallons in "message".
+- year is a four digit year. vehicleClass must be one of the eight classes listed above. province must be a two letter province or state code.
+- Changing a plate is allowed, but not while the vehicle has a rental agreement that is not closed, because other records point at the old plate. That is refused with an explanation.
+- needsPm, lastPmOdometer, currentOdometer, id and created_at can never be written this way. Odometer figures come from the vehicle itself, and the PM baseline is set by pmComplete.
+- Changing status is a separate thing, covered under Fleet operation rules above.
 
 PM Complete:
 - Use operation "pmComplete" on table "fleet", match on "id" or "plate", and no "data". Example: {"table":"fleet","operation":"pmComplete","match":{"plate":"ABC123"}}
@@ -215,6 +220,9 @@ const ACTION_POLICY = {
   "vehicle.pmComplete": { tier: "pin", label: "Record preventative maintenance as complete" },
   "vehicle.pmInterval": { tier: "pin", label: "Set the PM interval" },
   "vehicle.add":        { tier: "pin", label: "Add a vehicle to the fleet" },
+  // Plate, VIN and class are what the fleet is identified and billed by, and a
+  // plate edit is what other tables point at, so corrections sit with the rest.
+  "vehicle.details":    { tier: "pin", label: "Edit vehicle details" },
 
   // Rental agreement lifecycle.
   "ra.open":    { tier: "pin", label: "Open a rental agreement" },
@@ -236,6 +244,13 @@ const actionLabel = (key) => ACTION_POLICY[key]?.label || "this action";
 // reservations update depends on which fields it touches.
 const MONEY_FIELDS   = ["gasOwed", "gasCollected", "dailyRate"];
 const PIN_RA_FIELDS  = ["rentalAgreementStatus"];
+// The same ten fields VEHICLE_REQUIRED_FIELDS names, repeated here because the
+// routing table is defined long before the write rules are. pin-policy.test.mjs
+// asserts the two lists match, so they cannot drift apart unnoticed.
+const VEHICLE_DETAIL_KEYS = [
+  "plate", "province", "year", "make", "model",
+  "colour", "tankSizeLiters", "pmIntervalKm", "vehicleClass", "vin",
+];
 function commandBarActionKey({ table, operation, data }) {
   const fields = Object.keys(data || {});
   const touches = (list) => fields.some((f) => list.includes(f));
@@ -258,7 +273,10 @@ function commandBarActionKey({ table, operation, data }) {
     if (fields.includes("tankSizeLiters")) return "vehicle.tankSize";
     if (fields.includes("pmIntervalKm"))   return "vehicle.pmInterval";
     if (fields.includes("needsPm") || fields.includes("lastPmOdometer")) return "vehicle.pmComplete";
-    return "vehicle.status";
+    if (fields.includes("status")) return "vehicle.status";
+    // A correction to the vehicle's identity: plate, VIN, class, year and so on.
+    if (touches(VEHICLE_DETAIL_KEYS)) return "vehicle.details";
+    return "vehicle.status"; // unknown fleet payload keeps the safer existing key
   }
   if (table === "damage_claims") return "damage.resolve";
   if (table === "rental_agreements") {
@@ -4618,6 +4636,10 @@ function UnitToggle({ unit, setUnit, options }) {
   );
 }
 
+// The codes behind the Province / State dropdown, minus its "All" filter entry.
+// Derived rather than retyped so the AI accepts exactly what the form offers.
+const PROVINCE_CODES = PROV_STATE_LIST.filter((p) => p.value !== "All").map((p) => p.value);
+
 const VOLUME_UNITS   = [{ value: "L",  label: "Litres" },   { value: "gal", label: "Gallons" }];
 const DISTANCE_UNITS = [{ value: "km", label: "Kilometers" }, { value: "mi",  label: "Miles" }];
 
@@ -4718,6 +4740,81 @@ const VEHICLE_REQUIRED_FIELDS = [
   ["Vehicle Class",    "vehicleClass"],
   ["VIN",              "vin"],
 ];
+
+// The classes offered on the Add Vehicle form. Shared so the form, the AI and
+// the validator cannot drift into offering different sets.
+const FLEET_VEHICLE_CLASSES = [
+  "Compact Car", "Regular Car", "Large Car",
+  "Compact SUV", "Regular SUV", "Large SUV",
+  "Minivan", "Truck",
+];
+
+const vehicleFieldLabel = (key) =>
+  (VEHICLE_REQUIRED_FIELDS.find(([, k]) => k === key) || [key])[0];
+
+// Never writable through the command bar. needsPm and lastPmOdometer are
+// computed by resolvePmComplete from the reading on file, and currentOdometer is
+// captured when a rental is returned. Typing any of the three rebaselines the
+// service schedule to a number nobody measured, which is the one thing the PM
+// logic cannot recover from. id and created_at are the row's identity.
+const FLEET_PROTECTED_FIELDS = ["id", "created_at", "needsPm", "lastPmOdometer", "currentOdometer"];
+
+// Field rules for editing a vehicle already in the fleet. Same ten fields the
+// Add Vehicle form collects and the same per-field rules, but applied only to
+// what was actually sent, since an edit names one or two fields rather than all
+// ten. Blank is refused rather than treated as a clear: Add Vehicle requires
+// every one of these, so emptying one would leave a vehicle the form itself
+// would not have accepted.
+function validateVehicleEdit(data, provinces) {
+  const fields = Object.keys(data || {});
+  if (!fields.length) return { ok: false, error: "No changes were given." };
+
+  const blocked = fields.filter((f) => FLEET_PROTECTED_FIELDS.includes(f));
+  if (blocked.length) {
+    return {
+      ok: false,
+      error: `${blocked.join(" and ")} cannot be set directly. Preventative maintenance figures come from the vehicle's own odometer, recorded with PM Complete.`,
+    };
+  }
+
+  // Walked in form order, not payload order, so the message names fields in the
+  // same sequence validateVehicle does.
+  const touched = VEHICLE_REQUIRED_FIELDS.map(([, k]) => k).filter((k) => fields.includes(k));
+
+  const blank = touched.filter((k) => String(data[k] ?? "").trim() === "");
+  if (blank.length) {
+    const names = blank.map(vehicleFieldLabel);
+    return {
+      ok: false,
+      error: names.length === 1
+        ? `${names[0]} cannot be left blank.`
+        : `These cannot be left blank: ${names.join(", ")}.`,
+    };
+  }
+
+  const numbers = validateFleetNumerics(data);
+  if (!numbers.ok) return numbers;
+
+  if (touched.includes("year")) {
+    const y = Number(String(data.year).trim());
+    if (!Number.isInteger(y) || y < 1900 || y > 2100) {
+      return { ok: false, error: "Year has to be a four digit year." };
+    }
+  }
+
+  if (touched.includes("vehicleClass") && !FLEET_VEHICLE_CLASSES.includes(String(data.vehicleClass).trim())) {
+    return { ok: false, error: `Vehicle class has to be one of: ${FLEET_VEHICLE_CLASSES.join(", ")}.` };
+  }
+
+  if (touched.includes("province") && provinces && provinces.length) {
+    const p = String(data.province).trim().toUpperCase();
+    if (!provinces.includes(p)) {
+      return { ok: false, error: `${String(data.province).trim()} is not a province or state code. Use one of: ${provinces.join(", ")}.` };
+    }
+  }
+
+  return { ok: true, error: null };
+}
 
 function validateVehicle(v) {
   const missing = VEHICLE_REQUIRED_FIELDS
@@ -5462,7 +5559,7 @@ function FleetAdditionsPage() {
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Vehicle Class"),
               React.createElement("select", { className: "addVehicleInput", value: addForm.vehicleClass, onChange: (e) => onAdd("vehicleClass", e.target.value) },
-                ["Compact Car", "Regular Car", "Large Car", "Compact SUV", "Regular SUV", "Large SUV", "Minivan", "Truck"].map((vc) =>
+                FLEET_VEHICLE_CLASSES.map((vc) =>
                   React.createElement("option", { key: vc, value: vc }, vc)
                 )
               )
@@ -6433,12 +6530,35 @@ function FleetrCommandBar() {
       if (!check.ok) return fail(check.error);
     }
 
-    // Tank size and PM interval are editable on an existing vehicle too, and a
-    // zero or a stray word in either would quietly break the gas charge or the
-    // service schedule.
+    // Every field the Add Vehicle form collects is correctable on a vehicle
+    // already in the fleet, under the same per-field rules the form applies.
+    // A status change carries none of these and passes straight through.
     if (table === "fleet" && operation === "update") {
-      const check = validateFleetNumerics(data);
+      const check = validateVehicleEdit(data, PROVINCE_CODES);
       if (!check.ok) return fail(check.error);
+
+      // Stored the way the form stores them, so a spoken "a b c 1 2 3" and a
+      // typed one land on the same string.
+      if (data.plate)    data = { ...data, plate: normalizePlate(data.plate) };
+      if (data.province) data = { ...data, province: String(data.province).trim().toUpperCase() };
+
+      // Other tables point at a vehicle by its plate string rather than its id,
+      // so renaming a plate mid-rental orphans the agreement and any damage
+      // claim against it. Corrections are for vehicles that are not out.
+      if (data.plate) {
+        const target = fleet.find((v) => Object.entries(match || {}).every(([k, val]) =>
+          k === "plate" ? normalizePlate(v.plate) === normalizePlate(val) : String(v[k]) === String(val)
+        ));
+        const oldPlate = target?.plate;
+        if (oldPlate && normalizePlate(oldPlate) !== normalizePlate(data.plate)) {
+          const openRa = rentalAgreements.find((ra) =>
+            normalizePlate(ra.plate || "") === normalizePlate(oldPlate) &&
+            ra.rentalAgreementStatus && ra.rentalAgreementStatus !== "closed");
+          if (openRa) {
+            return fail(`${oldPlate} has a rental agreement that is not closed yet (${openRa.resCode}). Renaming its plate now would leave that agreement pointing at a plate no vehicle has. Close it first.`);
+          }
+        }
+      }
     }
 
     // PM takes over a status change the same way it does in the UI.
