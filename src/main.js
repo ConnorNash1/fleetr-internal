@@ -34,6 +34,8 @@ Always respond with a valid JSON object — no markdown, no code fences, no text
 
 Rules:
 - "message" is always required. Write in plain conversational English.
+- When "action" is included, nothing has happened yet. The staff member still has to confirm it, most actions then ask for a PIN, and the system may refuse the action outright. So describe what WILL happen, never what has happened. Write "This will set the tank size to 55 litres", not "I've set the tank size to 55 litres". Do not say done, updated, recorded, saved, opened, closed or changed about the action you are proposing.
+- For a read or lookup, where nothing is being written, describe what you found in the normal past or present tense. This rule is only about actions.
 - "action" is optional. Only include it when the user is requesting a write operation. For read/lookup requests omit "action" entirely.
 - For "match", use the record's primary identifier: resCode for reservations, id for rental_agreements, id for fleet, id for ndi_rows, id for no_shows, id for damage_claims.
 - For "data", include only the fields that need to change.
@@ -6327,8 +6329,12 @@ function FleetrCommandBar() {
       } else {
         const raw = data?.content?.[0]?.text || "{}";
         const parsed = parseClaudeJSON(raw);
-        setAiMessage(parsed.message || "Done.");
-        if (parsed.action && parsed.action.table && parsed.action.operation) {
+        const hasAction = !!(parsed.action && parsed.action.table && parsed.action.operation);
+        // "Done." next to a Confirm button that has not been pressed is the same
+        // lie the tense rule in the system prompt exists to prevent, so the
+        // fallback depends on whether anything is still waiting to run.
+        setAiMessage(parsed.message || (hasAction ? "Review the action below." : "Done."));
+        if (hasAction) {
           setPendingAction(parsed.action);
         }
         console.log("Fleetr command submitted:", trimmed, "| parsed:", parsed);
