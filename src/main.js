@@ -6218,48 +6218,24 @@ function MobileNav() {
 
 // ─── MobileCommandBar ────────────────────────────────────────────────────────
 
+// The bar used to render a collapsed "pill" button that only set expanded
+// state, swapping in the real FleetrCommandBar on tap. The pill was a mock-up:
+// same rounded shape, same mic glyph, same "Ask fleetr ai…" text, but no input
+// and no mic button behind it. So the first tap only brought the real controls
+// into existence and the second tap was the one that did anything, which is
+// what made the bar feel like it needed two taps to wake up.
+//
+// Rendering the real bar always removes the problem at the source rather than
+// working around it. Tapping the input is a plain tap on a real input, so the
+// browser focuses it and raises the keyboard itself, with no programmatic
+// focus() that mobile Safari could refuse for happening outside a gesture. The
+// mic is the real button, so one tap starts listening. This is also how the bar
+// behaves on desktop, which is what the two were supposed to match.
 function MobileCommandBar() {
-  const [expanded, setExpanded] = React.useState(false);
   return React.createElement(
     "div",
-    { className: "mobileBottomBar" + (expanded ? " mobileBottomBar--expanded" : "") },
-    expanded
-      ? React.createElement(
-          React.Fragment,
-          null,
-          React.createElement(
-            "button",
-            {
-              type: "button",
-              className: "mobileBottomBar__collapse",
-              "aria-label": "Collapse command bar",
-              onClick: () => setExpanded(false),
-            },
-            React.createElement(
-              "svg",
-              { width: "16", height: "16", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2.5", strokeLinecap: "round", strokeLinejoin: "round" },
-              React.createElement("polyline", { points: "18 15 12 9 6 15" })
-            )
-          ),
-          React.createElement(FleetrCommandBar)
-        )
-      : React.createElement(
-          "button",
-          {
-            type: "button",
-            className: "mobileBottomBar__pill",
-            onClick: () => setExpanded(true),
-          },
-          React.createElement(
-            "svg",
-            { width: "14", height: "14", viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" },
-            React.createElement("rect", { x: "9", y: "2", width: "6", height: "12", rx: "3" }),
-            React.createElement("path", { d: "M5 10a7 7 0 0 0 14 0" }),
-            React.createElement("line", { x1: "12", y1: "19", x2: "12", y2: "22" }),
-            React.createElement("line", { x1: "8",  y1: "22", x2: "16", y2: "22" })
-          ),
-          React.createElement("span", null, "Ask fleetr ai…")
-        )
+    { className: "mobileBottomBar" },
+    React.createElement(FleetrCommandBar)
   );
 }
 
@@ -10375,46 +10351,23 @@ body, * {
     display: flex;
     align-items: center;
   }
-  .mobileBottomBar--expanded{
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-    padding: 10px 16px 16px;
-  }
-  .mobileBottomBar__pill{
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex: 1;
-    background: #F9F9F7;
-    border: 1.5px solid rgba(66,164,255,0.35);
-    border-radius: 999px;
-    padding: 8px 14px;
-    font-family: inherit;
-    font-size: 13px;
-    color: rgba(6,13,12,0.4);
-    cursor: pointer;
-    text-align: left;
-  }
-  .mobileBottomBar__pill svg{ color: #42a4ff; flex-shrink: 0; }
-  .mobileBottomBar__collapse{
-    background: none;
-    border: none;
-    color: rgba(255,255,255,0.5);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    align-self: flex-end;
-    padding: 2px 6px;
-  }
-  .mobileBottomBar--expanded .fleetrCommandBar{
-    background: #F9F9F7;
-    border-radius: 999px;
-  }
-  .mobileBottomBar--expanded .fleetrCommandBar__popover{
+  /* The bar sits at the bottom of the screen, so its popover opens upward.
+     This used to hang off .mobileBottomBar--expanded, which no longer exists
+     now that the collapsed pill is gone. */
+  .mobileBottomBar .fleetrCommandBar__popover{
     top: auto;
     bottom: calc(100% + 10px);
+  }
+  /* Anything below 16px makes iOS zoom the whole page when the field takes
+     focus, which is jarring on the very tap this bar is built around. */
+  .mobileBottomBar .fleetrCommandBar__input{
+    font-size: 16px;
+  }
+  /* Comfortable touch targets for the mic and send buttons. */
+  .mobileBottomBar .fleetrCommandBar__iconBtn,
+  .mobileBottomBar .fleetrCommandBar__sendBtn{
+    min-width: 40px;
+    min-height: 40px;
   }
 
   /* Dashboard cards */
