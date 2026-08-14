@@ -43,7 +43,7 @@ Rules:
 - Do not include any text, explanation, or formatting outside the JSON object.
 
 Fleet table fields:
-- id (primary key, do not modify), plate (e.g. "ABC-123"), make, model, year (number), colour, vin (17 chars), province (e.g. "NL")
+- id (primary key, do not modify), plate (e.g. "ABC-123"), make, model, year (number), colour, vin (exactly 17 characters, no I, O or Q), province (e.g. "NL")
 - vehicleClass: one of "Compact Car", "Regular Car", "Large Car", "Compact SUV", "Regular SUV", "Large SUV", "Minivan", "Truck"
 - status: one of "Available", "Needs Cleaning", "Ready for Pickup", "PM", "Damaged", "On Rent", "Ready Returns"
 - "PM" means Preventative Maintenance (the vehicle is due for scheduled service).
@@ -67,6 +67,7 @@ Editing an existing vehicle:
 - None of these may be set to blank. If the user wants a field emptied, say it cannot be blank rather than sending an empty value.
 - tankSizeLiters is in LITRES and pmIntervalKm is in KILOMETRES. If the user speaks in gallons or miles, convert (1 gallon = 3.785411784 litres, 1 mile = 1.609344 km). Both must be positive. Reply in whatever unit the person used: if they said "12 gallons", send 45.4 and say 12 gallons in "message".
 - year is a four digit year. vehicleClass must be one of the eight classes listed above. province must be a two letter province or state code.
+- vin must be exactly 17 characters, letters and digits only, and never the letters I, O or Q, which a real VIN does not use. Anything else is rejected. If the user reads out a VIN that is not 17 characters, say so and ask them to check it rather than sending it.
 - Changing a plate is allowed, but not while the vehicle has a rental agreement that is not closed, because other records point at the old plate. That is refused with an explanation.
 - needsPm, lastPmOdometer, currentOdometer, id and created_at can never be written this way. Odometer figures come from the vehicle itself, and the PM baseline is set by pmComplete.
 - Changing status is a separate thing, covered under Fleet operation rules above.
@@ -4749,6 +4750,38 @@ const FLEET_VEHICLE_CLASSES = [
   "Minivan", "Truck",
 ];
 
+// A VIN is 17 characters by international standard (ISO 3779), and the letters
+// I, O and Q are excluded from it precisely so they cannot be confused with the
+// digits 1 and 0. Both of those are worth enforcing: the length catches a
+// truncated paste, and the letter rule catches the O-for-zero typo that makes a
+// VIN look right and match nothing.
+//
+// Stored uppercase, since that is the only form a VIN is ever written in.
+const VIN_LENGTH  = 17;
+const VIN_PATTERN = /^[A-HJ-NPR-Z0-9]{17}$/;
+
+const normalizeVin = (raw) => String(raw ?? "").trim().toUpperCase();
+
+function validateVin(raw) {
+  const vin = normalizeVin(raw);
+  if (vin === "") return { ok: false, vin: "", error: "VIN is required." };
+  if (vin.length !== VIN_LENGTH) {
+    return {
+      ok: false,
+      vin,
+      error: `A VIN is exactly ${VIN_LENGTH} characters. That one is ${vin.length}.`,
+    };
+  }
+  if (!VIN_PATTERN.test(vin)) {
+    return {
+      ok: false,
+      vin,
+      error: "That VIN contains a character a VIN cannot have. VINs use letters and digits only, and never the letters I, O or Q.",
+    };
+  }
+  return { ok: true, vin, error: null };
+}
+
 const vehicleFieldLabel = (key) =>
   (VEHICLE_REQUIRED_FIELDS.find(([, k]) => k === key) || [key])[0];
 
@@ -4806,6 +4839,11 @@ function validateVehicleEdit(data, provinces) {
     return { ok: false, error: `Vehicle class has to be one of: ${FLEET_VEHICLE_CLASSES.join(", ")}.` };
   }
 
+  if (touched.includes("vin")) {
+    const check = validateVin(data.vin);
+    if (!check.ok) return { ok: false, error: check.error };
+  }
+
   if (touched.includes("province") && provinces && provinces.length) {
     const p = String(data.province).trim().toUpperCase();
     if (!provinces.includes(p)) {
@@ -4835,6 +4873,12 @@ function validateVehicle(v) {
   const pm   = parseFloat(v.pmIntervalKm);
   if (!Number.isFinite(tank) || tank <= 0) return { ok: false, missing: [], error: "Tank size must be a positive number." };
   if (!Number.isFinite(pm)   || pm   <= 0) return { ok: false, missing: [], error: "Needs PM Every must be a positive number." };
+
+  // Same rule the edit path applies, so the form and the AI cannot disagree
+  // about what a VIN looks like.
+  const vinCheck = validateVin(v.vin);
+  if (!vinCheck.ok) return { ok: false, missing: [], error: vinCheck.error };
+
   return { ok: true, missing: [], error: null };
 }
 
@@ -5413,7 +5457,7 @@ function FleetAdditionsPage() {
       tankSizeLiters: tankLiters,
       pmIntervalKm:   pmKm,
       vehicleClass:   addForm.vehicleClass,
-      vin:            addForm.vin,
+      vin:            normalizeVin(addForm.vin),
     };
     const check = validateVehicle(candidate);
     if (!check.ok) { setAddError(check.error); return; }
@@ -5425,7 +5469,7 @@ function FleetAdditionsPage() {
         vehicleClass: addForm.vehicleClass || "Compact Car",
         year: addForm.year || null,
         colour: addForm.colour || null,
-        vin: addForm.vin || null,
+        vin: candidate.vin,
         province: addForm.province || null,
         tankSizeLiters: tankLiters,
         pmIntervalKm: pmKm,
@@ -6516,6 +6560,7 @@ function FleetrCommandBar() {
     // before any Supabase call.
 
     if (table === "fleet" && operation === "insert") {
+      if (data.vin) data = { ...data, vin: normalizeVin(data.vin) };
       const check = validateVehicle(data);
       if (!check.ok) return fail(check.error);
     }
@@ -6541,6 +6586,7 @@ function FleetrCommandBar() {
       // typed one land on the same string.
       if (data.plate)    data = { ...data, plate: normalizePlate(data.plate) };
       if (data.province) data = { ...data, province: String(data.province).trim().toUpperCase() };
+      if (data.vin)      data = { ...data, vin: normalizeVin(data.vin) };
 
       // Other tables point at a vehicle by its plate string rather than its id,
       // so renaming a plate mid-rental orphans the agreement and any damage
