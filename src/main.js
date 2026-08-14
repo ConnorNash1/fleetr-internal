@@ -149,39 +149,18 @@ Gas collections:
 // helper can be reinstated if a staff-initiated "send text now" button is ever
 // added, but nothing in the app should text customers on a timer any more.
 
-// ─── One-time customer data cleanup ──────────────────────────────────────────
-// Runs once per device (gated by localStorage). Wipes all customer records from
-// Supabase so the system starts completely empty. Does not touch fleet vehicles.
-(async function runOneTimeCleanup() {
-  const FLAG = "fleetr_cleanup_v1";
-  if (localStorage.getItem(FLAG)) return;
-  try {
-    // Secondary safety check: if any customer data already exists in Supabase,
-    // the app has been used in production. Set the flag and bail out so a
-    // localStorage.clear() can never trigger a wipe of real data.
-    const [{ count: resCount }, { count: ndiCount }, { count: raCount }] = await Promise.all([
-      supabase.from("reservations").select("*", { count: "exact", head: true }),
-      supabase.from("ndi_rows").select("*", { count: "exact", head: true }),
-      supabase.from("rental_agreements").select("*", { count: "exact", head: true }),
-    ]);
-    if ((resCount || 0) > 0 || (ndiCount || 0) > 0 || (raCount || 0) > 0) {
-      localStorage.setItem(FLAG, "1");
-      console.log("Fleetr: cleanup skipped — data already exists in Supabase.");
-      return;
-    }
-    await Promise.all([
-      supabase.from("reservations").delete().not("resCode", "is", null),
-      supabase.from("rental_agreements").delete().not("id", "is", null),
-      supabase.from("ndi_rows").delete().not("id", "is", null),
-      supabase.from("tor_rows").delete().not("id", "is", null),
-      supabase.from("no_shows").delete().not("id", "is", null),
-    ]);
-    localStorage.setItem(FLAG, "1");
-    console.log("Fleetr: one-time cleanup complete — all customer data removed.");
-  } catch (e) {
-    console.warn("Fleetr: one-time cleanup error:", e);
-  }
-})();
+// ─── One-time customer data cleanup: removed ─────────────────────────────────
+// A block here used to wipe reservations, rental agreements, intake, TOR and
+// no-show rows once per device, gated by a localStorage flag and skipped if any
+// customer data already existed.
+//
+// That guard was the whole safety of it, and it stopped working the moment the
+// tables were emptied on purpose: with nothing left to find, a browser that had
+// never loaded the app ran the deletes for real instead of skipping. Harmless
+// against empty tables, and a data loss waiting to happen against real ones.
+//
+// It has served its purpose and is deliberately not replaced. Nothing else
+// referenced it, and the fleetr_cleanup_v1 key it left behind is inert.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Action gating policy ────────────────────────────────────────────────────
@@ -4782,6 +4761,40 @@ function validateVin(raw) {
   return { ok: true, vin, error: null };
 }
 
+// Plate and VIN each identify one vehicle in the real world, so neither may be
+// shared. The form checked only the plate, and only in its own submit handler,
+// which is how three vehicles ended up carrying the same VIN and how the AI
+// could add a second vehicle on an existing plate at all.
+//
+// `self` is the vehicle being edited, excluded so a vehicle never collides with
+// itself when some other field is changed. Comparison is on the normalized
+// forms, so "abc-123" and "ABC123" are recognised as the same plate.
+function validateVehicleUniqueness(candidate, fleet, self) {
+  const others = (fleet || []).filter((v) => {
+    if (!self) return true;
+    if (self.id != null && v.id != null) return String(v.id) !== String(self.id);
+    return normalizePlate(v.plate) !== normalizePlate(self.plate);
+  });
+
+  const plate = normalizePlate(candidate?.plate);
+  if (plate !== "") {
+    const clash = others.find((v) => normalizePlate(v.plate) === plate);
+    if (clash) {
+      return { ok: false, field: "plate", error: "A vehicle with this plate already exists." };
+    }
+  }
+
+  const vin = normalizeVin(candidate?.vin);
+  if (vin !== "") {
+    const clash = others.find((v) => normalizeVin(v.vin) === vin);
+    if (clash) {
+      return { ok: false, field: "vin", error: `That VIN is already on ${clash.plate}. A VIN identifies one vehicle, so no two can share it.` };
+    }
+  }
+
+  return { ok: true, field: null, error: null };
+}
+
 const vehicleFieldLabel = (key) =>
   (VEHICLE_REQUIRED_FIELDS.find(([, k]) => k === key) || [key])[0];
 
@@ -5461,7 +5474,10 @@ function FleetAdditionsPage() {
     };
     const check = validateVehicle(candidate);
     if (!check.ok) { setAddError(check.error); return; }
-    if (fleet.some((v) => normalizePlate(v.plate) === plate)) { setAddError("A vehicle with this plate already exists."); return; }
+    // Plate and VIN uniqueness, in the shared rule rather than inline here, so
+    // the command bar enforces the same thing.
+    const unique = validateVehicleUniqueness(candidate, fleet, null);
+    if (!unique.ok) { setAddError(unique.error); return; }
 
     requirePin(() => {
       const newVehicle = {
@@ -6560,9 +6576,14 @@ function FleetrCommandBar() {
     // before any Supabase call.
 
     if (table === "fleet" && operation === "insert") {
-      if (data.vin) data = { ...data, vin: normalizeVin(data.vin) };
+      if (data.vin)   data = { ...data, vin: normalizeVin(data.vin) };
+      if (data.plate) data = { ...data, plate: normalizePlate(data.plate) };
       const check = validateVehicle(data);
       if (!check.ok) return fail(check.error);
+      // The AI could previously add a second vehicle on an existing plate; the
+      // duplicate check lived only in the form's submit handler.
+      const unique = validateVehicleUniqueness(data, fleet, null);
+      if (!unique.ok) return fail(unique.error);
     }
 
     if (table === "fleet" && operation === "delete") {
@@ -6588,13 +6609,19 @@ function FleetrCommandBar() {
       if (data.province) data = { ...data, province: String(data.province).trim().toUpperCase() };
       if (data.vin)      data = { ...data, vin: normalizeVin(data.vin) };
 
+      const target = fleet.find((v) => Object.entries(match || {}).every(([k, val]) =>
+        k === "plate" ? normalizePlate(v.plate) === normalizePlate(val) : String(v[k]) === String(val)
+      ));
+
+      // Passed as `self` so a vehicle keeping its own plate or VIN while some
+      // other field changes is not reported as colliding with itself.
+      const unique = validateVehicleUniqueness(data, fleet, target);
+      if (!unique.ok) return fail(unique.error);
+
       // Other tables point at a vehicle by its plate string rather than its id,
       // so renaming a plate mid-rental orphans the agreement and any damage
       // claim against it. Corrections are for vehicles that are not out.
       if (data.plate) {
-        const target = fleet.find((v) => Object.entries(match || {}).every(([k, val]) =>
-          k === "plate" ? normalizePlate(v.plate) === normalizePlate(val) : String(v[k]) === String(val)
-        ));
         const oldPlate = target?.plate;
         if (oldPlate && normalizePlate(oldPlate) !== normalizePlate(data.plate)) {
           const openRa = rentalAgreements.find((ra) =>
