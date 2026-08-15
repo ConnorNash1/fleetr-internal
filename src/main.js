@@ -219,6 +219,57 @@ const ACTION_POLICY = {
 const actionTier = (key) => ACTION_POLICY[key]?.tier || "pin"; // unknown defaults to the safer tier
 const actionLabel = (key) => ACTION_POLICY[key]?.label || "this action";
 
+// How the command bar signs its audit entries, matching how notesLog attributes
+// an AI-added note. The staff member who confirmed it is named in the entry's
+// description, so "fleetr ai" never stands in for a person's accountability.
+const AI_ACTOR = "fleetr ai";
+
+// The signed-in user's display name. The session stores `username`; `name` was
+// never a field on it, so every `currentUser?.name` in this file silently
+// resolved to undefined. That is why notes staff added by hand were being
+// attributed to fleetr ai.
+const actorName = (user) => user?.name || user?.username || "unknown";
+
+// The identifier a reader would recognise, per table: a plate for a vehicle, a
+// resCode for a reservation. Falls back to whatever the match was keyed on, so
+// an entry is never left with nothing to point at.
+const AUDIT_ID_FIELDS = {
+  fleet:             ["plate", "id"],
+  reservations:      ["resCode", "id"],
+  rental_agreements: ["resCode", "id"],
+  damage_claims:     ["id"],
+  ndi_rows:          ["rescode", "id"],
+  no_shows:          ["rescode", "id"],
+  app_settings:      ["key"],
+};
+
+function auditRecordId(table, match, data) {
+  const fields = AUDIT_ID_FIELDS[table] || ["id"];
+  for (const f of fields) {
+    if (match && match[f] != null && String(match[f]).trim() !== "") return String(match[f]);
+    if (data  && data[f]  != null && String(data[f]).trim()  !== "") return String(data[f]);
+  }
+  const firstMatch = Object.values(match || {})[0];
+  return firstMatch != null ? String(firstMatch) : null;
+}
+
+// A short "what changed" line from the payload, capped so one oversized field
+// cannot turn the log into a place nobody reads.
+function auditDescribe(data, limit = 160) {
+  const entries = Object.entries(data || {});
+  if (!entries.length) return null;
+  const parts = entries.map(([k, v]) => {
+    let shown;
+    if (v === null || v === undefined) shown = "cleared";
+    else if (typeof v === "object")    shown = Array.isArray(v) ? `${v.length} item(s)` : "updated";
+    else                                shown = String(v);
+    if (shown.length > 40) shown = shown.slice(0, 37) + "...";
+    return `${k}: ${shown}`;
+  });
+  const joined = parts.join(", ");
+  return joined.length > limit ? joined.slice(0, limit - 3) + "..." : joined;
+}
+
 // Maps a command bar action onto the same registry, so the AI is gated by
 // consequence rather than uniformly. Reads the payload because the tier of a
 // reservations update depends on which fields it touches.
@@ -239,6 +290,7 @@ function commandBarActionKey({ table, operation, data }) {
     return table === "fleet" ? "vehicle.retire" : "reservation.delete";
   }
   if (operation === "confirmPickup") return "noShow.confirmPickup";
+  if (operation === "addNote")       return "note.add";
   if (operation === "pmComplete")    return "vehicle.pmComplete";
   // Opening is called out separately from advancing because opening is what puts
   // a vehicle on the road, and it is the one that can override a PM flag.
@@ -312,6 +364,7 @@ const NAV_SECTIONS = [
     header: "Branch",
     items: [
       { label: "Reports", path: "/reports" },
+      { label: "Audit Log", path: "/audit-log" },
       { label: "Settings", path: "/settings" },
     ],
   },
@@ -901,21 +954,65 @@ function AppProvider({ children, currentUser, signOut }) {
   // ── PIN confirmation modal ────────────────────────────────────────────────
   const [pinModalOpen, setPinModalOpen] = React.useState(false);
   const pendingFnRef = React.useRef(null);
+  // What the pending action was, so dismissing the gate can be logged as a
+  // cancellation rather than vanishing.
+  const pendingAuditRef = React.useRef(null);
+
+  // ── Audit log ─────────────────────────────────────────────────────────────
+  // Writes one row per action. Deliberately fire-and-forget and wrapped in a
+  // catch: an audit log that can block a rental from being opened, or surface a
+  // Supabase error to a staff member mid-task, would be worse than one with a
+  // gap in it. Failures go to the console instead.
+  const logAudit = React.useCallback((entry) => {
+    const row = {
+      actor:       entry.actor || actorName(currentUser),
+      actionType:  entry.actionType,
+      actionLabel: actionLabel(entry.actionType),
+      tableName:   entry.tableName || null,
+      recordId:    entry.recordId != null ? String(entry.recordId) : null,
+      tier:        entry.tier || actionTier(entry.actionType),
+      outcome:     entry.outcome,
+      description: entry.description || null,
+    };
+    supabase.from("audit_log").insert(row)
+      .then(({ error }) => { if (error) console.warn("audit_log insert failed:", error, row); })
+      .catch((e) => console.warn("audit_log insert:", e, row));
+  }, [currentUser]);
 
   // Call requirePin(fn) to show the PIN gate; fn runs only if PIN matches.
-  const requirePin = (fn) => {
+  // Private to this provider: everything goes through guardAction so that no
+  // action can reach the PIN without also being logged and tiered by policy.
+  const requirePin = (fn, auditEntry) => {
     pendingFnRef.current = fn;
+    pendingAuditRef.current = auditEntry || null;
     setPinModalOpen(true);
   };
 
-  // The single entry point every write should go through. Looks the action up in
+  // The single entry point every write goes through. Looks the action up in
   // ACTION_POLICY and either raises the PIN gate or runs it straight away,
   // because for the "confirm" tier the click that got here IS the confirmation.
   // Callers pass an action key rather than a boolean so the policy stays in one
   // place and cannot drift per call site.
-  const guardAction = (actionKey, fn) => {
-    if (actionTier(actionKey) === "pin") { requirePin(fn); return; }
-    fn();
+  //
+  // It is also where the audit log is written, for the same reason: this is the
+  // one place both the UI and the command bar pass through, so a log hooked here
+  // cannot be forgotten by a new handler the way a per-handler log would be.
+  // `meta` carries what the entry cannot infer: which record, and a description.
+  const guardAction = (actionKey, fn, meta) => {
+    const tier  = actionTier(actionKey);
+    const entry = { actionType: actionKey, tier, ...(meta || {}) };
+    const run = async () => {
+      try {
+        await fn();
+        logAudit({ ...entry, outcome: "completed" });
+      } catch (e) {
+        // The action itself threw. Record the attempt rather than lose it.
+        logAudit({ ...entry, outcome: "refused", description: `${entry.description || ""} (failed: ${e.message})`.trim() });
+        throw e;
+      }
+    };
+    if (tier === "pin") { requirePin(run, entry); return; }
+    run();
   };
 
   // Called by PinConfirmModal on submit — verifies against the PIN stored in session state at login.
@@ -924,6 +1021,7 @@ function AppProvider({ children, currentUser, signOut }) {
     if (enteredPin === currentUser.pin) {
       const fn = pendingFnRef.current;
       pendingFnRef.current = null;
+      pendingAuditRef.current = null;
       setPinModalOpen(false);
       if (fn) await fn();
       return true;
@@ -931,9 +1029,15 @@ function AppProvider({ children, currentUser, signOut }) {
     return false;
   };
 
+  // Backing out of the PIN is recorded, not just successful writes. Someone
+  // reaching the gate on a delete or a PM override and then stopping is exactly
+  // what a reviewer would want to see, and it leaves no other trace.
   const dismissPinModal = () => {
+    const entry = pendingAuditRef.current;
     pendingFnRef.current = null;
+    pendingAuditRef.current = null;
     setPinModalOpen(false);
+    if (entry) logAudit({ ...entry, outcome: "cancelled" });
   };
 
   // ── setRentalAgreements: keeps raRef in sync alongside React state ──────────
@@ -1357,7 +1461,7 @@ function AppProvider({ children, currentUser, signOut }) {
 
   return React.createElement(
     AppContext.Provider,
-    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, readyReturns, setReadyReturns, appSettings, saveSetting, requirePin, guardAction, currentUser, signOut } },
+    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, readyReturns, setReadyReturns, appSettings, saveSetting, guardAction, logAudit, currentUser, signOut } },
     children,
     pinModalOpen && React.createElement(PinConfirmModal, { onConfirm: confirmPin, onCancel: dismissPinModal })
   );
@@ -3830,7 +3934,7 @@ function OverdueRentalsPage() {
 // ─── VehicleDetailPage ──────────────────────────────────────────────────────────────────────────────
 
 function VehicleDetailPage() {
-  const { openVehiclePlate, fleet, setFleet, reservations, rentalAgreements, setOpenRentalAgreementId, damageClaims, requirePin } = React.useContext(AppContext);
+  const { openVehiclePlate, fleet, setFleet, reservations, rentalAgreements, setOpenRentalAgreementId, damageClaims, guardAction } = React.useContext(AppContext);
   const navigate = useNavigate();
 
   const plate   = openVehiclePlate || "";
@@ -3918,12 +4022,12 @@ function VehicleDetailPage() {
       window.alert(error);
       return;
     }
-    requirePin(() => {
+    guardAction("vehicle.pmComplete", () => {
       setFleet((prev) => prev.map((v) => v.plate === plate ? { ...v, ...patch } : v));
       supabase.from("fleet").update(patch).eq("id", vehicle.id)
         .then(({ error }) => { if (error) console.warn("fleet PM complete failed:", error); })
         .catch((err) => console.warn("fleet PM complete:", err));
-    });
+    }, { tableName: "fleet", recordId: plate, description: `PM recorded complete. Interval rebaselined to ${patch.lastPmOdometer} km${patch.status ? ", status PM -> Available" : ""}.` });
   };
   const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
 
@@ -5427,7 +5531,7 @@ function FleetVehiclesPage() {
 // ─── FleetAdditionsPage ────────────────────────────────────────────────────────
 
 function FleetAdditionsPage() {
-  const { fleet, setFleet, requirePin } = React.useContext(AppContext);
+  const { fleet, setFleet, guardAction } = React.useContext(AppContext);
   const { filtered, filterState } = useFleetFilter(fleet);
   const [activeTab,  setActiveTab]  = React.useState("add");
   const [archived,   setArchived]   = React.useState(ARCHIVED_VEHICLES_SEED);
@@ -5479,7 +5583,7 @@ function FleetAdditionsPage() {
     const unique = validateVehicleUniqueness(candidate, fleet, null);
     if (!unique.ok) { setAddError(unique.error); return; }
 
-    requirePin(() => {
+    guardAction("vehicle.add", () => {
       const newVehicle = {
         plate, make: addForm.make, model: addForm.model,
         vehicleClass: addForm.vehicleClass || "Compact Car",
@@ -5500,7 +5604,7 @@ function FleetAdditionsPage() {
       setTankCanonical(null);
       setPmCanonical(null);
       setAddSuccess(true);
-    });
+    }, { tableName: "fleet", recordId: plate, description: `Added ${addForm.year} ${addForm.make} ${addForm.model}, ${addForm.vehicleClass}, VIN ${candidate.vin}.` });
   };
 
   const handleRetireSubmit = (e) => {
@@ -5509,7 +5613,7 @@ function FleetAdditionsPage() {
     const v = fleet.find((x) => x.id === retireForm.plateId);
     if (!v) { setRetireError("Vehicle not found."); return; }
     const extra = VEHICLE_EXTRA_DATA[v.plate] || {};
-    requirePin(() => {
+    guardAction("vehicle.retire", () => {
       setArchived((prev) => [...prev, {
         id: `AV-${Date.now()}`, plate: v.plate, make: v.make, model: v.model,
         year: extra.year || "", colour: extra.colour || "", province: extra.province || "",
@@ -5518,7 +5622,7 @@ function FleetAdditionsPage() {
       setFleet((prev) => prev.filter((x) => x.id !== retireForm.plateId));
       supabase.from("fleet").delete().eq("id", retireForm.plateId).then((res) => { console.log("fleet delete response:", res); if (res.error) console.warn("fleet delete error:", res.error); }).catch((e) => console.warn("fleet delete:", e));
       setRetireForm(BLANK_RETIRE);
-    });
+    }, { tableName: "fleet", recordId: v.plate, description: `Retired ${v.make} ${v.model}. Disposal ${retireForm.disposalDate}, reason: ${retireForm.reason}.` });
   };
 
   const fmtDate = (iso) => {
@@ -5742,7 +5846,7 @@ function FleetDamageClaimsPage() {
       supabase.from("damage_claims").update({ status: "resolved", resolvedAt: now, updatedAt: now }).eq("id", claim.id).then(({ error }) => {
         if (error) console.warn("damage_claims update failed:", claim.id, error);
       }).catch((e) => console.warn("damage_claims update:", e));
-    });
+    }, { tableName: "damage_claims", recordId: claim.id, description: `Damage claim marked resolved${claim.plate ? ` on ${claim.plate}` : ""}.` });
   };
 
   const renderTable = (claims, showResolve) =>
@@ -5957,6 +6061,154 @@ function ReportsPage() {
 
 // ─── SettingsPage ──────────────────────────────────────────────────────────────
 
+// ─── AuditLogPage ────────────────────────────────────────────────────────────
+// Read only, deliberately. Nothing in the app writes here except guardAction,
+// and an audit log staff can edit is not an audit log.
+function AuditLogPage() {
+  const [rows,    setRows]    = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error,   setError]   = React.useState("");
+
+  const [actorFilt,   setActorFilt]   = React.useState("All");
+  const [actionFilt,  setActionFilt]  = React.useState("All");
+  const [outcomeFilt, setOutcomeFilt] = React.useState("All");
+  const [fromDate,    setFromDate]    = React.useState("");
+  const [toDate,      setToDate]      = React.useState("");
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      // Capped rather than unbounded: this table only grows, and a page that
+      // tries to render every entry gets slower every week it runs.
+      const { data, error: err } = await supabase
+        .from("audit_log").select("*").order("timestamp", { ascending: false }).limit(500);
+      if (cancelled) return;
+      if (err) setError(err.message || "Could not load the audit log.");
+      else setRows(data || []);
+      setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const actors  = React.useMemo(() => [...new Set(rows.map((r) => r.actor).filter(Boolean))].sort(), [rows]);
+  const actions = React.useMemo(() => [...new Set(rows.map((r) => r.actionType).filter(Boolean))].sort(), [rows]);
+
+  const filtered = rows.filter((r) => {
+    if (actorFilt   !== "All" && r.actor      !== actorFilt)   return false;
+    if (actionFilt  !== "All" && r.actionType !== actionFilt)  return false;
+    if (outcomeFilt !== "All" && r.outcome    !== outcomeFilt) return false;
+    // Compared on the local calendar day, so "today" means the staff member's
+    // today rather than UTC's.
+    const day = r.timestamp ? new Date(r.timestamp).toLocaleDateString("en-CA") : "";
+    if (fromDate && day < fromDate) return false;
+    if (toDate   && day > toDate)   return false;
+    return true;
+  });
+
+  const fmtWhen = (iso) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso
+      : d.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  };
+
+  const outcomeClass = (o) =>
+    o === "completed" ? "auditOutcome auditOutcome--completed"
+    : o === "cancelled" ? "auditOutcome auditOutcome--cancelled"
+    : "auditOutcome auditOutcome--refused";
+
+  const select = (label, value, onChange, options) =>
+    React.createElement("div", { className: "auditFilter" },
+      React.createElement("label", { className: "auditFilterLabel" }, label),
+      React.createElement("select",
+        { className: "auditFilterInput", value, onChange: (e) => onChange(e.target.value) },
+        options.map((o) => React.createElement("option", { key: o, value: o }, o))
+      )
+    );
+
+  const dateInput = (label, value, onChange) =>
+    React.createElement("div", { className: "auditFilter" },
+      React.createElement("label", { className: "auditFilterLabel" }, label),
+      React.createElement("input", {
+        type: "date", className: "auditFilterInput", value,
+        onChange: (e) => onChange(e.target.value),
+      })
+    );
+
+  return React.createElement(
+    "div", { className: "page" },
+    React.createElement("h1", { className: "page__title" }, "Audit Log"),
+    React.createElement("div", { className: "page__titleUnderline" }),
+
+    React.createElement("p", { className: "aiTabDesc", style: { marginBottom: "14px" } },
+      "Every action that changes something, by whom and when, from the app and from fleetr ai alike. ",
+      "Cancelled and refused attempts are recorded too, not just the ones that went through. ",
+      "This view is read only."
+    ),
+
+    React.createElement("section", { className: "dashboardSection", style: { marginBottom: "16px" } },
+      React.createElement("div", { className: "dashboardSection__body" },
+        React.createElement("div", { className: "auditFilters" },
+          select("Actor",   actorFilt,   setActorFilt,   ["All", ...actors]),
+          select("Action",  actionFilt,  setActionFilt,  ["All", ...actions]),
+          select("Outcome", outcomeFilt, setOutcomeFilt, ["All", "completed", "cancelled", "refused"]),
+          dateInput("From", fromDate, setFromDate),
+          dateInput("To",   toDate,   setToDate),
+          React.createElement("button", {
+            type: "button", className: "auditClearBtn",
+            onClick: () => { setActorFilt("All"); setActionFilt("All"); setOutcomeFilt("All"); setFromDate(""); setToDate(""); },
+          }, "Clear")
+        )
+      )
+    ),
+
+    React.createElement("section", { className: "dashboardSection" },
+      React.createElement("div", { className: "dashboardSection__header" },
+        React.createElement("div", { className: "dashboardSection__headerRow" },
+          React.createElement("span", null, `Entries (${filtered.length}${filtered.length !== rows.length ? ` of ${rows.length}` : ""})`)
+        )
+      ),
+      React.createElement("div", { className: "dashboardSection__body" },
+        error
+          ? React.createElement("div", { className: "addVehicleError" }, error)
+        : loading
+          ? React.createElement("div", { className: "resvEmpty" }, "Loading…")
+        : filtered.length === 0
+          ? React.createElement("div", { className: "resvEmpty" },
+              rows.length === 0 ? "Nothing recorded yet." : "No entries match these filters.")
+          : React.createElement("table", { className: "dashboardTable" },
+              React.createElement("thead", null,
+                React.createElement("tr", null,
+                  ["When", "Actor", "Action", "Record", "Tier", "Outcome", "Details"].map((c) =>
+                    React.createElement("th", { key: c }, c))
+                )
+              ),
+              React.createElement("tbody", null,
+                filtered.map((r) =>
+                  React.createElement("tr", { key: r.id },
+                    React.createElement("td", { style: { whiteSpace: "nowrap" } }, fmtWhen(r.timestamp)),
+                    React.createElement("td", null, r.actor || "—"),
+                    React.createElement("td", null,
+                      React.createElement("div", null, r.actionLabel || r.actionType),
+                      React.createElement("div", { className: "auditActionKey" }, r.actionType)
+                    ),
+                    React.createElement("td", null,
+                      r.recordId || "—",
+                      r.tableName && React.createElement("div", { className: "auditActionKey" }, r.tableName)
+                    ),
+                    React.createElement("td", null, r.tier || "—"),
+                    React.createElement("td", null,
+                      React.createElement("span", { className: outcomeClass(r.outcome) }, r.outcome || "—")),
+                    React.createElement("td", { className: "auditDescription" }, r.description || "—")
+                  )
+                )
+              )
+            )
+      )
+    )
+  );
+}
+
 function SettingsPage() {
   const { appSettings, saveSetting, fleet, guardAction } = React.useContext(AppContext);
 
@@ -6013,7 +6265,7 @@ function SettingsPage() {
     if (n === appSettings.gasMarkupPercent) return;
     guardAction("gas.markup", async () => {
       if (await saveSetting("gasMarkupPercent", n)) flash("Markup saved.");
-    });
+    }, { tableName: "app_settings", recordId: "gasMarkupPercent", description: `Gas markup ${appSettings.gasMarkupPercent ?? "unset"}% -> ${n}%.` });
   };
 
   const commitPrice = async (region) => {
@@ -6031,7 +6283,7 @@ function SettingsPage() {
     if (n === null) delete next[region]; else next[region] = n;
     guardAction("gas.regionPrice", async () => {
       if (await saveSetting("gasPrices", next)) flash(`${region} price saved.`);
-    });
+    }, { tableName: "app_settings", recordId: region, description: `${region} fuel price ${gasPrices[region] ?? "unset"} -> ${n ?? "cleared"} per litre.` });
   };
 
   const missingTank = fleet.filter((v) => v.tankSizeLiters == null).length;
@@ -6334,7 +6586,7 @@ function PlaceholderPage({ title }) {
 // ─── Fleetr AI Command Bar ───────────────────────────────────────────────────
 
 function FleetrCommandBar() {
-  const { requirePin, guardAction, currentUser, reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows, damageClaims, setDamageClaims, appSettings, saveSetting } = React.useContext(AppContext);
+  const { guardAction, logAudit, currentUser, reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows, damageClaims, setDamageClaims, appSettings, saveSetting } = React.useContext(AppContext);
   const [command,        setCommand]        = React.useState("");
   const [aiMessage,      setAiMessage]      = React.useState("");
   const [pendingAction,  setPendingAction]  = React.useState(null);
@@ -6493,8 +6745,23 @@ function FleetrCommandBar() {
   // tier than the field deserves.
   // Reuses the same channel a failed Supabase write reports through, and drops
   // the pending action so the Confirm button cannot be pressed again.
+  // A refusal happens before guardAction is ever reached, so it has to record
+  // itself. These are worth keeping: they are the attempts the rules stopped.
   const abortAction = (msg, ctx) => {
     console.warn("Fleetr AI action blocked by a write rule:", msg, ctx);
+    const key = commandBarActionKey({
+      table:     pendingAction?.table,
+      operation: pendingAction?.operation,
+      data:      editableData,
+    });
+    logAudit({
+      actor:       AI_ACTOR,
+      actionType:  key,
+      tableName:   pendingAction?.table || null,
+      recordId:    auditRecordId(pendingAction?.table, pendingAction?.match, editableData),
+      outcome:     "refused",
+      description: `${msg} Asked by ${actorName(currentUser)}.`,
+    });
     setAiMessage(msg);
     setPendingAction(null);
     setActionLoading(false);
@@ -6514,7 +6781,14 @@ function FleetrCommandBar() {
     // lighter tier than the field deserves.
     const key = commandBarActionKey(plan);
     console.log("Fleetr command bar action tier:", key, actionTier(key));
-    guardAction(key, () => executeAction(plan));
+    // Signed as fleetr ai, with the staff member who confirmed it named in the
+    // description so the entry still leads back to a person.
+    guardAction(key, () => executeAction(plan), {
+      actor:       AI_ACTOR,
+      tableName:   plan.table,
+      recordId:    auditRecordId(plan.table, plan.match, plan.data),
+      description: `${auditDescribe(plan.data) || plan.operation}. Asked by ${actorName(currentUser)}.`,
+    });
   };
 
   // Resolves the pending action against the shared write rules and returns the
@@ -6772,7 +7046,7 @@ function FleetrCommandBar() {
             error = { message: "Could not find that record to add a note to." };
           } else {
             const existing = parseNotesLog(rows[0].notesLog);
-            const newLog   = [...existing, { author: currentUser?.name || "fleetr ai", text: noteText }];
+            const newLog   = [...existing, { author: actorName(currentUser), text: noteText }];
             ({ error } = await supabase.from(table).update({ notesLog: newLog }).eq(idCol, idVal));
             if (!error && setLocal) {
               setLocal((prev) => prev.map((row) => (String(row[idCol]) === String(idVal) ? { ...row, notesLog: newLog } : row)));
@@ -7553,7 +7827,7 @@ const RATES_VCLASS_CATS = {
 // ─── CustomerPage ─────────────────────────────────────────────────────────────
 
 function CustomerPage() {
-  const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, requirePin, guardAction, setDamageClaims } = React.useContext(AppContext);
+  const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, guardAction, logAudit, setDamageClaims } = React.useContext(AppContext);
   const navigate = useNavigate();
   const name   = openCustomer?.name   || "Customer";
   const resCode = openCustomer?.resCode || null;
@@ -7906,24 +8180,35 @@ function CustomerPage() {
     // action they are about to cancel.
     if (!confirmRentalDespitePm(pmVehicle)) {
       console.log("rental open cancelled: vehicle flagged for PM", pmVehicle?.plate);
+      // Declining the PM warning never reaches guardAction, so it logs itself.
+      logAudit({
+        actionType: "ra.open", tableName: "reservations", recordId: resCode,
+        outcome: "refused",
+        description: `Declined to open the rental: ${pmVehicle?.plate || "the vehicle"} is flagged for preventative maintenance.`,
+      });
       return;
     }
-    requirePin(() => {
+    guardAction("ra.open", () => {
       setLocalRecord((prev) => prev ? { ...prev, rentalAgreementStatus: "open_rental_agreement" } : prev);
       setReservations((prev) =>
         prev.map((r) => r.resCode === resCode ? { ...r, rentalAgreementStatus: "open_rental_agreement" } : r)
       );
       syncRAStatus(resCode, "open_rental_agreement");
-    });
+    }, { tableName: "reservations", recordId: resCode, description: `Rental agreement opened${pmVehicle?.plate ? ` on ${pmVehicle.plate}` : ""}.` });
   };
 
   const updateRentalAgreementStatus = (status) => {
     // Reopening a rental agreement is the same soft block as opening one.
     if (status === "open_rental_agreement" && !confirmRentalDespitePm(pmVehicle)) {
       console.log("rental reopen cancelled: vehicle flagged for PM", pmVehicle?.plate);
+      logAudit({
+        actionType: "ra.open", tableName: "reservations", recordId: resCode,
+        outcome: "refused",
+        description: `Declined to reopen the rental: ${pmVehicle?.plate || "the vehicle"} is flagged for preventative maintenance.`,
+      });
       return;
     }
-    requirePin(() => {
+    guardAction(status === "open_rental_agreement" ? "ra.open" : "ra.advance", () => {
       setLocalRecord((prev) => prev ? { ...prev, rentalAgreementStatus: status } : prev);
       setReservations((prev) =>
         prev.map((r) => r.resCode === resCode ? { ...r, rentalAgreementStatus: status } : r)
@@ -7938,7 +8223,7 @@ function CustomerPage() {
           .then((res) => console.log("reservations return date/time update:", res))
           .catch((e) => console.warn("reservations return date/time update:", e));
       }
-    });
+    }, { tableName: "reservations", recordId: resCode, description: `Rental agreement status ${rentalAgreementStatus} -> ${status}.` });
   };
 
   const handleDeleteReservation = async () => {
@@ -7947,7 +8232,7 @@ function CustomerPage() {
       `Delete reservation ${resCode} for ${name}? This cannot be undone.`
     );
     if (!confirmed) return;
-    requirePin(async () => {
+    guardAction("reservation.delete", async () => {
       setReservations((prev) => prev.filter((r) => r.resCode !== resCode));
       try {
         await supabase.from("reservations").delete().eq("resCode", resCode);
@@ -7955,7 +8240,7 @@ function CustomerPage() {
         console.warn("Delete reservation error:", e);
       }
       navigate(-1);
-    });
+    }, { tableName: "reservations", recordId: resCode, description: `Deleted reservation for ${name}.` });
   };
 
   const deleteBtn = React.createElement("button", {
@@ -7995,7 +8280,7 @@ function CustomerPage() {
         };
         setDamageClaims((prev) => [...prev, { ...claim, reportedAt: new Date().toISOString() }]);
         supabase.from("damage_claims").insert(claim).catch((e) => console.warn("damage_claims insert:", e));
-      });
+      }, { tableName: "damage_claims", recordId: resCode, description: `Damage flagged${ra?.plate ? ` on ${ra.plate}` : ""}: ${description || "no description given"}.` });
     },
   }, isDamaged ? "Damage Flagged" : "Flag Damage");
 
@@ -8867,6 +9152,10 @@ function AppRoutes() {
       element: React.createElement(SettingsPage),
     }),
     React.createElement(Route, {
+      path: "/audit-log",
+      element: React.createElement(AuditLogPage),
+    }),
+    React.createElement(Route, {
       path: "/rental-agreements",
       element: React.createElement(RentalAgreementsPage),
     }),
@@ -8874,7 +9163,7 @@ function AppRoutes() {
       path: "/customer",
       element: React.createElement(CustomerPage),
     }),
-    NAV.filter((item) => !["/dashboard", "/reservations", "/arms", "/pre-rental-check", "/overdue-rentals", "/time-of-repair", "/no-shows", "/fleet", "/fleet/vehicles", "/fleet/additions", "/fleet/gas-collections", "/fleet/damage-claims", "/reports", "/settings", "/rental-agreements", "/customer", "/vehicle"].includes(item.path))
+    NAV.filter((item) => !["/dashboard", "/reservations", "/arms", "/pre-rental-check", "/overdue-rentals", "/time-of-repair", "/no-shows", "/fleet", "/fleet/vehicles", "/fleet/additions", "/fleet/gas-collections", "/fleet/damage-claims", "/reports", "/settings", "/audit-log", "/rental-agreements", "/customer", "/vehicle"].includes(item.path))
       .map((item) =>
         React.createElement(Route, {
           key: item.path,
@@ -10738,6 +11027,75 @@ body, * {
   line-height: 1.5;
 }
 .pmBannerPlates { font-weight: 700; }
+
+/* ─── Audit Log ─────────────────────────────────────────────────────────── */
+.auditFilters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+.auditFilter {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.auditFilterLabel {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(6,13,12,0.5);
+}
+.auditFilterInput {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid #d3dbe8;
+  border-radius: 8px;
+  background: #fff;
+  color: #1F1E1D;
+  min-width: 140px;
+}
+.auditFilterInput:focus {
+  outline: none;
+  border-color: #42a4ff;
+  box-shadow: 0 0 0 3px rgba(66,164,255,0.15);
+}
+.auditClearBtn {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 14px;
+  border: 1px solid #d3dbe8;
+  border-radius: 8px;
+  background: #fff;
+  color: #1F1E1D;
+  cursor: pointer;
+}
+.auditClearBtn:hover { background: #f2f5fa; }
+/* The policy key under the human label. Present so an entry traces back to
+   ACTION_POLICY without guessing, quiet enough not to compete with the label. */
+.auditActionKey {
+  font-size: 11px;
+  color: rgba(6,13,12,0.45);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.auditDescription {
+  max-width: 420px;
+  font-size: 12px;
+  color: rgba(6,13,12,0.75);
+}
+.auditOutcome {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+.auditOutcome--completed { background: #d1fae5; color: #065f46; }
+.auditOutcome--cancelled { background: #fef3c7; color: #92400e; }
+.auditOutcome--refused   { background: #fee2e2; color: #991b1b; }
 
 .gasSettingRow {
   display: flex;
