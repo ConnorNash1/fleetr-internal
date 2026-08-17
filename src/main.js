@@ -275,37 +275,49 @@ Gas collections:
 // The tier is about consequence, not effort. A note can be edited away; a
 // deleted reservation and a vehicle released from PM cannot.
 const ACTION_POLICY = {
-  // Deletes, and composites that contain one.
-  "reservation.delete":   { tier: "pin", label: "Delete reservation" },
-  "reservation.noShow":   { tier: "pin", label: "Mark reservation as a no-show" },
-  "noShow.confirmPickup": { tier: "pin", label: "Confirm the customer showed up" },
-  "vehicle.retire":       { tier: "pin", label: "Retire vehicle" },
+  // ── PIN: hard to undo, or moves money ──────────────────────────────────────
+  // The tier is set by consequence, not by how important the action feels. A
+  // gate on everything is a gate on nothing: staff who type a PIN forty times a
+  // shift stop reading what they are confirming, which is exactly the habit the
+  // gate exists to prevent. So the list below is deliberately short.
 
-  // Money.
-  "gas.amount":       { tier: "pin", label: "Change the amount owed" },
-  "gas.collected":    { tier: "pin", label: "Change gas payment status" },
-  "gas.markup":       { tier: "pin", label: "Change the gas markup" },
-  "gas.regionPrice":  { tier: "pin", label: "Change a regional fuel price" },
-  "damage.flag":      { tier: "pin", label: "Flag damage" },
-  "damage.resolve":   { tier: "pin", label: "Resolve a damage claim" },
-  // Tank size is a money input: it is the divisor in every gas charge.
+  // Destroys a record. There is no undo for any of these.
+  "reservation.delete": { tier: "pin", label: "Delete reservation" },
+  "reservation.noShow": { tier: "pin", label: "Mark reservation as a no-show" },
+  "vehicle.retire":     { tier: "pin", label: "Retire vehicle" },
+
+  // Changes a dollar amount.
+  "gas.amount":      { tier: "pin", label: "Change the amount owed" },
+  // Not obviously money until you read the handler: marking a balance Paid also
+  // writes gasOwed to "0", so this writes off what a customer owed.
+  "gas.collected":   { tier: "pin", label: "Change gas payment status" },
+  "gas.markup":      { tier: "pin", label: "Change the gas markup" },
+  "gas.regionPrice": { tier: "pin", label: "Change a regional fuel price" },
+  // Tank size is a money input: it is the divisor in every future gas charge.
   "vehicle.tankSize": { tier: "pin", label: "Set tank size" },
 
-  // Vehicle status and PM.
-  "vehicle.status":     { tier: "pin", label: "Change vehicle status" },
-  "vehicle.collected":  { tier: "pin", label: "Mark vehicle collected" },
-  "vehicle.pmComplete": { tier: "pin", label: "Record preventative maintenance as complete" },
-  "vehicle.pmInterval": { tier: "pin", label: "Set the PM interval" },
-  "vehicle.add":        { tier: "pin", label: "Add a vehicle to the fleet" },
-  // Plate, VIN and class are what the fleet is identified and billed by, and a
-  // plate edit is what other tables point at, so corrections sit with the rest.
-  "vehicle.details":    { tier: "pin", label: "Edit vehicle details" },
-
-  // Rental agreement lifecycle.
+  // Puts a vehicle on the road or ends a rental. ra.open is also where the PM
+  // soft block is overridden, so the safety override is gated here.
   "ra.open":    { tier: "pin", label: "Open a rental agreement" },
   "ra.advance": { tier: "pin", label: "Change rental agreement status" },
+  // The PM interval is the back door to the same safety block: setting it wide
+  // enough silences the flag for the whole fleet without overriding anything.
+  "vehicle.pmInterval": { tier: "pin", label: "Set the PM interval" },
 
-  // Reversible, no money or safety weight.
+  // ── Confirm: routine, reversible, done many times a day ────────────────────
+  "vehicle.status":     { tier: "confirm", label: "Change vehicle status" },
+  "vehicle.collected":  { tier: "confirm", label: "Mark vehicle collected" },
+  "vehicle.pmComplete": { tier: "confirm", label: "Record preventative maintenance as complete" },
+  "vehicle.add":        { tier: "confirm", label: "Add a vehicle to the fleet" },
+  "vehicle.details":    { tier: "confirm", label: "Edit vehicle details" },
+  // Restores a reservation rather than destroying one. The destructive
+  // direction, reservation.noShow, keeps its PIN.
+  "noShow.confirmPickup": { tier: "confirm", label: "Confirm the customer showed up" },
+  // Records that damage exists; it sets no amount. The claim's dollar value is
+  // a gas.amount-style write, gated separately.
+  "damage.flag":      { tier: "confirm", label: "Flag damage" },
+  // Sets status to resolved and stamps a time. No amount is written here.
+  "damage.resolve":   { tier: "confirm", label: "Resolve a damage claim" },
   "reservation.add":  { tier: "confirm", label: "Add reservation" },
   "reservation.edit": { tier: "confirm", label: "Save reservation changes" },
   "note.add":         { tier: "confirm", label: "Add a note" },
@@ -405,7 +417,12 @@ function commandBarActionKey({ table, operation, data }) {
     if (fields.includes("status")) return "vehicle.status";
     // A correction to the vehicle's identity: plate, VIN, class, year and so on.
     if (touches(VEHICLE_DETAIL_KEYS)) return "vehicle.details";
-    return "vehicle.status"; // unknown fleet payload keeps the safer existing key
+    // An unrecognised fleet payload. This used to fall back to vehicle.status,
+    // which was fine while that was PIN-tier and is not now: the fallback would
+    // have quietly become the weakest tier rather than the strongest. The key
+    // below is deliberately absent from ACTION_POLICY so actionTier's
+    // unknown-defaults-to-pin rule is what decides it.
+    return "vehicle.unknown";
   }
   if (table === "damage_claims") return "damage.resolve";
   if (table === "rental_agreements") {
@@ -911,9 +928,32 @@ const DASHBOARD_RES_SEED = [
 
 const AppContext = React.createContext(null);
 
+// ── runWrite: fire a supabase-js v1 write and report what happened ───────────
+// v1 query builders are thenables, not Promises: they implement then() but not
+// catch() or finally(). So `supabase.from(x).update(y).eq(...).catch(fn)` threw
+// a TypeError on the .catch call, and because v1 only sends the request when
+// then() is invoked, the write was never issued at all. Twelve call sites did
+// this. Each one paired with an optimistic React update, so the screen showed
+// the new value and the database kept the old one until the next reload.
+//
+// Found by the audit log rather than by anyone noticing: guardAction caught the
+// TypeError and recorded the actions as refused.
+const runWrite = (builder, label) =>
+  builder.then(
+    ({ error }) => { if (error) console.warn(`${label} failed:`, error); },
+    (e) => console.warn(`${label} threw:`, e)
+  );
+
 // ─── PIN Confirmation Modal ───────────────────────────────────────────────────
 // ── PIN failure messages ─────────────────────────────────────────────────────
 const PIN_WRONG_MESSAGE = "Incorrect PIN. Please try again.";
+
+// Shown when the check itself failed, as opposed to the PIN being wrong. These
+// are different events and they now read differently: verify_pin was throwing
+// 42883 on every call for two sessions, and because the failure was reported as
+// "Incorrect PIN" it looked like a forgotten PIN rather than a broken gate.
+// Still fails closed; it just stops lying about why.
+const PIN_UNAVAILABLE_MESSAGE = "PIN check unavailable. Nothing was changed. Please try again or contact support.";
 
 // verify_pin returned a bare boolean before the lockout was added. Both shapes
 // are read here because the SQL is applied by hand: a browser holding the new
@@ -1165,7 +1205,7 @@ function AppProvider({ children, currentUser, signOut }) {
       if (error) {
         console.warn("verify_pin failed:", error);
         // Fail closed. A broken check must never open the gate.
-        return { ok: false, message: PIN_WRONG_MESSAGE };
+        return { ok: false, message: PIN_UNAVAILABLE_MESSAGE };
       }
       const result = readPinResult(data);
       if (!result.ok) return { ok: false, message: pinFailureMessage(result) };
@@ -2210,7 +2250,7 @@ function ReservationsPage() {
                           setReservations((prev) =>
                             prev.map((r) => r.resCode === row.resCode ? { ...r, notesLog: newLog } : r)
                           );
-                          supabase.from("reservations").update({ notesLog: newLog }).eq("resCode", row.resCode).catch((e) => console.warn("notes sync:", e));
+                          runWrite(supabase.from("reservations").update({ notesLog: newLog }).eq("resCode", row.resCode), "notes sync");
                         },
                       })
                     )
@@ -2421,7 +2461,7 @@ function NonDriveIntakeSection({ standalone }) {
     );
     // slaTimer is a UI-only countdown — not a Supabase column
     if (field !== "slaTimer") {
-      supabase.from("ndi_rows").update({ [field]: value }).eq("id", id).catch((e) => console.warn("ndi_rows update:", e));
+      runWrite(supabase.from("ndi_rows").update({ [field]: value }).eq("id", id), "ndi_rows update");
     }
   };
 
@@ -2474,9 +2514,9 @@ function NonDriveIntakeSection({ standalone }) {
         next.sort((a, b) => parseTimeToMinutes(a.time) - parseTimeToMinutes(b.time));
         return next;
       });
-      supabase.from("reservations").insert(newRes).then((res) => console.log("reservations insert response:", res)).catch((e) => console.warn("reservations insert:", e));
+      runWrite(supabase.from("reservations").insert(newRes).then((res) => console.log("reservations insert response:", res)), "reservations insert");
       setNdiRows((prev) => prev.filter((row) => row.id !== id));
-      supabase.from("ndi_rows").delete().eq("id", id).catch((e) => console.warn("ndi_rows delete:", e));
+      runWrite(supabase.from("ndi_rows").delete().eq("id", id), "ndi_rows delete");
     });
   };
 
@@ -2738,7 +2778,7 @@ function DashboardPage() {
       setFleet((prev) => prev.map((fv) =>
         fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
       ));
-      supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
+      runWrite(supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id), "fleet update");
       setCollectedOpenId(null);
       if (forced) window.alert(message);
     });
@@ -3141,7 +3181,7 @@ function DashboardPage() {
                               setReservations((prev) =>
                                 prev.map((r) => r.resCode === row.resCode ? { ...r, notesLog: newLog } : r)
                               );
-                              supabase.from("reservations").update({ notesLog: newLog }).eq("resCode", row.resCode).catch((e) => console.warn("notes sync:", e));
+                              runWrite(supabase.from("reservations").update({ notesLog: newLog }).eq("resCode", row.resCode), "notes sync");
                             },
                           })
                         )
@@ -3781,9 +3821,9 @@ function NoShowsPage() {
     // Deletes the no-show row, so it takes the PIN.
     guardAction("noShow.confirmPickup", () => {
       setReservations((prev) => [...prev, newRes]);
-      supabase.from("reservations").insert(newRes).then((res) => console.log("reservations insert response:", res)).catch((e) => console.warn("reservations insert:", e));
+      runWrite(supabase.from("reservations").insert(newRes).then((res) => console.log("reservations insert response:", res)), "reservations insert");
       setNoShows((prev) => prev.filter((r) => r.id !== row.id));
-      supabase.from("no_shows").delete().eq("id", row.id).catch((e) => console.warn("no_shows delete:", e));
+      runWrite(supabase.from("no_shows").delete().eq("id", row.id), "no_shows delete");
     });
   };
 
@@ -4361,7 +4401,7 @@ function VehicleDetailPage() {
                     prev.map((v) => v.plate === plate ? { ...v, status: newStatus } : v)
                   );
                   if (vehicle.id) {
-                    supabase.from("fleet").update({ status: newStatus }).eq("id", vehicle.id).catch((err) => console.warn("fleet update:", err));
+                    runWrite(supabase.from("fleet").update({ status: newStatus }).eq("id", vehicle.id), "fleet update");
                   }
                   if (forced) window.alert(message);
                 });
@@ -4479,7 +4519,7 @@ function FleetPage() {
       setFleet((prev) => prev.map((fv) =>
         fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
       ));
-      supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
+      runWrite(supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id), "fleet update");
       setCollectedOpenId(null);
       if (forced) window.alert(message);
     });
@@ -4674,7 +4714,7 @@ function TORPage() {
           : r
       )
     );
-    supabase.from("reservations").update({ returnDate: date, repairDateConfirmed: true }).eq("resCode", resCode).catch((e) => console.warn("reservations update:", e));
+    runWrite(supabase.from("reservations").update({ returnDate: date, repairDateConfirmed: true }).eq("resCode", resCode), "reservations update");
   };
 
   return React.createElement(
@@ -5441,7 +5481,7 @@ function FleetVehiclesPage() {
       setFleet((prev) => prev.map((fv) =>
         fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
       ));
-      supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id).catch((e) => console.warn("fleet update:", e));
+      runWrite(supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id), "fleet update");
       setCollectedOpenId(null);
       if (forced) window.alert(message);
     });
@@ -5452,7 +5492,7 @@ function FleetVehiclesPage() {
     const { status: finalStatus, forced, message } = resolvePmStatus(vehicle, newStatus);
     guardAction("vehicle.status", () => {
       setFleet((prev) => prev.map((fv) => fv.id === vehicle.id ? { ...fv, status: finalStatus } : fv));
-      supabase.from("fleet").update({ status: finalStatus }).eq("id", vehicle.id).catch((e) => console.warn("fleet status update:", e));
+      runWrite(supabase.from("fleet").update({ status: finalStatus }).eq("id", vehicle.id), "fleet status update");
       if (forced) window.alert(message);
     });
   };
@@ -5751,7 +5791,7 @@ function FleetAdditionsPage() {
         currentRenter: null, dueBack: null, fileType: null,
       };
       setFleet((prev) => [...prev, newVehicle]);
-      supabase.from("fleet").insert(newVehicle).then((res) => { console.log("fleet insert response:", res); if (res.error) console.warn("fleet insert error:", res.error); }).catch((e) => console.warn("fleet insert:", e));
+      runWrite(supabase.from("fleet").insert(newVehicle).then((res) => { console.log("fleet insert response:", res); if (res.error) console.warn("fleet insert error:", res.error); }), "fleet insert");
       setAddForm(BLANK_ADD);
       setTankCanonical(null);
       setPmCanonical(null);
@@ -5772,7 +5812,7 @@ function FleetAdditionsPage() {
         vin: extra.vin || "", disposalDate: retireForm.disposalDate, reason: retireForm.reason,
       }]);
       setFleet((prev) => prev.filter((x) => x.id !== retireForm.plateId));
-      supabase.from("fleet").delete().eq("id", retireForm.plateId).then((res) => { console.log("fleet delete response:", res); if (res.error) console.warn("fleet delete error:", res.error); }).catch((e) => console.warn("fleet delete:", e));
+      runWrite(supabase.from("fleet").delete().eq("id", retireForm.plateId).then((res) => { console.log("fleet delete response:", res); if (res.error) console.warn("fleet delete error:", res.error); }), "fleet delete");
       setRetireForm(BLANK_RETIRE);
     }, { tableName: "fleet", recordId: v.plate, description: `Retired ${v.make} ${v.model}. Disposal ${retireForm.disposalDate}, reason: ${retireForm.reason}.` });
   };
@@ -8418,7 +8458,7 @@ function CustomerPage() {
         setReservations((prev) =>
           prev.map((r) => r.resCode === resCode ? { ...r, hasDamage: true } : r)
         );
-        supabase.from("reservations").update({ hasDamage: true }).eq("resCode", resCode).catch((e) => console.warn("reservations update:", e));
+        runWrite(supabase.from("reservations").update({ hasDamage: true }).eq("resCode", resCode), "reservations update");
 
         // Flagging damage here is a manual, standalone report (no return flow,
         // no photos), it still creates a real damage_claims row.
@@ -8431,7 +8471,7 @@ function CustomerPage() {
           status:            "open",
         };
         setDamageClaims((prev) => [...prev, { ...claim, reportedAt: new Date().toISOString() }]);
-        supabase.from("damage_claims").insert(claim).catch((e) => console.warn("damage_claims insert:", e));
+        runWrite(supabase.from("damage_claims").insert(claim), "damage_claims insert");
       }, { tableName: "damage_claims", recordId: resCode, description: `Damage flagged${ra?.plate ? ` on ${ra.plate}` : ""}: ${description || "no description given"}.` });
     },
   }, isDamaged ? "Damage Flagged" : "Flag Damage");
