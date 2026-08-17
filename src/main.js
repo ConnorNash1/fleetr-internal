@@ -715,12 +715,11 @@ function enrichDamageClaim(claim, rentalAgreements, reservations) {
   };
 }
 
-// ─── Archived vehicles seed ────────────────────────────────────────────────────
-
-const ARCHIVED_VEHICLES_SEED = [
-  { id: "AV-1", plate: "XKR-401", make: "Ford",   model: "Focus", year: 2018, colour: "Silver", province: "NL", vin: "1FADP3F24JL123456", disposalDate: "2025-10-15", reason: "High mileage — decommissioned" },
-  { id: "AV-2", plate: "PTN-889", make: "Toyota", model: "Yaris", year: 2017, colour: "White",  province: "NL", vin: "JTDBT923X71234567", disposalDate: "2025-12-01", reason: "Collision write-off" },
-];
+// The archived vehicles seed is gone. It held two invented retirements that
+// existed only to make the table look populated. Now that archived_vehicles is
+// a real table, seeding it would put fabricated records into the one place that
+// answers "what happened to that vehicle", which is the same reason the
+// reservations seed was emptied earlier.
 
 // ─── No Shows seed ────────────────────────────────────────────────────────────
 
@@ -1096,6 +1095,7 @@ function AppProvider({ children, currentUser, signOut }) {
   const [ndiRows,      setNdiRowsState]      = React.useState([]);
   const [torRows,      setTorRowsState]      = React.useState([]);
   const [fleet,            setFleetState]            = React.useState([]);
+  const [archivedVehicles, setArchivedVehicles]       = React.useState([]);
   const [noShows,          setNoShowsState]          = React.useState([]);
   const [rentalAgreements, setRentalAgreementsState] = React.useState([]);
   const raRef = React.useRef([]); // mirror of rentalAgreements for sync callbacks
@@ -1339,7 +1339,7 @@ function AppProvider({ children, currentUser, signOut }) {
   // ── Initial load from Supabase ───────────────────────────────────────────
   React.useEffect(() => {
     async function load() {
-      const [res, ndi, tor, fl, ns, ra, dc, st] = await Promise.all([
+      const [res, ndi, tor, fl, ns, ra, dc, st, av] = await Promise.all([
         supabase.from("reservations").select("*"),
         supabase.from("ndi_rows").select("*"),
         supabase.from("tor_rows").select("*"),
@@ -1348,6 +1348,7 @@ function AppProvider({ children, currentUser, signOut }) {
         supabase.from("rental_agreements").select("*"),
         supabase.from("damage_claims").select("*"),
         supabase.from("app_settings").select("*"),
+        supabase.from("archived_vehicles").select("*").order("disposalDate", { ascending: false }),
       ]);
 
       // If a table is empty, seed it with the default data
@@ -1527,6 +1528,7 @@ function AppProvider({ children, currentUser, signOut }) {
       raRef.current = raData;
       setRentalAgreementsState(raData);
       setDamageClaimsState(dc.data || []);
+      setArchivedVehicles(av.data || []);
       setAppSettingsState(Object.fromEntries((st.data || []).map((r) => [r.key, r.value])));
       setDbReady(true);
     }
@@ -1541,6 +1543,7 @@ function AppProvider({ children, currentUser, signOut }) {
       raRef.current = [];
       setRentalAgreementsState([]);
       setDamageClaimsState([]);
+      setArchivedVehicles([]);
       setAppSettingsState({});
       setDbReady(true);
     });
@@ -1653,7 +1656,7 @@ function AppProvider({ children, currentUser, signOut }) {
 
   return React.createElement(
     AppContext.Provider,
-    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, readyReturns, setReadyReturns, appSettings, saveSetting, guardAction, logAudit, currentUser, signOut } },
+    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, archivedVehicles, setArchivedVehicles, readyReturns, setReadyReturns, appSettings, saveSetting, guardAction, logAudit, currentUser, signOut } },
     children,
     pinModalOpen && React.createElement(PinConfirmModal, { onConfirm: confirmPin, onCancel: dismissPinModal })
   );
@@ -4800,71 +4803,71 @@ function TORPage() {
 const PROV_STATE_LIST = [
   { value: "All", label: "All Provinces / States" },
   // Canadian provinces
-  { value: "NL", label: "NL — Newfoundland and Labrador" },
-  { value: "NS", label: "NS — Nova Scotia" },
-  { value: "NB", label: "NB — New Brunswick" },
-  { value: "PE", label: "PE — Prince Edward Island" },
-  { value: "QC", label: "QC — Quebec" },
-  { value: "ON", label: "ON — Ontario" },
-  { value: "MB", label: "MB — Manitoba" },
-  { value: "SK", label: "SK — Saskatchewan" },
-  { value: "AB", label: "AB — Alberta" },
-  { value: "BC", label: "BC — British Columbia" },
-  { value: "YT", label: "YT — Yukon" },
-  { value: "NT", label: "NT — Northwest Territories" },
-  { value: "NU", label: "NU — Nunavut" },
+  { value: "NL", label: "NL - Newfoundland and Labrador" },
+  { value: "NS", label: "NS - Nova Scotia" },
+  { value: "NB", label: "NB - New Brunswick" },
+  { value: "PE", label: "PE - Prince Edward Island" },
+  { value: "QC", label: "QC - Quebec" },
+  { value: "ON", label: "ON - Ontario" },
+  { value: "MB", label: "MB - Manitoba" },
+  { value: "SK", label: "SK - Saskatchewan" },
+  { value: "AB", label: "AB - Alberta" },
+  { value: "BC", label: "BC - British Columbia" },
+  { value: "YT", label: "YT - Yukon" },
+  { value: "NT", label: "NT - Northwest Territories" },
+  { value: "NU", label: "NU - Nunavut" },
   // US states
-  { value: "AK", label: "AK — Alaska" },
-  { value: "AL", label: "AL — Alabama" },
-  { value: "AR", label: "AR — Arkansas" },
-  { value: "AZ", label: "AZ — Arizona" },
-  { value: "CA", label: "CA — California" },
-  { value: "CO", label: "CO — Colorado" },
-  { value: "CT", label: "CT — Connecticut" },
-  { value: "DC", label: "DC — Washington D.C." },
-  { value: "DE", label: "DE — Delaware" },
-  { value: "FL", label: "FL — Florida" },
-  { value: "GA", label: "GA — Georgia" },
-  { value: "HI", label: "HI — Hawaii" },
-  { value: "IA", label: "IA — Iowa" },
-  { value: "ID", label: "ID — Idaho" },
-  { value: "IL", label: "IL — Illinois" },
-  { value: "IN", label: "IN — Indiana" },
-  { value: "KS", label: "KS — Kansas" },
-  { value: "KY", label: "KY — Kentucky" },
-  { value: "LA", label: "LA — Louisiana" },
-  { value: "MA", label: "MA — Massachusetts" },
-  { value: "MD", label: "MD — Maryland" },
-  { value: "ME", label: "ME — Maine" },
-  { value: "MI", label: "MI — Michigan" },
-  { value: "MN", label: "MN — Minnesota" },
-  { value: "MO", label: "MO — Missouri" },
-  { value: "MS", label: "MS — Mississippi" },
-  { value: "MT", label: "MT — Montana" },
-  { value: "NC", label: "NC — North Carolina" },
-  { value: "ND", label: "ND — North Dakota" },
-  { value: "NE", label: "NE — Nebraska" },
-  { value: "NH", label: "NH — New Hampshire" },
-  { value: "NJ", label: "NJ — New Jersey" },
-  { value: "NM", label: "NM — New Mexico" },
-  { value: "NV", label: "NV — Nevada" },
-  { value: "NY", label: "NY — New York" },
-  { value: "OH", label: "OH — Ohio" },
-  { value: "OK", label: "OK — Oklahoma" },
-  { value: "OR", label: "OR — Oregon" },
-  { value: "PA", label: "PA — Pennsylvania" },
-  { value: "RI", label: "RI — Rhode Island" },
-  { value: "SC", label: "SC — South Carolina" },
-  { value: "SD", label: "SD — South Dakota" },
-  { value: "TN", label: "TN — Tennessee" },
-  { value: "TX", label: "TX — Texas" },
-  { value: "UT", label: "UT — Utah" },
-  { value: "VA", label: "VA — Virginia" },
-  { value: "VT", label: "VT — Vermont" },
-  { value: "WA", label: "WA — Washington" },
-  { value: "WI", label: "WI — Wisconsin" },
-  { value: "WV", label: "WV — West Virginia" },
-  { value: "WY", label: "WY — Wyoming" },
+  { value: "AK", label: "AK - Alaska" },
+  { value: "AL", label: "AL - Alabama" },
+  { value: "AR", label: "AR - Arkansas" },
+  { value: "AZ", label: "AZ - Arizona" },
+  { value: "CA", label: "CA - California" },
+  { value: "CO", label: "CO - Colorado" },
+  { value: "CT", label: "CT - Connecticut" },
+  { value: "DC", label: "DC - Washington D.C." },
+  { value: "DE", label: "DE - Delaware" },
+  { value: "FL", label: "FL - Florida" },
+  { value: "GA", label: "GA - Georgia" },
+  { value: "HI", label: "HI - Hawaii" },
+  { value: "IA", label: "IA - Iowa" },
+  { value: "ID", label: "ID - Idaho" },
+  { value: "IL", label: "IL - Illinois" },
+  { value: "IN", label: "IN - Indiana" },
+  { value: "KS", label: "KS - Kansas" },
+  { value: "KY", label: "KY - Kentucky" },
+  { value: "LA", label: "LA - Louisiana" },
+  { value: "MA", label: "MA - Massachusetts" },
+  { value: "MD", label: "MD - Maryland" },
+  { value: "ME", label: "ME - Maine" },
+  { value: "MI", label: "MI - Michigan" },
+  { value: "MN", label: "MN - Minnesota" },
+  { value: "MO", label: "MO - Missouri" },
+  { value: "MS", label: "MS - Mississippi" },
+  { value: "MT", label: "MT - Montana" },
+  { value: "NC", label: "NC - North Carolina" },
+  { value: "ND", label: "ND - North Dakota" },
+  { value: "NE", label: "NE - Nebraska" },
+  { value: "NH", label: "NH - New Hampshire" },
+  { value: "NJ", label: "NJ - New Jersey" },
+  { value: "NM", label: "NM - New Mexico" },
+  { value: "NV", label: "NV - Nevada" },
+  { value: "NY", label: "NY - New York" },
+  { value: "OH", label: "OH - Ohio" },
+  { value: "OK", label: "OK - Oklahoma" },
+  { value: "OR", label: "OR - Oregon" },
+  { value: "PA", label: "PA - Pennsylvania" },
+  { value: "RI", label: "RI - Rhode Island" },
+  { value: "SC", label: "SC - South Carolina" },
+  { value: "SD", label: "SD - South Dakota" },
+  { value: "TN", label: "TN - Tennessee" },
+  { value: "TX", label: "TX - Texas" },
+  { value: "UT", label: "UT - Utah" },
+  { value: "VA", label: "VA - Virginia" },
+  { value: "VT", label: "VT - Vermont" },
+  { value: "WA", label: "WA - Washington" },
+  { value: "WI", label: "WI - Wisconsin" },
+  { value: "WV", label: "WV - West Virginia" },
+  { value: "WY", label: "WY - Wyoming" },
 ];
 
 // ─── Unit conversion ──────────────────────────────────────────────────────────
@@ -5723,10 +5726,10 @@ function FleetVehiclesPage() {
 // ─── FleetAdditionsPage ────────────────────────────────────────────────────────
 
 function FleetAdditionsPage() {
-  const { fleet, setFleet, guardAction } = React.useContext(AppContext);
+  const { fleet, setFleet, guardAction, archivedVehicles, setArchivedVehicles, currentUser } = React.useContext(AppContext);
   const { filtered, filterState } = useFleetFilter(fleet);
   const [activeTab,  setActiveTab]  = React.useState("add");
-  const [archived,   setArchived]   = React.useState(ARCHIVED_VEHICLES_SEED);
+
 
   // tankSize / pmInterval are held in the CURRENTLY SELECTED display unit while
   // typing, and converted to canonical litres/km only at submit.
@@ -5737,7 +5740,9 @@ function FleetAdditionsPage() {
   // toggling units re-renders the number without ever rewriting the value.
   const [tankCanonical, setTankCanonical] = React.useState(null);
   const [pmCanonical,   setPmCanonical]   = React.useState(null);
-  const BLANK_RETIRE = { plateId: "", disposalDate: "", reason: "" };
+  // The disposal date defaults to today, which is the answer almost every time
+  // a vehicle is retired from the desk it is standing at.
+  const BLANK_RETIRE = { plateId: "", disposalDate: isoOffset(0), reason: "" };
   const [addForm,    setAddForm]    = React.useState(BLANK_ADD);
   const [addError,   setAddError]   = React.useState("");
   const [addSuccess, setAddSuccess] = React.useState(false);
@@ -5801,24 +5806,47 @@ function FleetAdditionsPage() {
 
   const handleRetireSubmit = (e) => {
     e.preventDefault();
-    if (!retireForm.plateId || !retireForm.disposalDate || !retireForm.reason.trim()) { setRetireError("All fields are required."); return; }
+    // The reason is no longer required. A mandatory free-text field that nobody
+    // wants to fill gets filled with noise, and the archive is worse for it.
+    if (!retireForm.plateId)     { setRetireError("Select a vehicle to retire."); return; }
+    if (!retireForm.disposalDate) { setRetireError("A disposal date is required."); return; }
     const v = fleet.find((x) => x.id === retireForm.plateId);
     if (!v) { setRetireError("Vehicle not found."); return; }
-    const extra = VEHICLE_EXTRA_DATA[v.plate] || {};
-    guardAction("vehicle.retire", () => {
-      setArchived((prev) => [...prev, {
-        id: `AV-${Date.now()}`, plate: v.plate, make: v.make, model: v.model,
-        year: extra.year || "", colour: extra.colour || "", province: extra.province || "",
-        vin: extra.vin || "", disposalDate: retireForm.disposalDate, reason: retireForm.reason,
-      }]);
+    const extra  = VEHICLE_EXTRA_DATA[v.plate] || {};
+    const reason = retireForm.reason.trim();
+    // Everything the fleet row held, copied out before it is deleted. Prefer the
+    // live row and fall back to the static extras, so a vehicle edited after it
+    // was seeded archives what it actually became.
+    const record = {
+      plate:        v.plate,
+      make:         v.make  || null,
+      model:        v.model || null,
+      year:         String(v.year ?? extra.year ?? "") || null,
+      colour:       v.colour       || extra.colour   || null,
+      province:     v.province     || extra.province || null,
+      vin:          v.vin          || extra.vin      || null,
+      vehicleClass: v.vehicleClass || null,
+      disposalDate: retireForm.disposalDate,
+      reason:       reason || null,
+      retiredBy:    actorName(currentUser),
+    };
+    guardAction("vehicle.retire", async () => {
+      // The archive is written FIRST and awaited. The fleet delete is what makes
+      // this irreversible, so it must not run until the record that replaces it
+      // is safely stored; the old order would have lost the vehicle outright if
+      // the insert failed.
+      const { data, error } = await supabase.from("archived_vehicles").insert(record);
+      if (error) throw new Error(`archive failed, vehicle not retired: ${error.message}`);
+      setArchivedVehicles((prev) => [...(data || [record]), ...prev]);
       setFleet((prev) => prev.filter((x) => x.id !== retireForm.plateId));
-      runWrite(supabase.from("fleet").delete().eq("id", retireForm.plateId).then((res) => { console.log("fleet delete response:", res); if (res.error) console.warn("fleet delete error:", res.error); }), "fleet delete");
+      runWrite(supabase.from("fleet").delete().eq("id", retireForm.plateId), "fleet delete");
       setRetireForm(BLANK_RETIRE);
-    }, { tableName: "fleet", recordId: v.plate, description: `Retired ${v.make} ${v.model}. Disposal ${retireForm.disposalDate}, reason: ${retireForm.reason}.` });
+    }, { tableName: "fleet", recordId: v.plate,
+         description: `Retired ${v.make} ${v.model}. Disposal ${retireForm.disposalDate}${reason ? `, reason: ${reason}` : ""}.` });
   };
 
   const fmtDate = (iso) => {
-    if (!iso) return "—";
+    if (!iso) return "Not set";
     const d = new Date(`${iso}T00:00:00`);
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
   };
@@ -5950,8 +5978,8 @@ function FleetAdditionsPage() {
                   className: "addVehicleInput", value: retireForm.plateId,
                   onChange: (e) => { setRetireForm((p) => ({ ...p, plateId: e.target.value })); setRetireError(""); },
                 },
-                  React.createElement("option", { value: "" }, filtered.length === fleet.length ? "— Select vehicle —" : `— ${filtered.length} of ${fleet.length} shown —`),
-                  filtered.map((v) => React.createElement("option", { key: v.id, value: v.id }, `${v.plate} — ${v.make} ${v.model}`))
+                  React.createElement("option", { value: "" }, filtered.length === fleet.length ? "Select vehicle" : `${filtered.length} of ${fleet.length} shown`),
+                  filtered.map((v) => React.createElement("option", { key: v.id, value: v.id }, `${v.plate}, ${v.make} ${v.model}`))
                 )
               ),
               React.createElement("div", { className: "addVehicleField" },
@@ -5962,7 +5990,7 @@ function FleetAdditionsPage() {
                 })
               ),
               React.createElement("div", { className: "addVehicleField addVehicleField--full" },
-                React.createElement("label", { className: "addVehicleLabel" }, "Reason for Retirement"),
+                React.createElement("label", { className: "addVehicleLabel" }, "Reason for Retirement (optional)"),
                 React.createElement("input", {
                   type: "text", className: "addVehicleInput", placeholder: "e.g. High mileage, Collision write-off",
                   value: retireForm.reason,
@@ -5975,7 +6003,7 @@ function FleetAdditionsPage() {
           )
         )
       ),
-      archived.length > 0 && React.createElement(
+      archivedVehicles.length > 0 && React.createElement(
         "section", { className: "dashboardSection", style: { marginTop: "20px" } },
         React.createElement("div", { className: "dashboardSection__header" },
           React.createElement("div", { className: "dashboardSection__headerRow" }, React.createElement("span", null, "Archived Vehicles"))
@@ -5988,7 +6016,7 @@ function FleetAdditionsPage() {
               )
             ),
             React.createElement("tbody", null,
-              archived.map((v) =>
+              archivedVehicles.map((v) =>
                 React.createElement("tr", { key: v.id },
                   React.createElement("td", null, v.plate.replace(/-/g, "")),
                   React.createElement("td", null, v.make),
