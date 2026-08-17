@@ -16,6 +16,103 @@ const SUPABASE_URL  = "https://hzcatlecvwpqxedrzfog.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6Y2F0bGVjdndwcXhlZHJ6Zm9nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgwNzQzMTMsImV4cCI6MjA5MzY1MDMxM30.mfqwWQh54hPsRunAVB6RDf_IrvwKmhSYWWJ4sMy0rcw";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
 
+// ─── Authentication ───────────────────────────────────────────────────────────
+// Passwords are verified by Supabase Auth, never in this file. That is the
+// whole point: the anon key above ships to every browser, so anything this code
+// compares is something an attacker controls. Sign-in returns a signed JWT that
+// the client cannot forge, and every later request carries it.
+//
+// Staff type a username, not an email. Supabase Auth authenticates by email, so
+// the username is mapped onto a fixed non-routable domain. The alternative, a
+// public username-to-email table, would let anyone enumerate staff.
+const AUTH_EMAIL_DOMAIN = "@fleetr.internal";
+const usernameToEmail   = (u) => `${String(u || "").trim().toLowerCase()}${AUTH_EMAIL_DOMAIN}`;
+
+// A hard cap on how long a session lives, independent of Supabase's own token
+// refresh. Refresh tokens would otherwise keep a session alive indefinitely,
+// which is the wrong behaviour for a terminal on a branch counter.
+const SESSION_MAX_MS = 12 * 60 * 60 * 1000; // 12 hours
+const PROFILE_KEY    = "fleetr_profile";
+
+// Temporary, removed at cutover. See LoginScreen.
+const LEGACY_USERNAME = "connor";
+const LEGACY_PASSWORD = "1234";
+
+// The profile columns the app is allowed to hold. pinHash is deliberately
+// absent: it never leaves the database, because a hash in the browser is a hash
+// an attacker can take away and grind offline.
+const PROFILE_COLUMNS = "id,username,name,role,operatorId,locationId,active";
+
+async function fetchProfile() {
+  // No filter needed. The row level security policy is `id = auth.uid()`, so
+  // this returns exactly the signed-in user's row and nothing else.
+  const { data, error } = await supabase.from("users").select(PROFILE_COLUMNS).limit(1);
+  if (error) return { ok: false, error: error.message };
+  const row = (data || [])[0];
+  if (!row)        return { ok: false, error: "Signed in, but no staff profile is linked to this account." };
+  if (!row.active) return { ok: false, error: "This account has been deactivated." };
+  return { ok: true, profile: row };
+}
+
+// Returns { ok, user } or { ok:false, error }. Never throws, so the caller can
+// fall through to the legacy path during the transition.
+async function signInReal(username, password) {
+  try {
+    // supabase-js v1: signIn, not v2's signInWithPassword.
+    const { error } = await supabase.auth.signIn({
+      email:    usernameToEmail(username),
+      password: password,
+    });
+    if (error) return { ok: false, error: error.message };
+
+    const prof = await fetchProfile();
+    if (!prof.ok) {
+      // Authenticated but unusable. Do not leave a half-signed-in session.
+      await supabase.auth.signOut();
+      return { ok: false, error: prof.error };
+    }
+    return { ok: true, user: { ...prof.profile, legacy: false } };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+}
+
+// Stores the profile alongside when the session began, so the 12 hour cap can
+// be enforced on the next load. The JWT itself is managed by supabase-js.
+function storeSession(user) {
+  try {
+    localStorage.setItem(PROFILE_KEY, JSON.stringify({ user, loginAt: Date.now() }));
+  } catch (e) { console.warn("could not persist the session:", e); }
+}
+
+function readStoredSession() {
+  try {
+    const raw = localStorage.getItem(PROFILE_KEY);
+    if (!raw) return null;
+    const { user, loginAt } = JSON.parse(raw);
+    if (!user || !loginAt) return null;
+    if (Date.now() - loginAt > SESSION_MAX_MS) {
+      console.log("Fleetr: session older than 12 hours, signing out.");
+      return null;
+    }
+    // A real session needs a live Supabase token to back it. The legacy path
+    // has no token, so it is exempt until it is removed.
+    if (!user.legacy && !supabase.auth.session()) return null;
+    return user;
+  } catch (e) { return null; }
+}
+
+function clearSession() {
+  try {
+    localStorage.removeItem(PROFILE_KEY);
+    // Left over from the previous scheme. Removed so a stale token cannot
+    // outlive the mechanism that used it.
+    localStorage.removeItem("fleetr_session");
+    sessionStorage.removeItem("fleetr_tab_token");
+  } catch (e) { /* storage unavailable, nothing to clear */ }
+  return supabase.auth.signOut().catch((e) => console.warn("sign out:", e));
+}
+
 // ─── Claude API ───────────────────────────────────────────────────────────────
 const CLAUDE_MODEL     = "claude-sonnet-4-5";
 const CLAUDE_API_URL   = "https://fleetr-ai-proxy.connor-0a5.workers.dev";
@@ -815,11 +912,36 @@ const DASHBOARD_RES_SEED = [
 const AppContext = React.createContext(null);
 
 // ─── PIN Confirmation Modal ───────────────────────────────────────────────────
+// ── PIN failure messages ─────────────────────────────────────────────────────
+const PIN_WRONG_MESSAGE = "Incorrect PIN. Please try again.";
+
+// verify_pin returned a bare boolean before the lockout was added. Both shapes
+// are read here because the SQL is applied by hand: a browser holding the new
+// code against a database that has not run add_pin_lockout.sql yet should still
+// gate correctly rather than treat every PIN as wrong.
+const readPinResult = (data) => {
+  if (data === true)  return { ok: true };
+  if (data === false || data == null) return { ok: false, locked: false };
+  return { ok: data.ok === true, locked: data.locked === true,
+           attemptsLeft: data.attemptsLeft, retryInSeconds: data.retryInSeconds };
+};
+
+const pinFailureMessage = (result) => {
+  if (result.locked) {
+    const mins = Math.max(1, Math.ceil((result.retryInSeconds || 300) / 60));
+    return `Too many incorrect attempts. Try again in ${mins} minute${mins === 1 ? "" : "s"}.`;
+  }
+  // Counting down only near the end. Showing "4 attempts remaining" on a single
+  // typo reads as an accusation; showing it at one left is a useful warning.
+  if (result.attemptsLeft === 1) return "Incorrect PIN. 1 attempt remaining before lockout.";
+  return PIN_WRONG_MESSAGE;
+};
+
 // Reusable modal that gates any write operation behind the signed-in user's PIN.
 // Rendered by AppProvider; shown via requirePin(fn) from anywhere in the tree.
 function PinConfirmModal({ onConfirm, onCancel }) {
   const [pin,     setPin]     = React.useState("");
-  const [error,   setError]   = React.useState(false);
+  const [error,   setError]   = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [focused, setFocused] = React.useState(true);
   const inputRef = React.useRef(null);
@@ -832,9 +954,9 @@ function PinConfirmModal({ onConfirm, onCancel }) {
     e.preventDefault();
     if (!pin) return;
     setLoading(true);
-    const ok = await onConfirm(pin);
+    const result = await onConfirm(pin);
     setLoading(false);
-    if (!ok) { setError(true); setPin(""); }
+    if (!result || !result.ok) { setError((result && result.message) || PIN_WRONG_MESSAGE); setPin(""); }
   };
 
   return React.createElement(
@@ -884,7 +1006,7 @@ function PinConfirmModal({ onConfirm, onCancel }) {
               "aria-label": "PIN",
               autoComplete: "off",
               value: pin,
-              onChange: (e) => { setPin(e.target.value.slice(0, 4)); setError(false); },
+              onChange: (e) => { setPin(e.target.value.slice(0, 4)); setError(""); },
               onFocus: () => setFocused(true),
               onBlur:  () => setFocused(false),
             }),
@@ -911,7 +1033,7 @@ function PinConfirmModal({ onConfirm, onCancel }) {
           error && React.createElement(
             "div",
             { style: { color: "#e53e3e", marginTop: "8px", fontSize: "13px", textAlign: "center" } },
-            "Incorrect PIN. Please try again."
+            error
           )
         ),
         React.createElement(
@@ -966,6 +1088,10 @@ function AppProvider({ children, currentUser, signOut }) {
   const logAudit = React.useCallback((entry) => {
     const row = {
       actor:       entry.actor || actorName(currentUser),
+      // The id as well as the name: a display name can change, and an audit
+      // trail that only records what someone was called stops resolving when
+      // it does. Null for AI-signed and legacy entries, which have no user row.
+      actorId:     entry.actorId !== undefined ? entry.actorId : (currentUser?.id || null),
       actionType:  entry.actionType,
       actionLabel: actionLabel(entry.actionType),
       tableName:   entry.tableName || null,
@@ -1015,18 +1141,44 @@ function AppProvider({ children, currentUser, signOut }) {
     run();
   };
 
-  // Called by PinConfirmModal on submit — verifies against the PIN stored in session state at login.
+  // Called by PinConfirmModal on submit.
+  //
+  // The PIN is checked inside the database by verify_pin, a security definer
+  // function that reads the hash for auth.uid() and compares there. Nothing
+  // about the PIN reaches the browser: no hash to grind offline, and no
+  // client-side comparison for an attacker to simply skip.
+  //
+  // It is also a genuinely separate secret from the login password now. While
+  // the two were the same string, every PIN prompt was asking for the password
+  // the person had just typed to get in, so the tier bought nothing.
   const confirmPin = async (enteredPin) => {
-    if (!currentUser) return false;
-    if (enteredPin === currentUser.pin) {
-      const fn = pendingFnRef.current;
-      pendingFnRef.current = null;
-      pendingAuditRef.current = null;
-      setPinModalOpen(false);
-      if (fn) await fn();
-      return true;
+    if (!currentUser) return { ok: false, message: PIN_WRONG_MESSAGE };
+
+    let matched = false;
+    if (currentUser.legacy) {
+      // Legacy fallback only, removed at cutover along with the hardcoded login.
+      // No lockout here: the legacy PIN is a hardcoded constant, so rate
+      // limiting it would protect nothing.
+      matched = enteredPin === currentUser.pin;
+    } else {
+      const { data, error } = await supabase.rpc("verify_pin", { pin: enteredPin });
+      if (error) {
+        console.warn("verify_pin failed:", error);
+        // Fail closed. A broken check must never open the gate.
+        return { ok: false, message: PIN_WRONG_MESSAGE };
+      }
+      const result = readPinResult(data);
+      if (!result.ok) return { ok: false, message: pinFailureMessage(result) };
+      matched = true;
     }
-    return false;
+
+    if (!matched) return { ok: false, message: PIN_WRONG_MESSAGE };
+    const fn = pendingFnRef.current;
+    pendingFnRef.current = null;
+    pendingAuditRef.current = null;
+    setPinModalOpen(false);
+    if (fn) await fn();
+    return { ok: true };
   };
 
   // Backing out of the PIN is recorded, not just successful writes. Someone
@@ -9194,11 +9346,29 @@ function LoginScreen({ onSuccess }) {
   const handleSubmit = (e) => {
     e.preventDefault();
     const u = username.trim().toLowerCase();
-    if (u !== "connor" || pin !== "1234") {
-      setError(true);
-      return;
-    }
-    onSuccess({ id: null, username: u, pin });
+
+    // Real authentication is tried first and is authoritative. The hardcoded
+    // pair below is a temporary fallback so there is never a moment where
+    // neither system lets anyone in; it is removed once the new login is
+    // confirmed working, and every use of it is announced loudly.
+    setLoading(true);
+    setError(false);
+    signInReal(u, pin)
+      .then((result) => {
+        if (result.ok) { onSuccess(result.user); return; }
+
+        if (u === LEGACY_USERNAME && pin === LEGACY_PASSWORD) {
+          console.warn(
+            "Fleetr: signed in with the LEGACY hardcoded credentials. " +
+            "Real sign-in failed with:", result.error
+          );
+          onSuccess({ id: null, username: u, name: u, role: null, pin, legacy: true });
+          return;
+        }
+        console.warn("Fleetr sign-in failed:", result.error);
+        setError(true);
+      })
+      .finally(() => setLoading(false));
   };
 
   return React.createElement(
@@ -9243,30 +9413,34 @@ function LoginScreen({ onSuccess }) {
 }
 
 function App() {
-  // Session strategy: localStorage holds the user data (survives browser quirks
-  // and page refreshes reliably). sessionStorage holds a per-tab token written
-  // at login. On init, both must match — a missing or mismatched sessionStorage
-  // token means the tab was closed/relaunched and sign-in is required again.
-  // This is more robust than pure sessionStorage, which Safari and PWA contexts
-  // can clear on page reload in certain configurations.
-  const [currentUser, setCurrentUser] = React.useState(() => {
-    try {
-      const saved = localStorage.getItem("fleetr_session");
-      if (!saved) return null;
-      const data = JSON.parse(saved);
-      const tabToken = sessionStorage.getItem("fleetr_tab_token");
-      if (!tabToken || tabToken !== data._tabToken) {
-        localStorage.removeItem("fleetr_session");
-        return null;
+  // Session strategy: the JWT is held and refreshed by supabase-js; this only
+  // keeps the staff profile and the moment the session began, so the 12 hour
+  // cap can be enforced on load.
+  //
+  // The previous scheme paired localStorage against a per-tab sessionStorage
+  // token, which forced a fresh sign-in in every new tab while the stored
+  // credential itself never expired. That is now reversed: tabs share the
+  // session, and the session actually ends.
+  const [currentUser, setCurrentUser] = React.useState(readStoredSession);
+
+  // Enforces the cap during a long-running session, not only at load. Checked
+  // once a minute, which is precise enough for a 12 hour limit and costs
+  // nothing.
+  React.useEffect(() => {
+    if (!currentUser) return;
+    const iv = setInterval(() => {
+      if (!readStoredSession()) {
+        console.log("Fleetr: session expired.");
+        clearSession();
+        setCurrentUser(null);
+        window.location.hash = "";
       }
-      const { _tabToken: _t, ...user } = data;
-      return user;
-    } catch (e) { return null; }
-  });
+    }, 60 * 1000);
+    return () => clearInterval(iv);
+  }, [currentUser]);
 
   const signOut = () => {
-    localStorage.removeItem("fleetr_session");
-    sessionStorage.removeItem("fleetr_tab_token");
+    clearSession();
     setCurrentUser(null);
     window.location.hash = "";
   };
@@ -9274,9 +9448,7 @@ function App() {
   if (!currentUser) {
     return React.createElement(LoginScreen, {
       onSuccess: (user) => {
-        const tabToken = Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
-        sessionStorage.setItem("fleetr_tab_token", tabToken);
-        localStorage.setItem("fleetr_session", JSON.stringify({ ...user, _tabToken: tabToken }));
+        storeSession(user);
         window.location.hash = "/";
         setCurrentUser(user);
       },
