@@ -34,10 +34,6 @@ const usernameToEmail   = (u) => `${String(u || "").trim().toLowerCase()}${AUTH_
 const SESSION_MAX_MS = 12 * 60 * 60 * 1000; // 12 hours
 const PROFILE_KEY    = "fleetr_profile";
 
-// Temporary, removed at cutover. See LoginScreen.
-const LEGACY_USERNAME = "connor";
-const LEGACY_PASSWORD = "1234";
-
 // The profile columns the app is allowed to hold. pinHash is deliberately
 // absent: it never leaves the database, because a hash in the browser is a hash
 // an attacker can take away and grind offline.
@@ -54,8 +50,9 @@ async function fetchProfile() {
   return { ok: true, profile: row };
 }
 
-// Returns { ok, user } or { ok:false, error }. Never throws, so the caller can
-// fall through to the legacy path during the transition.
+// Returns { ok, user } or { ok:false, error }. Never throws: the caller shows
+// one message for every failure, so a wrong password and an account that does
+// not exist are indistinguishable from outside.
 async function signInReal(username, password) {
   try {
     // supabase-js v1: signIn, not v2's signInWithPassword.
@@ -71,7 +68,7 @@ async function signInReal(username, password) {
       await supabase.auth.signOut();
       return { ok: false, error: prof.error };
     }
-    return { ok: true, user: { ...prof.profile, legacy: false } };
+    return { ok: true, user: prof.profile };
   } catch (e) {
     return { ok: false, error: e.message || String(e) };
   }
@@ -95,9 +92,10 @@ function readStoredSession() {
       console.log("Fleetr: session older than 12 hours, signing out.");
       return null;
     }
-    // A real session needs a live Supabase token to back it. The legacy path
-    // has no token, so it is exempt until it is removed.
-    if (!user.legacy && !supabase.auth.session()) return null;
+    // A stored profile is not a session on its own. Without a live Supabase
+    // token behind it, it is just JSON someone could have typed into
+    // localStorage, so it is refused.
+    if (!supabase.auth.session()) return null;
     return user;
   } catch (e) { return null; }
 }
@@ -1130,7 +1128,7 @@ function AppProvider({ children, currentUser, signOut }) {
       actor:       entry.actor || actorName(currentUser),
       // The id as well as the name: a display name can change, and an audit
       // trail that only records what someone was called stops resolving when
-      // it does. Null for AI-signed and legacy entries, which have no user row.
+      // it does. Null for AI-signed entries, which have no user row behind them.
       actorId:     entry.actorId !== undefined ? entry.actorId : (currentUser?.id || null),
       actionType:  entry.actionType,
       actionLabel: actionLabel(entry.actionType),
@@ -1194,25 +1192,15 @@ function AppProvider({ children, currentUser, signOut }) {
   const confirmPin = async (enteredPin) => {
     if (!currentUser) return { ok: false, message: PIN_WRONG_MESSAGE };
 
-    let matched = false;
-    if (currentUser.legacy) {
-      // Legacy fallback only, removed at cutover along with the hardcoded login.
-      // No lockout here: the legacy PIN is a hardcoded constant, so rate
-      // limiting it would protect nothing.
-      matched = enteredPin === currentUser.pin;
-    } else {
-      const { data, error } = await supabase.rpc("verify_pin", { pin: enteredPin });
-      if (error) {
-        console.warn("verify_pin failed:", error);
-        // Fail closed. A broken check must never open the gate.
-        return { ok: false, message: PIN_UNAVAILABLE_MESSAGE };
-      }
-      const result = readPinResult(data);
-      if (!result.ok) return { ok: false, message: pinFailureMessage(result) };
-      matched = true;
+    const { data, error } = await supabase.rpc("verify_pin", { pin: enteredPin });
+    if (error) {
+      console.warn("verify_pin failed:", error);
+      // Fail closed. A broken check must never open the gate.
+      return { ok: false, message: PIN_UNAVAILABLE_MESSAGE };
     }
+    const result = readPinResult(data);
+    if (!result.ok) return { ok: false, message: pinFailureMessage(result) };
 
-    if (!matched) return { ok: false, message: PIN_WRONG_MESSAGE };
     const fn = pendingFnRef.current;
     pendingFnRef.current = null;
     pendingAuditRef.current = null;
@@ -9415,24 +9403,14 @@ function LoginScreen({ onSuccess }) {
     e.preventDefault();
     const u = username.trim().toLowerCase();
 
-    // Real authentication is tried first and is authoritative. The hardcoded
-    // pair below is a temporary fallback so there is never a moment where
-    // neither system lets anyone in; it is removed once the new login is
-    // confirmed working, and every use of it is announced loudly.
+    // Supabase Auth is the only way in. The hardcoded connor/1234 fallback that
+    // stood here during the transition is gone, along with the account whose
+    // password was a constant in this file.
     setLoading(true);
     setError(false);
     signInReal(u, pin)
       .then((result) => {
         if (result.ok) { onSuccess(result.user); return; }
-
-        if (u === LEGACY_USERNAME && pin === LEGACY_PASSWORD) {
-          console.warn(
-            "Fleetr: signed in with the LEGACY hardcoded credentials. " +
-            "Real sign-in failed with:", result.error
-          );
-          onSuccess({ id: null, username: u, name: u, role: null, pin, legacy: true });
-          return;
-        }
         console.warn("Fleetr sign-in failed:", result.error);
         setError(true);
       })
