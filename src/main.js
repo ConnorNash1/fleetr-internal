@@ -6929,11 +6929,22 @@ function FleetrCommandBar() {
         `App settings: ${JSON.stringify(appSettings)}\n\n` +
         `Fleet regions with a fuel price that can be set: ${JSON.stringify(gasRegions)}\n\n` +
         `User command: ${trimmed}`;
+      // The proxy verifies this token before spending anything on our Anthropic
+      // key. Without it the endpoint was open to anyone who read this file and
+      // found the URL, which is every visitor.
+      const aiSession = supabase.auth.session();
+      if (!aiSession) {
+        // The finally below clears the loading state, so this only has to say
+        // what happened. Matches how the other failure paths here report.
+        setAiMessage("Your session has expired. Sign in again to use fleetr ai.");
+        return;
+      }
       const res = await fetch(CLAUDE_API_URL, {
         method: "POST",
         headers: {
           "anthropic-version": "2023-06-01",
           "content-type":      "application/json",
+          "authorization":     `Bearer ${aiSession.access_token}`,
         },
         body: JSON.stringify({
           model:      CLAUDE_MODEL,
