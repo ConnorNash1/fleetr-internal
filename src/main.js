@@ -16,6 +16,29 @@ const SUPABASE_URL  = "https://hzcatlecvwpqxedrzfog.supabase.co";
 const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh6Y2F0bGVjdndwcXhlZHJ6Zm9nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgwNzQzMTMsImV4cCI6MjA5MzY1MDMxM30.mfqwWQh54hPsRunAVB6RDf_IrvwKmhSYWWJ4sMy0rcw";
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON);
 
+// ── restHeaders: identity for the calls that bypass supabase-js ──────────────
+// A few inserts go through raw fetch rather than the client, because v1 appends
+// a `columns` query parameter on array inserts that 400s when any key is not a
+// real column. Those calls still have to say who is making them.
+//
+// apikey stays the project key, which is what Supabase routes on. Authorization
+// carries the session token. Sending the anon key there instead, which is what
+// these did, makes the request arrive as an anonymous caller: harmless while no
+// policy reads auth.uid(), and silently empty the moment one does.
+//
+// No fallback to the anon key. A write with no session is a bug, and returning
+// headers that "work" would hide it until a policy turned the result into an
+// empty array that looks like an ordinary quiet day.
+function restHeaders(extra) {
+  const session = supabase.auth.session();
+  if (!session) throw new Error("restHeaders called with no session; the request would arrive anonymous");
+  return {
+    "apikey":        SUPABASE_ANON,
+    "Authorization": `Bearer ${session.access_token}`,
+    ...(extra || {}),
+  };
+}
+
 // ─── Authentication ───────────────────────────────────────────────────────────
 // Passwords are verified by Supabase Auth, never in this file. That is the
 // whole point: the anon key above ships to every browser, so anything this code
@@ -1339,37 +1362,25 @@ function AppProvider({ children, currentUser, signOut }) {
         supabase.from("archived_vehicles").select("*").order("disposalDate", { ascending: false }),
       ]);
 
-      // If a table is empty, seed it with the default data
-      async function maybeSeED(table, seed, data) {
-        if (!data?.length && seed.length > 0) {
-          // Use raw fetch to avoid Supabase JS v1 SDK automatically appending
-          // a `columns` query parameter on array inserts, which causes 400 errors
-          // when any seed key doesn't exist as a column in the table schema.
-          const resp = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
-            method: "POST",
-            headers: {
-              "apikey": SUPABASE_ANON,
-              "Authorization": `Bearer ${SUPABASE_ANON}`,
-              "Content-Type": "application/json",
-              "Prefer": "return=representation",
-            },
-            body: JSON.stringify(seed),
-          });
-          const inserted = resp.ok ? await resp.json() : null;
-          return inserted || seed;
-        }
-        return data || [];
-      }
+      // maybeSeED used to live here. Both of its call sites passed an empty
+      // seed and its guard required a non-empty one, so its body was
+      // unreachable: it could only ever return `data || []`, which is what the
+      // two lines below now do directly.
+      //
+      // Worth removing rather than fixing. It carried a raw insert that ran
+      // under the anon key and could write invented rows into reservations and
+      // rental_agreements, which is the same shape of dormant hazard as the
+      // one-time cleanup block deleted earlier.
 
       let [resData, ndiData, torData, flData, nsData, raData] = await Promise.all([
-        // Pass an empty seed so maybeSeED never inserts fake data — reservations
-        // must come from Supabase only. If the table is empty, start with [].
-        maybeSeED("reservations",      [],             res.data),
+        // Reservations and rental agreements come from Supabase only. Nothing
+        // is ever seeded into them.
+        Promise.resolve(res.data || []),
         Promise.resolve(ndi.data || []),
         Promise.resolve(tor.data || []),
-        Promise.resolve(fl.data || []),
-        Promise.resolve(ns.data || []),
-        maybeSeED("rental_agreements", [],             ra.data),
+        Promise.resolve(fl.data  || []),
+        Promise.resolve(ns.data  || []),
+        Promise.resolve(ra.data  || []),
       ]);
 
       // ── 1. Migrate reservation codes to new format "ABC 123 456" ─────────────
@@ -1476,12 +1487,10 @@ function AppProvider({ children, currentUser, signOut }) {
           // Raw fetch bypasses Supabase JS v1 SDK's automatic `columns` URL param
           const sweepRes = await fetch(`${SUPABASE_URL}/rest/v1/no_shows`, {
             method: "POST",
-            headers: {
-              "apikey": SUPABASE_ANON,
-              "Authorization": `Bearer ${SUPABASE_ANON}`,
+            headers: restHeaders({
               "Content-Type": "application/json",
-              "Prefer": "return=minimal",
-            },
+              "Prefer":       "return=minimal",
+            }),
             body: JSON.stringify(newNsEntries),
           });
           if (!sweepRes.ok) {
