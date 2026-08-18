@@ -263,9 +263,13 @@ Gas collections:
 // ─── Twilio SMS ──────────────────────────────────────────────────────────────
 // The client-side sendSMS helper was removed along with the automated texting
 // loop. Automated customer texts are now sent server-side by the Cloudflare Cron
-// Trigger in worker.js. The Worker's /sms proxy endpoint is still live, so this
-// helper can be reinstated if a staff-initiated "send text now" button is ever
-// added, but nothing in the app should text customers on a timer any more.
+// Trigger in worker.js.
+//
+// The Worker's /sms proxy endpoint has since been deleted too. It took the
+// recipient and the body from the request with no authentication, so it was an
+// open relay on our Twilio number. If a staff-initiated "send text now" button
+// is ever added, it needs an endpoint that verifies the caller's session, not
+// the one that used to be there.
 
 // ─── One-time customer data cleanup: removed ─────────────────────────────────
 // A block here used to wipe reservations, rental agreements, intake, TOR and
