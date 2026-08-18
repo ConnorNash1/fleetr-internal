@@ -48,8 +48,29 @@ function restHeaders(extra) {
 // Staff type a username, not an email. Supabase Auth authenticates by email, so
 // the username is mapped onto a fixed non-routable domain. The alternative, a
 // public username-to-email table, would let anyone enumerate staff.
-const AUTH_EMAIL_DOMAIN = "@fleetr.internal";
-const usernameToEmail   = (u) => `${String(u || "").trim().toLowerCase()}${AUTH_EMAIL_DOMAIN}`;
+const AUTH_EMAIL_DOMAIN = "fleetr.internal";
+
+// The auth address is namespaced by location code, so two companies can each
+// have a user called connor. The code is not a secret and is not a second
+// factor: it only says which namespace to look in, and the password still does
+// all the authenticating.
+//
+// The alternative was a username-to-company lookup, which would have to be
+// readable before sign-in and would therefore let anyone with the public key
+// enumerate every staff member. A field the person types avoids that entirely.
+const normalizeLocationCode = (c) => String(c || "").trim().toUpperCase();
+
+const usernameToEmail = (u, code) => {
+  const user = String(u || "").trim().toLowerCase();
+  const ns   = normalizeLocationCode(code).toLowerCase();
+  return ns ? `${user}@${ns}.${AUTH_EMAIL_DOMAIN}` : `${user}@${AUTH_EMAIL_DOMAIN}`;
+};
+
+// Legacy, pre-namespace form. Kept only for the cutover window, so a sign-in
+// works whether or not that account's address has been moved yet. Removed once
+// both existing accounts are namespaced; new accounts are only ever created in
+// the namespaced form.
+const usernameToLegacyEmail = (u) => `${String(u || "").trim().toLowerCase()}@${AUTH_EMAIL_DOMAIN}`;
 
 // A hard cap on how long a session lives, independent of Supabase's own token
 // refresh. Refresh tokens would otherwise keep a session alive indefinitely,
@@ -76,13 +97,29 @@ async function fetchProfile() {
 // Returns { ok, user } or { ok:false, error }. Never throws: the caller shows
 // one message for every failure, so a wrong password and an account that does
 // not exist are indistinguishable from outside.
-async function signInReal(username, password) {
+async function signInReal(username, password, locationCode) {
   try {
     // supabase-js v1: signIn, not v2's signInWithPassword.
-    const { error } = await supabase.auth.signIn({
-      email:    usernameToEmail(username),
+    //
+    // The namespaced address is tried first and is the real one. The legacy
+    // fallback exists so that renaming the existing accounts in the dashboard
+    // is not a flag day: before the rename the first attempt misses and the
+    // second succeeds, after it the first succeeds and the second never runs.
+    let { error } = await supabase.auth.signIn({
+      email:    usernameToEmail(username, locationCode),
       password: password,
     });
+    if (error) {
+      const legacy = await supabase.auth.signIn({
+        email:    usernameToLegacyEmail(username),
+        password: password,
+      });
+      if (!legacy.error) {
+        console.warn("Fleetr: signed in with the pre-namespace address. Move this account to " +
+                     usernameToEmail(username, locationCode));
+        error = null;
+      }
+    }
     if (error) return { ok: false, error: error.message };
 
     const prof = await fetchProfile();
@@ -1561,86 +1598,22 @@ function AppProvider({ children, currentUser, signOut }) {
     });
   }, []);
 
-  // ── Real-time subscriptions ───────────────────────────────────────────────
-  // Subscribe once after the initial load; each handler re-fetches only the
-  // affected table and updates the relevant slice of state.
-  React.useEffect(() => {
-    if (!dbReady) return;
-
-    const refetchReservations = async () => {
-      const { data } = await supabase.from("reservations").select("*");
-      if (!data) return;
-      const raByResCode = Object.fromEntries(raRef.current.map((a) => [a.resCode, a]));
-      setReservationsState(
-        data.map((r) => {
-          const ra = raByResCode[r.resCode];
-          return ra ? { ...r, rentalAgreementStatus: ra.rentalAgreementStatus } : r;
-        })
-      );
-    };
-
-    const refetchRentalAgreements = async () => {
-      const { data } = await supabase.from("rental_agreements").select("*");
-      if (!data) return;
-      raRef.current = data;
-      setRentalAgreementsState(data);
-      // Re-merge rentalAgreementStatus into the current reservations slice.
-      setReservationsState((prev) => {
-        const raByResCode = Object.fromEntries(data.map((a) => [a.resCode, a]));
-        return prev.map((r) => {
-          const ra = raByResCode[r.resCode];
-          return ra ? { ...r, rentalAgreementStatus: ra.rentalAgreementStatus } : r;
-        });
-      });
-    };
-
-    const refetchFleet = async () => {
-      const { data } = await supabase.from("fleet").select("*");
-      if (data) setFleetState(data);
-    };
-
-    const refetchNdiRows = async () => {
-      const { data } = await supabase.from("ndi_rows").select("*");
-      if (data) setNdiRowsState(data);
-    };
-
-    const refetchTorRows = async () => {
-      const { data } = await supabase.from("tor_rows").select("*");
-      if (data) setTorRowsState(data);
-    };
-
-    const refetchNoShows = async () => {
-      const { data } = await supabase.from("no_shows").select("*");
-      if (data) setNoShowsState(data);
-    };
-
-    const refetchDamageClaims = async () => {
-      const { data } = await supabase.from("damage_claims").select("*");
-      if (data) setDamageClaimsState(data);
-    };
-
-    // Scoped like the initial load. The realtime subscription fires on every
-    // app_settings change in the project, including other companies', so an
-    // unfiltered refetch would pull their rows into this session's settings.
-    const refetchAppSettings = async () => {
-      const { data } = await supabase.from("app_settings").select("*")
-        .eq("locationId", currentUser?.locationId ?? null);
-      if (data) setAppSettingsState(Object.fromEntries(data.map((r) => [r.key, r.value])));
-    };
-
-    const subs = [
-      supabase.from("reservations").on("*", refetchReservations).subscribe(),
-      supabase.from("rental_agreements").on("*", refetchRentalAgreements).subscribe(),
-      supabase.from("fleet").on("*", refetchFleet).subscribe(),
-      supabase.from("ndi_rows").on("*", refetchNdiRows).subscribe(),
-      supabase.from("tor_rows").on("*", refetchTorRows).subscribe(),
-      supabase.from("no_shows").on("*", refetchNoShows).subscribe(),
-      supabase.from("damage_claims").on("*", refetchDamageClaims).subscribe(),
-      supabase.from("app_settings").on("*", refetchAppSettings).subscribe(),
-    ];
-
-    return () => subs.forEach((s) => s.unsubscribe());
-  }, [dbReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  // ── No real-time subscriptions ────────────────────────────────────────────
+  // Eight subscribe() calls used to live here, one per table, each re-fetching
+  // its slice on change. They never fired. These tables are not in the
+  // supabase_realtime publication, so Postgres publishes nothing for them and
+  // the channel delivers no events, verified by subscribing as the row's own
+  // tenant and watching a real write produce silence while the socket reported
+  // SUBSCRIBED.
+  //
+  // Removed rather than fixed. Live code that cannot run is worse than absent
+  // code: it states a guarantee the app does not have, and two staff members
+  // reading it would reasonably conclude they see each other's changes.
+  //
+  // Turning it on is not a small change. Realtime is a separate path from
+  // PostgREST and does not apply the policies added in step 7, so publishing
+  // these tables without configuring RLS on the channel would hand every
+  // subscriber every tenant's rows.
 
   // ── Automated SMS ─────────────────────────────────────────────────────────
   // Removed. All customer texting (pre-rental check, no-show 2hr/24hr, overdue,
@@ -9427,10 +9400,16 @@ function AppRoutes() {
 
 function LoginScreen({ onSuccess }) {
   const [username, setUsername] = React.useState("");
+  // Remembered across sign-ins. A counter terminal is always the same branch,
+  // so asking for it every shift would be friction with no security value: the
+  // code is not a secret and the password is what authenticates.
+  const [locationCode, setLocationCode] = React.useState(
+    () => { try { return localStorage.getItem("fleetr_location_code") || ""; } catch (e) { return ""; } });
   const [pin,      setPin]      = React.useState("");
   const [error,    setError]    = React.useState(false);
   const [loading,  setLoading]  = React.useState(false);
-  const pinRef = React.useRef(null);
+  const pinRef  = React.useRef(null);
+  const codeRef = React.useRef(null);
 
   const handleUsernameChange = (e) => {
     const val = e.target.value;
@@ -9445,11 +9424,16 @@ function LoginScreen({ onSuccess }) {
     // Supabase Auth is the only way in. The hardcoded connor/1234 fallback that
     // stood here during the transition is gone, along with the account whose
     // password was a constant in this file.
+    const code = normalizeLocationCode(locationCode);
     setLoading(true);
     setError(false);
-    signInReal(u, pin)
+    signInReal(u, pin, code)
       .then((result) => {
-        if (result.ok) { onSuccess(result.user); return; }
+        if (result.ok) {
+          try { localStorage.setItem("fleetr_location_code", code); } catch (e) {}
+          onSuccess(result.user);
+          return;
+        }
         console.warn("Fleetr sign-in failed:", result.error);
         setError(true);
       })
@@ -9476,6 +9460,21 @@ function LoginScreen({ onSuccess }) {
           autoComplete: "username",
           value: username,
           onChange: handleUsernameChange,
+          onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); codeRef.current?.focus(); } },
+        }),
+        React.createElement("input", {
+          ref: codeRef,
+          className: "loginInput",
+          type: "text",
+          placeholder: "Location code",
+          maxLength: 8,
+          // Not a password field and not autocompleted as one. It is an
+          // identifier, so the browser may remember it like a username.
+          autoComplete: "off",
+          autoCapitalize: "characters",
+          spellCheck: false,
+          value: locationCode,
+          onChange: (e) => { setLocationCode(normalizeLocationCode(e.target.value)); setError(false); },
           onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); pinRef.current?.focus(); } },
         }),
         React.createElement("input", {
