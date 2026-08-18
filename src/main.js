@@ -1338,14 +1338,25 @@ function AppProvider({ children, currentUser, signOut }) {
 
   // Writes one app_settings key and mirrors it into local state. Used by the
   // Settings page for the gas markup and per-region fuel prices.
+  //
+  // locationId is passed explicitly rather than left to the fill_tenant trigger,
+  // and it is part of the conflict target. The key alone is no longer unique:
+  // every location holds its own gasMarkupPercent, and upserting on "key" would
+  // find another company's row and overwrite their fuel price with this one.
   const saveSetting = React.useCallback(async (key, value) => {
+    const locationId = currentUser?.locationId;
+    if (!locationId) {
+      console.warn("saveSetting called with no location on the profile:", key);
+      return false;
+    }
     setAppSettingsState((prev) => ({ ...prev, [key]: value }));
     const { error } = await supabase
       .from("app_settings")
-      .upsert({ key, value, updatedAt: new Date().toISOString() }, { onConflict: "key" });
+      .upsert({ key, value, locationId, updatedAt: new Date().toISOString() },
+              { onConflict: "locationId,key" });
     if (error) console.warn("app_settings upsert failed:", key, error);
     return !error;
-  }, []);
+  }, [currentUser?.locationId]);
 
   // ── Initial load from Supabase ───────────────────────────────────────────
   React.useEffect(() => {
@@ -1358,7 +1369,7 @@ function AppProvider({ children, currentUser, signOut }) {
         supabase.from("no_shows").select("*"),
         supabase.from("rental_agreements").select("*"),
         supabase.from("damage_claims").select("*"),
-        supabase.from("app_settings").select("*"),
+        supabase.from("app_settings").select("*").eq("locationId", currentUser?.locationId ?? null),
         supabase.from("archived_vehicles").select("*").order("disposalDate", { ascending: false }),
       ]);
 
@@ -1604,8 +1615,12 @@ function AppProvider({ children, currentUser, signOut }) {
       if (data) setDamageClaimsState(data);
     };
 
+    // Scoped like the initial load. The realtime subscription fires on every
+    // app_settings change in the project, including other companies', so an
+    // unfiltered refetch would pull their rows into this session's settings.
     const refetchAppSettings = async () => {
-      const { data } = await supabase.from("app_settings").select("*");
+      const { data } = await supabase.from("app_settings").select("*")
+        .eq("locationId", currentUser?.locationId ?? null);
       if (data) setAppSettingsState(Object.fromEntries(data.map((r) => [r.key, r.value])));
     };
 
