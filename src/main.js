@@ -50,27 +50,21 @@ function restHeaders(extra) {
 // public username-to-email table, would let anyone enumerate staff.
 const AUTH_EMAIL_DOMAIN = "fleetr.internal";
 
-// The auth address is namespaced by location code, so two companies can each
-// have a user called connor. The code is not a secret and is not a second
-// factor: it only says which namespace to look in, and the password still does
-// all the authenticating.
+// Usernames are globally unique, enforced by a unique index on public.users
+// rather than by anything here. That is what lets the address stay a plain
+// username@domain and the login form stay two fields.
 //
-// The alternative was a username-to-company lookup, which would have to be
-// readable before sign-in and would therefore let anyone with the public key
-// enumerate every staff member. A field the person types avoids that entirely.
-const normalizeLocationCode = (c) => String(c || "").trim().toUpperCase();
-
-const usernameToEmail = (u, code) => {
-  const user = String(u || "").trim().toLowerCase();
-  const ns   = normalizeLocationCode(code).toLowerCase();
-  return ns ? `${user}@${ns}.${AUTH_EMAIL_DOMAIN}` : `${user}@${AUTH_EMAIL_DOMAIN}`;
-};
-
-// Legacy, pre-namespace form. Kept only for the cutover window, so a sign-in
-// works whether or not that account's address has been moved yet. Removed once
-// both existing accounts are namespaced; new accounts are only ever created in
-// the namespaced form.
-const usernameToLegacyEmail = (u) => `${String(u || "").trim().toLowerCase()}@${AUTH_EMAIL_DOMAIN}`;
+// The tradeoff is deliberate and matches locations.code: the first company to
+// take a username keeps it, and a later company with its own connor has to
+// pick something else. The alternative was namespacing the address by a
+// location code typed at sign-in, which worked but put a third field in front
+// of every staff member every shift to solve a collision that has not happened
+// yet. Uniqueness in the database costs nothing until it does.
+//
+// Nothing outside this file needs to know the address exists. Staff type a
+// username; the mapping to an email is an implementation detail of Supabase
+// Auth authenticating by email.
+const usernameToEmail = (u) => `${String(u || "").trim().toLowerCase()}@${AUTH_EMAIL_DOMAIN}`;
 
 // A hard cap on how long a session lives, independent of Supabase's own token
 // refresh. Refresh tokens would otherwise keep a session alive indefinitely,
@@ -97,29 +91,13 @@ async function fetchProfile() {
 // Returns { ok, user } or { ok:false, error }. Never throws: the caller shows
 // one message for every failure, so a wrong password and an account that does
 // not exist are indistinguishable from outside.
-async function signInReal(username, password, locationCode) {
+async function signInReal(username, password) {
   try {
     // supabase-js v1: signIn, not v2's signInWithPassword.
-    //
-    // The namespaced address is tried first and is the real one. The legacy
-    // fallback exists so that renaming the existing accounts in the dashboard
-    // is not a flag day: before the rename the first attempt misses and the
-    // second succeeds, after it the first succeeds and the second never runs.
-    let { error } = await supabase.auth.signIn({
-      email:    usernameToEmail(username, locationCode),
+    const { error } = await supabase.auth.signIn({
+      email:    usernameToEmail(username),
       password: password,
     });
-    if (error) {
-      const legacy = await supabase.auth.signIn({
-        email:    usernameToLegacyEmail(username),
-        password: password,
-      });
-      if (!legacy.error) {
-        console.warn("Fleetr: signed in with the pre-namespace address. Move this account to " +
-                     usernameToEmail(username, locationCode));
-        error = null;
-      }
-    }
     if (error) return { ok: false, error: error.message };
 
     const prof = await fetchProfile();
@@ -9400,16 +9378,10 @@ function AppRoutes() {
 
 function LoginScreen({ onSuccess }) {
   const [username, setUsername] = React.useState("");
-  // Remembered across sign-ins. A counter terminal is always the same branch,
-  // so asking for it every shift would be friction with no security value: the
-  // code is not a secret and the password is what authenticates.
-  const [locationCode, setLocationCode] = React.useState(
-    () => { try { return localStorage.getItem("fleetr_location_code") || ""; } catch (e) { return ""; } });
   const [pin,      setPin]      = React.useState("");
   const [error,    setError]    = React.useState(false);
   const [loading,  setLoading]  = React.useState(false);
   const pinRef  = React.useRef(null);
-  const codeRef = React.useRef(null);
 
   const handleUsernameChange = (e) => {
     const val = e.target.value;
@@ -9424,13 +9396,11 @@ function LoginScreen({ onSuccess }) {
     // Supabase Auth is the only way in. The hardcoded connor/1234 fallback that
     // stood here during the transition is gone, along with the account whose
     // password was a constant in this file.
-    const code = normalizeLocationCode(locationCode);
     setLoading(true);
     setError(false);
-    signInReal(u, pin, code)
+    signInReal(u, pin)
       .then((result) => {
         if (result.ok) {
-          try { localStorage.setItem("fleetr_location_code", code); } catch (e) {}
           onSuccess(result.user);
           return;
         }
@@ -9460,21 +9430,6 @@ function LoginScreen({ onSuccess }) {
           autoComplete: "username",
           value: username,
           onChange: handleUsernameChange,
-          onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); codeRef.current?.focus(); } },
-        }),
-        React.createElement("input", {
-          ref: codeRef,
-          className: "loginInput",
-          type: "text",
-          placeholder: "Location code",
-          maxLength: 8,
-          // Not a password field and not autocompleted as one. It is an
-          // identifier, so the browser may remember it like a username.
-          autoComplete: "off",
-          autoCapitalize: "characters",
-          spellCheck: false,
-          value: locationCode,
-          onChange: (e) => { setLocationCode(normalizeLocationCode(e.target.value)); setError(false); },
           onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); pinRef.current?.focus(); } },
         }),
         React.createElement("input", {
