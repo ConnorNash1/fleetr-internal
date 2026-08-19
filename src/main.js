@@ -1167,11 +1167,16 @@ function AppProvider({ children, currentUser, signOut }) {
   // gap in it. Failures go to the console instead.
   const logAudit = React.useCallback((entry) => {
     const row = {
+      // actorId is deliberately NOT sent. A before-insert trigger sets it from
+      // auth.uid(), and the insert policy rejects any row where it disagrees,
+      // so a value supplied here would be discarded at best. Leaving it out
+      // keeps this code honest about who decides: the database does.
+      //
+      // actor is sent, because one legitimate value is not a person: command
+      // bar entries are signed `fleetr ai`. The trigger passes that label
+      // through and replaces anything else with the caller's real name, so
+      // what is sent here is a hint, not an assertion.
       actor:       entry.actor || actorName(currentUser),
-      // The id as well as the name: a display name can change, and an audit
-      // trail that only records what someone was called stops resolving when
-      // it does. Null for AI-signed entries, which have no user row behind them.
-      actorId:     entry.actorId !== undefined ? entry.actorId : (currentUser?.id || null),
       actionType:  entry.actionType,
       actionLabel: actionLabel(entry.actionType),
       tableName:   entry.tableName || null,
