@@ -336,6 +336,14 @@ const ACTION_POLICY = {
   // Tank size is a money input: it is the divisor in every future gas charge.
   "vehicle.tankSize": { tier: "pin", label: "Set tank size" },
 
+  // Changes who can do what, or ends someone's access. Both are hard to notice
+  // after the fact: a quietly promoted account looks exactly like a legitimate
+  // one, and a deactivated colleague finds out at the start of their next
+  // shift. The database refuses these for anyone who is not an Admin, and
+  // refuses them outright against yourself; the PIN is the second lock.
+  "staff.role":   { tier: "pin", label: "Change a staff member's role" },
+  "staff.active": { tier: "pin", label: "Activate or deactivate a staff member" },
+
   // Puts a vehicle on the road or ends a rental. ra.open is also where the PM
   // soft block is overridden, so the safety override is gated here.
   "ra.open":    { tier: "pin", label: "Open a rental agreement" },
@@ -519,6 +527,7 @@ const NAV_SECTIONS = [
     items: [
       { label: "Reports", path: "/reports" },
       { label: "Audit Log", path: "/audit-log" },
+      { label: "Staff", path: "/staff" },
       { label: "Settings", path: "/settings" },
     ],
   },
@@ -6256,6 +6265,202 @@ function ReportsPage() {
 // ─── AuditLogPage ────────────────────────────────────────────────────────────
 // Read only, deliberately. Nothing in the app writes here except guardAction,
 // and an audit log staff can edit is not an audit log.
+// Refusal reasons from set_staff_role and set_staff_active, turned into
+// something a person can act on. not_found covers both "no such person" and
+// "not at your branch": the database answers the same way for each on purpose,
+// so this message must not distinguish them either.
+const STAFF_REASONS = {
+  admin_only:   "Only an Admin can change staff.",
+  not_yourself: "You cannot change your own role or deactivate yourself.",
+  bad_role:     "That is not a role.",
+  not_found:    "That person is not at this branch.",
+};
+
+// The staff list and the join code live together because they are two halves of
+// one job: the code is how somebody joins, this list is what happens to them
+// afterwards. Splitting them across two screens means an Admin hands out a code
+// and then goes looking for where the person turned up.
+//
+// Everything here is enforced in the database, not on this page. The Admin
+// checks below decide what to RENDER; set_staff_role and set_staff_active make
+// the same checks again and are the ones that matter. A page that hides a
+// button is a page that can be edited in a browser console.
+function StaffPage() {
+  const { currentUser, guardAction } = React.useContext(AppContext);
+  const isAdmin = currentUser?.role === "Admin";
+
+  const [rows,    setRows]    = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error,   setError]   = React.useState("");
+  const [busyId,  setBusyId]  = React.useState("");
+
+  const [code,       setCode]       = React.useState("");
+  const [codeSetAt,  setCodeSetAt]  = React.useState("");
+  const [codeShown,  setCodeShown]  = React.useState(false);
+  const [codeError,  setCodeError]  = React.useState("");
+  const [rotating,   setRotating]   = React.useState(false);
+
+  const loadStaff = React.useCallback(async () => {
+    // No location filter. The read policy already scopes this to the caller's
+    // own branch, and a filter here would only hide a policy failure rather
+    // than prevent one.
+    const { data, error: err } = await supabase
+      .from("users").select("id,username,name,role,active").order("username");
+    if (err) setError(err.message || "Could not load the staff list.");
+    else { setRows(data || []); setError(""); }
+    setLoading(false);
+  }, []);
+
+  React.useEffect(() => { loadStaff(); }, [loadStaff]);
+
+  const loadCode = React.useCallback(async () => {
+    const { data, error: err } = await supabase.rpc("my_join_code");
+    if (err || !data || !data.ok) { setCodeError("Could not load the join code."); return; }
+    setCode(data.code);
+    setCodeSetAt(data.setAt || "");
+    setCodeError("");
+  }, []);
+
+  const rotate = () => {
+    setRotating(true);
+    supabase.rpc("regenerate_join_code")
+      .then(({ data, error: err }) => {
+        if (err || !data || !data.ok) { setCodeError("Could not generate a new code."); return; }
+        setCode(data.code);
+        setCodeSetAt(new Date().toISOString());
+        setCodeShown(true);
+        setCodeError("");
+      })
+      .then(() => setRotating(false), () => setRotating(false));
+  };
+
+  // Both mutations go through guardAction, so they are PIN gated and land in
+  // the audit log with the target named. A role change nobody can point at
+  // afterwards is the kind of thing this log exists for.
+  const runStaffAction = (row, actionKey, rpc, args, describe) => {
+    guardAction(actionKey, async () => {
+      setBusyId(row.id);
+      try {
+        const { data, error: err } = await supabase.rpc(rpc, args);
+        if (err) throw new Error(err.message);
+        if (!data || !data.ok) throw new Error(STAFF_REASONS[data && data.reason] || "Refused.");
+        await loadStaff();
+      } finally {
+        setBusyId("");
+      }
+    }, {
+      tableName:   "users",
+      recordId:    row.username,
+      description: describe,
+    });
+  };
+
+  const changeRole = (row) => runStaffAction(
+    row, "staff.role", "set_staff_role",
+    { target_id: row.id, new_role: row.role === "Admin" ? "Agent" : "Admin" },
+    `${row.username}: ${row.role} to ${row.role === "Admin" ? "Agent" : "Admin"}`);
+
+  const toggleActive = (row) => runStaffAction(
+    row, "staff.active", "set_staff_active",
+    { target_id: row.id, is_active: !row.active },
+    `${row.username}: ${row.active ? "deactivated" : "reactivated"}`);
+
+  if (!isAdmin) {
+    return React.createElement(
+      "div", { className: "page" },
+      React.createElement("h1", null, "Staff"),
+      React.createElement("div", { className: "resvEmpty" },
+        "Only an Admin can manage staff. Ask an Admin at your branch if you need an account changed.")
+    );
+  }
+
+  return React.createElement(
+    "div", { className: "page" },
+    React.createElement("h1", null, "Staff"),
+
+    // ── Join code ──
+    React.createElement(
+      "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
+      React.createElement("h2", null, "Join code"),
+      React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+        "New staff enter this code when they create their account. It decides which branch they join, so treat it like a door key: anyone who has it can create an account here."),
+      React.createElement(
+        "div", { style: { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" } },
+        React.createElement("code", {
+          style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px", background: "rgba(66,164,255,0.12)" },
+        }, codeShown && code ? code : "••••••••"),
+        React.createElement("button", {
+          className: "loginBtn",
+          style: { width: "auto", padding: "8px 14px" },
+          onClick: () => {
+            if (codeShown) { setCodeShown(false); return; }
+            // Fetched only when asked for. It is not needed to render the page,
+            // and a code that is on screen by default is a code on screen
+            // while a customer is standing at the counter.
+            if (!code) loadCode().then(() => setCodeShown(true));
+            else setCodeShown(true);
+          },
+        }, codeShown ? "Hide" : "Show"),
+        React.createElement("button", {
+          className: "loginBtn",
+          style: { width: "auto", padding: "8px 14px" },
+          disabled: rotating,
+          onClick: rotate,
+        }, rotating ? "Generating…" : "Generate new code")
+      ),
+      codeSetAt && codeShown && React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } },
+        `Set ${new Date(codeSetAt).toLocaleDateString("en-CA")}`),
+      React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } },
+        "Generating a new code stops the old one working immediately. Anyone who was given the old code will need the new one."),
+      codeError && React.createElement("div", { className: "loginError" }, codeError)
+    ),
+
+    // ── Staff list ──
+    React.createElement(
+      "div", { className: "dashboardSection" },
+      React.createElement("h2", null, "People at this branch"),
+      error   && React.createElement("div", { className: "loginError" }, error),
+      loading && React.createElement("div", { className: "resvEmpty" }, "Loading…"),
+      !loading && rows.length === 0 && React.createElement("div", { className: "resvEmpty" }, "Nobody else has joined yet."),
+      !loading && rows.length > 0 && React.createElement(
+        "table", { className: "dashboardTable" },
+        React.createElement("thead", null, React.createElement("tr", null,
+          ["Username", "Name", "Role", "Status", ""].map((h) =>
+            React.createElement("th", { key: h }, h)))),
+        React.createElement("tbody", null, rows.map((row) => {
+          const isSelf = row.id === currentUser?.id;
+          return React.createElement("tr", { key: row.id, style: row.active ? null : { opacity: 0.5 } },
+            React.createElement("td", null, row.username),
+            React.createElement("td", null, row.name),
+            React.createElement("td", null, row.role),
+            React.createElement("td", null, row.active ? "Active" : "Deactivated"),
+            React.createElement("td", { style: { whiteSpace: "nowrap" } },
+              // Your own row carries no buttons. An Admin who demotes or
+              // deactivates themselves has locked the company out of its own
+              // staff administration, and there is nobody left with the rights
+              // to undo it. The database refuses it too; this just means the
+              // button is never there to be clicked by accident.
+              isSelf
+                ? React.createElement("span", { style: { opacity: 0.6, fontSize: "0.85rem" } }, "You")
+                : React.createElement(React.Fragment, null,
+                    React.createElement("button", {
+                      className: "loginBtn",
+                      style: { width: "auto", padding: "6px 10px", marginRight: "8px" },
+                      disabled: busyId === row.id,
+                      onClick: () => changeRole(row),
+                    }, row.role === "Admin" ? "Make Agent" : "Make Admin"),
+                    React.createElement("button", {
+                      className: "loginBtn",
+                      style: { width: "auto", padding: "6px 10px" },
+                      disabled: busyId === row.id,
+                      onClick: () => toggleActive(row),
+                    }, row.active ? "Deactivate" : "Reactivate"))));
+        }))
+      )
+    )
+  );
+}
+
 function AuditLogPage() {
   const [rows,    setRows]    = React.useState([]);
   const [loading, setLoading] = React.useState(true);
@@ -6409,7 +6614,7 @@ function SettingsPage() {
     // Roles are described here but nothing enforces them: there is no users
     // table and the PIN is checked against the single signed-in user. Said
     // plainly so the panel does not read as a working feature.
-    { key: "users",   title: "User Accounts",         body: "Manage staff logins, roles (Agent, Manager, Admin), and PIN resets. Roles are not active yet: every signed-in user currently has the same access, and confirmation is by PIN alone." },
+    { key: "users",   title: "User Accounts",         body: "Staff, roles and join codes have moved to the Staff page. Roles are real for staff administration: only an Admin can promote, deactivate, or see the join code. Everywhere else in the app, an Agent and an Admin still have the same access." },
     { key: "notifs",  title: "Notification Settings", body: "Configure which events trigger notifications and to which staff members." },
     { key: "twilio",  title: "Twilio SMS Setup",      body: "Twilio Account SID, Auth Token, and sending phone number for AI call and text automation." },
     { key: "billing", title: "Billing Configuration", body: "Billing address, HST registration number, and invoice export settings." },
@@ -9357,6 +9562,11 @@ function AppRoutes() {
     React.createElement(Route, {
       path: "/audit-log",
       element: React.createElement(AuditLogPage),
+    }),
+    React.createElement(Route, {
+      key:  "staff",
+      path: "/staff",
+      element: React.createElement(StaffPage),
     }),
     React.createElement(Route, {
       path: "/rental-agreements",
