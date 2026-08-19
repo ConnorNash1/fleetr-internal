@@ -331,8 +331,8 @@ const ACTION_POLICY = {
   // Not obviously money until you read the handler: marking a balance Paid also
   // writes gasOwed to "0", so this writes off what a customer owed.
   "gas.collected":   { tier: "pin", label: "Change gas payment status" },
-  "gas.markup":      { tier: "pin", label: "Change the gas markup" },
-  "gas.regionPrice": { tier: "pin", label: "Change a regional fuel price" },
+  "gas.markup":      { tier: "pin", role: "Admin", label: "Change the gas markup" },
+  "gas.regionPrice": { tier: "pin", role: "Admin", label: "Change a regional fuel price" },
   // Tank size is a money input: it is the divisor in every future gas charge.
   "vehicle.tankSize": { tier: "pin", label: "Set tank size" },
 
@@ -341,12 +341,19 @@ const ACTION_POLICY = {
   // one, and a deactivated colleague finds out at the start of their next
   // shift. The database refuses these for anyone who is not an Admin, and
   // refuses them outright against yourself; the PIN is the second lock.
-  "staff.role":   { tier: "pin", label: "Change a staff member's role" },
-  "staff.active": { tier: "pin", label: "Activate or deactivate a staff member" },
+  "staff.role":   { tier: "pin", role: "Admin", label: "Change a staff member's role" },
+  "staff.active": { tier: "pin", role: "Admin", label: "Activate or deactivate a staff member" },
 
   // Puts a vehicle on the road or ends a rental. ra.open is also where the PM
   // soft block is overridden, so the safety override is gated here.
   "ra.open":    { tier: "pin", label: "Open a rental agreement" },
+  // The PM override is its own action, not a branch inside ra.open. An Agent
+  // opens rentals all day; overriding a preventative maintenance flag puts a
+  // vehicle that is due for service on the road with a customer in it, and that
+  // is a different decision by a different person. Splitting the key is also
+  // what lets the audit log tell the two apart afterwards, which a single
+  // ra.open entry never could.
+  "ra.openDespitePm": { tier: "pin", role: "Admin", label: "Open a rental on a vehicle flagged for PM" },
   "ra.advance": { tier: "pin", label: "Change rental agreement status" },
   // The PM interval is the back door to the same safety block: setting it wide
   // enough silences the flag for the whole fleet without overriding anything.
@@ -375,6 +382,12 @@ const ACTION_POLICY = {
 
 const actionTier = (key) => ACTION_POLICY[key]?.tier || "pin"; // unknown defaults to the safer tier
 const actionLabel = (key) => ACTION_POLICY[key]?.label || "this action";
+// null means every signed-in user may do it. Unlike actionTier there is no safe
+// default to fall back to: guessing "Admin" for an unknown key would lock the
+// whole branch out of a typo, and guessing null would open it. Unknown keys
+// already default to the PIN tier, and the database refuses what it refuses
+// whatever this returns.
+const actionRole = (key) => ACTION_POLICY[key]?.role || null;
 
 // How the command bar signs its audit entries, matching how notesLog attributes
 // an AI-added note. The staff member who confirmed it is named in the entry's
@@ -439,7 +452,7 @@ const VEHICLE_DETAIL_KEYS = [
   "plate", "province", "year", "make", "model",
   "colour", "tankSizeLiters", "pmIntervalKm", "vehicleClass", "vin",
 ];
-function commandBarActionKey({ table, operation, data }) {
+function commandBarActionKey({ table, operation, data, pmVehicle }) {
   const fields = Object.keys(data || {});
   const touches = (list) => fields.some((f) => list.includes(f));
 
@@ -452,7 +465,12 @@ function commandBarActionKey({ table, operation, data }) {
   // Opening is called out separately from advancing because opening is what puts
   // a vehicle on the road, and it is the one that can override a PM flag.
   if (operation === "raStatus") {
-    return data?.rentalAgreementStatus === "open_rental_agreement" ? "ra.open" : "ra.advance";
+    if (data?.rentalAgreementStatus !== "open_rental_agreement") return "ra.advance";
+    // Overriding a PM flag is a different action from opening a rental, and it
+    // has to be recognised here too. The command bar reaches the same tables as
+    // the UI, so a split that only exists in the page hands the AI path the
+    // route around it.
+    return pmVehicle?.needsPm ? "ra.openDespitePm" : "ra.open";
   }
   if (table === "app_settings") {
     return fields.includes("gasMarkupPercent") ? "gas.markup" : "gas.regionPrice";
@@ -1011,6 +1029,10 @@ const readPinResult = (data) => {
   if (data === true)  return { ok: true };
   if (data === false || data == null) return { ok: false, locked: false };
   return { ok: data.ok === true, locked: data.locked === true,
+           // Taken from the verify_pin response, never from the cached profile.
+           // The profile sits in localStorage where anyone can edit it; this
+           // came from the users row in the same call that checked the PIN.
+           role: data.role || null,
            attemptsLeft: data.attemptsLeft, retryInSeconds: data.retryInSeconds };
 };
 
@@ -1256,6 +1278,23 @@ function AppProvider({ children, currentUser, signOut }) {
     }
     const result = readPinResult(data);
     if (!result.ok) return { ok: false, message: pinFailureMessage(result) };
+
+    // Checked after the PIN, against the role the database just reported. The
+    // database refuses the write either way; doing it here means the person is
+    // told which permission they are missing rather than watching the action
+    // fail for no stated reason.
+    const needed = actionRole(pendingAuditRef.current?.actionType);
+    if (needed && result.role !== needed) {
+      pendingFnRef.current = null;
+      const entry = pendingAuditRef.current;
+      pendingAuditRef.current = null;
+      setPinModalOpen(false);
+      // Logged as refused. An attempt at something above your permissions is
+      // exactly the kind of thing the log should carry.
+      if (entry) logAudit({ ...entry, outcome: "refused", description:
+        `${entry.description || ""} (refused: ${needed} only)`.trim() });
+      return { ok: false, message: `Only an ${needed} can do this.` };
+    }
 
     const fn = pendingFnRef.current;
     pendingFnRef.current = null;
@@ -7161,6 +7200,7 @@ function FleetrCommandBar() {
       table:     pendingAction?.table,
       operation: pendingAction?.operation,
       data:      editableData,
+      pmVehicle: ctx?.pmVehicle,
     });
     logAudit({
       actor:       AI_ACTOR,
@@ -8590,13 +8630,18 @@ function CustomerPage() {
       console.log("rental open cancelled: vehicle flagged for PM", pmVehicle?.plate);
       // Declining the PM warning never reaches guardAction, so it logs itself.
       logAudit({
-        actionType: "ra.open", tableName: "reservations", recordId: resCode,
+        actionType: pmVehicle?.needsPm ? "ra.openDespitePm" : "ra.open",
+        tableName: "reservations", recordId: resCode,
         outcome: "refused",
         description: `Declined to open the rental: ${pmVehicle?.plate || "the vehicle"} is flagged for preventative maintenance.`,
       });
       return;
     }
-    guardAction("ra.open", () => {
+    // The key depends on the vehicle, not on the button. Overriding a PM flag
+    // is Admin-only and is logged under its own action, so the log can answer
+    // "who put a vehicle that was due for service on the road" without anyone
+    // reading descriptions to work out which ra.open entries were overrides.
+    guardAction(pmVehicle?.needsPm ? "ra.openDespitePm" : "ra.open", () => {
       setLocalRecord((prev) => prev ? { ...prev, rentalAgreementStatus: "open_rental_agreement" } : prev);
       setReservations((prev) =>
         prev.map((r) => r.resCode === resCode ? { ...r, rentalAgreementStatus: "open_rental_agreement" } : r)
@@ -8610,13 +8655,16 @@ function CustomerPage() {
     if (status === "open_rental_agreement" && !confirmRentalDespitePm(pmVehicle)) {
       console.log("rental reopen cancelled: vehicle flagged for PM", pmVehicle?.plate);
       logAudit({
-        actionType: "ra.open", tableName: "reservations", recordId: resCode,
+        actionType: pmVehicle?.needsPm ? "ra.openDespitePm" : "ra.open",
+        tableName: "reservations", recordId: resCode,
         outcome: "refused",
         description: `Declined to reopen the rental: ${pmVehicle?.plate || "the vehicle"} is flagged for preventative maintenance.`,
       });
       return;
     }
-    guardAction(status === "open_rental_agreement" ? "ra.open" : "ra.advance", () => {
+    guardAction(
+      status !== "open_rental_agreement" ? "ra.advance"
+        : pmVehicle?.needsPm ? "ra.openDespitePm" : "ra.open", () => {
       setLocalRecord((prev) => prev ? { ...prev, rentalAgreementStatus: status } : prev);
       setReservations((prev) =>
         prev.map((r) => r.resCode === resCode ? { ...r, rentalAgreementStatus: status } : r)
