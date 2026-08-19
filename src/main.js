@@ -9381,7 +9381,82 @@ function AppRoutes() {
   );
 }
 
-function LoginScreen({ onSuccess }) {
+// Signup goes through the worker, not straight at Supabase. The worker holds
+// the ordering that keeps a failed attempt from leaving an orphaned account
+// behind, and the rate limiting that keeps an unauthenticated endpoint bounded.
+// Nothing here decides anything: every refusal comes back from the database.
+const SIGNUP_URL = `${CLAUDE_API_URL}/signup`;
+
+function SignupScreen({ onDone, onCancel }) {
+  const [username, setUsername] = React.useState("");
+  const [name,     setName]     = React.useState("");
+  const [joinCode, setJoinCode] = React.useState("");
+  const [password, setPassword] = React.useState("");
+  const [message,  setMessage]  = React.useState("");
+  const [loading,  setLoading]  = React.useState(false);
+
+  const submit = (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setMessage("");
+    fetch(SIGNUP_URL, {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({
+        username: username.trim().toLowerCase(),
+        name:     name.trim(),
+        joinCode: joinCode.trim().toUpperCase(),
+        password: password,
+      }),
+    })
+      .then((r) => r.json())
+      .then((out) => {
+        if (out && out.ok) {
+          // Sent back to the login screen rather than signed in here. The
+          // account is real at this point, so the first thing the person does
+          // is the thing they will do every shift after.
+          onDone(out.username);
+          return;
+        }
+        setMessage((out && out.message) || "Signup could not be completed.");
+      })
+      .catch(() => setMessage("Could not reach the server. Check your connection."))
+      .finally(() => setLoading(false));
+  };
+
+  const field = (props) => React.createElement("input", {
+    className: "loginInput", spellCheck: false, ...props,
+  });
+
+  return React.createElement(
+    "div", { className: "loginWrap" },
+    React.createElement(
+      "div", { className: "loginCard" },
+      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#42a4ff", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
+      React.createElement("div", { className: "loginSubtitle" }, "Create your account."),
+      React.createElement(
+        "form", { className: "loginForm", onSubmit: submit },
+        field({ type: "text", placeholder: "Join code", maxLength: 8, autoCapitalize: "characters",
+                value: joinCode, onChange: (e) => { setJoinCode(e.target.value.toUpperCase()); setMessage(""); } }),
+        field({ type: "text", placeholder: "Full name", maxLength: 60, autoComplete: "name",
+                value: name, onChange: (e) => { setName(e.target.value); setMessage(""); } }),
+        field({ type: "text", placeholder: "Username", minLength: 6, maxLength: 12, autoComplete: "username",
+                value: username, onChange: (e) => { setUsername(e.target.value.toLowerCase()); setMessage(""); } }),
+        field({ type: "password", placeholder: "Password", minLength: 8, maxLength: 72, autoComplete: "new-password",
+                value: password, onChange: (e) => { setPassword(e.target.value); setMessage(""); } }),
+        React.createElement("button", { type: "submit", className: "loginBtn", disabled: loading },
+          loading ? "Creating\u2026" : "Create Account"),
+        message && React.createElement("div", { className: "loginError" }, message),
+        React.createElement("button", {
+          type: "button", className: "loginLink", onClick: onCancel,
+          style: { background: "none", border: "none", color: "#42a4ff", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
+        }, "I already have an account")
+      )
+    )
+  );
+}
+
+function LoginScreen({ onSuccess, onSignup, notice }) {
   const [username, setUsername] = React.useState("");
   const [pin,      setPin]      = React.useState("");
   const [error,    setError]    = React.useState(false);
@@ -9450,7 +9525,12 @@ function LoginScreen({ onSuccess }) {
           onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); handleSubmit(e); } },
         }),
         React.createElement("button", { type: "submit", className: "loginBtn", disabled: loading }, loading ? "Signing in…" : "Sign In"),
-        error && React.createElement("div", { className: "loginError" }, "Invalid credentials")
+        error && React.createElement("div", { className: "loginError" }, "Invalid credentials"),
+        notice && React.createElement("div", { className: "loginNotice", style: { color: "#3fbf7f", fontSize: "0.85rem", marginTop: "8px", textAlign: "center" } }, notice),
+        React.createElement("button", {
+          type: "button", onClick: onSignup,
+          style: { background: "none", border: "none", color: "#42a4ff", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
+        }, "I have a join code")
       )
     )
   );
@@ -9483,6 +9563,9 @@ function App() {
     return () => clearInterval(iv);
   }, [currentUser]);
 
+  const [signingUp,    setSigningUp]    = React.useState(false);
+  const [signupNotice, setSignupNotice] = React.useState("");
+
   const signOut = () => {
     clearSession();
     setCurrentUser(null);
@@ -9490,7 +9573,18 @@ function App() {
   };
 
   if (!currentUser) {
+    if (signingUp) {
+      return React.createElement(SignupScreen, {
+        onCancel: () => setSigningUp(false),
+        onDone:   (username) => {
+          setSigningUp(false);
+          setSignupNotice(`Account ${username} created. Sign in to continue.`);
+        },
+      });
+    }
     return React.createElement(LoginScreen, {
+      notice:   signupNotice,
+      onSignup: () => { setSignupNotice(""); setSigningUp(true); },
       onSuccess: (user) => {
         storeSession(user);
         window.location.hash = "/";
