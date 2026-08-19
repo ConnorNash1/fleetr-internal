@@ -11148,6 +11148,13 @@ body, * {
     white-space: nowrap;
   }
 
+  /* How tall the fixed command bar is. On :root because the nav drawer and the
+     bar are siblings: custom properties inherit down the tree, so a value
+     declared on .mobileBottomBar would be invisible to the drawer, and the
+     calc() below it would resolve to nothing and drop the whole declaration.
+     Anything that needs to clear the bar reads it from here. */
+  :root{ --mobileBottomBarH: 68px; }
+
   /* Nav drawer */
   .mobileNavOverlay{
     position: fixed;
@@ -11160,7 +11167,15 @@ body, * {
     width: 260px;
     height: 100%;
     overflow-y: auto;
-    padding: 16px 0;
+    /* The drawer runs to the bottom of the screen, but the command bar is
+       fixed on top of it. Without this the drawer scrolled to its true end
+       and the last item, Settings, still sat entirely behind the bar: there
+       was nothing left to scroll, so it could not be reached at all.
+       Padding rather than shortening the overlay, so the drawer's background
+       still runs behind the bar instead of ending in a visible seam.
+       The safe-area inset covers phones where the bar is lifted by a home
+       indicator, which pushes the overlap further up again. */
+    padding: 16px 0 calc(var(--mobileBottomBarH) + env(safe-area-inset-bottom, 0px) + 16px);
     display: flex;
     flex-direction: column;
     gap: 16px;
@@ -11197,6 +11212,8 @@ body, * {
 
   /* Fixed bottom command bar */
   .mobileBottomBar{
+    min-height: var(--mobileBottomBarH);
+    box-sizing: border-box;
     position: fixed;
     bottom: 0;
     left: 0;
