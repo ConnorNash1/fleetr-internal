@@ -389,6 +389,24 @@ const actionLabel = (key) => ACTION_POLICY[key]?.label || "this action";
 // whatever this returns.
 const actionRole = (key) => ACTION_POLICY[key]?.role || null;
 
+// Role is a ladder, not a label. Comparing with === was correct while Admin was
+// the top, and becomes wrong the moment a role sits above it: an Exec would be
+// refused every Admin-only action, leaving the most powerful role in the system
+// with strictly fewer powers than the one below it.
+//
+// 0 covers anything unrecognised, which includes null: not signed in, inactive,
+// or a profile that predates a role this build knows about.
+const ROLE_RANK = { Exec: 3, Admin: 2, Agent: 1 };
+const roleRank  = (r) => ROLE_RANK[r] || 0;
+
+// The second clause is the one that matters. Without it an unknown REQUIREMENT
+// ranks 0, every caller clears it, and a typo in ACTION_POLICY would silently
+// open the action to everyone. With it, a requirement nobody recognises is
+// refused to everybody, Exec included. Mirrors public.role_at_least in SQL, and
+// the two are asserted against the same table in the test suite.
+const roleAtLeast = (actual, needed) =>
+  roleRank(needed) > 0 && roleRank(actual) >= roleRank(needed);
+
 // How the command bar signs its audit entries, matching how notesLog attributes
 // an AI-added note. The staff member who confirmed it is named in the entry's
 // description, so "fleetr ai" never stands in for a person's accountability.
@@ -1284,7 +1302,7 @@ function AppProvider({ children, currentUser, signOut }) {
     // told which permission they are missing rather than watching the action
     // fail for no stated reason.
     const needed = actionRole(pendingAuditRef.current?.actionType);
-    if (needed && result.role !== needed) {
+    if (needed && !roleAtLeast(result.role, needed)) {
       pendingFnRef.current = null;
       const entry = pendingAuditRef.current;
       pendingAuditRef.current = null;
@@ -6326,7 +6344,7 @@ const STAFF_REASONS = {
 // button is a page that can be edited in a browser console.
 function StaffPage() {
   const { currentUser, guardAction } = React.useContext(AppContext);
-  const isAdmin = currentUser?.role === "Admin";
+  const isAdmin = roleAtLeast(currentUser?.role, "Admin");
 
   const [rows,    setRows]    = React.useState([]);
   const [loading, setLoading] = React.useState(true);
