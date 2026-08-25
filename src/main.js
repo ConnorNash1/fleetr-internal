@@ -343,6 +343,12 @@ const ACTION_POLICY = {
   // refuses them outright against yourself; the PIN is the second lock.
   "staff.role":   { tier: "pin", role: "Admin", label: "Change a staff member's role" },
   "staff.active": { tier: "pin", role: "Admin", label: "Activate or deactivate a staff member" },
+  // Moving someone changes which branch's data they can reach, so it is a
+  // permission change wearing different clothes.
+  "staff.reassign": { tier: "pin", role: "Admin", label: "Move a staff member to another branch" },
+  // Clearing a PIN removes a control, and the person it belongs to is not the
+  // one clicking. Gated like every other removal of a control.
+  "staff.resetPin": { tier: "pin", role: "Admin", label: "Reset a staff member's PIN" },
 
   // Puts a vehicle on the road or ends a rental. ra.open is also where the PM
   // soft block is overridden, so the safety override is gated here.
@@ -1047,12 +1053,18 @@ const readPinResult = (data) => {
   if (data === true)  return { ok: true };
   if (data === false || data == null) return { ok: false, locked: false };
   return { ok: data.ok === true, locked: data.locked === true,
+           // 'no_pin_set' means the account has no PIN at all, usually because
+           // an Admin just cleared it. Distinct from a wrong PIN because the
+           // way out is different: there is nothing to type yet.
+           reason: data.reason || null,
            // Taken from the verify_pin response, never from the cached profile.
            // The profile sits in localStorage where anyone can edit it; this
            // came from the users row in the same call that checked the PIN.
            role: data.role || null,
            attemptsLeft: data.attemptsLeft, retryInSeconds: data.retryInSeconds };
 };
+
+const PIN_SETUP_MESSAGE = "You do not have a PIN yet. Set one to continue.";
 
 const pinFailureMessage = (result) => {
   if (result.locked) {
@@ -1071,6 +1083,10 @@ function PinConfirmModal({ onConfirm, onCancel }) {
   const [pin,     setPin]     = React.useState("");
   const [error,   setError]   = React.useState("");
   const [loading, setLoading] = React.useState(false);
+  // "confirm" until the database says there is no PIN to confirm.
+  const [mode,    setMode]    = React.useState("confirm");
+  const [newPin,  setNewPin]  = React.useState("");
+  const [notice,  setNotice]  = React.useState("");
   const [focused, setFocused] = React.useState(true);
   const inputRef = React.useRef(null);
 
@@ -1084,7 +1100,35 @@ function PinConfirmModal({ onConfirm, onCancel }) {
     setLoading(true);
     const result = await onConfirm(pin);
     setLoading(false);
-    if (!result || !result.ok) { setError((result && result.message) || PIN_WRONG_MESSAGE); setPin(""); }
+    if (result && result.ok) return;
+    if (result && result.needsPinSetup) {
+      setMode("setup");
+      setError("");
+      setNotice(result.message || PIN_SETUP_MESSAGE);
+      setPin("");
+      return;
+    }
+    setError((result && result.message) || PIN_WRONG_MESSAGE);
+    setPin("");
+  };
+
+  const handleSetPin = async (e) => {
+    e.preventDefault();
+    if (!/^[0-9]{4}$/.test(newPin)) { setError("Your PIN must be 4 digits."); return; }
+    setLoading(true);
+    const { data, error: err } = await supabase.rpc("set_my_pin", { new_pin: newPin });
+    setLoading(false);
+    if (err || !data || !data.ok) {
+      setError((data && STAFF_REASONS[data.reason]) || "Could not set your PIN. Try again.");
+      return;
+    }
+    // Back to confirming, and they type it. Setting a PIN proves only that
+    // somebody holds the session; the action still has to be confirmed by
+    // someone who knows the PIN, which a moment ago nobody did.
+    setMode("confirm");
+    setNewPin("");
+    setError("");
+    setNotice("PIN set. Enter it to confirm this action.");
   };
 
   return React.createElement(
@@ -1095,15 +1139,39 @@ function PinConfirmModal({ onConfirm, onCancel }) {
       { className: "resModal", style: { maxWidth: "340px" }, onClick: (e) => e.stopPropagation() },
       React.createElement(
         "div", { className: "resModalHeader" },
-        React.createElement("h2", { className: "resModalTitle" }, "Confirm PIN"),
+        React.createElement("h2", { className: "resModalTitle" },
+          mode === "setup" ? "Set your PIN" : "Confirm PIN"),
         React.createElement("button", { type: "button", className: "resModalClose", onClick: onCancel }, "✕")
       ),
-      React.createElement(
+      mode === "setup" ? React.createElement(
+        "form", { className: "resModalForm", onSubmit: handleSetPin },
+        React.createElement(
+          "div", { className: "resModalBody" },
+          React.createElement("p", { style: { color: "#666", fontSize: "14px", marginBottom: "16px" } },
+            notice || PIN_SETUP_MESSAGE),
+          React.createElement("input", {
+            className: "resFormInput",
+            type: "password", inputMode: "numeric", maxLength: 4, autoFocus: true,
+            placeholder: "New 4-digit PIN",
+            value: newPin,
+            onChange: (e) => { setNewPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setError(""); },
+          }),
+          React.createElement("div", { style: { opacity: 0.65, fontSize: "12px", marginTop: "8px" } },
+            "Nobody else can see or choose this, including whoever cleared it."),
+          error && React.createElement("div", { className: "loginError" }, error)
+        ),
+        React.createElement(
+          "div", { className: "resModalFooter" },
+          React.createElement("button", { type: "button", className: "resModalCancel", onClick: onCancel }, "Cancel"),
+          React.createElement("button", { type: "submit", className: "resModalSave", disabled: loading },
+            loading ? "Setting\u2026" : "Set PIN")
+        )
+      ) : React.createElement(
         "form", { className: "resModalForm", onSubmit: handleSubmit },
         React.createElement(
           "div", { className: "resModalBody" },
           React.createElement("p", { style: { color: "#666", fontSize: "14px", marginBottom: "16px" } },
-            "Enter your PIN to confirm this action."
+            notice || "Enter your PIN to confirm this action."
           ),
           // Four rendered slots with our own caret, rather than one centred
           // input faking dots with letter-spacing.
@@ -1295,6 +1363,12 @@ function AppProvider({ children, currentUser, signOut }) {
       return { ok: false, message: PIN_UNAVAILABLE_MESSAGE };
     }
     const result = readPinResult(data);
+    // Handed back rather than shown as a failure. The modal switches to setting
+    // a PIN, because "Incorrect PIN" is a lie when there is no PIN to be wrong
+    // about, and it leaves the person with nothing to try.
+    if (!result.ok && result.reason === "no_pin_set") {
+      return { ok: false, needsPinSetup: true, message: PIN_SETUP_MESSAGE };
+    }
     if (!result.ok) return { ok: false, message: pinFailureMessage(result) };
 
     // Checked after the PIN, against the role the database just reported. The
@@ -6326,11 +6400,23 @@ function ReportsPage() {
 // something a person can act on. not_found covers both "no such person" and
 // "not at your branch": the database answers the same way for each on purpose,
 // so this message must not distinguish them either.
+// The old label was `role === "Admin" ? "Make Agent" : "Make Admin"`, written
+// when Admin was the top. With Exec above it, an Exec's row offered "Make
+// Admin", which is a demotion described as a promotion.
+const roleToggleLabel = (role) =>
+  role === "Exec"  ? "Make Admin" :
+  role === "Admin" ? "Make Agent" : "Make Admin";
+
 const STAFF_REASONS = {
-  admin_only:   "Only an Admin can change staff.",
-  not_yourself: "You cannot change your own role or deactivate yourself.",
-  bad_role:     "That is not a role.",
-  not_found:    "That person is not at this branch.",
+  admin_only:     "Only an Admin can change staff.",
+  exec_only:      "Only an Exec can do that.",
+  not_yourself:   "You cannot change your own role, branch, PIN or status from here.",
+  bad_role:       "That is not a role.",
+  not_found:      "That person is not at this branch.",
+  target_is_exec: "An Exec is not attached to a branch.",
+  bad_location:   "That is not a branch of this company.",
+  last_exec:      "This is the only Exec. Appoint another one first.",
+  location_required: "Choose the branch they should move to.",
 };
 
 // The staff list and the join code live together because they are two halves of
@@ -6350,6 +6436,10 @@ function StaffPage() {
   const [loading, setLoading] = React.useState(true);
   const [error,   setError]   = React.useState("");
   const [busyId,  setBusyId]  = React.useState("");
+  const [branches, setBranches] = React.useState([]);
+  // Defaults to where the person doing the moving is, which is the branch they
+  // are almost always moving somebody to.
+  const [moveTo,  setMoveTo]  = React.useState({});
 
   const [code,       setCode]       = React.useState("");
   const [codeSetAt,  setCodeSetAt]  = React.useState("");
@@ -6359,16 +6449,25 @@ function StaffPage() {
 
   const loadStaff = React.useCallback(async () => {
     // No location filter. The read policy already scopes this to the caller's
-    // own branch, and a filter here would only hide a policy failure rather
-    // than prevent one.
+    // own branch, or to the whole company for an Exec, and a filter here would
+    // only hide a policy failure rather than prevent one.
     const { data, error: err } = await supabase
-      .from("users").select("id,username,name,role,active").order("username");
+      .from("users").select("id,username,name,role,active,locationId").order("username");
     if (err) setError(err.message || "Could not load the staff list.");
     else { setRows(data || []); setError(""); }
     setLoading(false);
   }, []);
 
-  React.useEffect(() => { loadStaff(); }, [loadStaff]);
+  // Named columns, never select("*"). locations has been column-granted since
+  // step 10, so * expands to include a column nobody may read and the whole
+  // query comes back 403.
+  const loadBranches = React.useCallback(async () => {
+    const { data } = await supabase
+      .from("locations").select("id,name,code,active").order("name");
+    setBranches((data || []).filter((b) => b.active));
+  }, []);
+
+  React.useEffect(() => { loadStaff(); loadBranches(); }, [loadStaff, loadBranches]);
 
   const loadCode = React.useCallback(async () => {
     const { data, error: err } = await supabase.rpc("my_join_code");
@@ -6412,15 +6511,45 @@ function StaffPage() {
     });
   };
 
-  const changeRole = (row) => runStaffAction(
-    row, "staff.role", "set_staff_role",
-    { target_id: row.id, new_role: row.role === "Admin" ? "Agent" : "Admin" },
-    `${row.username}: ${row.role} to ${row.role === "Admin" ? "Agent" : "Admin"}`);
+  const changeRole = (row) => {
+    const next = row.role === "Admin" ? "Agent" : "Admin";
+    // Leaving Exec needs somewhere to land: users_location_by_role refuses a
+    // non-Exec with no branch, so without this the write fails on a constraint
+    // rather than on anything the person could act on.
+    const args = { target_id: row.id, new_role: next };
+    if (row.role === "Exec") {
+      args.new_location_id = moveTo[row.id] || currentUser?.locationId || (branches[0] || {}).id;
+      if (!args.new_location_id) { setError(STAFF_REASONS.location_required); return; }
+    }
+    runStaffAction(row, "staff.role", "set_staff_role", args,
+      `${row.username}: ${row.role} to ${next}`);
+  };
 
   const toggleActive = (row) => runStaffAction(
     row, "staff.active", "set_staff_active",
     { target_id: row.id, is_active: !row.active },
     `${row.username}: ${row.active ? "deactivated" : "reactivated"}`);
+
+  const reassign = (row) => {
+    const dest = moveTo[row.id] || currentUser?.locationId || "";
+    if (!dest) { setError(STAFF_REASONS.location_required); return; }
+    const name = (branches.find((b) => b.id === dest) || {}).name || dest;
+    runStaffAction(row, "staff.reassign", "reassign_staff",
+      { target_id: row.id, location_id: dest },
+      `${row.username} moved to ${name}.`);
+  };
+
+  const resetPin = (row) => {
+    if (!window.confirm(
+      `Clear ${row.username}'s PIN?\n\n` +
+      `They will be asked to set a new one the next time they confirm an action. ` +
+      `You will not see it, and you cannot choose it for them.`)) return;
+    runStaffAction(row, "staff.resetPin", "reset_staff_pin",
+      { target_id: row.id }, `${row.username}: PIN cleared.`);
+  };
+
+  const branchName = (id) =>
+    (branches.find((b) => b.id === id) || {}).name || (id ? "another branch" : "\u2014");
 
   if (!isAdmin) {
     return React.createElement(
@@ -6482,7 +6611,7 @@ function StaffPage() {
       !loading && rows.length > 0 && React.createElement(
         "table", { className: "dashboardTable" },
         React.createElement("thead", null, React.createElement("tr", null,
-          ["Username", "Name", "Role", "Status", ""].map((h) =>
+          ["Username", "Name", "Role", "Branch", "Status", ""].map((h) =>
             React.createElement("th", { key: h }, h)))),
         React.createElement("tbody", null, rows.map((row) => {
           const isSelf = row.id === currentUser?.id;
@@ -6490,6 +6619,10 @@ function StaffPage() {
             React.createElement("td", null, row.username),
             React.createElement("td", null, row.name),
             React.createElement("td", null, row.role),
+            // An Exec has no branch at all, which is the point of the role, so
+            // it reads as such rather than as a missing value.
+            React.createElement("td", null,
+              row.role === "Exec" ? "Company-wide" : branchName(row.locationId)),
             React.createElement("td", null, row.active ? "Active" : "Deactivated"),
             React.createElement("td", { style: { whiteSpace: "nowrap" } },
               // Your own row carries no buttons. An Admin who demotes or
@@ -6505,13 +6638,34 @@ function StaffPage() {
                       style: { width: "auto", padding: "6px 10px", marginRight: "8px" },
                       disabled: busyId === row.id,
                       onClick: () => changeRole(row),
-                    }, row.role === "Admin" ? "Make Agent" : "Make Admin"),
+                    }, roleToggleLabel(row.role)),
                     React.createElement("button", {
                       className: "loginBtn",
-                      style: { width: "auto", padding: "6px 10px" },
+                      style: { width: "auto", padding: "6px 10px", marginRight: "8px" },
                       disabled: busyId === row.id,
                       onClick: () => toggleActive(row),
-                    }, row.active ? "Deactivate" : "Reactivate"))));
+                    }, row.active ? "Deactivate" : "Reactivate"),
+                    React.createElement("button", {
+                      className: "loginBtn",
+                      style: { width: "auto", padding: "6px 10px", marginRight: "8px" },
+                      disabled: busyId === row.id,
+                      onClick: () => resetPin(row),
+                    }, "Reset PIN"),
+                    // An Exec belongs to no branch, so there is nothing to move.
+                    row.role !== "Exec" && branches.length > 1 && React.createElement(
+                      "span", { style: { whiteSpace: "nowrap" } },
+                      React.createElement("select", {
+                        className: "resFormInput",
+                        style: { width: "auto", padding: "5px", marginRight: "6px" },
+                        value: moveTo[row.id] || currentUser?.locationId || "",
+                        onChange: (e) => setMoveTo((p) => ({ ...p, [row.id]: e.target.value })),
+                      }, branches.map((b) => React.createElement("option", { key: b.id, value: b.id }, b.name))),
+                      React.createElement("button", {
+                        className: "loginBtn",
+                        style: { width: "auto", padding: "6px 10px" },
+                        disabled: busyId === row.id,
+                        onClick: () => reassign(row),
+                      }, "Move")))));
         }))
       )
     )
