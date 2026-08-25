@@ -6446,6 +6446,16 @@ function StaffPage() {
   const [codeShown,  setCodeShown]  = React.useState(false);
   const [codeError,  setCodeError]  = React.useState("");
   const [rotating,   setRotating]   = React.useState(false);
+  const [defaultLocation, setDefaultLocation] = React.useState("");
+  // Reported by my_join_code rather than derived from the role here, so the
+  // rule lives in one place: the database already decides it.
+  const [canRotate,  setCanRotate]  = React.useState(false);
+  const isExec = roleAtLeast(currentUser?.role, "Exec");
+  // Where the person doing the moving currently is. For an Admin that is their
+  // own branch; for an Exec it is whichever branch they are acting in, which
+  // the cached profile cannot say because an Exec's locationId is null.
+  const [actingLocation, setActingLocation] = React.useState("");
+  const homeBranch = actingLocation || currentUser?.locationId || "";
 
   const loadStaff = React.useCallback(async () => {
     // No location filter. The read policy already scopes this to the caller's
@@ -6467,15 +6477,26 @@ function StaffPage() {
     setBranches((data || []).filter((b) => b.active));
   }, []);
 
-  React.useEffect(() => { loadStaff(); loadBranches(); }, [loadStaff, loadBranches]);
-
   const loadCode = React.useCallback(async () => {
     const { data, error: err } = await supabase.rpc("my_join_code");
     if (err || !data || !data.ok) { setCodeError("Could not load the join code."); return; }
     setCode(data.code);
     setCodeSetAt(data.setAt || "");
+    setDefaultLocation(data.defaultLocation || "");
+    setCanRotate(data.canRotate === true);
     setCodeError("");
   }, []);
+
+  // Fetched on mount, not on Show. canRotate and the default branch are needed
+  // to render the panel honestly: without them an Exec was told only an Exec
+  // could rotate the code. The code arrives in the same response and simply is
+  // not displayed, which is what Show actually controls.
+  React.useEffect(() => {
+    loadStaff(); loadBranches(); loadCode();
+    supabase.rpc("my_acting_location").then(({ data }) => {
+      if (data && data.ok && data.locationId) setActingLocation(data.locationId);
+    });
+  }, [loadStaff, loadBranches, loadCode]);
 
   const rotate = () => {
     setRotating(true);
@@ -6518,7 +6539,7 @@ function StaffPage() {
     // rather than on anything the person could act on.
     const args = { target_id: row.id, new_role: next };
     if (row.role === "Exec") {
-      args.new_location_id = moveTo[row.id] || currentUser?.locationId || (branches[0] || {}).id;
+      args.new_location_id = moveTo[row.id] || homeBranch || (branches[0] || {}).id;
       if (!args.new_location_id) { setError(STAFF_REASONS.location_required); return; }
     }
     runStaffAction(row, "staff.role", "set_staff_role", args,
@@ -6531,7 +6552,7 @@ function StaffPage() {
     `${row.username}: ${row.active ? "deactivated" : "reactivated"}`);
 
   const reassign = (row) => {
-    const dest = moveTo[row.id] || currentUser?.locationId || "";
+    const dest = moveTo[row.id] || homeBranch || "";
     if (!dest) { setError(STAFF_REASONS.location_required); return; }
     const name = (branches.find((b) => b.id === dest) || {}).name || dest;
     runStaffAction(row, "staff.reassign", "reassign_staff",
@@ -6569,7 +6590,9 @@ function StaffPage() {
       "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
       React.createElement("h2", null, "Join code"),
       React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-        "New staff enter this code when they create their account. It decides which branch they join, so treat it like a door key: anyone who has it can create an account here."),
+        "New staff enter this code when they create their account. One code for the whole company: treat it like a door key, because anyone who has it can create an account here."),
+      defaultLocation && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+        `New accounts start at ${defaultLocation}. Move them from the list below if they belong somewhere else.`),
       React.createElement(
         "div", { style: { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" } },
         React.createElement("code", {
@@ -6578,16 +6601,11 @@ function StaffPage() {
         React.createElement("button", {
           className: "loginBtn",
           style: { width: "auto", padding: "8px 14px" },
-          onClick: () => {
-            if (codeShown) { setCodeShown(false); return; }
-            // Fetched only when asked for. It is not needed to render the page,
-            // and a code that is on screen by default is a code on screen
-            // while a customer is standing at the counter.
-            if (!code) loadCode().then(() => setCodeShown(true));
-            else setCodeShown(true);
-          },
+          // Hidden by default because a code on screen is a code on screen while
+          // a customer is standing at the counter.
+          onClick: () => setCodeShown((v) => !v),
         }, codeShown ? "Hide" : "Show"),
-        React.createElement("button", {
+        canRotate && React.createElement("button", {
           className: "loginBtn",
           style: { width: "auto", padding: "8px 14px" },
           disabled: rotating,
@@ -6597,19 +6615,24 @@ function StaffPage() {
       codeSetAt && codeShown && React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } },
         `Set ${new Date(codeSetAt).toLocaleDateString("en-CA")}`),
       React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } },
-        "Generating a new code stops the old one working immediately. Anyone who was given the old code will need the new one."),
+        canRotate
+          ? "Generating a new code stops the old one working immediately, at every branch. Anyone who was given the old code will need the new one."
+          : "Only an Exec can generate a new code, since it covers the whole company."),
       codeError && React.createElement("div", { className: "loginError" }, codeError)
     ),
 
     // ── Staff list ──
     React.createElement(
       "div", { className: "dashboardSection" },
-      React.createElement("h2", null, "People at this branch"),
+      React.createElement("h2", null,
+        isExec ? "People in this company" : "People at this branch"),
       error   && React.createElement("div", { className: "loginError" }, error),
       loading && React.createElement("div", { className: "resvEmpty" }, "Loading…"),
       !loading && rows.length === 0 && React.createElement("div", { className: "resvEmpty" }, "Nobody else has joined yet."),
       !loading && rows.length > 0 && React.createElement(
-        "table", { className: "dashboardTable" },
+        "div", { style: { overflowX: "auto" } },
+        React.createElement(
+        "table", { className: "dashboardTable", style: { minWidth: "760px" } },
         React.createElement("thead", null, React.createElement("tr", null,
           ["Username", "Name", "Role", "Branch", "Status", ""].map((h) =>
             React.createElement("th", { key: h }, h)))),
@@ -6624,7 +6647,9 @@ function StaffPage() {
             React.createElement("td", null,
               row.role === "Exec" ? "Company-wide" : branchName(row.locationId)),
             React.createElement("td", null, row.active ? "Active" : "Deactivated"),
-            React.createElement("td", { style: { whiteSpace: "nowrap" } },
+            // Was nowrap, which pushed the last controls off the right edge
+            // once the row grew from two buttons to four and a picker.
+            React.createElement("td", { style: { display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" } },
               // Your own row carries no buttons. An Admin who demotes or
               // deactivates themselves has locked the company out of its own
               // staff administration, and there is nobody left with the rights
@@ -6635,19 +6660,19 @@ function StaffPage() {
                 : React.createElement(React.Fragment, null,
                     React.createElement("button", {
                       className: "loginBtn",
-                      style: { width: "auto", padding: "6px 10px", marginRight: "8px" },
+                      style: { width: "auto", padding: "6px 10px" },
                       disabled: busyId === row.id,
                       onClick: () => changeRole(row),
                     }, roleToggleLabel(row.role)),
                     React.createElement("button", {
                       className: "loginBtn",
-                      style: { width: "auto", padding: "6px 10px", marginRight: "8px" },
+                      style: { width: "auto", padding: "6px 10px" },
                       disabled: busyId === row.id,
                       onClick: () => toggleActive(row),
                     }, row.active ? "Deactivate" : "Reactivate"),
                     React.createElement("button", {
                       className: "loginBtn",
-                      style: { width: "auto", padding: "6px 10px", marginRight: "8px" },
+                      style: { width: "auto", padding: "6px 10px" },
                       disabled: busyId === row.id,
                       onClick: () => resetPin(row),
                     }, "Reset PIN"),
@@ -6656,8 +6681,8 @@ function StaffPage() {
                       "span", { style: { whiteSpace: "nowrap" } },
                       React.createElement("select", {
                         className: "resFormInput",
-                        style: { width: "auto", padding: "5px", marginRight: "6px" },
-                        value: moveTo[row.id] || currentUser?.locationId || "",
+                        style: { width: "auto", padding: "5px" },
+                        value: moveTo[row.id] || homeBranch || "",
                         onChange: (e) => setMoveTo((p) => ({ ...p, [row.id]: e.target.value })),
                       }, branches.map((b) => React.createElement("option", { key: b.id, value: b.id }, b.name))),
                       React.createElement("button", {
@@ -6667,7 +6692,7 @@ function StaffPage() {
                         onClick: () => reassign(row),
                       }, "Move")))));
         }))
-      )
+      ))
     )
   );
 }
