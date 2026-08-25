@@ -9687,15 +9687,22 @@ function SignupScreen({ onDone, onCancel }) {
 
   const submit = (e) => {
     e.preventDefault();
+    // Checked here as well as in the database, because the database's check
+    // runs after the account exists. A four-character rule enforced only at the
+    // end costs the person their chosen username.
+    if (!/^[0-9]{4}$/.test(pin)) { setMessage("Your PIN must be 4 digits."); return; }
     setLoading(true);
     setMessage("");
     fetch(SIGNUP_URL, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({
-        username: username.trim().toLowerCase(),
-        joinCode: joinCode.trim().toUpperCase(),
-        password: password,
+        username:      username.trim().toLowerCase(),
+        joinCode:      joinCode.trim().toUpperCase(),
+        password:      password,
+        // Sent so the worker can refuse a malformed address before creating an
+        // account. Not a secret, and it is going to be emailed anyway.
+        recoveryEmail: email.trim(),
       }),
     })
       .then((r) => r.json())
