@@ -572,6 +572,7 @@ const NAV_SECTIONS = [
       { label: "Company", path: "/company" },
       { label: "Staff", path: "/staff" },
       { label: "Settings", path: "/settings" },
+      { label: "Your Account", path: "/account" },
     ],
   },
 ];
@@ -6454,6 +6455,214 @@ const COMPANY_REASONS = {
 // Everything here goes through operator-scoped RPCs. Nothing on this page reads
 // or writes a table directly, because the table policies are correctly scoped
 // to the acting branch and should stay that way.
+// The address the current session was issued for. Needed to re-authenticate
+// before a password change, and read from the session rather than rebuilt from
+// the username so the two can never disagree.
+function currentSessionEmail() {
+  try {
+    const sess = supabase.auth.session();
+    return (sess && sess.user && sess.user.email) || "";
+  } catch (e) { return ""; }
+}
+
+// Refusals from the account RPCs, plus the ones GoTrue produces.
+const ACCOUNT_REASONS = {
+  bad_email:         "Enter an email address you can actually receive mail at.",
+  bad_pin:           "Your PIN must be 4 digits.",
+  wrong_current_pin: "That is not your current PIN.",
+  pin_failed:        "That PIN was not accepted.",
+  not_signed_in:     "Your session has expired. Sign in again.",
+  not_found:         "Could not load your account.",
+  network:           "Could not reach the server.",
+};
+
+// Reachable by anyone signed in, whatever their role. Everything here is about
+// the person, not the branch, which is why it is exempt from the branch guard:
+// an Exec with no branch selected still has a password to change.
+function AccountPage() {
+  const { currentUser } = React.useContext(AppContext);
+  const [account, setAccount] = React.useState(null);
+  const [loadErr, setLoadErr] = React.useState("");
+
+  const refresh = React.useCallback(async () => {
+    const { data, error } = await supabase.rpc("my_account");
+    if (error || !data || !data.ok) { setLoadErr("Could not load your account."); return; }
+    setAccount(data);
+  }, []);
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  return React.createElement(
+    "div", { className: "page" },
+    React.createElement("h1", null, "Your account"),
+    loadErr && React.createElement("div", { className: "loginError" }, loadErr),
+
+    React.createElement(
+      "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
+      React.createElement("h2", null, "Who you are"),
+      React.createElement("div", { style: { fontSize: "0.95rem", lineHeight: "1.9" } },
+        React.createElement("div", null, `Username: ${account ? account.username : "…"}`),
+        React.createElement("div", null, `Name: ${account ? account.name : "…"}`),
+        React.createElement("div", null, `Role: ${account ? account.role : "…"}`)),
+      React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } },
+        "Your username and role are set by an Admin. Ask one if either is wrong.")
+    ),
+
+    React.createElement(ChangePassword),
+    React.createElement(ChangePin, { hasPin: account && account.hasPin, onDone: refresh }),
+    React.createElement(ChangeRecoveryEmail, { account, onDone: refresh })
+  );
+}
+
+function ChangePassword() {
+  const [current, setCurrent] = React.useState("");
+  const [next,    setNext]    = React.useState("");
+  const [again,   setAgain]   = React.useState("");
+  const [msg,     setMsg]     = React.useState("");
+  const [ok,      setOk]      = React.useState("");
+  const [busy,    setBusy]    = React.useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setMsg(""); setOk("");
+    if (next.length < 8)  { setMsg("Your new password must be at least 8 characters."); return; }
+    if (next !== again)   { setMsg("The two new passwords do not match."); return; }
+    if (next === current) { setMsg("That is your current password."); return; }
+    setBusy(true);
+    // Re-authenticate first. supabase-js v1's update takes no current password,
+    // so without this anyone who walks up to an unlocked terminal can change it.
+    // Honest limitation: this is a check at the keyboard, not in the database.
+    const who = currentSessionEmail();
+    const { error: authErr } = await supabase.auth.signIn({ email: who, password: current });
+    if (authErr) { setBusy(false); setMsg("That is not your current password."); return; }
+    const { error } = await supabase.auth.update({ password: next });
+    setBusy(false);
+    if (error) { setMsg(error.message || "Could not change your password."); return; }
+    setCurrent(""); setNext(""); setAgain("");
+    setOk("Password changed. It applies the next time you sign in.");
+  };
+
+  return React.createElement(
+    "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
+    React.createElement("h2", null, "Password"),
+    React.createElement(
+      "form", { onSubmit: submit, style: { display: "flex", flexDirection: "column", gap: "8px", maxWidth: "340px" } },
+      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "Current password",
+        autoComplete: "current-password", value: current, onChange: (e) => { setCurrent(e.target.value); setMsg(""); } }),
+      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password",
+        autoComplete: "new-password", value: next, onChange: (e) => { setNext(e.target.value); setMsg(""); } }),
+      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password again",
+        autoComplete: "new-password", value: again, onChange: (e) => { setAgain(e.target.value); setMsg(""); } }),
+      React.createElement("button", { className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy },
+        busy ? "Changing…" : "Change password"),
+      msg && React.createElement("div", { className: "loginError" }, msg),
+      ok  && React.createElement("div", { style: { color: "#3fbf7f", fontSize: "0.85rem" } }, ok)
+    )
+  );
+}
+
+function ChangePin({ hasPin, onDone }) {
+  const [current, setCurrent] = React.useState("");
+  const [next,    setNext]    = React.useState("");
+  const [msg,     setMsg]     = React.useState("");
+  const [ok,      setOk]      = React.useState("");
+  const [busy,    setBusy]    = React.useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setMsg(""); setOk("");
+    if (!/^[0-9]{4}$/.test(next)) { setMsg("Your PIN must be 4 digits."); return; }
+    setBusy(true);
+    const args = { new_pin: next };
+    // Only sent when there is one to send. set_my_pin refuses a supplied
+    // current PIN differently from a missing one, and an account with no PIN
+    // has nothing to prove.
+    if (hasPin) args.current_pin = current;
+    const { data, error } = await supabase.rpc("set_my_pin", args);
+    setBusy(false);
+    if (error || !data || !data.ok) {
+      setMsg(ACCOUNT_REASONS[data && data.reason] || "Could not change your PIN.");
+      return;
+    }
+    setCurrent(""); setNext("");
+    setOk(hasPin ? "PIN changed." : "PIN set.");
+    onDone && onDone();
+  };
+
+  return React.createElement(
+    "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
+    React.createElement("h2", null, hasPin ? "PIN" : "Set a PIN"),
+    React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+      hasPin
+        ? "Confirms actions that are hard to undo. Keep it different from your password."
+        : "You do not have a PIN yet, so actions that need one will ask you to set it. You can do that here instead."),
+    React.createElement(
+      "form", { onSubmit: submit, style: { display: "flex", flexDirection: "column", gap: "8px", maxWidth: "340px" } },
+      hasPin && React.createElement("input", { className: "resFormInput", type: "password", inputMode: "numeric",
+        maxLength: 4, placeholder: "Current PIN", value: current,
+        onChange: (e) => { setCurrent(e.target.value.replace(/\D/g, "").slice(0, 4)); setMsg(""); } }),
+      React.createElement("input", { className: "resFormInput", type: "password", inputMode: "numeric",
+        maxLength: 4, placeholder: hasPin ? "New PIN" : "Choose a 4-digit PIN", value: next,
+        onChange: (e) => { setNext(e.target.value.replace(/\D/g, "").slice(0, 4)); setMsg(""); } }),
+      React.createElement("button", { className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy },
+        busy ? "Saving…" : (hasPin ? "Change PIN" : "Set PIN")),
+      msg && React.createElement("div", { className: "loginError" }, msg),
+      ok  && React.createElement("div", { style: { color: "#3fbf7f", fontSize: "0.85rem" } }, ok)
+    )
+  );
+}
+
+function ChangeRecoveryEmail({ account, onDone }) {
+  const [addr, setAddr] = React.useState("");
+  const [pin,  setPin]  = React.useState("");
+  const [msg,  setMsg]  = React.useState("");
+  const [ok,   setOk]   = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => { setAddr((account && account.recoveryEmail) || ""); }, [account && account.recoveryEmail]);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setMsg(""); setOk("");
+    setBusy(true);
+    const { data, error } = await supabase.rpc("set_my_recovery_email", { new_email: addr, pin: pin });
+    setBusy(false);
+    if (error || !data || !data.ok) {
+      setMsg(ACCOUNT_REASONS[data && data.reason] || "Could not change your recovery address.");
+      return;
+    }
+    setPin("");
+    setOk("Recovery address updated.");
+    onDone && onDone();
+  };
+
+  const verified = account && account.recoveryEmailVerified;
+
+  return React.createElement(
+    "div", { className: "dashboardSection" },
+    React.createElement("h2", null, "Recovery email"),
+    React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+      "The only real address we hold for you. Your login address is not a real mailbox, so this is how you get back in if you forget your password."),
+    account && React.createElement("div", { style: { opacity: 0.7, fontSize: "0.85rem", marginBottom: "8px" } },
+      account.recoveryEmail
+        ? (verified ? "Confirmed." : "Not confirmed yet.")
+        : "You have not set one."),
+    React.createElement(
+      "form", { onSubmit: submit, style: { display: "flex", flexDirection: "column", gap: "8px", maxWidth: "340px" } },
+      React.createElement("input", { className: "resFormInput", type: "email", placeholder: "you@example.com",
+        autoComplete: "email", value: addr, onChange: (e) => { setAddr(e.target.value); setMsg(""); } }),
+      // PIN-gated because whoever can change this can later ask for a reset and
+      // receive it. It is the back door, not a preference.
+      React.createElement("input", { className: "resFormInput", type: "password", inputMode: "numeric",
+        maxLength: 4, placeholder: "Your PIN", value: pin,
+        onChange: (e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setMsg(""); } }),
+      React.createElement("button", { className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy },
+        busy ? "Saving…" : "Update address"),
+      msg && React.createElement("div", { className: "loginError" }, msg),
+      ok  && React.createElement("div", { style: { color: "#3fbf7f", fontSize: "0.85rem" } }, ok)
+    )
+  );
+}
+
 function CompanyPage() {
   const { currentUser } = React.useContext(AppContext);
   const isExec = roleAtLeast(currentUser?.role, "Exec");
@@ -9974,7 +10183,7 @@ function CustomerPage() {
 // The Company and Staff screens are exempt. Company is where a branch is
 // chosen, and Staff is operator-scoped for an Exec, so both work with no branch
 // selected and blocking them would leave nowhere to go.
-const BRANCHLESS_OK = ["/company", "/staff"];
+const BRANCHLESS_OK = ["/company", "/staff", "/account"];
 
 function ExecNeedsBranch({ children }) {
   const { currentUser } = React.useContext(AppContext);
@@ -10013,7 +10222,6 @@ function AppRoutes() {
     React.createElement(Route, {
       path: "/",
       element: React.createElement(Navigate, { to: "/dashboard", replace: true }),
-
     }),
     React.createElement(Route, {
       path: "/dashboard",
@@ -10084,13 +10292,19 @@ function AppRoutes() {
       key:  "staff",
       path: "/staff",
       element: React.createElement(StaffPage),
-
     }),
     React.createElement(Route, {
       key:  "company",
       path: "/company",
       element: React.createElement(CompanyPage),
-
+    }),
+    // Not wrapped in ExecNeedsBranch. Everything here is about the person
+    // rather than the branch, and an Exec with no branch selected still has a
+    // password to change.
+    React.createElement(Route, {
+      key:  "account",
+      path: "/account",
+      element: React.createElement(AccountPage),
     }),
     React.createElement(Route, {
       path: "/rental-agreements",
