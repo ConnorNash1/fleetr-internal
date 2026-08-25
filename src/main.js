@@ -9663,11 +9663,25 @@ function AppRoutes() {
 // Nothing here decides anything: every refusal comes back from the database.
 const SIGNUP_URL = `${CLAUDE_API_URL}/signup`;
 
+// Reasons from redeem_join_code, which the worker never sees, so these cannot
+// come from signupMessage over there.
+const SIGNUP_FINISH_MESSAGES = {
+  bad_pin:             "Your PIN must be 4 digits.",
+  bad_email:           "Enter an email address you can actually receive mail at.",
+  bad_code:            "That join code is not valid.",
+  no_default_location: "That company is not set up to take new staff yet.",
+  username_taken:      "That username is taken, pick another.",
+  already_redeemed:    "This account already exists. Sign in instead.",
+  not_signed_in:       "Signup did not complete. Try again.",
+};
+
 function SignupScreen({ onDone, onCancel }) {
   const [username, setUsername] = React.useState("");
   const [name,     setName]     = React.useState("");
+  const [email,    setEmail]    = React.useState("");
   const [joinCode, setJoinCode] = React.useState("");
   const [password, setPassword] = React.useState("");
+  const [pin,      setPin]      = React.useState("");
   const [message,  setMessage]  = React.useState("");
   const [loading,  setLoading]  = React.useState(false);
 
@@ -9680,21 +9694,46 @@ function SignupScreen({ onDone, onCancel }) {
       headers: { "Content-Type": "application/json" },
       body:    JSON.stringify({
         username: username.trim().toLowerCase(),
-        name:     name.trim(),
         joinCode: joinCode.trim().toUpperCase(),
         password: password,
       }),
     })
       .then((r) => r.json())
       .then((out) => {
-        if (out && out.ok) {
-          // Sent back to the login screen rather than signed in here. The
-          // account is real at this point, so the first thing the person does
-          // is the thing they will do every shift after.
-          onDone(out.username);
-          return;
+        if (!out || !out.ok) {
+          setMessage((out && out.message) || "Signup could not be completed.");
+          return null;
         }
-        setMessage((out && out.message) || "Signup could not be completed.");
+        // Second leg, straight to the database with the session the worker just
+        // handed back. The PIN goes here and only here: routing it through the
+        // worker would put it within reach of Cloudflare's logs to save one
+        // request.
+        return fetch(`${SUPABASE_URL}/rest/v1/rpc/redeem_join_code`, {
+          method:  "POST",
+          headers: {
+            apikey:          SUPABASE_ANON,
+            Authorization:   `Bearer ${out.accessToken}`,
+            "Content-Type":  "application/json",
+          },
+          body: JSON.stringify({
+            code:           joinCode.trim().toUpperCase(),
+            full_name:      name.trim(),
+            pin:            pin,
+            recovery_email: email.trim(),
+          }),
+        })
+          .then((r) => r.json())
+          .then((res) => {
+            if (res && res.ok) {
+              // Back to the login screen rather than signed in here. The
+              // account is real at this point, so the first thing the person
+              // does is the thing they will do every shift after.
+              onDone(res.username);
+              return;
+            }
+            setMessage(SIGNUP_FINISH_MESSAGES[res && res.reason] ||
+                       "Signup could not be completed.");
+          });
       })
       .catch(() => setMessage("Could not reach the server. Check your connection."))
       .finally(() => setLoading(false));
@@ -9718,8 +9757,18 @@ function SignupScreen({ onDone, onCancel }) {
                 value: name, onChange: (e) => { setName(e.target.value); setMessage(""); } }),
         field({ type: "text", placeholder: "Username", minLength: 6, maxLength: 12, autoComplete: "username",
                 value: username, onChange: (e) => { setUsername(e.target.value.toLowerCase()); setMessage(""); } }),
+        field({ type: "email", placeholder: "Personal email (for account recovery)", maxLength: 120, autoComplete: "email",
+                value: email, onChange: (e) => { setEmail(e.target.value); setMessage(""); } }),
         field({ type: "password", placeholder: "Password", minLength: 8, maxLength: 72, autoComplete: "new-password",
                 value: password, onChange: (e) => { setPassword(e.target.value); setMessage(""); } }),
+        // Separate from the password on purpose, and the reason is written on
+        // the screen: a second secret nobody explains is a second secret people
+        // set to the same string as the first.
+        field({ type: "password", placeholder: "4-digit PIN", inputMode: "numeric", maxLength: 4,
+                autoComplete: "new-password",
+                value: pin, onChange: (e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setMessage(""); } }),
+        React.createElement("div", { style: { opacity: 0.6, fontSize: "0.78rem", marginTop: "-4px" } },
+          "The PIN confirms actions that are hard to undo. Keep it different from your password."),
         React.createElement("button", { type: "submit", className: "loginBtn", disabled: loading },
           loading ? "Creating\u2026" : "Create Account"),
         message && React.createElement("div", { className: "loginError" }, message),
