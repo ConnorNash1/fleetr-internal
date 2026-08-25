@@ -569,6 +569,7 @@ const NAV_SECTIONS = [
     items: [
       { label: "Reports", path: "/reports" },
       { label: "Audit Log", path: "/audit-log" },
+      { label: "Company", path: "/company" },
       { label: "Staff", path: "/staff" },
       { label: "Settings", path: "/settings" },
     ],
@@ -6428,6 +6429,237 @@ const STAFF_REASONS = {
 // checks below decide what to RENDER; set_staff_role and set_staff_active make
 // the same checks again and are the ones that matter. A page that hides a
 // button is a page that can be edited in a browser console.
+// Refusals from the company-wide RPCs. not_found covers both "no such branch"
+// and "not your company", which the database answers identically on purpose.
+const COMPANY_REASONS = {
+  exec_only:      "Only an Exec can manage the company.",
+  not_found:      "That branch is not part of this company.",
+  bad_key:        "That setting cannot be changed from here.",
+  bad_name:       "Give the branch a name.",
+  bad_code:       "A branch code is 2 to 8 letters or numbers.",
+  code_required:  "A branch code is required.",
+  code_taken:     "Another branch in this company already uses that code.",
+  duplicate_name: "Another branch in this company already has that name.",
+  is_default:     "This is where new staff start. Make another branch the default first.",
+  has_staff:      "Move or deactivate this branch's staff before closing it.",
+  last_location:  "This is the only open branch. A company needs one.",
+  no_operator:    "This account is not attached to a company.",
+  network:        "Could not reach the server.",
+};
+
+// The company screen. An Exec acts in one branch at a time, which is what keeps
+// every tenant policy working unchanged; this is where the things that are
+// genuinely about the company live instead.
+//
+// Everything here goes through operator-scoped RPCs. Nothing on this page reads
+// or writes a table directly, because the table policies are correctly scoped
+// to the acting branch and should stay that way.
+function CompanyPage() {
+  const { currentUser } = React.useContext(AppContext);
+  const isExec = roleAtLeast(currentUser?.role, "Exec");
+
+  const [branches, setBranches] = React.useState([]);
+  const [gas,      setGas]      = React.useState([]);
+  const [acting,   setActing]   = React.useState(null);
+  const [busy,     setBusy]     = React.useState("");
+  const [error,    setError]    = React.useState("");
+  const [notice,   setNotice]   = React.useState("");
+
+  const [newName, setNewName] = React.useState("");
+  const [newCode, setNewCode] = React.useState("");
+
+  const call = React.useCallback(async (fn, args) => {
+    const { data, error: err } = await supabase.rpc(fn, args || {});
+    if (err) return { ok: false, reason: "network", message: err.message };
+    return data || { ok: false, reason: "empty" };
+  }, []);
+
+  const refresh = React.useCallback(async () => {
+    const [ov, gs, act] = await Promise.all([
+      call("company_overview"), call("company_gas_settings"), call("my_acting_location"),
+    ]);
+    if (ov.ok)  setBranches(ov.branches || []);
+    if (gs.ok)  setGas(gs.branches || []);
+    if (act.ok) setActing(act);
+    if (!ov.ok) setError(COMPANY_REASONS[ov.reason] || "Could not load the company.");
+  }, [call]);
+
+  React.useEffect(() => { if (isExec) refresh(); }, [isExec, refresh]);
+
+  const run = async (label, fn, args) => {
+    setBusy(label); setError(""); setNotice("");
+    const res = await call(fn, args);
+    setBusy("");
+    if (!res.ok) { setError(COMPANY_REASONS[res.reason] || res.message || "That did not work."); return false; }
+    await refresh();
+    return true;
+  };
+
+  if (!isExec) {
+    return React.createElement(
+      "div", { className: "page" },
+      React.createElement("h1", null, "Company"),
+      React.createElement("div", { className: "resvEmpty" },
+        "This screen is for Execs. Your branch is managed from Staff and Settings.")
+    );
+  }
+
+  const actingName = acting && acting.name;
+
+  return React.createElement(
+    "div", { className: "page" },
+    React.createElement("h1", null, "Company"),
+    error  && React.createElement("div", { className: "loginError" }, error),
+    notice && React.createElement("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
+
+    // ── Acting branch ──
+    React.createElement(
+      "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
+      React.createElement("h2", null, "Acting branch"),
+      React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+        actingName
+          ? `You are working in ${actingName}. Reservations, fleet and settings all show that branch.`
+          : "Choose a branch to work in. Until you do, the operational screens have nothing to show, because you are not standing in any branch."),
+      React.createElement(
+        "div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" } },
+        React.createElement("select", {
+          className: "resFormInput",
+          style: { width: "auto" },
+          value: (acting && acting.locationId) || "",
+          onChange: (e) => run("acting", "set_acting_location", { location_id: e.target.value || null }),
+        },
+          React.createElement("option", { value: "" }, "No branch selected"),
+          branches.filter((b) => b.active).map((b) =>
+            React.createElement("option", { key: b.id, value: b.id }, b.name))
+        ),
+        busy === "acting" && React.createElement("span", { style: { opacity: 0.6, fontSize: "0.85rem" } }, "Switching…")
+      )
+    ),
+
+    // ── Branches ──
+    React.createElement(
+      "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
+      React.createElement("h2", null, "Branches"),
+      React.createElement(
+        "div", { style: { overflowX: "auto" } },
+        React.createElement(
+          "table", { className: "dashboardTable", style: { minWidth: "700px" } },
+          React.createElement("thead", null, React.createElement("tr", null,
+            ["Branch", "Code", "Staff", "Status", ""].map((h) => React.createElement("th", { key: h }, h)))),
+          React.createElement("tbody", null, branches.map((b) =>
+            React.createElement("tr", { key: b.id, style: b.active ? null : { opacity: 0.5 } },
+              React.createElement("td", null, b.name,
+                b.isDefault && React.createElement("span", {
+                  style: { marginLeft: "8px", fontSize: "0.7rem", opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em" },
+                }, "default")),
+              React.createElement("td", null, b.code),
+              React.createElement("td", null, String(b.staff)),
+              React.createElement("td", null, b.active ? "Open" : "Closed"),
+              React.createElement("td", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
+                React.createElement("button", {
+                  className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+                  onClick: () => {
+                    const name = window.prompt("New name for this branch", b.name);
+                    if (name == null) return;
+                    const code = window.prompt("Branch code (2 to 8 letters or numbers)", b.code || "");
+                    if (code == null) return;
+                    run("rename", "rename_location", { location_id: b.id, new_name: name, new_code: code });
+                  },
+                }, "Rename"),
+                !b.isDefault && b.active && React.createElement("button", {
+                  className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+                  onClick: () => run("default", "set_default_location", { location_id: b.id }),
+                }, "Make default"),
+                b.active
+                  ? React.createElement("button", {
+                      className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+                      // The refusals are the database's to make: a branch with
+                      // staff, the default, or the last one open. Hiding the
+                      // button would mean guessing all three here, and guessing
+                      // wrong reads as the feature being broken.
+                      onClick: () => run("close", "set_location_active", { location_id: b.id, is_active: false }),
+                    }, "Close")
+                  : React.createElement("button", {
+                      className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+                      onClick: () => run("open", "set_location_active", { location_id: b.id, is_active: true }),
+                    }, "Reopen"))))))
+      ),
+      React.createElement(
+        "div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "16px", alignItems: "center" } },
+        React.createElement("input", {
+          className: "resFormInput", style: { width: "auto" }, placeholder: "New branch name",
+          value: newName, onChange: (e) => setNewName(e.target.value),
+        }),
+        React.createElement("input", {
+          className: "resFormInput", style: { width: "110px" }, placeholder: "Code", maxLength: 8,
+          value: newCode, onChange: (e) => setNewCode(e.target.value.toUpperCase()),
+        }),
+        React.createElement("button", {
+          className: "loginBtn", style: { width: "auto", padding: "8px 14px" },
+          onClick: async () => {
+            if (await run("create", "create_location", { location_name: newName, location_code: newCode })) {
+              setNewName(""); setNewCode(""); setNotice("Branch opened.");
+            }
+          },
+        }, "Open a branch")
+      )
+    ),
+
+    // ── Pricing ──
+    React.createElement(
+      "div", { className: "dashboardSection" },
+      React.createElement("h2", null, "Fuel pricing"),
+      React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+        "Every branch at once. These two change what future customers are charged, so each edit is recorded against the branch it applies to, not the one you are acting in."),
+      React.createElement(
+        "div", { style: { overflowX: "auto" } },
+        React.createElement(
+          "table", { className: "dashboardTable", style: { minWidth: "620px" } },
+          React.createElement("thead", null, React.createElement("tr", null,
+            ["Branch", "Markup %", "Fuel prices", ""].map((h) => React.createElement("th", { key: h }, h)))),
+          React.createElement("tbody", null, gas.filter((g) => g.active).map((g) =>
+            React.createElement(GasRow, { key: g.locationId, row: g, busy, onSave: run }))))
+      )
+    )
+  );
+}
+
+// Its own component so each branch keeps its own draft. One shared draft object
+// meant typing in one row and saving another wrote the wrong number into the
+// wrong branch, which for a fuel price is a real charge to a real customer.
+function GasRow({ row, busy, onSave }) {
+  const [markup, setMarkup] = React.useState(
+    row.gasMarkupPercent != null ? String(row.gasMarkupPercent) : "");
+  const prices = row.gasPrices && typeof row.gasPrices === "object" ? row.gasPrices : {};
+
+  return React.createElement(
+    "tr", null,
+    React.createElement("td", null, row.name),
+    React.createElement("td", null,
+      React.createElement("input", {
+        className: "resFormInput", style: { width: "90px" },
+        inputMode: "decimal", value: markup,
+        onChange: (e) => setMarkup(e.target.value),
+      })),
+    React.createElement("td", { style: { fontSize: "0.85rem", opacity: 0.85 } },
+      Object.keys(prices).length
+        ? Object.entries(prices).map(([k, v]) => `${k} ${v}`).join("  ")
+        : "—"),
+    React.createElement("td", null,
+      React.createElement("button", {
+        className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+        disabled: busy === "gas",
+        onClick: () => {
+          const n = Number(markup);
+          if (!Number.isFinite(n) || n < 0) return;
+          onSave("gas", "set_company_gas_setting", {
+            location_id: row.locationId, setting_key: "gasMarkupPercent", setting_value: n,
+          });
+        },
+      }, "Save"))
+  );
+}
+
 function StaffPage() {
   const { currentUser, guardAction } = React.useContext(AppContext);
   const isAdmin = roleAtLeast(currentUser?.role, "Admin");
@@ -9735,6 +9967,45 @@ function CustomerPage() {
   );
 }
 
+// An Exec with no branch selected has current_location() null, so every
+// operational screen is legitimately empty: no fleet, no reservations, nothing.
+// Empty is indistinguishable from broken, so they get told instead.
+//
+// The Company and Staff screens are exempt. Company is where a branch is
+// chosen, and Staff is operator-scoped for an Exec, so both work with no branch
+// selected and blocking them would leave nowhere to go.
+const BRANCHLESS_OK = ["/company", "/staff"];
+
+function ExecNeedsBranch({ children }) {
+  const { currentUser } = React.useContext(AppContext);
+  const [acting, setActing] = React.useState(undefined);
+
+  React.useEffect(() => {
+    if (!roleAtLeast(currentUser?.role, "Exec")) { setActing(null); return; }
+    supabase.rpc("my_acting_location").then(({ data }) => {
+      setActing(data && data.ok ? data.locationId || null : null);
+    });
+  }, [currentUser?.role]);
+
+  if (!roleAtLeast(currentUser?.role, "Exec")) return children;
+  // undefined means the answer has not come back yet. Rendering the warning
+  // during that moment would flash it at an Exec who does have a branch.
+  if (acting === undefined) return null;
+  if (acting) return children;
+
+  return React.createElement(
+    "div", { className: "page" },
+    React.createElement("h1", null, "Choose a branch"),
+    React.createElement("div", { className: "resvEmpty" },
+      "You are not acting in any branch yet, so there is nothing here to show. " +
+      "Pick one on the Company screen and this page will fill in."),
+    React.createElement("a", {
+      href: "#/company", className: "loginBtn",
+      style: { display: "inline-block", width: "auto", padding: "8px 14px", marginTop: "12px", textDecoration: "none" },
+    }, "Go to Company")
+  );
+}
+
 function AppRoutes() {
   return React.createElement(
     Routes,
@@ -9742,84 +10013,92 @@ function AppRoutes() {
     React.createElement(Route, {
       path: "/",
       element: React.createElement(Navigate, { to: "/dashboard", replace: true }),
+
     }),
     React.createElement(Route, {
       path: "/dashboard",
-      element: React.createElement(DashboardPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(DashboardPage)),
     }),
     React.createElement(Route, {
       path: "/reservations",
-      element: React.createElement(ReservationsPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(ReservationsPage)),
     }),
     React.createElement(Route, {
       path: "/arms",
-      element: React.createElement(NonDriveIntakePage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(NonDriveIntakePage)),
     }),
     React.createElement(Route, {
       path: "/pre-rental-check",
-      element: React.createElement(PreRentalCheckPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(PreRentalCheckPage)),
     }),
     React.createElement(Route, {
       path: "/overdue-rentals",
-      element: React.createElement(OverdueRentalsPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(OverdueRentalsPage)),
     }),
     React.createElement(Route, {
       path: "/vehicle",
-      element: React.createElement(VehicleDetailPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(VehicleDetailPage)),
     }),
     React.createElement(Route, {
       path: "/time-of-repair",
-      element: React.createElement(TORPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(TORPage)),
     }),
 
     React.createElement(Route, {
       path: "/no-shows",
-      element: React.createElement(NoShowsPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(NoShowsPage)),
     }),
     React.createElement(Route, {
       path: "/fleet",
-      element: React.createElement(FleetPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(FleetPage)),
     }),
     React.createElement(Route, {
       path: "/fleet/vehicles",
-      element: React.createElement(FleetVehiclesPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(FleetVehiclesPage)),
     }),
     React.createElement(Route, {
       path: "/fleet/additions",
-      element: React.createElement(FleetAdditionsPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(FleetAdditionsPage)),
     }),
     React.createElement(Route, {
       path: "/fleet/gas-collections",
-      element: React.createElement(GasCollectionsPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(GasCollectionsPage)),
     }),
     React.createElement(Route, {
       path: "/fleet/damage-claims",
-      element: React.createElement(FleetDamageClaimsPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(FleetDamageClaimsPage)),
     }),
     React.createElement(Route, {
       path: "/reports",
-      element: React.createElement(ReportsPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(ReportsPage)),
     }),
     React.createElement(Route, {
       path: "/settings",
-      element: React.createElement(SettingsPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(SettingsPage)),
     }),
     React.createElement(Route, {
       path: "/audit-log",
-      element: React.createElement(AuditLogPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(AuditLogPage)),
     }),
     React.createElement(Route, {
       key:  "staff",
       path: "/staff",
       element: React.createElement(StaffPage),
+
+    }),
+    React.createElement(Route, {
+      key:  "company",
+      path: "/company",
+      element: React.createElement(CompanyPage),
+
     }),
     React.createElement(Route, {
       path: "/rental-agreements",
-      element: React.createElement(RentalAgreementsPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(RentalAgreementsPage)),
     }),
     React.createElement(Route, {
       path: "/customer",
-      element: React.createElement(CustomerPage),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(CustomerPage)),
     }),
     NAV.filter((item) => !["/dashboard", "/reservations", "/arms", "/pre-rental-check", "/overdue-rentals", "/time-of-repair", "/no-shows", "/fleet", "/fleet/vehicles", "/fleet/additions", "/fleet/gas-collections", "/fleet/damage-claims", "/reports", "/settings", "/audit-log", "/rental-agreements", "/customer", "/vehicle"].includes(item.path))
       .map((item) =>
@@ -9832,6 +10111,7 @@ function AppRoutes() {
     React.createElement(Route, {
       path: "*",
       element: React.createElement(PlaceholderPage, { title: "Not Found" }),
+
     })
   );
 }
