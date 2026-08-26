@@ -10398,7 +10398,15 @@ function ForgotScreen({ onCancel }) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: username.trim().toLowerCase() }),
     })
-      .then(() => setSent(true))
+      // The body is deliberately the same whether or not the account exists, so
+      // there is nothing to read there. The STATUS is a different question: a
+      // 500 means the request never got far enough to send anything, and
+      // showing "check your email" for that leaves someone waiting for a
+      // message that was never attempted.
+      .then((r) => {
+        if (!r.ok) { setErr("Something went wrong on our end. Try again shortly."); return; }
+        setSent(true);
+      })
       .catch(() => setErr("Could not reach the server. Check your connection."))
       .finally(() => setBusy(false));
   };
@@ -10414,7 +10422,9 @@ function ForgotScreen({ onCancel }) {
         ? React.createElement(
             "div", { style: { fontSize: "0.9rem", lineHeight: 1.6, textAlign: "center" } },
             React.createElement("p", null,
-              "If that username has an account with a recovery address, a link is on its way. It works for one hour."),
+              "If that username has an account with a recovery address, a link is on its way. The message itself says when the link stops working."),
+            React.createElement("p", { style: { opacity: 0.7 } },
+              "It can take a few minutes to arrive, and longer the first time. Check spam before asking for another one."),
             React.createElement("p", { style: { opacity: 0.7 } },
               "Nothing has changed yet. Your password stays as it is until you use the link."),
             React.createElement("button", {
