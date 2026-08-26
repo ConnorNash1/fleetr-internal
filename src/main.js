@@ -6524,7 +6524,7 @@ function ChangePassword() {
   const submit = async (e) => {
     e.preventDefault();
     setMsg(""); setOk("");
-    if (next.length < 8)  { setMsg("Your new password must be at least 8 characters."); return; }
+    if (next.length < PASSWORD_MIN) { setMsg(`Your new password must be at least ${PASSWORD_MIN} characters.`); return; }
     if (next !== again)   { setMsg("The two new passwords do not match."); return; }
     if (next === current) { setMsg("That is your current password."); return; }
     setBusy(true);
@@ -6546,11 +6546,11 @@ function ChangePassword() {
     React.createElement("h2", null, "Password"),
     React.createElement(
       "form", { onSubmit: submit, style: { display: "flex", flexDirection: "column", gap: "8px", maxWidth: "340px" } },
-      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "Current password",
+      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "Current password", maxLength: PASSWORD_MAX,
         autoComplete: "current-password", value: current, onChange: (e) => { setCurrent(e.target.value); setMsg(""); } }),
-      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password",
+      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password", maxLength: PASSWORD_MAX,
         autoComplete: "new-password", value: next, onChange: (e) => { setNext(e.target.value); setMsg(""); } }),
-      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password again",
+      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password again", maxLength: PASSWORD_MAX,
         autoComplete: "new-password", value: again, onChange: (e) => { setAgain(e.target.value); setMsg(""); } }),
       React.createElement("button", { className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy },
         busy ? "Changing…" : "Change password"),
@@ -10356,6 +10356,20 @@ const SIGNUP_URL = `${CLAUDE_API_URL}/signup`;
 // from reaching admin rights.
 const RESET_API_URL = "https://fleetr-reset.connor-0a5.workers.dev";
 
+// One pair of limits for every password field there is. They were previously
+// set per input, and drifted: the sign-in field capped at 12 while signup
+// allowed 72, so anyone who chose a longer password could create an account and
+// then never sign in to it. The sign-in field also truncated in onChange, so a
+// pasted password was silently cut and the only feedback was "Invalid
+// credentials", which points at the password being wrong rather than at the box
+// having eaten half of it.
+//
+// 72 is bcrypt's own limit, which is what Supabase hashes with. Past it the
+// remaining bytes are ignored, so two different passwords would both work;
+// refusing at the boundary is more honest than accepting and truncating.
+const PASSWORD_MIN = 8;
+const PASSWORD_MAX = 72;
+
 // Reasons from redeem_join_code, which the worker never sees, so these cannot
 // come from signupMessage over there.
 const SIGNUP_FINISH_MESSAGES = {
@@ -10518,7 +10532,7 @@ function SignupScreen({ onDone, onCancel }) {
                 value: username, onChange: (e) => { setUsername(e.target.value.toLowerCase()); setMessage(""); } }),
         field({ type: "email", placeholder: "Personal email (for account recovery)", maxLength: 120, autoComplete: "email",
                 value: email, onChange: (e) => { setEmail(e.target.value); setMessage(""); } }),
-        field({ type: "password", placeholder: "Password", minLength: 8, maxLength: 72, autoComplete: "new-password",
+        field({ type: "password", placeholder: "Password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX, autoComplete: "new-password",
                 value: password, onChange: (e) => { setPassword(e.target.value); setMessage(""); } }),
         // Separate from the password on purpose, and the reason is written on
         // the screen: a second secret nobody explains is a second secret people
@@ -10601,11 +10615,11 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
           className: "loginInput",
           type: "password",
           placeholder: "Password",
-          maxLength: 12,
+          maxLength: PASSWORD_MAX,
           inputMode: "text",
           autoComplete: "current-password",
           value: pin,
-          onChange: (e) => { setPin(e.target.value.slice(0, 12)); setError(false); },
+          onChange: (e) => { setPin(e.target.value); setError(false); },
           onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); handleSubmit(e); } },
         }),
         React.createElement("button", { type: "submit", className: "loginBtn", disabled: loading }, loading ? "Signing in…" : "Sign In"),
