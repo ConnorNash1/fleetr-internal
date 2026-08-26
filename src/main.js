@@ -6646,6 +6646,21 @@ function ChangeRecoveryEmail({ account, onDone }) {
       account.recoveryEmail
         ? (verified ? "Confirmed." : "Not confirmed yet.")
         : "You have not set one."),
+    account && account.recoveryEmail && !verified && React.createElement(
+      "div", { style: { marginBottom: "12px" } },
+      React.createElement("button", {
+        type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 12px" },
+        onClick: (e) => {
+          const btn = e.currentTarget;
+          btn.disabled = true;
+          fetch(`${RESET_API_URL}/verify/request`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: account.username }),
+          }).finally(() => { btn.textContent = "Sent, check your email"; });
+        },
+      }, "Send a confirmation link"),
+      React.createElement("div", { style: { opacity: 0.6, fontSize: "0.78rem", marginTop: "6px" } },
+        "Until it is confirmed this address cannot get you back into your account.")),
     React.createElement(
       "form", { onSubmit: submit, style: { display: "flex", flexDirection: "column", gap: "8px", maxWidth: "340px" } },
       React.createElement("input", { className: "resFormInput", type: "email", placeholder: "you@example.com",
@@ -10336,6 +10351,11 @@ function AppRoutes() {
 // Nothing here decides anything: every refusal comes back from the database.
 const SIGNUP_URL = `${CLAUDE_API_URL}/signup`;
 
+// A separate Worker, deliberately. It holds the Supabase service role key, and
+// keeping it apart is what stops a bug in the reminder cron or the AI proxy
+// from reaching admin rights.
+const RESET_API_URL = "https://fleetr-reset.connor-0a5.workers.dev";
+
 // Reasons from redeem_join_code, which the worker never sees, so these cannot
 // come from signupMessage over there.
 const SIGNUP_FINISH_MESSAGES = {
@@ -10347,6 +10367,65 @@ const SIGNUP_FINISH_MESSAGES = {
   already_redeemed:    "This account already exists. Sign in instead.",
   not_signed_in:       "Signup did not complete. Try again.",
 };
+
+// Always says the same thing. The screen cannot tell you whether the account
+// exists, because saying so would turn it into a way to ask which usernames are
+// real, one guess at a time. The worker answers identically for the same reason.
+function ForgotScreen({ onCancel }) {
+  const [username, setUsername] = React.useState("");
+  const [sent,     setSent]     = React.useState(false);
+  const [busy,     setBusy]     = React.useState(false);
+  const [err,      setErr]      = React.useState("");
+
+  const submit = (e) => {
+    e.preventDefault();
+    setBusy(true); setErr("");
+    fetch(`${RESET_API_URL}/forgot`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: username.trim().toLowerCase() }),
+    })
+      .then(() => setSent(true))
+      .catch(() => setErr("Could not reach the server. Check your connection."))
+      .finally(() => setBusy(false));
+  };
+
+  return React.createElement(
+    "div", { className: "loginWrap" },
+    React.createElement(
+      "div", { className: "loginCard" },
+      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#42a4ff", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
+      React.createElement("div", { className: "loginSubtitle" },
+        sent ? "Check your email." : "Reset your password."),
+      sent
+        ? React.createElement(
+            "div", { style: { fontSize: "0.9rem", lineHeight: 1.6, textAlign: "center" } },
+            React.createElement("p", null,
+              "If that username has an account with a recovery address, a link is on its way. It works for one hour."),
+            React.createElement("p", { style: { opacity: 0.7 } },
+              "Nothing has changed yet. Your password stays as it is until you use the link."),
+            React.createElement("button", {
+              type: "button", onClick: onCancel,
+              style: { background: "none", border: "none", color: "#42a4ff", cursor: "pointer", fontSize: "0.85rem" },
+            }, "Back to sign in"))
+        : React.createElement(
+            "form", { className: "loginForm", onSubmit: submit },
+            React.createElement("input", {
+              className: "loginInput", type: "text", placeholder: "Username",
+              autoComplete: "username", value: username,
+              onChange: (e) => setUsername(e.target.value.toLowerCase()),
+            }),
+            React.createElement("button", { type: "submit", className: "loginBtn", disabled: busy },
+              busy ? "Sending\u2026" : "Send a reset link"),
+            err && React.createElement("div", { className: "loginError" }, err),
+            React.createElement("div", { style: { opacity: 0.65, fontSize: "0.8rem", marginTop: "8px", textAlign: "center" } },
+              "The link goes to the personal email on your account, not to your fleetr username."),
+            React.createElement("button", {
+              type: "button", onClick: onCancel,
+              style: { background: "none", border: "none", color: "#42a4ff", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
+            }, "Back to sign in"))
+    )
+  );
+}
 
 function SignupScreen({ onDone, onCancel }) {
   const [username, setUsername] = React.useState("");
@@ -10461,7 +10540,7 @@ function SignupScreen({ onDone, onCancel }) {
   );
 }
 
-function LoginScreen({ onSuccess, onSignup, notice }) {
+function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
   const [username, setUsername] = React.useState("");
   const [pin,      setPin]      = React.useState("");
   const [error,    setError]    = React.useState(false);
@@ -10535,7 +10614,11 @@ function LoginScreen({ onSuccess, onSignup, notice }) {
         React.createElement("button", {
           type: "button", onClick: onSignup,
           style: { background: "none", border: "none", color: "#42a4ff", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
-        }, "I have a join code")
+        }, "I have a join code"),
+        React.createElement("button", {
+          type: "button", onClick: onForgot,
+          style: { background: "none", border: "none", color: "#42a4ff", cursor: "pointer", marginTop: "4px", fontSize: "0.85rem" },
+        }, "Forgot your password?")
       )
     )
   );
@@ -10569,6 +10652,7 @@ function App() {
   }, [currentUser]);
 
   const [signingUp,    setSigningUp]    = React.useState(false);
+  const [forgot,       setForgot]       = React.useState(false);
   const [signupNotice, setSignupNotice] = React.useState("");
 
   const signOut = () => {
@@ -10578,6 +10662,9 @@ function App() {
   };
 
   if (!currentUser) {
+    if (forgot) {
+      return React.createElement(ForgotScreen, { onCancel: () => setForgot(false) });
+    }
     if (signingUp) {
       return React.createElement(SignupScreen, {
         onCancel: () => setSigningUp(false),
@@ -10590,6 +10677,7 @@ function App() {
     return React.createElement(LoginScreen, {
       notice:   signupNotice,
       onSignup: () => { setSignupNotice(""); setSigningUp(true); },
+      onForgot: () => { setSignupNotice(""); setForgot(true); },
       onSuccess: (user) => {
         storeSession(user);
         window.location.hash = "/";
