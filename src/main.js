@@ -78,19 +78,69 @@ const PROFILE_KEY    = "fleetr_profile";
 const PROFILE_COLUMNS = "id,username,name,role,operatorId,locationId,active";
 
 async function fetchProfile() {
-  // No filter needed. The row level security policy is `id = auth.uid()`, so
-  // this returns exactly the signed-in user's row and nothing else.
-  const { data, error } = await supabase.from("users").select(PROFILE_COLUMNS).limit(1);
-  if (error) return { ok: false, error: error.message };
+  // Filtered on the signed-in id, explicitly. This once relied on the row level
+  // security policy being `id = auth.uid()` and took whatever single row came
+  // back, but the staff panel and the Exec company screen added policies that
+  // let Admins and Execs read other people's rows, and policies are OR'd. An
+  // unfiltered `limit(1)` then returned an arbitrary colleague: a deactivated
+  // one locked the account out with "Invalid credentials", and an active one
+  // would have been adopted as the signed-in identity, role and all.
+  const session = supabase.auth.session();
+  if (!session || !session.user) return { ok: false, reason: "no_session" };
+  const { data, error } = await supabase
+    .from("users").select(PROFILE_COLUMNS).eq("id", session.user.id).limit(1);
+  // The PostgREST message goes to the console, not the screen. It is the one
+  // failure here that can carry a database word, and the person reading the
+  // login form can do nothing with a policy name.
+  if (error) {
+    console.warn("Fleetr profile load failed:", error.message);
+    return { ok: false, reason: "load_failed" };
+  }
   const row = (data || [])[0];
-  if (!row)        return { ok: false, error: "Signed in, but no staff profile is linked to this account." };
-  if (!row.active) return { ok: false, error: "This account has been deactivated." };
+  if (!row)        return { ok: false, reason: "no_profile" };
+  if (!row.active) return { ok: false, reason: "deactivated" };
   return { ok: true, profile: row };
 }
 
-// Returns { ok, user } or { ok:false, error }. Never throws: the caller shows
-// one message for every failure, so a wrong password and an account that does
-// not exist are indistinguishable from outside.
+// What the login form is allowed to say. Everything except `credentials` is
+// reached only after a correct password has already been proven, so naming the
+// real problem gives away nothing a person did not just demonstrate they hold.
+// Collapsing them into one string is what hid a live bug behind a wrong answer.
+const LOGIN_REASONS = {
+  credentials:  "Invalid credentials",
+  no_session:   "Signed in, but the session carries no user. Try again.",
+  load_failed:  "Signed in, but your account could not be loaded. Try again.",
+  no_profile:   "Signed in, but no staff profile is linked to this account. Ask an administrator to add you.",
+  deactivated:  "This account has been deactivated.",
+  network:      "Could not reach the server.",
+  // Carries the auth service's own wording when there is one. This entry is the
+  // floor for the case where there is not.
+  auth_other:   "Could not sign in. Try again.",
+};
+// An unrecognised reason must not fall back to "Invalid credentials". That is
+// how the collapse this table exists to undo would grow back one reason at a
+// time, each new failure quietly wearing the wrong answer.
+const loginMessage = (reason) => LOGIN_REASONS[reason] || LOGIN_REASONS.auth_other;
+
+// GoTrue answers a wrong password and a username that was never issued with
+// byte-identical bodies, which is what keeps usernames from being enumerable.
+// That is the only sign-in failure worth hiding, so it is matched narrowly
+// rather than by assuming every authentication error means a bad password: a
+// rate limit or a disabled provider told "Invalid credentials" sends someone to
+// change a password that was right all along. The whole error is taken, not
+// just its message, because which field carries the wording is supabase-js's
+// business and has changed before; if the match ever misses, the fallback is a
+// vaguer message and not a leak, there being nothing here to tell the two
+// cases apart with anyway.
+const isBadCredentials = (err) => {
+  if (!err) return false;
+  if (typeof err === "string") return /invalid login credentials/i.test(err);
+  return err.error_code === "invalid_credentials" ||
+         /invalid login credentials/i.test(String(err.message || err.msg || ""));
+};
+
+// Returns { ok, user } or { ok:false, reason, error }. Never throws. `reason`
+// picks the message; `error` carries the detail for the console.
 async function signInReal(username, password) {
   try {
     // supabase-js v1: signIn, not v2's signInWithPassword.
@@ -98,17 +148,24 @@ async function signInReal(username, password) {
       email:    usernameToEmail(username),
       password: password,
     });
-    if (error) return { ok: false, error: error.message };
+    if (error) {
+      if (isBadCredentials(error)) {
+        return { ok: false, reason: "credentials", error: error.message };
+      }
+      // Something else went wrong in the auth service. Its own wording is more
+      // use than ours would be, so it is shown as it stands.
+      return { ok: false, reason: "auth_other", message: error.message, error: error.message };
+    }
 
     const prof = await fetchProfile();
     if (!prof.ok) {
       // Authenticated but unusable. Do not leave a half-signed-in session.
       await supabase.auth.signOut();
-      return { ok: false, error: prof.error };
+      return { ok: false, reason: prof.reason, error: prof.reason };
     }
     return { ok: true, user: prof.profile };
   } catch (e) {
-    return { ok: false, error: e.message || String(e) };
+    return { ok: false, reason: "network", error: e.message || String(e) };
   }
 }
 
@@ -10567,14 +10624,14 @@ function SignupScreen({ onDone, onCancel }) {
 function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
   const [username, setUsername] = React.useState("");
   const [pin,      setPin]      = React.useState("");
-  const [error,    setError]    = React.useState(false);
+  const [error,    setError]    = React.useState("");
   const [loading,  setLoading]  = React.useState(false);
   const pinRef  = React.useRef(null);
 
   const handleUsernameChange = (e) => {
     const val = e.target.value;
     setUsername(val);
-    setError(false);
+    setError("");
   };
 
   const handleSubmit = (e) => {
@@ -10585,15 +10642,19 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
     // stood here during the transition is gone, along with the account whose
     // password was a constant in this file.
     setLoading(true);
-    setError(false);
+    setError("");
     signInReal(u, pin)
       .then((result) => {
         if (result.ok) {
           onSuccess(result.user);
           return;
         }
-        console.warn("Fleetr sign-in failed:", result.error);
-        setError(true);
+        // A wrong password is the only failure that stays vague. Everything
+        // else is shown as itself: the generic string used to swallow a
+        // deactivated account, a missing profile and a broken profile read
+        // alike, so the one real bug among them looked like a typo for months.
+        console.warn("Fleetr sign-in failed:", result.reason, result.error);
+        setError(result.message || loginMessage(result.reason));
       })
       .finally(() => setLoading(false));
   };
@@ -10629,11 +10690,11 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
           inputMode: "text",
           autoComplete: "current-password",
           value: pin,
-          onChange: (e) => { setPin(e.target.value); setError(false); },
+          onChange: (e) => { setPin(e.target.value); setError(""); },
           onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); handleSubmit(e); } },
         }),
         React.createElement("button", { type: "submit", className: "loginBtn", disabled: loading }, loading ? "Signing in…" : "Sign In"),
-        error && React.createElement("div", { className: "loginError" }, "Invalid credentials"),
+        error && React.createElement("div", { className: "loginError" }, error),
         notice && React.createElement("div", { className: "loginNotice", style: { color: "#3fbf7f", fontSize: "0.85rem", marginTop: "8px", textAlign: "center" } }, notice),
         React.createElement("button", {
           type: "button", onClick: onSignup,
