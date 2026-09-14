@@ -7703,7 +7703,9 @@ function Topbar() {
         defaultValue: "",
       }, React.createElement("option", { value: "", disabled: true }, "Region"))
     ),
-    React.createElement(FleetrCommandBar),
+    // Not rendered at all when the company has it off. Sign Out is pushed
+    // right by its own margin-left: auto, so the topbar needs no stand-in.
+    isFeatureEnabled("ai_command_bar") && React.createElement(FleetrCommandBar),
     React.createElement("button", {
       onClick: signOut,
       style: {
@@ -8529,12 +8531,16 @@ function FleetrCommandBar() {
 function Layout() {
   const isMobile = useMobile();
   if (isMobile) {
+    // The fixed bottom bar has room reserved for it below the content and in
+    // the nav drawer. app--noCommandBar releases that room when the company
+    // has the bar off, so there is no empty strip where it would have been.
+    const showCommandBar = isFeatureEnabled("ai_command_bar");
     return React.createElement(
       "div",
-      { className: "app app--mobile" },
+      { className: showCommandBar ? "app app--mobile" : "app app--mobile app--noCommandBar" },
       React.createElement(MobileNav),
       React.createElement("main", { className: "content" }, React.createElement(AppRoutes)),
-      React.createElement(MobileCommandBar)
+      showCommandBar && React.createElement(MobileCommandBar)
     );
   }
   return React.createElement(
@@ -12212,6 +12218,12 @@ body, * {
     min-width: 40px;
     min-height: 40px;
   }
+  /* No bar, so nothing to clear. Zeroing the height on the app, an ancestor of
+     both the content and the drawer, reaches everything that reads it; the
+     content's own 80px is the bar's height plus a margin, so it goes back to
+     matching its other sides. */
+  .app--noCommandBar{ --mobileBottomBarH: 0px; }
+  .app--noCommandBar .content{ padding-bottom: 16px; }
 
   /* Dashboard cards */
   .dashCard{
