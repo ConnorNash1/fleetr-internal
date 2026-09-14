@@ -2600,7 +2600,7 @@ function ReservationsPage() {
                 React.createElement("span", { className: "resFormLabel" }, "Source"),
                 React.createElement("select", { className: "resFormInput", value: form.source, onChange: (e) => setForm((p) => ({ ...p, source: e.target.value, sourceDetail: "" })) },
                   React.createElement("option", { value: "" }, "Select source"),
-                  Object.keys(RATES_SOURCE_CATS).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
+                  Object.keys(sourceCatsFor(form.source)).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
                 )
               ),
               form.source && RATES_SOURCE_CATS[form.source] && React.createElement("label", { className: "resFormGroup" },
@@ -2855,9 +2855,11 @@ function NonDriveIntakeSection({ standalone }) {
                       value: row.source,
                       onChange: (e) => handleAiFieldUpdate(row.id, "source", e.target.value),
                     },
-                    NDI_SOURCE_OPTIONS.map((opt) =>
-                      React.createElement("option", { key: opt, value: opt }, opt)
-                    )
+                    NDI_SOURCE_OPTIONS
+                      .filter((opt) => opt !== "Insurance" || offerInsuranceSource(row.source))
+                      .map((opt) =>
+                        React.createElement("option", { key: opt, value: opt }, opt)
+                      )
                   )
                 ),
                 React.createElement("td", { key: `${row.id}-sla` }, formatSla(row.slaTimer)),
@@ -3905,7 +3907,7 @@ function DashboardPage() {
                 React.createElement("span", { className: "resFormLabel" }, "Source"),
                 React.createElement("select", { className: "resFormInput", value: form.source, onChange: (e) => setForm((p) => ({ ...p, source: e.target.value, sourceDetail: "" })) },
                   React.createElement("option", { value: "" }, "Select source"),
-                  Object.keys(RATES_SOURCE_CATS).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
+                  Object.keys(sourceCatsFor(form.source)).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
                 )
               ),
               form.source && RATES_SOURCE_CATS[form.source] && React.createElement("label", { className: "resFormGroup" },
@@ -9071,6 +9073,21 @@ const RATES_SOURCE_CATS = {
   "Corporate":           ["MyEHTrip", "NBA", "NHL", "Nike", "Microsoft"],
   "Retail":              [],
 };
+
+// insurance_rentals decides whether Insurance is offered as a source for new
+// work. A record that already says Insurance keeps it as a choice, so its
+// picker still shows what it is instead of quietly landing on another option.
+// Nothing else about insurance rentals changes when the flag is off: existing
+// insurance records display and bill exactly as before.
+function offerInsuranceSource(current) {
+  return isFeatureEnabled("insurance_rentals") || String(current || "").startsWith("Insurance");
+}
+
+function sourceCatsFor(current) {
+  if (offerInsuranceSource(current)) return RATES_SOURCE_CATS;
+  const { Insurance, ...rest } = RATES_SOURCE_CATS;
+  return rest;
+}
 const RATES_VCLASS_CATS = {
   "Car":     ["Compact", "Regular", "Large"],
   "SUV":     ["Compact", "Regular", "Large"],
@@ -9900,7 +9917,7 @@ function CustomerPage() {
 
   const ratesBillingBody = React.createElement("div", { className: "cdetailForm" },
     React.createElement("div", { className: "resFormRow" },
-      twoLevelPicker("Source",        "source",       RATES_SOURCE_CATS, "Select source"),
+      twoLevelPicker("Source",        "source",       sourceCatsFor(ratesForm.source), "Select source"),
       twoLevelPicker("Vehicle Class", "vehicleClass", RATES_VCLASS_CATS, "Select class"),
       React.createElement("label", { className: "resFormGroup" },
         React.createElement("span", { className: "resFormLabel" }, "Winter Tires"),
