@@ -255,6 +255,47 @@ function isFeatureEnabled(featureKey) {
     && companyFeatures[featureKey] === true;
 }
 
+// ─── New-version check ────────────────────────────────────────────────────────
+// A deploy does not reach an open tab. Signing in never reloads the page, and
+// GitHub Pages lets browsers reuse main.js for 10 minutes, so a tab opened
+// before a deploy keeps running the old code until someone reloads it. That is
+// how the ai_command_bar gate looked broken on the day it shipped.
+//
+// index.html and version.json both carry the build time, stamped into them by
+// GitHub Pages' Jekyll build on every push. The page keeps the value it loaded
+// with, and App's once-a-minute check fetches version.json past every cache
+// and compares. Nothing reloads by itself: someone half way through a form
+// would lose it. They are told, and they choose when.
+//
+// Read on first use rather than as the file loads: the tag never changes, and
+// nothing here should touch the page before the app itself does.
+let loadedVersion;
+function getLoadedVersion() {
+  if (loadedVersion === undefined) {
+    const v = document.querySelector('meta[name="fleetr-version"]')?.content || "";
+    // Served without the Jekyll build, as the local preview server does, the
+    // tag still holds its template and there is nothing meaningful to compare.
+    loadedVersion = /^\d+$/.test(v) ? v : null;
+  }
+  return loadedVersion;
+}
+
+// Resolves true only when the deployed version is known and differs. Every
+// failure, being offline included, resolves false: a missed banner costs one
+// more minute, a false one teaches people to ignore it.
+async function checkForNewVersion() {
+  const LOADED_VERSION = getLoadedVersion();
+  if (!LOADED_VERSION) return false;
+  try {
+    const res = await fetch(new URL("version.json", document.baseURI), { cache: "no-store" });
+    if (!res.ok) return false;
+    const { version } = await res.json();
+    return /^\d+$/.test(String(version)) && String(version) !== LOADED_VERSION;
+  } catch (e) {
+    return false;
+  }
+}
+
 // ─── Claude API ───────────────────────────────────────────────────────────────
 const CLAUDE_MODEL     = "claude-sonnet-4-5";
 const CLAUDE_API_URL   = "https://fleetr-ai-proxy.connor-0a5.workers.dev";
@@ -10774,13 +10815,20 @@ function App() {
   // credential itself never expired. That is now reversed: tabs share the
   // session, and the session actually ends.
   const [currentUser, setCurrentUser] = React.useState(readStoredSession);
+  // "none" until a newer deploy is seen, then "ready" until dismissed. A
+  // dismissal holds for the life of the tab rather than returning a minute
+  // later, which would make the banner a nag.
+  const [update, setUpdate] = React.useState("none");
 
   // Enforces the cap during a long-running session, not only at load. Checked
   // once a minute, which is precise enough for a 12 hour limit and costs
-  // nothing.
+  // nothing. The same tick asks whether a newer version has been deployed.
   React.useEffect(() => {
     if (!currentUser) return;
     const iv = setInterval(() => {
+      checkForNewVersion().then((isNew) => {
+        if (isNew) setUpdate((u) => (u === "none" ? "ready" : u));
+      });
       if (!readStoredSession()) {
         console.log("Fleetr: session expired.");
         clearSession();
@@ -10827,9 +10875,30 @@ function App() {
   }
 
   return React.createElement(
-    AppProvider,
-    { currentUser, signOut },
-    React.createElement(HashRouter, null, React.createElement(Layout))
+    React.Fragment,
+    null,
+    React.createElement(
+      AppProvider,
+      { currentUser, signOut },
+      React.createElement(HashRouter, null, React.createElement(Layout))
+    ),
+    update === "ready" && React.createElement(UpdateBanner, { onDismiss: () => setUpdate("dismissed") })
+  );
+}
+
+// Fixed and small, over the page rather than in its flow, so it moves nothing
+// and blocks nothing. Refresh is the person's choice; see checkForNewVersion.
+function UpdateBanner({ onDismiss }) {
+  return React.createElement(
+    "div",
+    { className: "updateBanner", role: "status" },
+    React.createElement("span", null, "A new version of fleetr is available."),
+    React.createElement("button", {
+      type: "button", className: "updateBanner__refresh", onClick: () => window.location.reload(),
+    }, "Refresh"),
+    React.createElement("button", {
+      type: "button", className: "updateBanner__dismiss", "aria-label": "Dismiss", onClick: onDismiss,
+    }, "×")
   );
 }
 
@@ -11081,6 +11150,58 @@ body, * {
 .pill--select option{
   background: #1F1E1D;
   color: #fff;
+}
+
+/* ── New-version banner ────────────────────────────────────────────────────── */
+/* Bottom centre, clear of the mobile command bar where there is one. The bar's
+   height is only defined in the mobile block, so desktop falls back to 0. */
+.updateBanner{
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--mobileBottomBarH, 0px) + 16px + env(safe-area-inset-bottom, 0px));
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  /* left: 50% alone would cap its natural width at half the screen and wrap
+     the message into a column on a phone. */
+  width: max-content;
+  max-width: calc(100% - 32px);
+  box-sizing: border-box;
+  padding: 8px 8px 8px 16px;
+  border-radius: 999px;
+  background: #1F1E1D;
+  color: #F9F9F7;
+  font-size: 0.85rem;
+  font-weight: 500;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+}
+/* The banner is the app's sibling, not its child, so it cannot see the zeroed
+   bar height app--noCommandBar sets. With no bar to clear, sit at the edge. */
+.app--noCommandBar ~ .updateBanner{
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+}
+.updateBanner__refresh{
+  font: inherit;
+  font-weight: 600;
+  color: #fff;
+  background: #42a4ff;
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.updateBanner__dismiss{
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.6);
+  background: none;
+  border: 0;
+  padding: 4px 8px;
+  cursor: pointer;
 }
 
 /* ── Fleetr AI Command Bar ─────────────────────────────────────────────────── */

@@ -1,0 +1,3 @@
+---
+---
+{"version": "{{ site.time | date: '%s' }}"}

@@ -1,7 +1,13 @@
+---
+---
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- The front matter above makes GitHub Pages' Jekyll build fill in the
+         build time below, and in version.json, on every deploy. See
+         checkForNewVersion in src/main.js. -->
+    <meta name="fleetr-version" content="{{ site.time | date: '%s' }}" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>fleetr internal system</title>
     <link rel="icon" type="image/png" href="/favicon-96x96.png" sizes="96x96" />
@@ -50,6 +56,9 @@
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" src="./src/main.js"></script>
+    <!-- Versioned so a fresh page always gets the matching script. Without it,
+         the page and main.js are cached separately for 10 minutes each, and a
+         new page could run an old script while reporting the new version. -->
+    <script type="module" src="./src/main.js?v={{ site.time | date: '%s' }}"></script>
   </body>
 </html>
