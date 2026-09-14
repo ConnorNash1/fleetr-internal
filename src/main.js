@@ -163,6 +163,9 @@ async function signInReal(username, password) {
       await supabase.auth.signOut();
       return { ok: false, reason: prof.reason, error: prof.reason };
     }
+    // Never fails the sign-in. Flags that cannot be read leave every feature
+    // off, the same answer as a company with no rows.
+    await loadCompanyFeatures(prof.profile.operatorId);
     return { ok: true, user: prof.profile };
   } catch (e) {
     return { ok: false, reason: "network", error: e.message || String(e) };
@@ -173,7 +176,7 @@ async function signInReal(username, password) {
 // be enforced on the next load. The JWT itself is managed by supabase-js.
 function storeSession(user) {
   try {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify({ user, loginAt: Date.now() }));
+    localStorage.setItem(PROFILE_KEY, JSON.stringify({ user, loginAt: Date.now(), features: companyFeatures }));
   } catch (e) { console.warn("could not persist the session:", e); }
 }
 
@@ -181,7 +184,7 @@ function readStoredSession() {
   try {
     const raw = localStorage.getItem(PROFILE_KEY);
     if (!raw) return null;
-    const { user, loginAt } = JSON.parse(raw);
+    const { user, loginAt, features } = JSON.parse(raw);
     if (!user || !loginAt) return null;
     if (Date.now() - loginAt > SESSION_MAX_MS) {
       console.log("Fleetr: session older than 12 hours, signing out.");
@@ -191,11 +194,16 @@ function readStoredSession() {
     // token behind it, it is just JSON someone could have typed into
     // localStorage, so it is refused.
     if (!supabase.auth.session()) return null;
+    // Rebuilt rather than adopted, so only literal true survives. A profile
+    // stored before features existed has none, and reads as all off.
+    companyFeatures = toFeatureMap(Object.entries(features || {})
+      .map(([featureKey, enabled]) => ({ featureKey, enabled })));
     return user;
   } catch (e) { return null; }
 }
 
 function clearSession() {
+  companyFeatures = {};
   try {
     localStorage.removeItem(PROFILE_KEY);
     // Left over from the previous scheme. Removed so a stale token cannot
@@ -204,6 +212,47 @@ function clearSession() {
     sessionStorage.removeItem("fleetr_tab_token");
   } catch (e) { /* storage unavailable, nothing to clear */ }
   return supabase.auth.signOut().catch((e) => console.warn("sign out:", e));
+}
+
+// ─── Company features ─────────────────────────────────────────────────────────
+// Which optional features the signed-in person's company has switched on, as
+// set by Fleetr in fleetr hq. Loaded once at sign-in and kept with the stored
+// profile, so it survives a reload for the life of the session. A change made
+// in hq therefore reaches a company at its staff's next sign-in, at most 12
+// hours later.
+//
+// This decides what the app SHOWS, not what anyone can do. The copy lives in
+// localStorage, where anyone at the keyboard can edit it, so a feature that has
+// to be enforced must be enforced by the database as well.
+let companyFeatures = {};
+
+const toFeatureMap = (rows) =>
+  Object.fromEntries((rows || []).map((r) => [r.featureKey, r.enabled === true]));
+
+async function loadCompanyFeatures(operatorId) {
+  companyFeatures = {};
+  if (!operatorId) return;
+  try {
+    // Filtered on the company explicitly, for the reason fetchProfile filters
+    // on the user: policies are OR'd, and a wider read policy added later would
+    // otherwise pull another company's flags into this map.
+    const { data, error } = await supabase
+      .from("company_features").select("featureKey,enabled").eq("operatorId", operatorId);
+    if (error) {
+      console.warn("Fleetr: company features could not be loaded, all off:", error.message);
+      return;
+    }
+    companyFeatures = toFeatureMap(data);
+  } catch (e) {
+    console.warn("Fleetr: company features could not be loaded, all off:", e.message || String(e));
+  }
+}
+
+// True only for a key whose row says enabled. A missing row is off, the same
+// default company_features and the hq toggles use.
+function isFeatureEnabled(featureKey) {
+  return Object.prototype.hasOwnProperty.call(companyFeatures, featureKey)
+    && companyFeatures[featureKey] === true;
 }
 
 // ─── Claude API ───────────────────────────────────────────────────────────────
