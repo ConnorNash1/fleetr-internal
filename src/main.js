@@ -704,7 +704,7 @@ const NAV_SECTIONS = [
     header: "AI Calls and Texts",
     items: [
       { label: "Non-Drive's", path: "/arms", feature: "non_drive_intake" },
-      { label: "Pre-Rental Check", path: "/pre-rental-check" },
+      { label: "Pre-Rental Check", path: "/pre-rental-check", feature: "pre_rental_check" },
       { label: "Overdue Rentals", path: "/overdue-rentals" },
       { label: "Unknown Repair Date", path: "/time-of-repair" },
 
@@ -1969,6 +1969,7 @@ function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote })
     : "preRentalCheckNot";
 
   const hasNotes = notesLog && notesLog.length > 0;
+  const showPreRentalCheck = isFeatureEnabled("pre_rental_check");
 
   const filteredNotes = hasNotes
     ? notesLog.filter((n) => {
@@ -2039,10 +2040,13 @@ function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote })
     ),
 
     // ── Pre-Rental Check status ───────────────────────────────────────────────────────
-    React.createElement("span", { className: statusClass }, preRentalCheck),
+    // Left out when the company has pre_rental_check off. The dash below only
+    // separates this status from the notes, so it goes with it; the wrap's gap
+    // spaces whatever remains.
+    showPreRentalCheck && React.createElement("span", { className: statusClass }, preRentalCheck),
 
     // ── dash + notes preview button ───────────────────────────────────────
-    hasNotes && React.createElement("span", { className: "notesDash" }, " \u2014 "),
+    hasNotes && showPreRentalCheck && React.createElement("span", { className: "notesDash" }, " \u2014 "),
     hasNotes &&
       React.createElement(
         "button",
@@ -7487,6 +7491,16 @@ function PlaceholderPage({ title }) {
 // so the answer is the same whichever of them catches the request.
 const NDI_DISABLED_MESSAGE = "Non-drive intake isn't enabled for this company.";
 
+// Pre-rental check has no table of its own: it is the preRentalCheck field on
+// reservations. So with pre_rental_check off, that field is stripped from the
+// reservations the command bar sends, and an update that would set it is
+// refused. Inserts are unaffected, since a new reservation always takes the
+// default status regardless of what the model asks for.
+const PRC_DISABLED_MESSAGE = "Pre-rental check isn't enabled for this company.";
+const isPreRentalCheckEdit = (table, operation, data) =>
+  table === "reservations" && operation === "update" &&
+  !!data && Object.prototype.hasOwnProperty.call(data, "preRentalCheck");
+
 function FleetrCommandBar() {
   const { guardAction, logAudit, currentUser, reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows, damageClaims, setDamageClaims, appSettings, saveSetting } = React.useContext(AppContext);
   const [command,        setCommand]        = React.useState("");
@@ -7584,7 +7598,14 @@ function FleetrCommandBar() {
     setShowPopover(true);
     try {
       const userMsg =
-        `Reservations data: ${JSON.stringify(reservations)}\n\n` +
+        // With pre_rental_check off, each reservation goes without its
+        // preRentalCheck field, and the model is told why so it can say so.
+        (isFeatureEnabled("pre_rental_check")
+          ? `Reservations data: ${JSON.stringify(reservations)}\n\n`
+          : `Reservations data: ${JSON.stringify(reservations.map(({ preRentalCheck, ...r }) => r))}\n\n` +
+            `Pre-rental check: not enabled for this company, so pre-rental check status is not provided. ` +
+            `If the command asks to view or change pre-rental check status (preRentalCheck on reservations), ` +
+            `reply with the message "${PRC_DISABLED_MESSAGE}" and no action.\n\n`) +
         `Rental agreements data: ${JSON.stringify(rentalAgreements)}\n\n` +
         `Fleet data: ${JSON.stringify(fleet)}\n\n` +
         // With non_drive_intake off the rows are not sent at all, so they cannot
@@ -7640,6 +7661,12 @@ function FleetrCommandBar() {
         if (hasAction && parsed.action.table === "ndi_rows" && !isFeatureEnabled("non_drive_intake")) {
           console.warn("Fleetr AI proposed an ndi_rows action with non_drive_intake off; dropped.");
           parsed.message = NDI_DISABLED_MESSAGE;
+          hasAction = false;
+        }
+        if (hasAction && !isFeatureEnabled("pre_rental_check") &&
+            isPreRentalCheckEdit(parsed.action.table, parsed.action.operation, parsed.action.data)) {
+          console.warn("Fleetr AI proposed a preRentalCheck edit with pre_rental_check off; dropped.");
+          parsed.message = PRC_DISABLED_MESSAGE;
           hasAction = false;
         }
         // "Done." next to a Confirm button that has not been pressed is the same
@@ -7733,6 +7760,11 @@ function FleetrCommandBar() {
     // ndi_rows through here while the company has it off, and the refusal is
     // audited like any other rule that stops an action.
     if (table === "ndi_rows" && !isFeatureEnabled("non_drive_intake")) return fail(NDI_DISABLED_MESSAGE);
+    // Checked against the edited payload, so a field typed into the card is
+    // caught as well as one the model proposed.
+    if (!isFeatureEnabled("pre_rental_check") && isPreRentalCheckEdit(table, operation, data)) {
+      return fail(PRC_DISABLED_MESSAGE);
+    }
 
     // rentalAgreementStatus on reservations is a stale mirror of the column on
     // rental_agreements, refreshed from there at load. A plain update to it
@@ -10107,7 +10139,10 @@ function AppRoutes() {
     }),
     React.createElement(Route, {
       path: "/pre-rental-check",
-      element: React.createElement(ExecNeedsBranch, null, React.createElement(PreRentalCheckPage)),
+      // Off means unreachable, not only unlisted, as for /arms.
+      element: isFeatureEnabled("pre_rental_check")
+        ? React.createElement(ExecNeedsBranch, null, React.createElement(PreRentalCheckPage))
+        : React.createElement(Navigate, { to: "/dashboard", replace: true }),
     }),
     React.createElement(Route, {
       path: "/overdue-rentals",
