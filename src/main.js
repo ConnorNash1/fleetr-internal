@@ -703,7 +703,7 @@ const NAV_SECTIONS = [
   {
     header: "AI Calls and Texts",
     items: [
-      { label: "Non-Drive's", path: "/arms" },
+      { label: "Non-Drive's", path: "/arms", feature: "non_drive_intake" },
       { label: "Pre-Rental Check", path: "/pre-rental-check" },
       { label: "Overdue Rentals", path: "/overdue-rentals" },
       { label: "Unknown Repair Date", path: "/time-of-repair" },
@@ -724,6 +724,17 @@ const NAV_SECTIONS = [
   },
 ];
 const NAV = NAV_SECTIONS.flatMap((section) => section.items);
+
+// A nav item may name the feature flag it belongs to. Both navs render from
+// this rather than NAV_SECTIONS directly, so an item whose company has the
+// feature off is not there at all, and a section left with no items loses its
+// header too instead of hanging empty. Items without a feature always show.
+const navItemVisible = (item) => !item.feature || isFeatureEnabled(item.feature);
+function visibleNavSections() {
+  return NAV_SECTIONS
+    .map((section) => ({ ...section, items: section.items.filter(navItemVisible) }))
+    .filter((section) => section.items.length > 0);
+}
 const FLEET_MODELS_BY_BRAND = {
   Chevrolet: ["Equinox", "Malibu", "Trax"],
   Ford: ["Escape", "Fusion", "Edge"],
@@ -3315,7 +3326,10 @@ function DashboardPage() {
           )
       ),
       // ── Section 2: Non-Drive Intake ──────────────────────────────────
-      React.createElement(NonDriveIntakeSection, { key: "nonDriveIntake", standalone: false }),
+      // Not rendered at all when off. dashboardGrid spaces its children with
+      // gap, so the sections either side close up with nothing left between.
+      isFeatureEnabled("non_drive_intake") &&
+        React.createElement(NonDriveIntakeSection, { key: "nonDriveIntake", standalone: false }),
       // ── Section 3: Vehicle Status ────────────────────────────────
       React.createElement(
         "section",
@@ -7324,7 +7338,7 @@ function MobileNav() {
       React.createElement(
         "nav",
         { className: "mobileNavDrawer" },
-        NAV_SECTIONS.map((section) =>
+        visibleNavSections().map((section) =>
           React.createElement(
             "section",
             { key: section.header, className: "mobileNavSection" },
@@ -7418,7 +7432,7 @@ function Sidebar() {
   return React.createElement(
     "aside",
     { className: "sidebar" },
-    NAV_SECTIONS.map((section) =>
+    visibleNavSections().map((section) =>
       React.createElement(
         "section",
         { key: section.header, className: "sidebar__section" },
@@ -10061,7 +10075,11 @@ function AppRoutes() {
     }),
     React.createElement(Route, {
       path: "/arms",
-      element: React.createElement(ExecNeedsBranch, null, React.createElement(NonDriveIntakePage)),
+      // Off means unreachable, not only unlisted: a typed or bookmarked URL
+      // lands on the Dashboard instead of the page.
+      element: isFeatureEnabled("non_drive_intake")
+        ? React.createElement(ExecNeedsBranch, null, React.createElement(NonDriveIntakePage))
+        : React.createElement(Navigate, { to: "/dashboard", replace: true }),
     }),
     React.createElement(Route, {
       path: "/pre-rental-check",
