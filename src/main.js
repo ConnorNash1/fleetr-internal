@@ -8766,15 +8766,514 @@ function RentalAgreementsPage() {
 }
 
 // ─── CloseRentalPage ──────────────────────────────────────────────────────────
-// Step 1 of Close Rental: find the open rental agreement being returned. The
-// later steps (closing mileage and gas, damage review, photos, charges) are not
-// built yet; picking an agreement lands on a placeholder that shows its id.
+// Close Rental, one screen per step:
+//   1. Find the open rental agreement being returned.
+//   2. Enter the closing mileage and gas level.
+//   3. Review the damage already on record, and say whether there is new damage.
+//   4. Photograph the new damage with the live camera. Only after a Yes in
+//      step 3; a No goes straight to step 5.
+//   5. Final charges. Not built yet: a placeholder showing what steps 1 to 4
+//      collected.
 //
-// Reads only what the app already loaded. Nothing here writes anything.
+// Reads only what the app already loaded. Nothing here writes anything or
+// uploads anything: the values entered and the photos taken are held in
+// memory and handed forward to the next step.
 //
 // Plates are compared through normalizePlate, with spaces, dashes and case
 // stripped, because the fleet holds both "ABC-123" and "JXR 841" and staff
 // type whichever they see.
+
+// The gas scale the customer app uses for pickup and return (fleetr-customer,
+// FUEL_LABELS): nine steps in eighths. The label itself is what gets stored,
+// as in rental_agreements.fuelAtPickup, so the gas charge maths can compare a
+// pickup and a closing reading directly.
+const FUEL_LABELS = ["Empty", "⅛", "¼", "⅜", "½", "⅝", "¾", "⅞", "Full"];
+
+// Step 2. Starts empty every time: nothing is pre-filled, because both values
+// are read off the vehicle by staff at return.
+//
+// The mileage check compares against the highest reading on file for this
+// vehicle, either the fleet's currentOdometer or this agreement's pickup
+// mileage. A lower figure is warned about, not refused: an odometer reset or
+// an earlier typo can make a correct reading look low, so staff confirm it
+// and carry on.
+function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings, onBack, onNext }) {
+  const [attempted, setAttempted] = React.useState(false);
+  const { mileage, gasIndex, lowConfirmed } = readings;
+
+  const lastReading = [row?.odometerOnFile, row?.pickupMileage]
+    .map((v) => (v === null || v === undefined || v === "" ? NaN : Number(v)))
+    .filter((v) => Number.isFinite(v))
+    .reduce((max, v) => (max === null || v > max ? v : max), null);
+
+  const trimmed    = String(mileage).trim();
+  const mileageNum = /^\d+$/.test(trimmed) ? Number(trimmed) : null;
+  const isLow      = mileageNum !== null && lastReading !== null && mileageNum < lastReading;
+
+  const mileageError = trimmed === ""
+    ? "Enter the closing mileage."
+    : mileageNum === null ? "Enter the mileage as a whole number of kilometres, digits only." : null;
+  const gasError = gasIndex === null ? "Set the closing gas level." : null;
+  const lowError = isLow && !lowConfirmed ? "Confirm the lower reading to continue." : null;
+
+  const setGas = (value) => setReadings((prev) => ({ ...prev, gasIndex: Number(value) }));
+
+  const handleNext = () => {
+    setAttempted(true);
+    if (mileageError || gasError || lowError) return;
+    onNext({ rentalAgreementId, closingMileage: mileageNum, closingGasLevel: FUEL_LABELS[gasIndex] });
+  };
+
+  const errorLine = (msg) => attempted && msg && React.createElement("div", { className: "closeRentalError" }, msg);
+
+  return React.createElement("div", { className: "page" },
+    React.createElement("h1", { className: "page__title" }, "Close Rental"),
+    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement("div", { className: "closeRentalSummary" },
+      React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
+      React.createElement("div", { className: "closeRentalSummary__meta" },
+        row ? [row.customer, row.plate || null].filter(Boolean).join(" · ") : rentalAgreementId)
+    ),
+    React.createElement("h2", { className: "closeRentalStepTitle" }, "Closing mileage and gas"),
+    React.createElement("div", { className: "closeRentalForm" },
+      React.createElement("label", { className: "resFormGroup" },
+        React.createElement("span", { className: "resFormLabel" }, "Closing mileage (km)"),
+        React.createElement("input", {
+          className: "resFormInput closeRentalMileage", type: "number", inputMode: "numeric",
+          min: 0, step: 1, placeholder: "e.g. 42500", autoComplete: "off",
+          value: mileage,
+          onChange: (e) => setReadings((prev) => ({ ...prev, mileage: e.target.value, lowConfirmed: false })),
+        }),
+        React.createElement("span", { className: "closeRentalHint" },
+          lastReading !== null
+            ? `Last recorded: ${lastReading.toLocaleString("en-CA")} km`
+            : "No previous reading on file for this vehicle.")
+      ),
+      errorLine(mileageError),
+      isLow && React.createElement("div", { className: "closeRentalWarning" },
+        React.createElement("div", null,
+          `This is lower than the last recorded reading of ${lastReading.toLocaleString("en-CA")} km. ` +
+          "That can happen after an odometer reset or an earlier data error. Check the reading before continuing."),
+        React.createElement("label", { className: "closeRentalWarning__confirm" },
+          React.createElement("input", {
+            type: "checkbox", checked: lowConfirmed,
+            onChange: (e) => setReadings((prev) => ({ ...prev, lowConfirmed: e.target.checked })),
+          }),
+          "The reading is correct, continue anyway"
+        )
+      ),
+      errorLine(lowError),
+      React.createElement("div", { className: "resFormGroup" },
+        React.createElement("span", { className: "resFormLabel", id: "closeRentalGasLabel" }, "Closing gas level"),
+        React.createElement("div", { className: "closeRentalFuel__value" }, gasIndex === null ? "Not set" : FUEL_LABELS[gasIndex]),
+        React.createElement("input", {
+          type: "range", min: 0, max: 8, step: 1,
+          className: gasIndex === null ? "closeRentalFuel closeRentalFuel--unset" : "closeRentalFuel",
+          "aria-labelledby": "closeRentalGasLabel",
+          "aria-valuetext": gasIndex === null ? "Not set" : FUEL_LABELS[gasIndex],
+          value: gasIndex === null ? 0 : gasIndex,
+          onChange: (e) => setGas(e.target.value),
+          // A click on the thumb's current spot fires no change event, so an
+          // unset slider could never be set to Empty. The click catches it.
+          onClick: (e) => setGas(e.currentTarget.value),
+        }),
+        React.createElement("div", { className: "closeRentalFuel__labels" },
+          ["Empty", "¼", "½", "¾", "Full"].map((l) => React.createElement("span", { key: l }, l))
+        )
+      ),
+      errorLine(gasError)
+    ),
+    React.createElement("div", { className: "closeRentalActions" },
+      React.createElement("button", { type: "button", className: "resModalCancel", onClick: onBack }, "Back"),
+      React.createElement("button", { type: "button", className: "resModalSubmit", onClick: handleNext }, "Next")
+    )
+  );
+}
+
+// A damage_claims photo is either a full URL, used as it is, or a path in the
+// private damage-photos bucket (<operatorId>/vehicles/<id>/<file>), which has
+// no public URL and is shown through a signed link that expires after an hour.
+// Minting the link is a read: the storage policies decide whether this user
+// may see the photo at all. No photo is stored anywhere yet (every claim's
+// photos array is empty today), so this is ready for when uploads exist.
+const DAMAGE_PHOTO_BUCKET = "damage-photos";
+
+function useDamagePhotoUrl(value) {
+  const direct = /^(https?:|data:|blob:)/i.test(String(value || ""));
+  const [url, setUrl] = React.useState(direct ? value : null);
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => {
+    if (direct || !value) { setUrl(direct ? value : null); return; }
+    let live = true;
+    setUrl(null); setFailed(false);
+    supabase.storage.from(DAMAGE_PHOTO_BUCKET).createSignedUrl(value, 3600)
+      .then((res) => {
+        if (!live) return;
+        const signed = res?.data?.signedURL || res?.data?.signedUrl || res?.signedURL || null;
+        if (res?.error || !signed) {
+          console.warn("damage photo link failed:", value, res?.error);
+          setFailed(true);
+        } else {
+          setUrl(signed);
+        }
+      })
+      .catch((e) => { if (live) { console.warn("damage photo link:", e); setFailed(true); } });
+    return () => { live = false; };
+  }, [value, direct]);
+  return { url, failed };
+}
+
+function DamagePhotoThumb({ value, onOpen }) {
+  const { url, failed } = useDamagePhotoUrl(value);
+  if (failed) return React.createElement("div", { className: "damagePhotoThumb damagePhotoThumb--empty" }, "Photo unavailable");
+  if (!url)   return React.createElement("div", { className: "damagePhotoThumb damagePhotoThumb--empty" }, "Loading...");
+  return React.createElement("button", {
+    type: "button", className: "damagePhotoThumb", onClick: () => onOpen(url), "aria-label": "View photo full size",
+  }, React.createElement("img", { src: url, alt: "Damage photo" }));
+}
+
+// Full-size view. Closes on the button, a click outside the photo, or Escape.
+function DamagePhotoViewer({ url, onClose }) {
+  React.useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return React.createElement("div", {
+    className: "damagePhotoViewer", role: "dialog", "aria-modal": "true", "aria-label": "Damage photo",
+    onClick: (e) => { if (e.target === e.currentTarget) onClose(); },
+  },
+    React.createElement("button", { type: "button", className: "damagePhotoViewer__close", onClick: onClose, "aria-label": "Close photo" }, "×"),
+    React.createElement("img", { className: "damagePhotoViewer__img", src: url, alt: "Damage photo, full size" })
+  );
+}
+
+// Step 3. Everything already on record for the vehicle, whatever the claim's
+// status: a settled claim is not proof the damage was repaired, and anything
+// left off this list is damage the returning customer could be wrongly
+// charged for. Newest first.
+//
+// Then a Yes/No for new damage, with no default, so the answer is always a
+// deliberate one. Yes needs a description before moving on.
+function CloseRentalDamageStep({ row, rentalAgreementId, damageDraft, setDamageDraft, onBack, onNext }) {
+  const { damageClaims, rentalAgreements } = React.useContext(AppContext);
+  const [viewing,   setViewing]   = React.useState(null);
+  const [attempted, setAttempted] = React.useState(false);
+  const { choice, note } = damageDraft;
+
+  const fmtDate = (iso) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? null
+      : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
+  };
+
+  // A claim names its vehicle by plate, or failing that through its rental
+  // agreement's plate, the same fallback enrichDamageClaim uses.
+  const vehiclePlate = normalizePlate(row?.plate);
+  const previous = !vehiclePlate ? [] : (damageClaims || [])
+    .filter((c) => {
+      const plate = c.plate || (rentalAgreements || []).find((a) => a.id === c.rentalAgreementId)?.plate;
+      return normalizePlate(plate) === vehiclePlate;
+    })
+    .sort((a, b) => String(b.reportedAt || b.createdAt || "").localeCompare(String(a.reportedAt || a.createdAt || "")));
+
+  const noteError = choice === "yes" && !note.trim() ? "Describe the new damage." : null;
+
+  const handleNext = () => {
+    setAttempted(true);
+    if (!choice || noteError) return;
+    onNext({ newDamageFound: choice === "yes", newDamageNote: choice === "yes" ? note.trim() : null });
+  };
+
+  const choiceBtn = (value, label) =>
+    React.createElement("button", {
+      type: "button", "aria-pressed": choice === value,
+      className: choice === value ? "closeRentalChoice closeRentalChoice--active" : "closeRentalChoice",
+      onClick: () => setDamageDraft((prev) => ({ ...prev, choice: value })),
+    }, label);
+
+  return React.createElement("div", { className: "page" },
+    React.createElement("h1", { className: "page__title" }, "Close Rental"),
+    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement("div", { className: "closeRentalSummary" },
+      React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
+      React.createElement("div", { className: "closeRentalSummary__meta" },
+        row ? [row.customer, row.plate || null].filter(Boolean).join(" · ") : rentalAgreementId)
+    ),
+    React.createElement("h2", { className: "closeRentalStepTitle" }, "Previous damage"),
+    React.createElement("div", { className: "closeRentalDamageList" },
+      previous.length === 0
+        ? React.createElement("div", { className: "closeRentalDamageEmpty" },
+            vehiclePlate ? "No damage on record for this vehicle." : "This rental has no plate on file, so previous damage cannot be looked up.")
+        : previous.map((c) => {
+            const photos = Array.isArray(c.photos) ? c.photos.filter(Boolean) : [];
+            const when = fmtDate(c.reportedAt || c.createdAt);
+            return React.createElement("div", { key: c.id, className: "closeRentalDamageItem" },
+              React.createElement("div", { className: "closeRentalDamageItem__desc" }, c.description || "No description"),
+              React.createElement("div", { className: "closeRentalDamageItem__meta" },
+                [damageClaimStatusLabel(c.status), when && `reported ${when}`].filter(Boolean).join(" · ")),
+              photos.length === 0
+                ? React.createElement("div", { className: "closeRentalHint" }, "No photo on file.")
+                : React.createElement("div", { className: "damagePhotoRow" },
+                    photos.map((p, i) => React.createElement(DamagePhotoThumb, { key: `${c.id}-${i}`, value: p, onOpen: setViewing }))
+                  )
+            );
+          })
+    ),
+    React.createElement("h2", { className: "closeRentalStepTitle" }, "New damage found?"),
+    React.createElement("div", { className: "closeRentalChoiceRow", role: "group", "aria-label": "New damage found?" },
+      choiceBtn("yes", "Yes"),
+      choiceBtn("no",  "No")
+    ),
+    choice === "yes" && React.createElement("div", { className: "closeRentalForm", style: { marginTop: 14 } },
+      React.createElement("label", { className: "resFormGroup" },
+        React.createElement("span", { className: "resFormLabel" }, "Describe the new damage"),
+        React.createElement("textarea", {
+          className: "resFormInput resFormTextarea closeRentalNote", rows: 4,
+          placeholder: "Where it is and what it looks like, e.g. 10 cm scratch on the rear passenger door",
+          value: note,
+          onChange: (e) => setDamageDraft((prev) => ({ ...prev, note: e.target.value })),
+        })
+      ),
+      attempted && noteError && React.createElement("div", { className: "closeRentalError" }, noteError)
+    ),
+    React.createElement("div", { className: "closeRentalActions" },
+      React.createElement("button", { type: "button", className: "resModalCancel", onClick: onBack }, "Back"),
+      choice && React.createElement("button", { type: "button", className: "resModalSubmit", onClick: handleNext }, "Next")
+    ),
+    viewing && React.createElement(DamagePhotoViewer, { url: viewing, onClose: () => setViewing(null) })
+  );
+}
+
+// ─── Close Rental step 4: new damage photos ──────────────────────────────────
+// Live camera only, deliberately. There is no file input anywhere in this
+// step and none may be added: a photo picked from the camera roll could have
+// been taken at any time, on any car, and these photos are the evidence that
+// the damage was found at this return. Every photo here is a frame grabbed
+// from the camera while this screen is open.
+//
+// Photos are JPEG blobs held in memory and handed forward. Nothing is uploaded
+// yet. Each is kept under the damage-photos bucket's 10 MB limit so it will
+// not be refused when uploads are wired up.
+
+const CLOSE_PHOTO_MAX_BYTES = 10 * 1024 * 1024;
+
+function cameraErrorMessage(err) {
+  const name = err?.name || "";
+  if (name === "NotAllowedError" || name === "SecurityError")
+    return "Camera access was blocked. Allow camera access for this site in the browser settings, then tap Try again.";
+  if (name === "NotFoundError" || name === "OverconstrainedError")
+    return "No camera was found on this device.";
+  if (name === "NotReadableError" || name === "AbortError")
+    return "The camera could not be started. It may be in use by another app. Close that app, then tap Try again.";
+  return "The camera could not be started. Tap Try again.";
+}
+
+// Grabs the current video frame at the camera's full resolution. Quality steps
+// down only if a frame would be over the bucket limit, which at normal phone
+// resolutions it never is.
+async function captureVideoFrame(video) {
+  const width = video.videoWidth, height = video.videoHeight;
+  if (!width || !height) throw new Error("camera not ready");
+  const canvas = document.createElement("canvas");
+  canvas.width = width; canvas.height = height;
+  canvas.getContext("2d").drawImage(video, 0, 0, width, height);
+  for (const quality of [0.9, 0.75, 0.6, 0.45]) {
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+    if (blob && blob.size <= CLOSE_PHOTO_MAX_BYTES) return { blob, width, height };
+  }
+  throw new Error("photo too large");
+}
+
+const releasePhotos = (list) => (list || []).forEach((p) => { if (p?.url) URL.revokeObjectURL(p.url); });
+
+function CloseRentalPhotoStep({ row, rentalAgreementId, note, photos, setPhotos, onBack, onNext }) {
+  const videoRef   = React.useRef(null);
+  const streamRef  = React.useRef(null);
+  const pendingRef = React.useRef(null);
+  const [camera,      setCamera]      = React.useState("starting");
+  const [cameraError, setCameraError] = React.useState(null);
+  const [attempt,     setAttempt]     = React.useState(0);
+  const [pending,     setPending]     = React.useState(null);
+  const [busy,        setBusy]        = React.useState(false);
+  const [captureError, setCaptureError] = React.useState(null);
+  const [viewing,     setViewing]     = React.useState(null);
+
+  pendingRef.current = pending;
+
+  const stopCamera = () => {
+    if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+  };
+
+  // Rear camera preferred, since staff are photographing a car, but any camera
+  // is accepted. Restarted by Try again. Always stopped on the way out, so the
+  // camera light goes off the moment this screen closes.
+  React.useEffect(() => {
+    let cancelled = false;
+    const md = navigator.mediaDevices;
+    if (!md || typeof md.getUserMedia !== "function") {
+      setCamera("error");
+      setCameraError(window.isSecureContext === false
+        ? "The camera only works over a secure (https) connection."
+        : "This browser cannot open the camera.");
+      return undefined;
+    }
+    setCamera("starting");
+    setCameraError(null);
+    md.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      audio: false,
+    }).then((stream) => {
+      if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+      streamRef.current = stream;
+      const video = videoRef.current;
+      if (video) {
+        video.srcObject = stream;
+        video.muted = true;
+        const played = video.play();
+        if (played && played.catch) played.catch(() => {});
+      }
+      setCamera("live");
+    }).catch((err) => {
+      if (cancelled) return;
+      console.warn("close rental camera:", err);
+      setCamera("error");
+      setCameraError(cameraErrorMessage(err));
+    });
+    return () => { cancelled = true; stopCamera(); };
+  }, [attempt]);
+
+  // A still that was never accepted or retaken is dropped with the screen.
+  React.useEffect(() => () => { if (pendingRef.current) URL.revokeObjectURL(pendingRef.current.url); }, []);
+
+  const resumePreview = () => {
+    const video = videoRef.current;
+    if (video && video.paused) { const p = video.play(); if (p && p.catch) p.catch(() => {}); }
+  };
+
+  const takePhoto = async () => {
+    if (busy || !videoRef.current) return;
+    setBusy(true);
+    setCaptureError(null);
+    try {
+      const { blob, width, height } = await captureVideoFrame(videoRef.current);
+      setPending({ blob, width, height, url: URL.createObjectURL(blob), capturedAt: new Date().toISOString() });
+    } catch (e) {
+      console.warn("close rental capture:", e);
+      setCaptureError("That photo could not be taken. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const retake = () => {
+    if (pending) URL.revokeObjectURL(pending.url);
+    setPending(null);
+    resumePreview();
+  };
+
+  const accept = () => {
+    if (!pending) return;
+    const photo = {
+      id: crypto.randomUUID(), blob: pending.blob, url: pending.url, type: pending.blob.type || "image/jpeg",
+      size: pending.blob.size, width: pending.width, height: pending.height, capturedAt: pending.capturedAt,
+    };
+    setPhotos((prev) => [...prev, photo]);
+    setPending(null);
+    resumePreview();
+  };
+
+  const removePhoto = (id) => {
+    setPhotos((prev) => {
+      releasePhotos(prev.filter((p) => p.id === id));
+      return prev.filter((p) => p.id !== id);
+    });
+  };
+
+  const leave = (fn) => () => {
+    stopCamera();
+    if (pending) { URL.revokeObjectURL(pending.url); setPending(null); }
+    fn();
+  };
+
+  const stage = pending
+    ? React.createElement("img", { className: "closeRentalCamera__still", src: pending.url, alt: "Photo just taken" })
+    : null;
+
+  return React.createElement("div", { className: "page" },
+    React.createElement("h1", { className: "page__title" }, "Close Rental"),
+    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement("div", { className: "closeRentalSummary" },
+      React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
+      React.createElement("div", { className: "closeRentalSummary__meta" },
+        row ? [row.customer, row.plate || null].filter(Boolean).join(" · ") : rentalAgreementId)
+    ),
+    React.createElement("h2", { className: "closeRentalStepTitle" }, "Photos of the new damage"),
+    note && React.createElement("p", { className: "closeRentalPhotoNote" },
+      React.createElement("span", { className: "resFormLabel" }, "Damage noted"), " ", note),
+    React.createElement("div", { className: "closeRentalCamera" },
+      // Always mounted, so the stream has somewhere to go the moment it
+      // arrives. Hidden, not removed, while a still is being reviewed, which
+      // keeps the camera warm for a retake.
+      React.createElement("video", {
+        ref: videoRef, className: "closeRentalCamera__video", playsInline: true, muted: true, autoPlay: true,
+        style: { visibility: camera === "live" && !pending ? "visible" : "hidden" },
+      }),
+      stage,
+      camera === "starting" && React.createElement("div", { className: "closeRentalCamera__status" }, "Starting camera..."),
+      camera === "error" && React.createElement("div", { className: "closeRentalCamera__status" },
+        React.createElement("div", null, cameraError),
+        React.createElement("button", {
+          type: "button", className: "resModalSubmit", style: { marginTop: 12 },
+          onClick: () => setAttempt((n) => n + 1),
+        }, "Try again")
+      )
+    ),
+    captureError && React.createElement("div", { className: "closeRentalError", style: { marginTop: 8 } }, captureError),
+    pending
+      ? React.createElement("div", { className: "closeRentalCameraControls" },
+          React.createElement("button", { type: "button", className: "resModalCancel", onClick: retake }, "Retake"),
+          React.createElement("button", { type: "button", className: "resModalSubmit", onClick: accept }, "Use photo")
+        )
+      : React.createElement("div", { className: "closeRentalCameraControls" },
+          React.createElement("button", {
+            type: "button", className: "closeRentalShutter", onClick: takePhoto,
+            disabled: camera !== "live" || busy,
+          }, busy ? "Taking photo..." : "Take photo")
+        ),
+    React.createElement("div", { className: "closeRentalPhotoListTitle" },
+      photos.length === 0 ? "No photos yet" : `${photos.length} photo${photos.length === 1 ? "" : "s"} taken`),
+    photos.length > 0 && React.createElement("div", { className: "damagePhotoRow" },
+      photos.map((p, i) =>
+        React.createElement("div", { key: p.id, className: "closeRentalPhotoItem" },
+          React.createElement("button", {
+            type: "button", className: "damagePhotoThumb", onClick: () => setViewing(p.url),
+            "aria-label": `View photo ${i + 1} full size`,
+          }, React.createElement("img", { src: p.url, alt: `New damage photo ${i + 1}` })),
+          React.createElement("button", {
+            type: "button", className: "closeRentalPhotoItem__remove", onClick: () => removePhoto(p.id),
+            "aria-label": `Remove photo ${i + 1}`,
+          }, "×")
+        )
+      )
+    ),
+    React.createElement("div", { className: "closeRentalActions" },
+      React.createElement("button", { type: "button", className: "resModalCancel", onClick: leave(onBack) }, "Back"),
+      React.createElement("button", {
+        type: "button", className: "resModalSubmit", disabled: photos.length === 0,
+        title: photos.length === 0 ? "Take at least one photo to continue" : undefined,
+        onClick: leave(() => onNext(photos)),
+      }, "Next")
+    ),
+    photos.length === 0 && React.createElement("div", { className: "closeRentalHint", style: { marginTop: 8 } }, "Take at least one photo to continue."),
+    viewing && React.createElement(DamagePhotoViewer, { url: viewing, onClose: () => setViewing(null) })
+  );
+}
+
+const EMPTY_CLOSE_READINGS = { mileage: "", gasIndex: null, lowConfirmed: false };
+const EMPTY_DAMAGE_DRAFT   = { choice: null, note: "" };
 
 function CloseRentalPage() {
   const { reservations, rentalAgreements, fleet } = React.useContext(AppContext);
@@ -8785,6 +9284,19 @@ function CloseRentalPage() {
   const [province,   setProvince]   = React.useState("All");
   const [lastName,   setLastName]   = React.useState("");
   const [selectedId, setSelectedId] = React.useState(null);
+  const [readings,   setReadings]   = React.useState(EMPTY_CLOSE_READINGS);
+  const [closing,    setClosing]    = React.useState(null);
+  const [damageDraft, setDamageDraft] = React.useState(EMPTY_DAMAGE_DRAFT);
+  const [review,     setReview]     = React.useState(null);
+  const [photos,     setPhotos]     = React.useState([]);
+  const [final,      setFinal]      = React.useState(null);
+
+  // Captured photos live only in memory, as object URLs over their blobs.
+  // Released when the page closes, so a walk away mid-flow leaks nothing.
+  const photosRef = React.useRef(photos);
+  photosRef.current = photos;
+  React.useEffect(() => () => releasePhotos(photosRef.current), []);
+  const clearPhotos = () => { releasePhotos(photosRef.current); setPhotos([]); };
 
   const fmtDate = (iso) => {
     if (!iso) return "-";
@@ -8818,6 +9330,8 @@ function CloseRentalPage() {
                       || [res.vehicleYear, res.vehicleMake, res.vehicleModel].filter(Boolean).join(" ")
                       || res.vehicleClass || "-",
           pickupDate: res.date || "",
+          pickupMileage:  ra.mileage ?? null,
+          odometerOnFile: vehicle?.currentOdometer ?? null,
         };
       });
   }, [reservations, rentalAgreements, fleet]);
@@ -8838,14 +9352,75 @@ function CloseRentalPage() {
     return row.lastName.toLowerCase().includes(nameQuery);
   });
 
-  if (selectedId) {
+  // Step 5 placeholder. Shows everything steps 1 to 4 collected, so the
+  // hand-off is visible until charges are built. Back returns to whichever
+  // step came before it: photos after a Yes, damage review after a No.
+  if (final) {
+    const line = (label, value) =>
+      React.createElement("p", { className: "page__body" }, `${label} `, React.createElement("strong", null, value));
     return React.createElement("div", { className: "page" },
-      React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => setSelectedId(null) }, "← Back to search"),
+      React.createElement("button", {
+        type: "button", className: "rentalAgreementBackBtn",
+        onClick: () => { setFinal(null); if (!final.newDamageFound) setReview(null); },
+      }, final.newDamageFound ? "← Back to photos" : "← Back to damage review"),
       React.createElement("h1", { className: "page__title" }, "Close Rental"),
       React.createElement("div", { className: "page__titleUnderline" }),
-      React.createElement("p", { className: "page__body" }, "Rental agreement ", React.createElement("strong", null, selectedId)),
-      React.createElement("p", { className: "page__body" }, "The next steps of closing this rental are coming soon.")
+      React.createElement("h2", { className: "closeRentalStepTitle" }, "Final charges"),
+      line("Rental agreement", final.rentalAgreementId),
+      line("Closing mileage", `${final.closingMileage.toLocaleString("en-CA")} km`),
+      line("Closing gas level", final.closingGasLevel),
+      line("New damage found", final.newDamageFound ? "Yes" : "No"),
+      final.newDamageFound && line("New damage note", final.newDamageNote),
+      final.newDamageFound && line("New damage photos", String(final.photos.length)),
+      final.photos.length > 0 && React.createElement("div", { className: "damagePhotoRow", style: { marginBottom: 12 } },
+        final.photos.map((p, i) => React.createElement("div", { key: p.id, className: "damagePhotoThumb" },
+          React.createElement("img", { src: p.url, alt: `New damage photo ${i + 1}` })))
+      ),
+      React.createElement("p", { className: "page__body" }, "Final charges are coming soon.")
     );
+  }
+
+  // Step 4, reached only after a Yes. Back returns to step 3 with its answer
+  // and note intact. Photos already taken are kept here, so they are still
+  // there if staff come forward again.
+  if (review) {
+    return React.createElement(CloseRentalPhotoStep, {
+      row: openRows.find((r) => r.id === review.rentalAgreementId) || null,
+      rentalAgreementId: review.rentalAgreementId,
+      note: review.newDamageNote,
+      photos, setPhotos,
+      onBack: () => setReview(null),
+      onNext: (taken) => setFinal({ ...review, photos: taken }),
+    });
+  }
+
+  // Step 3. Back returns to step 2 with its values intact; they live here,
+  // not in the step, so they survive the round trip. A No skips photos and
+  // goes straight to step 5, dropping any photos taken under an earlier Yes.
+  if (closing) {
+    return React.createElement(CloseRentalDamageStep, {
+      row: openRows.find((r) => r.id === closing.rentalAgreementId) || null,
+      rentalAgreementId: closing.rentalAgreementId,
+      damageDraft, setDamageDraft,
+      onBack: () => setClosing(null),
+      onNext: (answer) => {
+        const next = { ...closing, ...answer };
+        setReview(next);
+        if (!answer.newDamageFound) { clearPhotos(); setFinal({ ...next, photos: [] }); }
+      },
+    });
+  }
+
+  // Step 2. Back returns to search and drops what was entered, so the next
+  // agreement picked starts empty.
+  if (selectedId) {
+    return React.createElement(CloseRentalReadingsStep, {
+      row: openRows.find((r) => r.id === selectedId) || null,
+      rentalAgreementId: selectedId,
+      readings, setReadings,
+      onBack: () => { setSelectedId(null); setReadings(EMPTY_CLOSE_READINGS); setDamageDraft(EMPTY_DAMAGE_DRAFT); clearPhotos(); },
+      onNext: setClosing,
+    });
   }
 
   const modeTab = (value, label) =>
@@ -11985,6 +12560,314 @@ body, * {
   text-align: left;
   cursor: pointer;
 }
+.closeRentalSummary{
+  border: 1px solid #d9dee8;
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  max-width: 480px;
+}
+.closeRentalSummary__main{
+  font-size: 15px;
+  font-weight: 700;
+  color: #1F1E1D;
+}
+.closeRentalSummary__meta{
+  font-size: 13px;
+  color: #55657b;
+  margin-top: 2px;
+}
+.closeRentalStepTitle{
+  margin: 0 0 14px;
+  font-size: 18px;
+  font-weight: 800;
+  color: #1F1E1D;
+}
+.closeRentalForm{
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 480px;
+}
+.closeRentalHint{
+  font-size: 12px;
+  color: #7b8fa8;
+}
+.closeRentalError{
+  margin-top: -8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #c0392b;
+}
+.closeRentalWarning{
+  border: 1px solid #f3d38a;
+  background: #fff8e6;
+  color: #7a5a10;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.closeRentalWarning__confirm{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.closeRentalFuel__value{
+  font-size: 15px;
+  font-weight: 700;
+  color: #42a4ff;
+}
+.closeRentalFuel{
+  width: 100%;
+  accent-color: #42a4ff;
+  cursor: pointer;
+  margin: 2px 0 0;
+}
+.closeRentalFuel--unset{
+  opacity: 0.45;
+}
+.closeRentalFuel__labels{
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #7b8fa8;
+}
+.closeRentalActions{
+  display: flex;
+  gap: 10px;
+  margin-top: 22px;
+  max-width: 480px;
+}
+.closeRentalActions .resModalSubmit{
+  margin-left: auto;
+}
+.closeRentalDamageList{
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 640px;
+  margin-bottom: 24px;
+}
+.closeRentalDamageEmpty{
+  font-size: 13px;
+  color: #55657b;
+  padding: 10px 0;
+}
+.closeRentalDamageItem{
+  border: 1px solid #d9dee8;
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.closeRentalDamageItem__desc{
+  font-size: 14px;
+  font-weight: 600;
+  color: #1F1E1D;
+}
+.closeRentalDamageItem__meta{
+  font-size: 12px;
+  color: #7b8fa8;
+}
+.damagePhotoRow{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.damagePhotoThumb{
+  width: 96px;
+  height: 72px;
+  border: 1px solid #d9dee8;
+  border-radius: 8px;
+  padding: 0;
+  overflow: hidden;
+  background: #f0f4fa;
+  cursor: zoom-in;
+}
+.damagePhotoThumb img{
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.damagePhotoThumb--empty{
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  color: #7b8fa8;
+  text-align: center;
+  cursor: default;
+}
+.damagePhotoViewer{
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(10,31,60,0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 16px 16px;
+}
+.damagePhotoViewer__img{
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+}
+.damagePhotoViewer__close{
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+.damagePhotoViewer__close:hover{
+  background: rgba(255,255,255,0.3);
+}
+.closeRentalChoiceRow{
+  display: flex;
+  gap: 10px;
+  max-width: 480px;
+}
+.closeRentalChoice{
+  flex: 1;
+  border: 1px solid #d3dbe8;
+  border-radius: 8px;
+  background: #fff;
+  color: #1F1E1D;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 10px 0;
+  cursor: pointer;
+}
+.closeRentalChoice:hover{
+  border-color: #42a4ff;
+}
+.closeRentalChoice--active{
+  background: #42a4ff;
+  border-color: #42a4ff;
+  color: #F9F9F7;
+}
+.closeRentalActions .resModalSubmit:disabled{
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.closeRentalActions .resModalSubmit:disabled:hover{
+  background: #42a4ff;
+}
+.closeRentalPhotoNote{
+  margin: -6px 0 14px;
+  max-width: 640px;
+  font-size: 13px;
+  color: #1c2f49;
+  line-height: 1.45;
+}
+/* Letterboxed rather than cropped, so the preview shows exactly the frame a
+   photo will capture. */
+.closeRentalCamera{
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  aspect-ratio: 4 / 3;
+  background: #1F1E1D;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.closeRentalCamera__video,
+.closeRentalCamera__still{
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.closeRentalCamera__status{
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  text-align: center;
+  color: #F9F9F7;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.closeRentalCameraControls{
+  display: flex;
+  gap: 10px;
+  max-width: 640px;
+  margin: 12px 0 20px;
+}
+.closeRentalCameraControls button{
+  flex: 1;
+  padding-block: 12px;
+  font-size: 14px;
+}
+.closeRentalShutter{
+  border: none;
+  border-radius: 10px;
+  background: #42a4ff;
+  color: #F9F9F7;
+  font-family: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+.closeRentalShutter:hover{
+  background: #0063bf;
+}
+.closeRentalShutter:disabled{
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: #42a4ff;
+}
+.closeRentalPhotoListTitle{
+  font-size: 13px;
+  font-weight: 700;
+  color: #1F1E1D;
+  margin-bottom: 8px;
+}
+.closeRentalPhotoItem{
+  position: relative;
+}
+.closeRentalPhotoItem__remove{
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 999px;
+  background: #1F1E1D;
+  color: #F9F9F7;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.closeRentalPhotoItem__remove:hover{
+  background: #c0392b;
+}
 /* Modal */
 .resModalBackdrop{
   position: fixed;
@@ -12339,6 +13222,9 @@ body, * {
   }
   /* Full width on a phone, where it is the first thing under the title. */
   .closeRentalCta{ width: 100%; }
+  /* 16px or iOS zooms the page when the field takes focus. */
+  .closeRentalMileage, .closeRentalNote{ font-size: 16px; }
+  .closeRentalActions button{ flex: 1; padding-block: 12px; }
   .dashCard__chip--loc{
     background: #f0f5ff;
     font-size: 11px;
