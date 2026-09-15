@@ -3199,6 +3199,9 @@ function DashboardPage() {
     { className: "page" },
     React.createElement("h1", { className: "page__title" }, "Dashboard"),
     React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement("button", {
+      type: "button", className: "closeRentalCta", onClick: () => navigate("/close-rental"),
+    }, "Close Rental"),
     React.createElement("div", { className: "dashboardGrid" }, [
       // ── Section 1: Reservations ──────────────────────────────────────────
       React.createElement(
@@ -8762,6 +8765,173 @@ function RentalAgreementsPage() {
   );
 }
 
+// ─── CloseRentalPage ──────────────────────────────────────────────────────────
+// Step 1 of Close Rental: find the open rental agreement being returned. The
+// later steps (closing mileage and gas, damage review, photos, charges) are not
+// built yet; picking an agreement lands on a placeholder that shows its id.
+//
+// Reads only what the app already loaded. Nothing here writes anything.
+//
+// Plates are compared through normalizePlate, with spaces, dashes and case
+// stripped, because the fleet holds both "ABC-123" and "JXR 841" and staff
+// type whichever they see.
+
+function CloseRentalPage() {
+  const { reservations, rentalAgreements, fleet } = React.useContext(AppContext);
+  const isMobile = useMobile();
+  const navigate = useNavigate();
+  const [mode,       setMode]       = React.useState("plate");
+  const [plate,      setPlate]      = React.useState("");
+  const [province,   setProvince]   = React.useState("All");
+  const [lastName,   setLastName]   = React.useState("");
+  const [selectedId, setSelectedId] = React.useState(null);
+
+  const fmtDate = (iso) => {
+    if (!iso) return "-";
+    const d = new Date(`${iso}T00:00:00`);
+    return Number.isNaN(d.getTime()) ? iso
+      : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
+  };
+
+  // One row per open agreement, joined to its reservation (customer, pickup
+  // date) and its vehicle (description, province). The agreement's plate wins;
+  // the reservation's is the fallback for an agreement whose plate was never
+  // filled in, the same fallback syncRAStatus uses.
+  const openRows = React.useMemo(() => {
+    const resByCode = Object.fromEntries((reservations || []).map((r) => [r.resCode, r]));
+    return (rentalAgreements || [])
+      .filter((ra) => ra.rentalAgreementStatus === "open_rental_agreement")
+      .map((ra) => {
+        const res = resByCode[ra.resCode] || {};
+        const rowPlate = ra.plate || res.plate || "";
+        const vehicle = rowPlate
+          ? (fleet || []).find((v) => normalizePlate(v.plate) === normalizePlate(rowPlate)) || null
+          : null;
+        const parts = String(res.customer || "").trim().split(/\s+/);
+        return {
+          id:         ra.id,
+          customer:   res.customer || "-",
+          lastName:   res.lastName || (parts.length > 1 ? parts[parts.length - 1] : ""),
+          plate:      rowPlate,
+          province:   vehicle?.province || "",
+          vehicle:    [vehicle?.year, vehicle?.make, vehicle?.model].filter(Boolean).join(" ")
+                      || [res.vehicleYear, res.vehicleMake, res.vehicleModel].filter(Boolean).join(" ")
+                      || res.vehicleClass || "-",
+          pickupDate: res.date || "",
+        };
+      });
+  }, [reservations, rentalAgreements, fleet]);
+
+  // Nothing is listed until something is typed, so the screen never opens on a
+  // wall of every open rental. A vehicle with no province on file still
+  // matches a chosen province: it cannot be ruled out, and hiding it would
+  // leave that rental impossible to find here.
+  const plateQuery = normalizePlate(plate);
+  const nameQuery  = lastName.trim().toLowerCase();
+  const query      = mode === "plate" ? plateQuery : nameQuery;
+  const matches = !query ? [] : openRows.filter((row) => {
+    if (mode === "plate") {
+      if (!normalizePlate(row.plate).includes(plateQuery)) return false;
+      if (province !== "All" && row.province && row.province !== province) return false;
+      return true;
+    }
+    return row.lastName.toLowerCase().includes(nameQuery);
+  });
+
+  if (selectedId) {
+    return React.createElement("div", { className: "page" },
+      React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => setSelectedId(null) }, "← Back to search"),
+      React.createElement("h1", { className: "page__title" }, "Close Rental"),
+      React.createElement("div", { className: "page__titleUnderline" }),
+      React.createElement("p", { className: "page__body" }, "Rental agreement ", React.createElement("strong", null, selectedId)),
+      React.createElement("p", { className: "page__body" }, "The next steps of closing this rental are coming soon.")
+    );
+  }
+
+  const modeTab = (value, label) =>
+    React.createElement("button", {
+      key: value, type: "button",
+      className: mode === value ? "resvPageTab resvPageTab--active" : "resvPageTab",
+      onClick: () => setMode(value),
+    }, label);
+
+  const results = !query
+    ? React.createElement("div", { className: "resvEmpty" },
+        mode === "plate" ? "Type a plate number to find the open rental." : "Type the customer's last name to find the open rental.")
+    : matches.length === 0
+      ? React.createElement("div", { className: "resvEmpty" }, "No open rental agreements match.")
+      : isMobile
+        ? matches.map((row) =>
+            React.createElement("button", {
+              key: row.id, type: "button", className: "dashCard closeRentalCard",
+              onClick: () => setSelectedId(row.id),
+            },
+              React.createElement("div", { className: "dashCard__header" },
+                React.createElement("span", null, row.customer),
+                React.createElement("span", { className: "dashCard__resCode" }, row.plate || "-")
+              ),
+              React.createElement("div", { className: "dashCard__meta" },
+                React.createElement("span", { className: "dashCard__chip" }, row.vehicle),
+                React.createElement("span", { className: "dashCard__chip" }, `Picked up ${fmtDate(row.pickupDate)}`)
+              )
+            )
+          )
+        : React.createElement("section", { className: "dashboardSection" },
+            React.createElement("div", { className: "dashboardSection__body" },
+              React.createElement("table", { className: "dashboardTable" },
+                React.createElement("thead", null,
+                  React.createElement("tr", null,
+                    ["Vehicle", "Customer", "Plate", "Pickup Date"].map((col) => React.createElement("th", { key: col }, col))
+                  )
+                ),
+                React.createElement("tbody", null,
+                  matches.map((row) =>
+                    React.createElement("tr", {
+                      key: row.id, className: "closeRentalRow", tabIndex: 0,
+                      onClick: () => setSelectedId(row.id),
+                      onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedId(row.id); } },
+                    },
+                      React.createElement("td", null, row.vehicle),
+                      React.createElement("td", null, row.customer),
+                      React.createElement("td", null, row.plate || "-"),
+                      React.createElement("td", null, fmtDate(row.pickupDate))
+                    )
+                  )
+                )
+              )
+            )
+          );
+
+  return React.createElement("div", { className: "page" },
+    React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate("/dashboard") }, "← Dashboard"),
+    React.createElement("h1", { className: "page__title" }, "Close Rental"),
+    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement("div", { className: "resvPageTabs" },
+      modeTab("plate", "Plate & province"),
+      modeTab("lastName", "Customer last name")
+    ),
+    mode === "plate"
+      ? React.createElement("div", { className: "resvSearchBar" },
+          React.createElement("input", {
+            className: "resvSearchInput", type: "text", placeholder: "Plate number",
+            autoFocus: true, autoCapitalize: "characters", autoComplete: "off",
+            value: plate, onChange: (e) => setPlate(e.target.value),
+          }),
+          React.createElement("select", {
+            className: "resvSearchInput", value: province, onChange: (e) => setProvince(e.target.value),
+          }, PROV_STATE_LIST.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label)))
+        )
+      : React.createElement("div", { className: "resvSearchBar" },
+          React.createElement("input", {
+            className: "resvSearchInput", type: "text", placeholder: "Last name",
+            autoFocus: true, autoComplete: "off",
+            value: lastName, onChange: (e) => setLastName(e.target.value),
+          })
+        ),
+    results
+  );
+}
+
 // ─── CustomerPage data ────────────────────────────────────────────────────────
 
 const DEFAULT_LINE_ITEMS = [
@@ -10218,6 +10388,11 @@ function AppRoutes() {
     React.createElement(Route, {
       path: "/customer",
       element: React.createElement(ExecNeedsBranch, null, React.createElement(CustomerPage)),
+    }),
+    // Reached from the Dashboard's Close Rental button, not from the nav.
+    React.createElement(Route, {
+      path: "/close-rental",
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(CloseRentalPage)),
     }),
     NAV.filter((item) => !["/dashboard", "/reservations", "/arms", "/pre-rental-check", "/overdue-rentals", "/time-of-repair", "/no-shows", "/fleet", "/fleet/vehicles", "/fleet/additions", "/fleet/gas-collections", "/fleet/damage-claims", "/reports", "/settings", "/audit-log", "/rental-agreements", "/customer", "/vehicle"].includes(item.path))
       .map((item) =>
@@ -11775,6 +11950,41 @@ body, * {
   color: #7b8fa8;
   font-size: 14px;
 }
+/* Close Rental: the Dashboard's entry button and its search screen */
+.closeRentalCta{
+  display: block;
+  border: none;
+  border-radius: 10px;
+  background: #42a4ff;
+  color: #F9F9F7;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 800;
+  padding: 12px 22px;
+  margin-bottom: 18px;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+}
+.closeRentalCta:hover{
+  background: #0063bf;
+}
+.closeRentalRow{
+  cursor: pointer;
+}
+.closeRentalRow:hover td,
+.closeRentalRow:focus td{
+  background: #eef6ff;
+}
+.closeRentalRow:focus{
+  outline: none;
+}
+.closeRentalCard{
+  width: 100%;
+  border: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
 /* Modal */
 .resModalBackdrop{
   position: fixed;
@@ -12127,6 +12337,8 @@ body, * {
     background: #e0f2fe;
     color: #0369a1;
   }
+  /* Full width on a phone, where it is the first thing under the title. */
+  .closeRentalCta{ width: 100%; }
   .dashCard__chip--loc{
     background: #f0f5ff;
     font-size: 11px;
