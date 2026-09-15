@@ -7482,6 +7482,11 @@ function PlaceholderPage({ title }) {
 
 // ─── Fleetr AI Command Bar ───────────────────────────────────────────────────
 
+// What the command bar says when asked about intake for a company that has
+// non_drive_intake off. One string, used by the prompt and by both refusals,
+// so the answer is the same whichever of them catches the request.
+const NDI_DISABLED_MESSAGE = "Non-drive intake isn't enabled for this company.";
+
 function FleetrCommandBar() {
   const { guardAction, logAudit, currentUser, reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows, damageClaims, setDamageClaims, appSettings, saveSetting } = React.useContext(AppContext);
   const [command,        setCommand]        = React.useState("");
@@ -7582,7 +7587,13 @@ function FleetrCommandBar() {
         `Reservations data: ${JSON.stringify(reservations)}\n\n` +
         `Rental agreements data: ${JSON.stringify(rentalAgreements)}\n\n` +
         `Fleet data: ${JSON.stringify(fleet)}\n\n` +
-        `Non-drive intake data: ${JSON.stringify(ndiRows)}\n\n` +
+        // With non_drive_intake off the rows are not sent at all, so they cannot
+        // be read back, and the model is told why so it can say so.
+        (isFeatureEnabled("non_drive_intake")
+          ? `Non-drive intake data: ${JSON.stringify(ndiRows)}\n\n`
+          : `Non-drive intake: not enabled for this company, so no intake data is provided. ` +
+            `If the command asks to view or change non-drive intake (ndi_rows), reply with the message ` +
+            `"${NDI_DISABLED_MESSAGE}" and no action.\n\n`) +
         `No-shows data: ${JSON.stringify(noShows)}\n\n` +
         `Damage claims data: ${JSON.stringify(damageClaims)}\n\n` +
         // Settings are read straight from app_settings rather than a table dump,
@@ -7622,7 +7633,15 @@ function FleetrCommandBar() {
       } else {
         const raw = data?.content?.[0]?.text || "{}";
         const parsed = parseClaudeJSON(raw);
-        const hasAction = !!(parsed.action && parsed.action.table && parsed.action.operation);
+        let hasAction = !!(parsed.action && parsed.action.table && parsed.action.operation);
+        // The prompt asks the model not to propose intake actions when the
+        // feature is off; this makes sure one never reaches the Confirm card if
+        // it does anyway.
+        if (hasAction && parsed.action.table === "ndi_rows" && !isFeatureEnabled("non_drive_intake")) {
+          console.warn("Fleetr AI proposed an ndi_rows action with non_drive_intake off; dropped.");
+          parsed.message = NDI_DISABLED_MESSAGE;
+          hasAction = false;
+        }
         // "Done." next to a Confirm button that has not been pressed is the same
         // lie the tense rule in the system prompt exists to prevent, so the
         // fallback depends on whether anything is still waiting to run.
@@ -7709,6 +7728,11 @@ function FleetrCommandBar() {
     let operation = pendingAction.operation;
     let data = editableData; // use user-edited values
     const fail = (error) => ({ ok: false, error });
+
+    // The last line of defence for a gated feature: nothing writes to
+    // ndi_rows through here while the company has it off, and the refusal is
+    // audited like any other rule that stops an action.
+    if (table === "ndi_rows" && !isFeatureEnabled("non_drive_intake")) return fail(NDI_DISABLED_MESSAGE);
 
     // rentalAgreementStatus on reservations is a stale mirror of the column on
     // rental_agreements, refreshed from there at load. A plain update to it
