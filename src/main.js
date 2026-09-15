@@ -2221,6 +2221,28 @@ function PlateLink({ plate, label, style }) {
 }
 
 // ─── Unique Res Code generator ────────────────────────────────────────────────
+// A code must be unique across every company, not just this branch:
+// fleetr-customer looks a code up with no idea which company it belongs to.
+//
+// The check goes through res_code_taken (supabase/res_code_taken.sql in
+// fleetr-infra), which sees every tenant's rows. Selecting the code directly
+// cannot: row level security scopes those reads to the caller's own location,
+// so another company's code looked free.
+//
+// Until that function exists (or if the call fails), the direct selects below
+// still run, so a code is never less checked than before. no_shows keeps its
+// code in lowercase "rescode"; querying "resCode" there errored, and the error
+// read as "not taken", so no-show codes were never checked at all.
+async function resCodeTaken(code) {
+  const { data, error } = await supabase.rpc("res_code_taken", { p_code: code });
+  if (!error) return data !== false;
+  const [r1, r2, r3] = await Promise.all([
+    supabase.from("reservations").select("*").eq("resCode", code).limit(1),
+    supabase.from("ndi_rows").select("rescode").eq("rescode", code),
+    supabase.from("no_shows").select("rescode").eq("rescode", code),
+  ]);
+  return [r1, r2, r3].some((r) => r.data && r.data.length > 0);
+}
 
 async function generateUniqueResCode() {
   const L    = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -2229,12 +2251,7 @@ async function generateUniqueResCode() {
   for (let i = 0; i < 30; i++) {
     const code = `${rand3L()} ${rand3D()} ${rand3D()}`;
     try {
-      const [r1, r2, r3] = await Promise.all([
-        supabase.from("reservations").select("*").eq("resCode", code).limit(1),
-        supabase.from("ndi_rows").select("rescode").eq("rescode", code),
-        supabase.from("no_shows").select("resCode").eq("resCode", code),
-      ]);
-      const exists = [r1, r2, r3].some((r) => r.data && r.data.length > 0);
+      const exists = await resCodeTaken(code);
       if (!exists) return code;
     } catch {
       return code; // Supabase unreachable — accept the code
