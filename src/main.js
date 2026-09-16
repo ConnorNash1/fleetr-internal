@@ -9127,6 +9127,38 @@ async function captureVideoFrame(video) {
 
 const releasePhotos = (list) => (list || []).forEach((p) => { if (p?.url) URL.revokeObjectURL(p.url); });
 
+// Captured photos into the private damage-photos bucket, under the folder the
+// storage policy expects: <operatorId>/rental-agreements/<rentalAgreementId>/.
+// The operatorId prefix is what the policy compares against current_operator(),
+// so it comes from the signed-in profile, never from anything typed on screen.
+//
+// Each photo is uploaded on its own and a failure is recorded rather than
+// thrown: a photo that will not upload must not cost staff the rest of the
+// close, and the count of what did not make it is shown at the end so the gap
+// is known rather than silent. There is no delete policy on this bucket, so a
+// partial upload leaves the photos that did land, which is the right way round
+// for evidence.
+async function uploadDamagePhotos({ operatorId, rentalAgreementId, photos }) {
+  const paths = [], failures = [];
+  if (!operatorId || !rentalAgreementId) {
+    return { paths, failures: (photos || []).map((p) => p.id), reason: "no operator or agreement on file" };
+  }
+  for (const photo of photos || []) {
+    const stamp = (photo.capturedAt || new Date().toISOString()).replace(/[^0-9]/g, "").slice(0, 14);
+    const path  = `${operatorId}/rental-agreements/${rentalAgreementId}/${stamp}-${photo.id}.jpg`;
+    try {
+      const res = await supabase.storage.from(DAMAGE_PHOTO_BUCKET)
+        .upload(path, photo.blob, { contentType: photo.type || "image/jpeg", cacheControl: "3600" });
+      if (res?.error) { console.warn("damage photo upload failed:", path, res.error); failures.push(photo.id); }
+      else paths.push(path);
+    } catch (e) {
+      console.warn("damage photo upload threw:", path, e);
+      failures.push(photo.id);
+    }
+  }
+  return { paths, failures, reason: null };
+}
+
 function CloseRentalPhotoStep({ row, rentalAgreementId, note, photos, setPhotos, onBack, onNext, pageTitle }) {
   const videoRef   = React.useRef(null);
   const streamRef  = React.useRef(null);
@@ -9314,6 +9346,12 @@ function CloseRentalPhotoStep({ row, rentalAgreementId, note, photos, setPhotos,
 const EMPTY_CLOSE_READINGS = { mileage: "", gasIndex: null, lowConfirmed: false };
 const EMPTY_DAMAGE_DRAFT   = { choice: null, note: "" };
 
+// Where a closed rental lands. Not "closed": the vehicle is back and inspected,
+// but the charges screen does not exist yet, so the paperwork is genuinely not
+// finished, and Close Pending is the status the rest of the app already uses
+// for an agreement waiting on it.
+const CLOSE_RENTAL_RA_STATUS = "close_pending";
+
 // ─── Open rental search, shared by Close Rental and Switch Out ───────────────
 // One row per open agreement, joined to its reservation (customer, pickup
 // date) and its vehicle (description, province). The agreement's plate wins;
@@ -9464,6 +9502,8 @@ function OpenRentalSearch({ rows, onSelect }) {
 }
 
 function CloseRentalPage() {
+  const { reservations, setReservations, rentalAgreements, fleet, setFleet, syncRAStatus, guardAction, currentUser } =
+    React.useContext(AppContext);
   const navigate = useNavigate();
   const [selectedId, setSelectedId] = React.useState(null);
   const [readings,   setReadings]   = React.useState(EMPTY_CLOSE_READINGS);
@@ -9472,6 +9512,8 @@ function CloseRentalPage() {
   const [review,     setReview]     = React.useState(null);
   const [photos,     setPhotos]     = React.useState([]);
   const [final,      setFinal]      = React.useState(null);
+  const [busy,       setBusy]       = React.useState(false);
+  const [done,       setDone]       = React.useState(null);
 
   // Captured photos live only in memory, as object URLs over their blobs.
   // Released when the page closes, so a walk away mid-flow leaks nothing.
@@ -9481,21 +9523,173 @@ function CloseRentalPage() {
   const clearPhotos = () => { releasePhotos(photosRef.current); setPhotos([]); };
 
   const openRows = useOpenRentalRows();
+  const row     = openRows.find((r) => r.id === (final?.rentalAgreementId || selectedId)) || null;
+  const ra      = (rentalAgreements || []).find((a) => a.id === final?.rentalAgreementId) || null;
+  const vehicle = row?.plate
+    ? (fleet || []).find((v) => normalizePlate(v.plate) === normalizePlate(row.plate)) || null
+    : null;
 
-  // Step 5 placeholder. Shows everything steps 1 to 4 collected, so the
-  // hand-off is visible until charges are built. Back returns to whichever
-  // step came before it: photos after a Yes, damage review after a No.
+  // The status the returned vehicle lands on, the same rule staff get when
+  // they move one out of Ready Returns: damage reported beats the default, and
+  // resolvePmStatus has the last word, so a vehicle flagged for preventative
+  // maintenance goes to PM rather than back into service.
+  const vehicleStatus = resolvePmStatus(vehicle, final?.newDamageFound ? "Damaged" : "Needs Cleaning");
+
+  const resetFlow = () => {
+    setSelectedId(null); setReadings(EMPTY_CLOSE_READINGS); setClosing(null);
+    setDamageDraft(EMPTY_DAMAGE_DRAFT); setReview(null); setFinal(null); clearPhotos();
+  };
+
+  // Closing the rental. One audited action: the leg this vehicle just finished
+  // is written down, its photos go to the bucket, the agreement advances and
+  // the vehicle takes its resulting status.
+  //
+  // close_pending, not closed: the vehicle is back and the inspection is done,
+  // but the charges screen does not exist yet, so calling the paperwork
+  // finished would be a claim nothing has earned. It is the status the return
+  // already used everywhere else, and Close Pending is where an agreement
+  // waiting on charges belongs.
+  const completeClose = () => {
+    if (!final || !ra) return;
+    guardAction("ra.advance", async () => {
+      setBusy(true);
+      try {
+        // The leg. Pickup readings come off the agreement's own record, which
+        // is where the vehicle went out on them; the closing pair is what was
+        // just entered. endedAt is now, which is what makes this leg finished
+        // and lets the next one open.
+        const leg = {
+          rentalAgreementId: ra.id,
+          vehicleId:         vehicle?.id || null,
+          endedAt:           new Date().toISOString(),
+          pickupMileage:     ra.mileage ?? null,
+          pickupGas:         ra.fuelAtPickup ?? null,
+          closingMileage:    final.closingMileage,
+          closingGas:        final.closingGasLevel,
+          damageReported:    !!final.newDamageFound,
+          damageNote:        final.newDamageFound ? final.newDamageNote : null,
+          // Nothing in this app captures a signature. The customer app takes
+          // one at return and stores it on the agreement, so a self-service
+          // return carries its signature onto the leg and a staff-run close
+          // leaves it empty rather than inventing one.
+          signature:         ra.returnSignature || null,
+        };
+        // startedAt defaults to now, which would be wrong for a leg that is
+        // ending: it began when the vehicle went out. The pickup inspection
+        // stamp is the closest thing on record, and its absence leaves the
+        // default rather than a guessed date.
+        if (ra.inspectedAt) leg.startedAt = ra.inspectedAt;
+        const legRes = await supabase.from("rental_agreement_vehicles").insert(leg);
+        if (legRes?.error) console.warn("close rental: vehicle leg insert failed:", legRes.error);
+
+        const upload = final.photos.length
+          ? await uploadDamagePhotos({
+              operatorId: currentUser?.operatorId, rentalAgreementId: ra.id, photos: final.photos,
+            })
+          : { paths: [], failures: [] };
+
+        // syncRAStatus owns the status change: it writes rental_agreements and
+        // keeps the reservation mirror in step. Closing also stamps the return
+        // time, exactly as the status control on the agreement page does.
+        await syncRAStatus(ra.resCode, CLOSE_RENTAL_RA_STATUS);
+        const stamp = raCloseStamp();
+        runWrite(supabase.from("reservations").update(stamp).eq("resCode", ra.resCode), "close rental: return stamp");
+        setReservations((prev) => prev.map((r) => (
+          r.resCode === ra.resCode ? { ...r, ...stamp, rentalAgreementStatus: CLOSE_RENTAL_RA_STATUS } : r
+        )));
+
+        // The vehicle. close_pending moves it to Ready Returns, which is the
+        // queue for a vehicle that is back but not yet looked at; this flow
+        // has just looked at it, so it goes straight to where that inspection
+        // puts it, and its renter fields are cleared as they are when staff
+        // mark one collected.
+        //
+        // Read back once: the Ready Returns write syncRAStatus fires is not
+        // awaited, so two writes to one row can be in flight together and land
+        // in either order. Checking costs one request and removes the only way
+        // this ends with a vehicle sitting in the wrong queue.
+        if (vehicle) {
+          const patch = { status: vehicleStatus.status, currentRenter: null, dueBack: null, fileType: null };
+          await supabase.from("fleet").update(patch).eq("id", vehicle.id);
+          const check = await supabase.from("fleet").select("status").eq("id", vehicle.id).maybeSingle();
+          if (check?.data && check.data.status !== patch.status) {
+            runWrite(supabase.from("fleet").update(patch).eq("id", vehicle.id), "close rental: vehicle status");
+          }
+          setFleet((prev) => prev.map((v) => (v.id === vehicle.id ? { ...v, ...patch } : v)));
+        }
+
+        clearPhotos();
+        setDone({
+          resCode:       ra.resCode || null,
+          plate:         row?.plate || null,
+          closingMileage: final.closingMileage,
+          closingGas:    final.closingGasLevel,
+          damageFound:   !!final.newDamageFound,
+          vehicleStatus: vehicle ? vehicleStatus.status : null,
+          forcedMessage: vehicle && vehicleStatus.forced ? vehicleStatus.message : null,
+          legSaved:      !legRes?.error,
+          photosTaken:   final.photos.length,
+          photosUploaded: upload.paths.length,
+          photosFailed:  upload.failures.length,
+        });
+      } finally {
+        setBusy(false);
+      }
+    }, {
+      tableName: "rental_agreements",
+      recordId: ra.id,
+      description: `Closed rental agreement ${ra.resCode || ra.id}: ${row?.plate || "vehicle"} back at ` +
+        `${final.closingMileage.toLocaleString("en-CA")} km, gas ${final.closingGasLevel}, ` +
+        (final.newDamageFound ? `new damage reported (${final.newDamageNote})` : "no new damage") + ".",
+    });
+  };
+
+  // The rental is closed. What was written is spelled out rather than summed
+  // up as "saved", because anything that did not land is the one thing staff
+  // need to act on before the customer leaves.
+  if (done) {
+    const line = (label, value) =>
+      React.createElement("p", { className: "page__body" }, `${label} `, React.createElement("strong", null, value));
+    return React.createElement("div", { className: "page" },
+      React.createElement("h1", { className: "page__title" }, "Close Rental"),
+      React.createElement("div", { className: "page__titleUnderline" }),
+      React.createElement("h2", { className: "closeRentalStepTitle" }, "Rental closed"),
+      done.resCode && line("Rental agreement", done.resCode),
+      done.plate && line("Vehicle", done.plate),
+      line("Closing mileage", `${done.closingMileage.toLocaleString("en-CA")} km`),
+      line("Closing gas level", done.closingGas),
+      line("New damage found", done.damageFound ? "Yes" : "No"),
+      line("Agreement status", statusLabel(CLOSE_RENTAL_RA_STATUS)),
+      done.vehicleStatus && line("Vehicle status", done.vehicleStatus),
+      done.forcedMessage && React.createElement("div", { className: "closeRentalWarning" }, done.forcedMessage),
+      !done.plate && React.createElement("div", { className: "closeRentalWarning" },
+        "This agreement has no vehicle on file, so no vehicle status was changed. Check the fleet by hand."),
+      !done.legSaved && React.createElement("div", { className: "closeRentalWarning" },
+        "The vehicle's return record could not be saved. The agreement and the vehicle were still updated. Tell support before this vehicle goes out again."),
+      done.photosTaken > 0 && line("Damage photos uploaded", `${done.photosUploaded} of ${done.photosTaken}`),
+      done.photosFailed > 0 && React.createElement("div", { className: "closeRentalWarning" },
+        `${done.photosFailed} photo${done.photosFailed === 1 ? "" : "s"} could not be uploaded. Photograph the damage again from the vehicle's page.`),
+      React.createElement("div", { className: "closeRentalActions" },
+        React.createElement("button", { type: "button", className: "resModalCancel", onClick: () => { setDone(null); resetFlow(); } }, "Close another rental"),
+        React.createElement("button", { type: "button", className: "resModalSubmit", onClick: () => navigate("/dashboard") }, "Back to Dashboard")
+      )
+    );
+  }
+
+  // Step 5. Everything steps 1 to 4 collected, and the button that writes it.
+  // Back returns to whichever step came before it: photos after a Yes, damage
+  // review after a No.
   if (final) {
     const line = (label, value) =>
       React.createElement("p", { className: "page__body" }, `${label} `, React.createElement("strong", null, value));
     return React.createElement("div", { className: "page" },
       React.createElement("button", {
-        type: "button", className: "rentalAgreementBackBtn",
+        type: "button", className: "rentalAgreementBackBtn", disabled: busy,
         onClick: () => { setFinal(null); if (!final.newDamageFound) setReview(null); },
       }, final.newDamageFound ? "← Back to photos" : "← Back to damage review"),
       React.createElement("h1", { className: "page__title" }, "Close Rental"),
       React.createElement("div", { className: "page__titleUnderline" }),
-      React.createElement("h2", { className: "closeRentalStepTitle" }, "Final charges"),
+      React.createElement("h2", { className: "closeRentalStepTitle" }, "Confirm the close"),
       line("Rental agreement", final.rentalAgreementId),
       line("Closing mileage", `${final.closingMileage.toLocaleString("en-CA")} km`),
       line("Closing gas level", final.closingGasLevel),
@@ -9506,7 +9700,18 @@ function CloseRentalPage() {
         final.photos.map((p, i) => React.createElement("div", { key: p.id, className: "damagePhotoThumb" },
           React.createElement("img", { src: p.url, alt: `New damage photo ${i + 1}` })))
       ),
-      React.createElement("p", { className: "page__body" }, "Final charges are coming soon.")
+      line("Agreement moves to", statusLabel(CLOSE_RENTAL_RA_STATUS)),
+      vehicle && line("Vehicle moves to", vehicleStatus.status),
+      vehicle && vehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, vehicleStatus.message),
+      React.createElement("p", { className: "page__body" }, "Final charges are coming soon."),
+      React.createElement("div", { className: "closeRentalActions" },
+        React.createElement("button", {
+          type: "button", className: "resModalCancel", disabled: busy,
+          onClick: () => { setFinal(null); if (!final.newDamageFound) setReview(null); },
+        }, "Back"),
+        React.createElement("button", { type: "button", className: "resModalSubmit", onClick: completeClose, disabled: busy },
+          busy ? "Closing..." : "Complete Close")
+      )
     );
   }
 
@@ -9771,59 +9976,110 @@ function SwitchOutPage() {
   // Nothing about the customer, the dates or the money is touched.
   const completeSwitch = () => {
     if (!ra || !newVehicle || !baseline || !closing || !review) return;
-    setBusy(true);
     const customer  = row?.customer && row.customer !== "-" ? row.customer : (res?.customer || null);
     const dueBack   = ra.returnDate || res?.returnDate || null;
-    const noteText  =
-      `Switch out: ${row?.plate || "previous vehicle"} returned at ${closing.closingMileage.toLocaleString("en-CA")} km, ` +
-      `gas ${closing.closingGasLevel}, ` +
-      (review.newDamageFound ? `new damage reported (${review.newDamageNote})` : "no new damage") +
-      (review.newDamageFound && photos.length ? `, ${photos.length} photo${photos.length === 1 ? "" : "s"} taken` : "") +
-      `. Now on ${newVehicle.plate} at ${baseline.closingMileage.toLocaleString("en-CA")} km, gas ${baseline.closingGasLevel}.`;
-    const note    = { author: actorName(currentUser), text: noteText, at: new Date().toISOString() };
     const raPatch = {
       plate:        newVehicle.plate,
       make:         newVehicle.make  || null,
       model:        newVehicle.model || null,
       mileage:      baseline.closingMileage,
       fuelAtPickup: baseline.closingGasLevel,
-      notesLog:     [...(Array.isArray(ra.notesLog) ? ra.notesLog : []), note],
     };
 
-    guardAction("ra.switchOut", () => {
-      // The vehicle coming back. Its renter fields are cleared, as they are
-      // when a returned vehicle is marked collected.
-      if (oldVehicle) {
-        const oldPatch = { status: oldVehicleStatus.status, currentRenter: null, dueBack: null, fileType: null };
-        setFleet((prev) => prev.map((v) => (v.id === oldVehicle.id ? { ...v, ...oldPatch } : v)));
-        runWrite(supabase.from("fleet").update(oldPatch).eq("id", oldVehicle.id), "switch out: old vehicle");
+    guardAction("ra.switchOut", async () => {
+      setBusy(true);
+      try {
+        // The leg the old vehicle just finished. It is closed where it exists,
+        // and written closed where it does not: an agreement opened before this
+        // table existed, or through the customer app, has no open leg, and the
+        // switch is no reason to lose what the vehicle came back on.
+        const legClose = {
+          endedAt:        new Date().toISOString(),
+          closingMileage: closing.closingMileage,
+          closingGas:     closing.closingGasLevel,
+          damageReported: !!review.newDamageFound,
+          damageNote:     review.newDamageFound ? review.newDamageNote : null,
+        };
+        const openLeg = await supabase.from("rental_agreement_vehicles")
+          .select("id").eq("rentalAgreementId", ra.id).is("endedAt", null).maybeSingle();
+        let closeError = openLeg?.error || null;
+        if (openLeg?.data?.id) {
+          const res = await supabase.from("rental_agreement_vehicles").update(legClose).eq("id", openLeg.data.id);
+          closeError = res?.error || closeError;
+        } else {
+          // No signature: a switch is not a return, and nothing in this flow
+          // collects one. The agreement's own signatures belong to the pickup
+          // and to the final return, so neither is this leg's.
+          const res = await supabase.from("rental_agreement_vehicles").insert({
+            rentalAgreementId: ra.id,
+            vehicleId:         oldVehicle?.id || null,
+            pickupMileage:     ra.mileage ?? null,
+            pickupGas:         ra.fuelAtPickup ?? null,
+            ...(ra.inspectedAt ? { startedAt: ra.inspectedAt } : {}),
+            ...legClose,
+          });
+          closeError = res?.error || closeError;
+        }
+        if (closeError) console.warn("switch out: closing the old leg failed:", closeError);
+
+        const upload = photos.length
+          ? await uploadDamagePhotos({
+              operatorId: currentUser?.operatorId, rentalAgreementId: ra.id, photos,
+            })
+          : { paths: [], failures: [] };
+
+        // The leg starting now. Opened only after the old one is closed: one
+        // agreement may hold one open leg, which is what makes an endedAt of
+        // null mean "this is the vehicle the customer is on".
+        const openRes = await supabase.from("rental_agreement_vehicles").insert({
+          rentalAgreementId: ra.id,
+          vehicleId:         newVehicle.id,
+          startedAt:         new Date().toISOString(),
+          pickupMileage:     baseline.closingMileage,
+          pickupGas:         baseline.closingGasLevel,
+        });
+        if (openRes?.error) console.warn("switch out: opening the new leg failed:", openRes.error);
+
+        // The vehicle coming back. Its renter fields are cleared, as they are
+        // when a returned vehicle is marked collected.
+        if (oldVehicle) {
+          const oldPatch = { status: oldVehicleStatus.status, currentRenter: null, dueBack: null, fileType: null };
+          setFleet((prev) => prev.map((v) => (v.id === oldVehicle.id ? { ...v, ...oldPatch } : v)));
+          runWrite(supabase.from("fleet").update(oldPatch).eq("id", oldVehicle.id), "switch out: old vehicle");
+        }
+
+        const newPatch = { status: "On Rent", currentRenter: customer, dueBack };
+        setFleet((prev) => prev.map((v) => (v.id === newVehicle.id ? { ...v, ...newPatch } : v)));
+        runWrite(supabase.from("fleet").update(newPatch).eq("id", newVehicle.id), "switch out: new vehicle");
+
+        setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, ...raPatch } : a)));
+        runWrite(supabase.from("rental_agreements").update(raPatch).eq("id", ra.id), "switch out: rental agreement");
+
+        clearPhotos();
+        setDone({
+          oldPlate: row?.plate || null,
+          oldStatus: oldVehicle ? oldVehicleStatus.status : null,
+          forcedMessage: oldVehicle && oldVehicleStatus.forced ? oldVehicleStatus.message : null,
+          newPlate: newVehicle.plate,
+          newMileage: baseline.closingMileage,
+          newGas: baseline.closingGasLevel,
+          resCode: ra.resCode || null,
+          legsSaved: !closeError && !openRes?.error,
+          photosTaken: photos.length,
+          photosUploaded: upload.paths.length,
+          photosFailed: upload.failures.length,
+        });
+      } finally {
+        setBusy(false);
       }
-
-      const newPatch = { status: "On Rent", currentRenter: customer, dueBack };
-      setFleet((prev) => prev.map((v) => (v.id === newVehicle.id ? { ...v, ...newPatch } : v)));
-      runWrite(supabase.from("fleet").update(newPatch).eq("id", newVehicle.id), "switch out: new vehicle");
-
-      setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, ...raPatch } : a)));
-      runWrite(supabase.from("rental_agreements").update(raPatch).eq("id", ra.id), "switch out: rental agreement");
-
-      setDone({
-        oldPlate: row?.plate || null,
-        oldStatus: oldVehicle ? oldVehicleStatus.status : null,
-        forcedMessage: oldVehicle && oldVehicleStatus.forced ? oldVehicleStatus.message : null,
-        newPlate: newVehicle.plate,
-        newMileage: baseline.closingMileage,
-        newGas: baseline.closingGasLevel,
-        resCode: ra.resCode || null,
-      });
-      setBusy(false);
     }, {
       tableName: "rental_agreements",
       recordId: ra.id,
-      description: `Switched ${row?.plate || "the vehicle"} out for ${newVehicle.plate} on rental agreement ${ra.resCode || ra.id}.`,
+      description: `Switched ${row?.plate || "the vehicle"} out for ${newVehicle.plate} on rental agreement ${ra.resCode || ra.id}: ` +
+        `back at ${closing.closingMileage.toLocaleString("en-CA")} km, gas ${closing.closingGasLevel}, ` +
+        (review.newDamageFound ? `new damage reported (${review.newDamageNote})` : "no new damage") +
+        `. Out again at ${baseline.closingMileage.toLocaleString("en-CA")} km, gas ${baseline.closingGasLevel}.`,
     });
-    // guardAction may raise the PIN gate first; the button is freed again if
-    // the gate is dismissed rather than confirmed.
-    setTimeout(() => setBusy(false), 400);
   };
 
   if (done) {
@@ -9841,8 +10097,11 @@ function SwitchOutPage() {
       line("Now on", `${done.newPlate}, On Rent`),
       line("Starting mileage", `${done.newMileage.toLocaleString("en-CA")} km`),
       line("Starting gas level", done.newGas),
-      React.createElement("p", { className: "page__body" },
-        "The photos taken during the inspection are not stored yet, as in Close Rental."),
+      !done.legsSaved && React.createElement("div", { className: "closeRentalWarning" },
+        "The vehicle history for this agreement could not be saved. The vehicles and the agreement were still updated. Tell support before either vehicle goes out again."),
+      done.photosTaken > 0 && line("Damage photos uploaded", `${done.photosUploaded} of ${done.photosTaken}`),
+      done.photosFailed > 0 && React.createElement("div", { className: "closeRentalWarning" },
+        `${done.photosFailed} photo${done.photosFailed === 1 ? "" : "s"} could not be uploaded. Photograph the damage again from the vehicle's page.`),
       React.createElement("div", { className: "closeRentalActions" },
         React.createElement("button", {
           type: "button", className: "resModalCancel",
