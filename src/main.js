@@ -515,6 +515,13 @@ const ACTION_POLICY = {
   // ── Confirm: routine, reversible, done many times a day ────────────────────
   "vehicle.status":     { tier: "confirm", label: "Change vehicle status" },
   "vehicle.collected":  { tier: "confirm", label: "Mark vehicle collected" },
+  // Switch Out swaps which vehicle a rental is on. It opens and closes nothing
+  // and moves no money: two vehicle statuses change and the agreement points at
+  // the new plate, all of which a second switch undoes. Confirm, like the other
+  // vehicle status work, and audited either way. The PM block is not reachable
+  // through it: a flagged vehicle is never Available, so it cannot be switched
+  // to.
+  "ra.switchOut":       { tier: "confirm", label: "Switch the vehicle on a rental agreement" },
   "vehicle.pmComplete": { tier: "confirm", label: "Record preventative maintenance as complete" },
   "vehicle.add":        { tier: "confirm", label: "Add a vehicle to the fleet" },
   "vehicle.details":    { tier: "confirm", label: "Edit vehicle details" },
@@ -3216,9 +3223,14 @@ function DashboardPage() {
     { className: "page" },
     React.createElement("h1", { className: "page__title" }, "Dashboard"),
     React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement("button", {
-      type: "button", className: "closeRentalCta", onClick: () => navigate("/close-rental"),
-    }, "Close Rental"),
+    React.createElement("div", { className: "dashboardCtaRow" },
+      React.createElement("button", {
+        type: "button", className: "closeRentalCta", onClick: () => navigate("/close-rental"),
+      }, "Close Rental"),
+      React.createElement("button", {
+        type: "button", className: "closeRentalCta", onClick: () => navigate("/switch-out"),
+      }, "Switch Out")
+    ),
     React.createElement("div", { className: "dashboardGrid" }, [
       // ── Section 1: Reservations ──────────────────────────────────────────
       React.createElement(
@@ -8814,7 +8826,17 @@ const FUEL_LABELS = ["Empty", "⅛", "¼", "⅜", "½", "⅝", "¾", "⅞", "Ful
 // mileage. A lower figure is warned about, not refused: an odometer reset or
 // an earlier typo can make a correct reading look low, so staff confirm it
 // and carry on.
-function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings, onBack, onNext }) {
+const CLOSE_READINGS_LABELS = {
+  pageTitle:      "Close Rental",
+  stepTitle:      "Closing mileage and gas",
+  mileageLabel:   "Closing mileage (km)",
+  mileageMissing: "Enter the closing mileage.",
+  gasLabel:       "Closing gas level",
+  gasMissing:     "Set the closing gas level.",
+};
+
+function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings, onBack, onNext, labels }) {
+  const L = { ...CLOSE_READINGS_LABELS, ...(labels || {}) };
   const [attempted, setAttempted] = React.useState(false);
   const { mileage, gasIndex, lowConfirmed } = readings;
 
@@ -8828,9 +8850,9 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
   const isLow      = mileageNum !== null && lastReading !== null && mileageNum < lastReading;
 
   const mileageError = trimmed === ""
-    ? "Enter the closing mileage."
+    ? L.mileageMissing
     : mileageNum === null ? "Enter the mileage as a whole number of kilometres, digits only." : null;
-  const gasError = gasIndex === null ? "Set the closing gas level." : null;
+  const gasError = gasIndex === null ? L.gasMissing : null;
   const lowError = isLow && !lowConfirmed ? "Confirm the lower reading to continue." : null;
 
   const setGas = (value) => setReadings((prev) => ({ ...prev, gasIndex: Number(value) }));
@@ -8844,17 +8866,17 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
   const errorLine = (msg) => attempted && msg && React.createElement("div", { className: "closeRentalError" }, msg);
 
   return React.createElement("div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Close Rental"),
+    React.createElement("h1", { className: "page__title" }, L.pageTitle),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement("div", { className: "closeRentalSummary" },
       React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
       React.createElement("div", { className: "closeRentalSummary__meta" },
         row ? [row.customer, row.plate || null].filter(Boolean).join(" · ") : rentalAgreementId)
     ),
-    React.createElement("h2", { className: "closeRentalStepTitle" }, "Closing mileage and gas"),
+    React.createElement("h2", { className: "closeRentalStepTitle" }, L.stepTitle),
     React.createElement("div", { className: "closeRentalForm" },
       React.createElement("label", { className: "resFormGroup" },
-        React.createElement("span", { className: "resFormLabel" }, "Closing mileage (km)"),
+        React.createElement("span", { className: "resFormLabel" }, L.mileageLabel),
         React.createElement("input", {
           className: "resFormInput closeRentalMileage", type: "number", inputMode: "numeric",
           min: 0, step: 1, placeholder: "e.g. 42500", autoComplete: "off",
@@ -8881,7 +8903,7 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
       ),
       errorLine(lowError),
       React.createElement("div", { className: "resFormGroup" },
-        React.createElement("span", { className: "resFormLabel", id: "closeRentalGasLabel" }, "Closing gas level"),
+        React.createElement("span", { className: "resFormLabel", id: "closeRentalGasLabel" }, L.gasLabel),
         React.createElement("div", { className: "closeRentalFuel__value" }, gasIndex === null ? "Not set" : FUEL_LABELS[gasIndex]),
         React.createElement("input", {
           type: "range", min: 0, max: 8, step: 1,
@@ -8972,7 +8994,7 @@ function DamagePhotoViewer({ url, onClose }) {
 //
 // Then a Yes/No for new damage, with no default, so the answer is always a
 // deliberate one. Yes needs a description before moving on.
-function CloseRentalDamageStep({ row, rentalAgreementId, damageDraft, setDamageDraft, onBack, onNext }) {
+function CloseRentalDamageStep({ row, rentalAgreementId, damageDraft, setDamageDraft, onBack, onNext, pageTitle }) {
   const { damageClaims, rentalAgreements } = React.useContext(AppContext);
   const [viewing,   setViewing]   = React.useState(null);
   const [attempted, setAttempted] = React.useState(false);
@@ -9011,7 +9033,7 @@ function CloseRentalDamageStep({ row, rentalAgreementId, damageDraft, setDamageD
     }, label);
 
   return React.createElement("div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Close Rental"),
+    React.createElement("h1", { className: "page__title" }, pageTitle || "Close Rental"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement("div", { className: "closeRentalSummary" },
       React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
@@ -9105,7 +9127,7 @@ async function captureVideoFrame(video) {
 
 const releasePhotos = (list) => (list || []).forEach((p) => { if (p?.url) URL.revokeObjectURL(p.url); });
 
-function CloseRentalPhotoStep({ row, rentalAgreementId, note, photos, setPhotos, onBack, onNext }) {
+function CloseRentalPhotoStep({ row, rentalAgreementId, note, photos, setPhotos, onBack, onNext, pageTitle }) {
   const videoRef   = React.useRef(null);
   const streamRef  = React.useRef(null);
   const pendingRef = React.useRef(null);
@@ -9220,7 +9242,7 @@ function CloseRentalPhotoStep({ row, rentalAgreementId, note, photos, setPhotos,
     : null;
 
   return React.createElement("div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Close Rental"),
+    React.createElement("h1", { className: "page__title" }, pageTitle || "Close Rental"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement("div", { className: "closeRentalSummary" },
       React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
@@ -9292,41 +9314,17 @@ function CloseRentalPhotoStep({ row, rentalAgreementId, note, photos, setPhotos,
 const EMPTY_CLOSE_READINGS = { mileage: "", gasIndex: null, lowConfirmed: false };
 const EMPTY_DAMAGE_DRAFT   = { choice: null, note: "" };
 
-function CloseRentalPage() {
+// ─── Open rental search, shared by Close Rental and Switch Out ───────────────
+// One row per open agreement, joined to its reservation (customer, pickup
+// date) and its vehicle (description, province). The agreement's plate wins;
+// the reservation's is the fallback for an agreement whose plate was never
+// filled in, the same fallback syncRAStatus uses.
+//
+// Only open agreements: close_pending and closed ones are not returnable and
+// not switchable, so neither flow may reach them.
+function useOpenRentalRows() {
   const { reservations, rentalAgreements, fleet } = React.useContext(AppContext);
-  const isMobile = useMobile();
-  const navigate = useNavigate();
-  const [mode,       setMode]       = React.useState("plate");
-  const [plate,      setPlate]      = React.useState("");
-  const [province,   setProvince]   = React.useState("All");
-  const [lastName,   setLastName]   = React.useState("");
-  const [selectedId, setSelectedId] = React.useState(null);
-  const [readings,   setReadings]   = React.useState(EMPTY_CLOSE_READINGS);
-  const [closing,    setClosing]    = React.useState(null);
-  const [damageDraft, setDamageDraft] = React.useState(EMPTY_DAMAGE_DRAFT);
-  const [review,     setReview]     = React.useState(null);
-  const [photos,     setPhotos]     = React.useState([]);
-  const [final,      setFinal]      = React.useState(null);
-
-  // Captured photos live only in memory, as object URLs over their blobs.
-  // Released when the page closes, so a walk away mid-flow leaks nothing.
-  const photosRef = React.useRef(photos);
-  photosRef.current = photos;
-  React.useEffect(() => () => releasePhotos(photosRef.current), []);
-  const clearPhotos = () => { releasePhotos(photosRef.current); setPhotos([]); };
-
-  const fmtDate = (iso) => {
-    if (!iso) return "-";
-    const d = new Date(`${iso}T00:00:00`);
-    return Number.isNaN(d.getTime()) ? iso
-      : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
-  };
-
-  // One row per open agreement, joined to its reservation (customer, pickup
-  // date) and its vehicle (description, province). The agreement's plate wins;
-  // the reservation's is the fallback for an agreement whose plate was never
-  // filled in, the same fallback syncRAStatus uses.
-  const openRows = React.useMemo(() => {
+  return React.useMemo(() => {
     const resByCode = Object.fromEntries((reservations || []).map((r) => [r.resCode, r]));
     return (rentalAgreements || [])
       .filter((ra) => ra.rentalAgreementStatus === "open_rental_agreement")
@@ -9352,15 +9350,30 @@ function CloseRentalPage() {
         };
       });
   }, [reservations, rentalAgreements, fleet]);
+}
 
-  // Nothing is listed until something is typed, so the screen never opens on a
-  // wall of every open rental. A vehicle with no province on file still
-  // matches a chosen province: it cannot be ruled out, and hiding it would
-  // leave that rental impossible to find here.
+// Plate and province, or customer last name. Nothing is listed until something
+// is typed, so the screen never opens on a wall of every open rental. A vehicle
+// with no province on file still matches a chosen province: it cannot be ruled
+// out, and hiding it would leave that rental impossible to find here.
+function OpenRentalSearch({ rows, onSelect }) {
+  const isMobile = useMobile();
+  const [mode,     setMode]     = React.useState("plate");
+  const [plate,    setPlate]    = React.useState("");
+  const [province, setProvince] = React.useState("All");
+  const [lastName, setLastName] = React.useState("");
+
+  const fmtDate = (iso) => {
+    if (!iso) return "-";
+    const d = new Date(`${iso}T00:00:00`);
+    return Number.isNaN(d.getTime()) ? iso
+      : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
+  };
+
   const plateQuery = normalizePlate(plate);
   const nameQuery  = lastName.trim().toLowerCase();
   const query      = mode === "plate" ? plateQuery : nameQuery;
-  const matches = !query ? [] : openRows.filter((row) => {
+  const matches = !query ? [] : rows.filter((row) => {
     if (mode === "plate") {
       if (!normalizePlate(row.plate).includes(plateQuery)) return false;
       if (province !== "All" && row.province && row.province !== province) return false;
@@ -9368,6 +9381,106 @@ function CloseRentalPage() {
     }
     return row.lastName.toLowerCase().includes(nameQuery);
   });
+
+  const modeTab = (value, label) =>
+    React.createElement("button", {
+      key: value, type: "button",
+      className: mode === value ? "resvPageTab resvPageTab--active" : "resvPageTab",
+      onClick: () => setMode(value),
+    }, label);
+
+  const results = !query
+    ? React.createElement("div", { className: "resvEmpty" },
+        mode === "plate" ? "Type a plate number to find the open rental." : "Type the customer's last name to find the open rental.")
+    : matches.length === 0
+      ? React.createElement("div", { className: "resvEmpty" }, "No open rental agreements match.")
+      : isMobile
+        ? matches.map((row) =>
+            React.createElement("button", {
+              key: row.id, type: "button", className: "dashCard closeRentalCard",
+              onClick: () => onSelect(row.id),
+            },
+              React.createElement("div", { className: "dashCard__header" },
+                React.createElement("span", null, row.customer),
+                React.createElement("span", { className: "dashCard__resCode" }, row.plate || "-")
+              ),
+              React.createElement("div", { className: "dashCard__meta" },
+                React.createElement("span", { className: "dashCard__chip" }, row.vehicle),
+                React.createElement("span", { className: "dashCard__chip" }, `Picked up ${fmtDate(row.pickupDate)}`)
+              )
+            )
+          )
+        : React.createElement("section", { className: "dashboardSection" },
+            React.createElement("div", { className: "dashboardSection__body" },
+              React.createElement("table", { className: "dashboardTable" },
+                React.createElement("thead", null,
+                  React.createElement("tr", null,
+                    ["Vehicle", "Customer", "Plate", "Pickup Date"].map((col) => React.createElement("th", { key: col }, col))
+                  )
+                ),
+                React.createElement("tbody", null,
+                  matches.map((row) =>
+                    React.createElement("tr", {
+                      key: row.id, className: "closeRentalRow", tabIndex: 0,
+                      onClick: () => onSelect(row.id),
+                      onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(row.id); } },
+                    },
+                      React.createElement("td", null, row.vehicle),
+                      React.createElement("td", null, row.customer),
+                      React.createElement("td", null, row.plate || "-"),
+                      React.createElement("td", null, fmtDate(row.pickupDate))
+                    )
+                  )
+                )
+              )
+            )
+          );
+
+  return React.createElement(React.Fragment, null,
+    React.createElement("div", { className: "resvPageTabs" },
+      modeTab("plate", "Plate & province"),
+      modeTab("lastName", "Customer last name")
+    ),
+    mode === "plate"
+      ? React.createElement("div", { className: "resvSearchBar" },
+          React.createElement("input", {
+            className: "resvSearchInput", type: "text", placeholder: "Plate number",
+            autoFocus: true, autoCapitalize: "characters", autoComplete: "off",
+            value: plate, onChange: (e) => setPlate(e.target.value),
+          }),
+          React.createElement("select", {
+            className: "resvSearchInput", value: province, onChange: (e) => setProvince(e.target.value),
+          }, PROV_STATE_LIST.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label)))
+        )
+      : React.createElement("div", { className: "resvSearchBar" },
+          React.createElement("input", {
+            className: "resvSearchInput", type: "text", placeholder: "Last name",
+            autoFocus: true, autoComplete: "off",
+            value: lastName, onChange: (e) => setLastName(e.target.value),
+          })
+        ),
+    results
+  );
+}
+
+function CloseRentalPage() {
+  const navigate = useNavigate();
+  const [selectedId, setSelectedId] = React.useState(null);
+  const [readings,   setReadings]   = React.useState(EMPTY_CLOSE_READINGS);
+  const [closing,    setClosing]    = React.useState(null);
+  const [damageDraft, setDamageDraft] = React.useState(EMPTY_DAMAGE_DRAFT);
+  const [review,     setReview]     = React.useState(null);
+  const [photos,     setPhotos]     = React.useState([]);
+  const [final,      setFinal]      = React.useState(null);
+
+  // Captured photos live only in memory, as object URLs over their blobs.
+  // Released when the page closes, so a walk away mid-flow leaks nothing.
+  const photosRef = React.useRef(photos);
+  photosRef.current = photos;
+  React.useEffect(() => () => releasePhotos(photosRef.current), []);
+  const clearPhotos = () => { releasePhotos(photosRef.current); setPhotos([]); };
+
+  const openRows = useOpenRentalRows();
 
   // Step 5 placeholder. Shows everything steps 1 to 4 collected, so the
   // hand-off is visible until charges are built. Back returns to whichever
@@ -9440,31 +9553,71 @@ function CloseRentalPage() {
     });
   }
 
-  const modeTab = (value, label) =>
-    React.createElement("button", {
-      key: value, type: "button",
-      className: mode === value ? "resvPageTab resvPageTab--active" : "resvPageTab",
-      onClick: () => setMode(value),
-    }, label);
+  return React.createElement("div", { className: "page" },
+    React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate("/dashboard") }, "\u2190 Dashboard"),
+    React.createElement("h1", { className: "page__title" }, "Close Rental"),
+    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement(OpenRentalSearch, { rows: openRows, onSelect: setSelectedId })
+  );
+}
+
+// ─── Switch Out ──────────────────────────────────────────────────────────────
+// One rental, two vehicles: the customer brings a vehicle back mid-rental and
+// leaves in another one. The agreement, the customer, the dates and everything
+// billed carry on untouched; only the vehicle on it changes.
+//
+// Steps 1 to 4 are Close Rental's own screens, reused as they are: find the
+// open agreement, closing mileage and gas, previous damage and a new damage
+// answer, and live camera photos when there is new damage. Then two screens of
+// its own, the replacement vehicle and its starting readings, and a confirm.
+// There is no charges screen: nothing new is billed by a switch.
+
+// Only a vehicle sitting Available can be handed over. Ready for Pickup is
+// deliberately not included: it is prepared for a particular booking, and
+// taking it here would strand that one.
+const SWITCH_OUT_AVAILABLE_STATUS = "Available";
+
+// Step 5. Plate and province, the same rule as the rental search: a vehicle
+// with no province on file matches any province asked for. A plate that
+// matches a vehicle which is not Available says what that vehicle is doing
+// instead, rather than reporting nothing found.
+function SwitchOutVehicleStep({ row, onBack, onNext }) {
+  const { fleet } = React.useContext(AppContext);
+  const isMobile = useMobile();
+  const [plate,    setPlate]    = React.useState("");
+  const [province, setProvince] = React.useState("All");
+
+  const query = normalizePlate(plate);
+  const matchesPlate = (v) =>
+    normalizePlate(v.plate).includes(query) &&
+    (province === "All" || !v.province || v.province === province);
+
+  const candidates  = !query ? [] : (fleet || []).filter(matchesPlate);
+  const available   = candidates.filter((v) => v.status === SWITCH_OUT_AVAILABLE_STATUS);
+  const unavailable = candidates.filter((v) => v.status !== SWITCH_OUT_AVAILABLE_STATUS);
+
+  const describe = (v) => [v.year, v.make, v.model].filter(Boolean).join(" ") || v.vehicleClass || "-";
 
   const results = !query
-    ? React.createElement("div", { className: "resvEmpty" },
-        mode === "plate" ? "Type a plate number to find the open rental." : "Type the customer's last name to find the open rental.")
-    : matches.length === 0
-      ? React.createElement("div", { className: "resvEmpty" }, "No open rental agreements match.")
+    ? React.createElement("div", { className: "resvEmpty" }, "Type a plate number to find the replacement vehicle.")
+    : available.length === 0
+      ? React.createElement("div", { className: "resvEmpty" },
+          unavailable.length === 0
+            ? "No vehicle with that plate and province."
+            : `${unavailable[0].plate} is ${unavailable[0].status}, so it cannot be switched to. Only vehicles showing Available can.`)
       : isMobile
-        ? matches.map((row) =>
+        ? available.map((v) =>
             React.createElement("button", {
-              key: row.id, type: "button", className: "dashCard closeRentalCard",
-              onClick: () => setSelectedId(row.id),
+              key: v.id, type: "button", className: "dashCard closeRentalCard",
+              onClick: () => onNext(v),
             },
               React.createElement("div", { className: "dashCard__header" },
-                React.createElement("span", null, row.customer),
-                React.createElement("span", { className: "dashCard__resCode" }, row.plate || "-")
+                React.createElement("span", null, describe(v)),
+                React.createElement("span", { className: "dashCard__resCode" }, v.plate || "-")
               ),
               React.createElement("div", { className: "dashCard__meta" },
-                React.createElement("span", { className: "dashCard__chip" }, row.vehicle),
-                React.createElement("span", { className: "dashCard__chip" }, `Picked up ${fmtDate(row.pickupDate)}`)
+                React.createElement("span", { className: "dashCard__chip" }, v.province || "No province on file"),
+                React.createElement("span", { className: "dashCard__chip" }, v.vehicleClass || "-")
               )
             )
           )
@@ -9473,20 +9626,20 @@ function CloseRentalPage() {
               React.createElement("table", { className: "dashboardTable" },
                 React.createElement("thead", null,
                   React.createElement("tr", null,
-                    ["Vehicle", "Customer", "Plate", "Pickup Date"].map((col) => React.createElement("th", { key: col }, col))
+                    ["Vehicle", "Plate", "Province", "Class"].map((col) => React.createElement("th", { key: col }, col))
                   )
                 ),
                 React.createElement("tbody", null,
-                  matches.map((row) =>
+                  available.map((v) =>
                     React.createElement("tr", {
-                      key: row.id, className: "closeRentalRow", tabIndex: 0,
-                      onClick: () => setSelectedId(row.id),
-                      onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedId(row.id); } },
+                      key: v.id, className: "closeRentalRow", tabIndex: 0,
+                      onClick: () => onNext(v),
+                      onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onNext(v); } },
                     },
-                      React.createElement("td", null, row.vehicle),
-                      React.createElement("td", null, row.customer),
-                      React.createElement("td", null, row.plate || "-"),
-                      React.createElement("td", null, fmtDate(row.pickupDate))
+                      React.createElement("td", null, describe(v)),
+                      React.createElement("td", null, v.plate || "-"),
+                      React.createElement("td", null, v.province || "-"),
+                      React.createElement("td", null, v.vehicleClass || "-")
                     )
                   )
                 )
@@ -9495,32 +9648,289 @@ function CloseRentalPage() {
           );
 
   return React.createElement("div", { className: "page" },
-    React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate("/dashboard") }, "← Dashboard"),
-    React.createElement("h1", { className: "page__title" }, "Close Rental"),
+    React.createElement("h1", { className: "page__title" }, "Switch Out"),
     React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement("div", { className: "resvPageTabs" },
-      modeTab("plate", "Plate & province"),
-      modeTab("lastName", "Customer last name")
+    React.createElement("div", { className: "closeRentalSummary" },
+      React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
+      React.createElement("div", { className: "closeRentalSummary__meta" },
+        [row?.customer, row?.plate ? `out of ${row.plate}` : null].filter(Boolean).join(" \u00b7 "))
     ),
-    mode === "plate"
-      ? React.createElement("div", { className: "resvSearchBar" },
-          React.createElement("input", {
-            className: "resvSearchInput", type: "text", placeholder: "Plate number",
-            autoFocus: true, autoCapitalize: "characters", autoComplete: "off",
-            value: plate, onChange: (e) => setPlate(e.target.value),
-          }),
-          React.createElement("select", {
-            className: "resvSearchInput", value: province, onChange: (e) => setProvince(e.target.value),
-          }, PROV_STATE_LIST.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label)))
-        )
-      : React.createElement("div", { className: "resvSearchBar" },
-          React.createElement("input", {
-            className: "resvSearchInput", type: "text", placeholder: "Last name",
-            autoFocus: true, autoComplete: "off",
-            value: lastName, onChange: (e) => setLastName(e.target.value),
-          })
-        ),
-    results
+    React.createElement("h2", { className: "closeRentalStepTitle" }, "Replacement vehicle"),
+    React.createElement("div", { className: "resvSearchBar" },
+      React.createElement("input", {
+        className: "resvSearchInput", type: "text", placeholder: "Plate number",
+        autoFocus: true, autoCapitalize: "characters", autoComplete: "off",
+        value: plate, onChange: (e) => setPlate(e.target.value),
+      }),
+      React.createElement("select", {
+        className: "resvSearchInput", value: province, onChange: (e) => setProvince(e.target.value),
+      }, PROV_STATE_LIST.map((pv) => React.createElement("option", { key: pv.value, value: pv.value }, pv.label)))
+    ),
+    results,
+    React.createElement("div", { className: "closeRentalActions" },
+      React.createElement("button", { type: "button", className: "resModalCancel", onClick: onBack }, "Back")
+    )
+  );
+}
+
+// Step 7. Everything the switch is about to change, then one button. The
+// vehicle statuses shown are the ones that will be written, PM override
+// included, so nothing is decided after the confirm.
+function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, baseline, oldVehicleStatus, onBack, onComplete, busy }) {
+  const line = (label, value) =>
+    React.createElement("p", { className: "page__body" }, `${label} `, React.createElement("strong", null, value));
+  const describe = (v) => [v.year, v.make, v.model].filter(Boolean).join(" ") || v.vehicleClass || "-";
+
+  return React.createElement("div", { className: "page" },
+    React.createElement("h1", { className: "page__title" }, "Switch Out"),
+    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement("div", { className: "closeRentalSummary" },
+      React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.customer : "Rental agreement"),
+      React.createElement("div", { className: "closeRentalSummary__meta" }, "The rental agreement, dates and charges stay as they are.")
+    ),
+    React.createElement("h2", { className: "closeRentalStepTitle" }, "Confirm the switch"),
+    line("Vehicle coming back", `${row?.vehicle || "-"} (${row?.plate || "-"})`),
+    line("Closing mileage", `${closing.closingMileage.toLocaleString("en-CA")} km`),
+    line("Closing gas level", closing.closingGasLevel),
+    line("New damage found", review.newDamageFound ? "Yes" : "No"),
+    review.newDamageFound && line("New damage note", review.newDamageNote),
+    review.newDamageFound && line("New damage photos", String(photos.length)),
+    line("Its new status", oldVehicleStatus.status),
+    oldVehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, oldVehicleStatus.message),
+    React.createElement("h2", { className: "closeRentalStepTitle", style: { marginTop: 18 } }, "Going out"),
+    line("Replacement vehicle", `${describe(newVehicle)} (${newVehicle.plate})`),
+    line("Starting mileage", `${baseline.closingMileage.toLocaleString("en-CA")} km`),
+    line("Starting gas level", baseline.closingGasLevel),
+    React.createElement("div", { className: "closeRentalActions" },
+      React.createElement("button", { type: "button", className: "resModalCancel", onClick: onBack, disabled: busy }, "Back"),
+      React.createElement("button", { type: "button", className: "resModalSubmit", onClick: onComplete, disabled: busy },
+        busy ? "Switching..." : "Complete Switch")
+    )
+  );
+}
+
+const SWITCH_OUT_READINGS_LABELS = {
+  pageTitle:      "Switch Out",
+  stepTitle:      "Starting mileage and gas",
+  mileageLabel:   "Starting mileage (km)",
+  mileageMissing: "Enter the starting mileage.",
+  gasLabel:       "Starting gas level",
+  gasMissing:     "Set the starting gas level.",
+};
+
+function SwitchOutPage() {
+  const { reservations, rentalAgreements, setRentalAgreements, fleet, setFleet, guardAction, currentUser } =
+    React.useContext(AppContext);
+  const navigate = useNavigate();
+  const [selectedId,  setSelectedId]  = React.useState(null);
+  const [readings,    setReadings]    = React.useState(EMPTY_CLOSE_READINGS);
+  const [closing,     setClosing]     = React.useState(null);
+  const [damageDraft, setDamageDraft] = React.useState(EMPTY_DAMAGE_DRAFT);
+  const [review,      setReview]      = React.useState(null);
+  const [photos,      setPhotos]      = React.useState([]);
+  const [photosDone,  setPhotosDone]  = React.useState(false);
+  const [newVehicle,  setNewVehicle]  = React.useState(null);
+  const [newReadings, setNewReadings] = React.useState(EMPTY_CLOSE_READINGS);
+  const [baseline,    setBaseline]    = React.useState(null);
+  const [busy,        setBusy]        = React.useState(false);
+  const [done,        setDone]        = React.useState(null);
+
+  // As in Close Rental: photos are object URLs over blobs held in memory only,
+  // released when the page closes.
+  const photosRef = React.useRef(photos);
+  photosRef.current = photos;
+  React.useEffect(() => () => releasePhotos(photosRef.current), []);
+  const clearPhotos = () => { releasePhotos(photosRef.current); setPhotos([]); };
+
+  const openRows = useOpenRentalRows();
+  const row      = openRows.find((r) => r.id === selectedId) || null;
+  const ra       = (rentalAgreements || []).find((a) => a.id === selectedId) || null;
+  const res      = ra ? (reservations || []).find((r) => r.resCode === ra.resCode) || null : null;
+  const oldVehicle = row?.plate
+    ? (fleet || []).find((v) => normalizePlate(v.plate) === normalizePlate(row.plate)) || null
+    : null;
+
+  // The status the vehicle coming back lands on. Damage reported beats the
+  // default, and resolvePmStatus has the last word: a vehicle flagged for
+  // preventative maintenance goes to PM instead, exactly as it does when staff
+  // move one out of Ready Returns.
+  const oldVehicleStatus = resolvePmStatus(
+    oldVehicle,
+    review?.newDamageFound ? "Damaged" : "Needs Cleaning"
+  );
+
+  const resetFlow = () => {
+    setSelectedId(null); setReadings(EMPTY_CLOSE_READINGS); setClosing(null);
+    setDamageDraft(EMPTY_DAMAGE_DRAFT); setReview(null); setPhotosDone(false);
+    setNewVehicle(null); setNewReadings(EMPTY_CLOSE_READINGS); setBaseline(null);
+    clearPhotos();
+  };
+
+  // The switch itself. One audited action: the old vehicle is released, the
+  // new one goes out, and the agreement moves onto it with a fresh baseline.
+  // Nothing about the customer, the dates or the money is touched.
+  const completeSwitch = () => {
+    if (!ra || !newVehicle || !baseline || !closing || !review) return;
+    setBusy(true);
+    const customer  = row?.customer && row.customer !== "-" ? row.customer : (res?.customer || null);
+    const dueBack   = ra.returnDate || res?.returnDate || null;
+    const noteText  =
+      `Switch out: ${row?.plate || "previous vehicle"} returned at ${closing.closingMileage.toLocaleString("en-CA")} km, ` +
+      `gas ${closing.closingGasLevel}, ` +
+      (review.newDamageFound ? `new damage reported (${review.newDamageNote})` : "no new damage") +
+      (review.newDamageFound && photos.length ? `, ${photos.length} photo${photos.length === 1 ? "" : "s"} taken` : "") +
+      `. Now on ${newVehicle.plate} at ${baseline.closingMileage.toLocaleString("en-CA")} km, gas ${baseline.closingGasLevel}.`;
+    const note    = { author: actorName(currentUser), text: noteText, at: new Date().toISOString() };
+    const raPatch = {
+      plate:        newVehicle.plate,
+      make:         newVehicle.make  || null,
+      model:        newVehicle.model || null,
+      mileage:      baseline.closingMileage,
+      fuelAtPickup: baseline.closingGasLevel,
+      notesLog:     [...(Array.isArray(ra.notesLog) ? ra.notesLog : []), note],
+    };
+
+    guardAction("ra.switchOut", () => {
+      // The vehicle coming back. Its renter fields are cleared, as they are
+      // when a returned vehicle is marked collected.
+      if (oldVehicle) {
+        const oldPatch = { status: oldVehicleStatus.status, currentRenter: null, dueBack: null, fileType: null };
+        setFleet((prev) => prev.map((v) => (v.id === oldVehicle.id ? { ...v, ...oldPatch } : v)));
+        runWrite(supabase.from("fleet").update(oldPatch).eq("id", oldVehicle.id), "switch out: old vehicle");
+      }
+
+      const newPatch = { status: "On Rent", currentRenter: customer, dueBack };
+      setFleet((prev) => prev.map((v) => (v.id === newVehicle.id ? { ...v, ...newPatch } : v)));
+      runWrite(supabase.from("fleet").update(newPatch).eq("id", newVehicle.id), "switch out: new vehicle");
+
+      setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, ...raPatch } : a)));
+      runWrite(supabase.from("rental_agreements").update(raPatch).eq("id", ra.id), "switch out: rental agreement");
+
+      setDone({
+        oldPlate: row?.plate || null,
+        oldStatus: oldVehicle ? oldVehicleStatus.status : null,
+        forcedMessage: oldVehicle && oldVehicleStatus.forced ? oldVehicleStatus.message : null,
+        newPlate: newVehicle.plate,
+        newMileage: baseline.closingMileage,
+        newGas: baseline.closingGasLevel,
+        resCode: ra.resCode || null,
+      });
+      setBusy(false);
+    }, {
+      tableName: "rental_agreements",
+      recordId: ra.id,
+      description: `Switched ${row?.plate || "the vehicle"} out for ${newVehicle.plate} on rental agreement ${ra.resCode || ra.id}.`,
+    });
+    // guardAction may raise the PIN gate first; the button is freed again if
+    // the gate is dismissed rather than confirmed.
+    setTimeout(() => setBusy(false), 400);
+  };
+
+  if (done) {
+    const line = (label, value) =>
+      React.createElement("p", { className: "page__body" }, `${label} `, React.createElement("strong", null, value));
+    return React.createElement("div", { className: "page" },
+      React.createElement("h1", { className: "page__title" }, "Switch Out"),
+      React.createElement("div", { className: "page__titleUnderline" }),
+      React.createElement("h2", { className: "closeRentalStepTitle" }, "Switch complete"),
+      done.resCode && line("Rental agreement", done.resCode),
+      done.oldPlate && line("Came back", `${done.oldPlate}${done.oldStatus ? `, now ${done.oldStatus}` : ""}`),
+      !done.oldStatus && React.createElement("div", { className: "closeRentalWarning" },
+        "The vehicle coming back is not in the fleet list under that plate, so its status was left alone. Check it by hand."),
+      done.forcedMessage && React.createElement("div", { className: "closeRentalWarning" }, done.forcedMessage),
+      line("Now on", `${done.newPlate}, On Rent`),
+      line("Starting mileage", `${done.newMileage.toLocaleString("en-CA")} km`),
+      line("Starting gas level", done.newGas),
+      React.createElement("p", { className: "page__body" },
+        "The photos taken during the inspection are not stored yet, as in Close Rental."),
+      React.createElement("div", { className: "closeRentalActions" },
+        React.createElement("button", {
+          type: "button", className: "resModalCancel",
+          onClick: () => { setDone(null); resetFlow(); },
+        }, "Switch another"),
+        React.createElement("button", { type: "button", className: "resModalSubmit", onClick: () => navigate("/dashboard") }, "Done")
+      )
+    );
+  }
+
+  // Step 7: confirm.
+  if (baseline) {
+    return React.createElement(SwitchOutConfirmStep, {
+      row, closing, review, photos, newVehicle, baseline, oldVehicleStatus, busy,
+      onBack: () => setBaseline(null),
+      onComplete: completeSwitch,
+    });
+  }
+
+  // Step 6: the replacement vehicle's starting readings, Close Rental's
+  // readings screen with pickup wording. The vehicle's own odometer is the
+  // last reading, so a lower figure warns here too.
+  if (newVehicle) {
+    return React.createElement(CloseRentalReadingsStep, {
+      row: {
+        vehicle: [newVehicle.year, newVehicle.make, newVehicle.model].filter(Boolean).join(" ") || newVehicle.vehicleClass || "-",
+        customer: row?.customer || "",
+        plate: newVehicle.plate,
+        odometerOnFile: newVehicle.currentOdometer ?? null,
+        pickupMileage: null,
+      },
+      rentalAgreementId: selectedId,
+      readings: newReadings, setReadings: setNewReadings,
+      labels: SWITCH_OUT_READINGS_LABELS,
+      onBack: () => { setNewVehicle(null); setNewReadings(EMPTY_CLOSE_READINGS); },
+      onNext: setBaseline,
+    });
+  }
+
+  // Step 5: which vehicle the customer leaves in.
+  if (review && photosDone) {
+    return React.createElement(SwitchOutVehicleStep, {
+      row,
+      onBack: () => { if (review.newDamageFound) setPhotosDone(false); else { setPhotosDone(false); setReview(null); } },
+      onNext: setNewVehicle,
+    });
+  }
+
+  // Step 4: photos, only after a Yes.
+  if (review) {
+    return React.createElement(CloseRentalPhotoStep, {
+      row, rentalAgreementId: review.rentalAgreementId, note: review.newDamageNote,
+      photos, setPhotos, pageTitle: "Switch Out",
+      onBack: () => setReview(null),
+      onNext: () => setPhotosDone(true),
+    });
+  }
+
+  // Step 3: previous damage, and whether there is new damage.
+  if (closing) {
+    return React.createElement(CloseRentalDamageStep, {
+      row, rentalAgreementId: closing.rentalAgreementId,
+      damageDraft, setDamageDraft, pageTitle: "Switch Out",
+      onBack: () => setClosing(null),
+      onNext: (answer) => {
+        setReview({ ...closing, ...answer });
+        if (!answer.newDamageFound) { clearPhotos(); setPhotosDone(true); }
+      },
+    });
+  }
+
+  // Step 2: the returning vehicle's closing readings.
+  if (selectedId) {
+    return React.createElement(CloseRentalReadingsStep, {
+      row, rentalAgreementId: selectedId,
+      readings, setReadings,
+      labels: { pageTitle: "Switch Out" },
+      onBack: resetFlow,
+      onNext: setClosing,
+    });
+  }
+
+  // Step 1: find the open rental.
+  return React.createElement("div", { className: "page" },
+    React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate("/dashboard") }, "\u2190 Dashboard"),
+    React.createElement("h1", { className: "page__title" }, "Switch Out"),
+    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement(OpenRentalSearch, { rows: openRows, onSelect: setSelectedId })
   );
 }
 
@@ -10985,6 +11395,11 @@ function AppRoutes() {
     React.createElement(Route, {
       path: "/close-rental",
       element: React.createElement(ExecNeedsBranch, null, React.createElement(CloseRentalPage)),
+    }),
+    // Same, for Switch Out.
+    React.createElement(Route, {
+      path: "/switch-out",
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(SwitchOutPage)),
     }),
     NAV.filter((item) => !["/dashboard", "/reservations", "/arms", "/pre-rental-check", "/overdue-rentals", "/time-of-repair", "/no-shows", "/fleet", "/fleet/vehicles", "/fleet/additions", "/fleet/gas-collections", "/fleet/damage-claims", "/reports", "/settings", "/audit-log", "/rental-agreements", "/customer", "/vehicle"].includes(item.path))
       .map((item) =>
@@ -12543,6 +12958,12 @@ body, * {
   font-size: 14px;
 }
 /* Close Rental: the Dashboard's entry button and its search screen */
+.dashboardCtaRow{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+}
 .closeRentalCta{
   display: block;
   border: none;
@@ -12553,7 +12974,6 @@ body, * {
   font-size: 15px;
   font-weight: 800;
   padding: 12px 22px;
-  margin-bottom: 18px;
   cursor: pointer;
   box-shadow: 0 1px 4px rgba(0,0,0,0.07);
 }
@@ -13237,7 +13657,8 @@ body, * {
     background: #e0f2fe;
     color: #0369a1;
   }
-  /* Full width on a phone, where it is the first thing under the title. */
+  /* Full width on a phone, where they are the first thing under the title. */
+  .dashboardCtaRow{ flex-direction: column; }
   .closeRentalCta{ width: 100%; }
   /* 16px or iOS zooms the page when the field takes focus. */
   .closeRentalMileage, .closeRentalNote{ font-size: 16px; }
