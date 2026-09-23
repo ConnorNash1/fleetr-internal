@@ -6366,7 +6366,7 @@ function ChangePassword() {
   const submit = async (e) => {
     e.preventDefault();
     setMsg(""); setOk("");
-    if (next.length < PASSWORD_MIN) { setMsg(`Your new password must be at least ${PASSWORD_MIN} characters.`); return; }
+    if (next.length < PASSWORD_MIN) { setMsg(`Your new password must be ${PASSWORD_MIN} to ${PASSWORD_MAX} characters.`); return; }
     if (next !== again)   { setMsg("The two new passwords do not match."); return; }
     if (next === current) { setMsg("That is your current password."); return; }
     setBusy(true);
@@ -6388,11 +6388,11 @@ function ChangePassword() {
     React.createElement("h2", null, "Password"),
     React.createElement(
       "form", { onSubmit: submit, style: { display: "flex", flexDirection: "column", gap: "8px", maxWidth: "340px" } },
-      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "Current password", maxLength: PASSWORD_MAX,
+      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "Current password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX,
         autoComplete: "current-password", value: current, onChange: (e) => { setCurrent(e.target.value); setMsg(""); } }),
-      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password", maxLength: PASSWORD_MAX,
+      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX,
         autoComplete: "new-password", value: next, onChange: (e) => { setNext(e.target.value); setMsg(""); } }),
-      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password again", maxLength: PASSWORD_MAX,
+      React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password again", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX,
         autoComplete: "new-password", value: again, onChange: (e) => { setAgain(e.target.value); setMsg(""); } }),
       React.createElement("button", { className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy },
         busy ? "Changing…" : "Change password"),
@@ -11695,32 +11695,39 @@ const RESET_API_URL = "https://fleetr-reset.connor-0a5.workers.dev";
 // credentials", which points at the password being wrong rather than at the box
 // having eaten half of it.
 //
-// 72 is bcrypt's own limit, which is what Supabase hashes with. Past it the
-// remaining bytes are ignored, so two different passwords would both work;
-// refusing at the boundary is more honest than accepting and truncating.
-const PASSWORD_MIN = 8;
-const PASSWORD_MAX = 72;
+// The maximum is 20, matching worker.js handleSignup, the reset worker and its
+// reset page, so a password that can be chosen in one place can be typed in
+// every other. It replaces 72, which was bcrypt's own limit and the point past
+// which extra bytes are ignored. 20 is well inside that, so the hash never
+// silently ignores part of what was typed.
+//
+// The cost is on this box rather than on the ones that choose a password: an
+// account whose password was set while 72 was allowed is longer than this field
+// now accepts, and the field stops at 20 with no explanation, so the sign-in
+// reads as a wrong password. Such an account recovers through Forgot your
+// password, which sets a new one inside the range.
+//
+// The minimum is 6, matching worker.js handleSignup and the reset worker. It
+// was 8 here while signup asked for 6, which let somebody choose a password at
+// signup that the change-password form would then refuse as too short.
+const PASSWORD_MIN = 6;
+const PASSWORD_MAX = 20;
 
-// Signup has its own, tighter bounds, and they are deliberately not the two
-// constants above. Those govern the sign-in box and the change-password form,
-// where the password being typed is an EXISTING one that may predate any rule
-// we invent now; a maxLength of 20 there would silently eat the end of a longer
-// password and report it as wrong. These apply only to a password being chosen
-// for the first time, which is the only case the server-side bound covers too.
+// Signup's username bounds. It has no password bounds of its own: the pair
+// above now covers every password field in this file, signup included, so there
+// is one minimum and one maximum and nothing to drift.
 //
 // Mirrors worker.js USERNAME_MIN/MAX and PASSWORD_MIN/MAX, and the username
 // pattern ^[a-z0-9]{6,20}$ in signup_length_limits.sql. The server is the
 // authority; these only save a round trip.
 //
-// USERNAME_MAX is the exception to the paragraph above: it is NOT signup-only,
-// and it carries no SIGNUP_ prefix for that reason. The sign-in box has to
-// accept every username signup can create, or an account exists that its owner
-// cannot type. The two were separate numbers once and drifted by eight
-// characters, which is the bug this single constant exists to make impossible.
+// USERNAME_MAX carries no SIGNUP_ prefix on purpose, and both screens use it.
+// The sign-in box has to accept every username signup can create, or an account
+// exists that its owner cannot type. The two were separate numbers once and
+// drifted by eight characters, which is the bug this single constant exists to
+// make impossible.
 const SIGNUP_USERNAME_MIN = 6;
 const USERNAME_MAX = 20;
-const SIGNUP_PASSWORD_MIN = 6;
-const SIGNUP_PASSWORD_MAX = 20;
 
 // Reasons from redeem_join_code, which the worker never sees, so these cannot
 // come from signupMessage over there.
@@ -11894,7 +11901,7 @@ function SignupScreen({ onDone, onCancel }) {
                 value: username, onChange: (e) => { setUsername(e.target.value.toLowerCase()); setMessage(""); } }),
         field({ type: "email", placeholder: "Personal email (for account recovery)", maxLength: 120, autoComplete: "email",
                 value: email, onChange: (e) => { setEmail(e.target.value); setMessage(""); } }),
-        field({ type: "password", placeholder: "Password", minLength: SIGNUP_PASSWORD_MIN, maxLength: SIGNUP_PASSWORD_MAX, autoComplete: "new-password",
+        field({ type: "password", placeholder: "Password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX, autoComplete: "new-password",
                 value: password, onChange: (e) => { setPassword(e.target.value); setMessage(""); } }),
         // Separate from the password on purpose, and the reason is written on
         // the screen: a second secret nobody explains is a second secret people
@@ -11981,6 +11988,7 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
           className: "loginInput",
           type: "password",
           placeholder: "Password",
+          minLength: PASSWORD_MIN,
           maxLength: PASSWORD_MAX,
           inputMode: "text",
           autoComplete: "current-password",
