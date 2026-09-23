@@ -11713,20 +11713,21 @@ const RESET_API_URL = "https://fleetr-reset.connor-0a5.workers.dev";
 const PASSWORD_MIN = 6;
 const PASSWORD_MAX = 20;
 
-// Signup's username bounds. It has no password bounds of its own: the pair
-// above now covers every password field in this file, signup included, so there
-// is one minimum and one maximum and nothing to drift.
+// The username bounds, for every screen that takes one: signup, sign-in and
+// forgot-password. Neither is signup-only, so neither is named for signup.
+// Signup has no password bounds of its own either; the pair above covers every
+// password field in this file.
 //
-// Mirrors worker.js USERNAME_MIN/MAX and PASSWORD_MIN/MAX, and the username
-// pattern ^[a-z0-9]{6,20}$ in signup_length_limits.sql. The server is the
-// authority; these only save a round trip.
+// Mirrors worker.js USERNAME_MIN/MAX and PASSWORD_MIN/MAX, the username pattern
+// ^[a-z0-9]{6,20}$ in signup_length_limits.sql, and USERNAME_SHAPE in the reset
+// worker. The server is the authority; these only save a round trip.
 //
-// USERNAME_MAX carries no SIGNUP_ prefix on purpose, and both screens use it.
-// The sign-in box has to accept every username signup can create, or an account
-// exists that its owner cannot type. The two were separate numbers once and
-// drifted by eight characters, which is the bug this single constant exists to
-// make impossible.
-const SIGNUP_USERNAME_MIN = 6;
+// One number each, because every screen here has to agree with what signup can
+// create. The sign-in box once capped at 12 against signup's 20, so an account
+// could be made that its owner could not type, and the forgot-password box had
+// no bound at all while the route behind it silently ignored anything longer
+// than 12. Both were separate literals at the time.
+const USERNAME_MIN = 6;
 const USERNAME_MAX = 20;
 
 // Reasons from redeem_join_code, which the worker never sees, so these cannot
@@ -11794,6 +11795,7 @@ function ForgotScreen({ onCancel }) {
             "form", { className: "loginForm", onSubmit: submit },
             React.createElement("input", {
               className: "loginInput", type: "text", placeholder: "Username",
+              minLength: USERNAME_MIN, maxLength: USERNAME_MAX,
               autoComplete: "username", value: username,
               onChange: (e) => setUsername(e.target.value.toLowerCase()),
             }),
@@ -11897,7 +11899,7 @@ function SignupScreen({ onDone, onCancel }) {
                 value: joinCode, onChange: (e) => { setJoinCode(e.target.value.toUpperCase()); setMessage(""); } }),
         field({ type: "text", placeholder: "Full name", maxLength: 60, autoComplete: "name",
                 value: name, onChange: (e) => { setName(e.target.value); setMessage(""); } }),
-        field({ type: "text", placeholder: "Username", minLength: SIGNUP_USERNAME_MIN, maxLength: USERNAME_MAX, autoComplete: "username",
+        field({ type: "text", placeholder: "Username", minLength: USERNAME_MIN, maxLength: USERNAME_MAX, autoComplete: "username",
                 value: username, onChange: (e) => { setUsername(e.target.value.toLowerCase()); setMessage(""); } }),
         field({ type: "email", placeholder: "Personal email (for account recovery)", maxLength: 120, autoComplete: "email",
                 value: email, onChange: (e) => { setEmail(e.target.value); setMessage(""); } }),
@@ -11976,7 +11978,7 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
           className: "loginInput",
           type: "text",
           placeholder: "Username",
-          minLength: 6,
+          minLength: USERNAME_MIN,
           maxLength: USERNAME_MAX,
           autoComplete: "username",
           value: username,
