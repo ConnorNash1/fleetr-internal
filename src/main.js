@@ -11701,6 +11701,27 @@ const RESET_API_URL = "https://fleetr-reset.connor-0a5.workers.dev";
 const PASSWORD_MIN = 8;
 const PASSWORD_MAX = 72;
 
+// Signup has its own, tighter bounds, and they are deliberately not the two
+// constants above. Those govern the sign-in box and the change-password form,
+// where the password being typed is an EXISTING one that may predate any rule
+// we invent now; a maxLength of 20 there would silently eat the end of a longer
+// password and report it as wrong. These apply only to a password being chosen
+// for the first time, which is the only case the server-side bound covers too.
+//
+// Mirrors worker.js USERNAME_MIN/MAX and PASSWORD_MIN/MAX, and the username
+// pattern ^[a-z0-9]{6,20}$ in signup_length_limits.sql. The server is the
+// authority; these only save a round trip.
+//
+// USERNAME_MAX is the exception to the paragraph above: it is NOT signup-only,
+// and it carries no SIGNUP_ prefix for that reason. The sign-in box has to
+// accept every username signup can create, or an account exists that its owner
+// cannot type. The two were separate numbers once and drifted by eight
+// characters, which is the bug this single constant exists to make impossible.
+const SIGNUP_USERNAME_MIN = 6;
+const USERNAME_MAX = 20;
+const SIGNUP_PASSWORD_MIN = 6;
+const SIGNUP_PASSWORD_MAX = 20;
+
 // Reasons from redeem_join_code, which the worker never sees, so these cannot
 // come from signupMessage over there.
 const SIGNUP_FINISH_MESSAGES = {
@@ -11869,11 +11890,11 @@ function SignupScreen({ onDone, onCancel }) {
                 value: joinCode, onChange: (e) => { setJoinCode(e.target.value.toUpperCase()); setMessage(""); } }),
         field({ type: "text", placeholder: "Full name", maxLength: 60, autoComplete: "name",
                 value: name, onChange: (e) => { setName(e.target.value); setMessage(""); } }),
-        field({ type: "text", placeholder: "Username", minLength: 6, maxLength: 12, autoComplete: "username",
+        field({ type: "text", placeholder: "Username", minLength: SIGNUP_USERNAME_MIN, maxLength: USERNAME_MAX, autoComplete: "username",
                 value: username, onChange: (e) => { setUsername(e.target.value.toLowerCase()); setMessage(""); } }),
         field({ type: "email", placeholder: "Personal email (for account recovery)", maxLength: 120, autoComplete: "email",
                 value: email, onChange: (e) => { setEmail(e.target.value); setMessage(""); } }),
-        field({ type: "password", placeholder: "Password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX, autoComplete: "new-password",
+        field({ type: "password", placeholder: "Password", minLength: SIGNUP_PASSWORD_MIN, maxLength: SIGNUP_PASSWORD_MAX, autoComplete: "new-password",
                 value: password, onChange: (e) => { setPassword(e.target.value); setMessage(""); } }),
         // Separate from the password on purpose, and the reason is written on
         // the screen: a second secret nobody explains is a second secret people
@@ -11949,7 +11970,7 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
           type: "text",
           placeholder: "Username",
           minLength: 6,
-          maxLength: 12,
+          maxLength: USERNAME_MAX,
           autoComplete: "username",
           value: username,
           onChange: handleUsernameChange,
