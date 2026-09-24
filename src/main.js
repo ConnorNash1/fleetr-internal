@@ -9376,6 +9376,45 @@ function closeRentalOutcome({ damageFound, pickupGas, returnGas }) {
   return { status: "closed", reason: null };
 }
 
+// The gas charge for a return that came back lower than it went out. This is
+// the same sum complete_return does in SQL for a customer self-return
+// (customer_return_status.sql), ported here because a staff close never ran it:
+// the customer app charged for fuel and Close Rental did not, so the same
+// shortage cost nothing when a staff member processed the return.
+//
+//   eighths short / 8 x tank litres x price per litre x (1 + markup)
+//
+// The price comes from the vehicle's own province, falling back to the
+// configured default region, because that is the province the fuel was bought
+// in. Markup is optional and treated as zero when unset.
+//
+// Returns null rather than zero whenever the sum cannot be made: no tank size
+// on the vehicle, no price for its region, or a level either side that is not
+// one of FUEL_LABELS. Null means "leave gasOwed alone for manual entry", which
+// is what the Gas Collection settings page promises. Zero would read as a
+// settled balance and drop the rental off Gas Collections entirely.
+function gasChargeForReturn({ pickupGas, returnGas, vehicle, appSettings }) {
+  const from = FUEL_LABELS.indexOf(pickupGas);
+  const to   = FUEL_LABELS.indexOf(returnGas);
+  if (from === -1 || to === -1 || to >= from) return null;
+
+  const tank = parseFloat(vehicle?.tankSizeLiters);
+  if (!Number.isFinite(tank) || tank <= 0) return null;
+
+  const region = vehicle?.province || appSettings?.gasDefaultRegion || null;
+  const price  = region ? parseFloat((appSettings?.gasPrices || {})[region]) : NaN;
+  if (!Number.isFinite(price) || price <= 0) return null;
+
+  const markupRaw = parseFloat(appSettings?.gasMarkupPercent);
+  const markup    = Number.isFinite(markupRaw) ? markupRaw : 0;
+
+  const charge = ((from - to) / 8) * tank * price * (1 + markup / 100);
+  if (!Number.isFinite(charge) || charge <= 0) return null;
+  // Two decimals as a string, matching the column: gasOwed is text everywhere
+  // else in the app, and Gas Collections parses it back out.
+  return (Math.round(charge * 100) / 100).toFixed(2);
+}
+
 // ─── Open rental search, shared by Close Rental and Switch Out ───────────────
 // One row per rental the caller may act on, joined to its reservation
 // (customer, pickup date) and its vehicle (description, province). The
@@ -9554,7 +9593,7 @@ function OpenRentalSearch({ rows, onSelect }) {
 }
 
 function CloseRentalPage() {
-  const { reservations, setReservations, rentalAgreements, fleet, setFleet, syncRAStatus, setDamageClaims, guardAction, currentUser } =
+  const { reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, syncRAStatus, setDamageClaims, appSettings, guardAction, currentUser } =
     React.useContext(AppContext);
   const navigate = useNavigate();
   const location = useLocation();
@@ -9611,6 +9650,18 @@ function CloseRentalPage() {
     pickupGas:   ra?.fuelAtPickup,
     returnGas:   final?.closingGasLevel,
   }), [final?.newDamageFound, ra?.fuelAtPickup, final?.closingGasLevel]);
+
+  // What the shortage costs, when the shortage is what is holding the agreement
+  // open. Only for fuel_short: a damage close and a close with an unreadable
+  // pickup level both stay out of Gas Collections, the first because the fuel
+  // says nothing and the second because there is nothing to measure against.
+  const gasCharge = React.useMemo(() => (
+    agreementOutcome.reason === "fuel_short"
+      ? gasChargeForReturn({
+          pickupGas: ra?.fuelAtPickup, returnGas: final?.closingGasLevel, vehicle, appSettings,
+        })
+      : null
+  ), [agreementOutcome.reason, ra?.fuelAtPickup, final?.closingGasLevel, vehicle, appSettings]);
 
   const resetFlow = () => {
     setSelectedId(null); setReadings(EMPTY_CLOSE_READINGS); setClosing(null);
@@ -9716,6 +9767,31 @@ function CloseRentalPage() {
         // what the return actually found. Letting syncRAStatus move it to Ready
         // Returns as well put two writes on one row with no order between them.
         await syncRAStatus(ra.resCode, agreementOutcome.status, { skipFleet: true });
+
+        // The fuel charge, written onto the agreement so the rental shows up on
+        // Gas Collections. That screen lists every agreement with a gasOwed
+        // above zero, so writing the amount is the whole of putting it there.
+        //
+        // After syncRAStatus, which writes this same row: two updates to one
+        // row with no order between them is the race skipFleet was added to
+        // stop, and it would be no better here.
+        //
+        // Nothing is written when the charge could not be worked out. The row
+        // keeps whatever it had, which on a self-return is the amount
+        // complete_return already calculated, and a blank stays blank for
+        // manual entry rather than being overwritten with a zero that reads as
+        // paid.
+        let gasSaved = true;
+        if (gasCharge) {
+          const gasRes = await supabase.from("rental_agreements").update({ gasOwed: gasCharge }).eq("id", ra.id);
+          if (gasRes?.error) {
+            gasSaved = false;
+            console.warn("close rental: gas charge write failed:", gasRes.error);
+          } else {
+            setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, gasOwed: gasCharge } : a)));
+          }
+        }
+
         const stamp = raCloseStamp(returnedAtIso ? new Date(returnedAtIso) : new Date());
         runWrite(supabase.from("reservations").update(stamp).eq("resCode", ra.resCode), "close rental: return stamp");
         setReservations((prev) => prev.map((r) => (
@@ -9753,6 +9829,9 @@ function CloseRentalPage() {
           forcedMessage: vehicle && vehicleStatus.forced ? vehicleStatus.message : null,
           legSaved:      !legRes?.error,
           claimSaved:    !claimRes?.error,
+          gasOwed:       gasCharge,
+          gasSaved,
+          gasUncharged:  agreementOutcome.reason === "fuel_short" && !gasCharge,
           photosTaken:   final.photos.length,
           photosUploaded: upload.paths.length,
           photosFailed:  upload.failures.length,
@@ -9765,7 +9844,8 @@ function CloseRentalPage() {
       recordId: ra.id,
       description: `Closed rental agreement ${ra.resCode || ra.id}: ${row?.plate || "vehicle"} back at ` +
         `${final.closingMileage.toLocaleString("en-CA")} km, gas ${final.closingGasLevel}, ` +
-        (final.newDamageFound ? `new damage reported (${final.newDamageNote})` : "no new damage") + ".",
+        (final.newDamageFound ? `new damage reported (${final.newDamageNote})` : "no new damage") +
+        (gasCharge ? `, gas charge $${gasCharge}` : "") + ".",
     });
   };
 
@@ -9787,10 +9867,16 @@ function CloseRentalPage() {
       line("Agreement status", statusLabel(done.agreementStatus)),
       done.agreementReason && CLOSE_RENTAL_REASONS[done.agreementReason] &&
         line("Reason", CLOSE_RENTAL_REASONS[done.agreementReason]),
+      done.gasOwed && line("Gas owed", `$${done.gasOwed}`),
       done.vehicleStatus && line("Vehicle status", done.vehicleStatus),
       done.forcedMessage && React.createElement("div", { className: "closeRentalWarning" }, done.forcedMessage),
       !done.plate && React.createElement("div", { className: "closeRentalWarning" },
         "This agreement has no vehicle on file, so no vehicle status was changed. Check the fleet by hand."),
+      !done.gasSaved && React.createElement("div", { className: "closeRentalWarning" },
+        `The gas charge of $${done.gasOwed} could not be saved, so this rental is not on Gas Collections. Enter it there by hand.`),
+      done.gasUncharged && React.createElement("div", { className: "closeRentalWarning" },
+        "The vehicle came back with less fuel, but the charge could not be worked out: the vehicle needs a tank size and its " +
+        "region needs a fuel price. Enter the amount by hand on Gas Collections."),
       !done.claimSaved && React.createElement("div", { className: "closeRentalWarning" },
         "The damage claim could not be saved, so this damage is not in Ongoing Damage Claims. " +
         "Flag it by hand from the customer's page before anyone is billed."),
@@ -9833,6 +9919,11 @@ function CloseRentalPage() {
       line("Agreement moves to", statusLabel(agreementOutcome.status)),
       agreementOutcome.reason && CLOSE_RENTAL_REASONS[agreementOutcome.reason] &&
         line("Reason", CLOSE_RENTAL_REASONS[agreementOutcome.reason]),
+      gasCharge && line("Gas owed", `$${gasCharge}`),
+      agreementOutcome.reason === "fuel_short" && !gasCharge &&
+        React.createElement("div", { className: "closeRentalWarning" },
+          "The vehicle came back with less fuel, but the charge cannot be worked out: the vehicle needs a tank size and its " +
+          "region needs a fuel price. It will have to be entered by hand on Gas Collections."),
       vehicle && line("Vehicle moves to", vehicleStatus.status),
       vehicle && vehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, vehicleStatus.message),
       React.createElement("p", { className: "page__body" }, "Final charges are coming soon."),
