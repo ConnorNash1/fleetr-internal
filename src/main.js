@@ -6,6 +6,7 @@ import {
   Route,
   Routes,
   HashRouter,
+  useLocation,
   useNavigate,
 } from "https://esm.sh/react-router-dom@6.26.2?deps=react@18.3.1,react-dom@18.3.1";
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@1/+esm";
@@ -2238,6 +2239,31 @@ const RA_IN_READY_RETURNS = ["customer_return", "close_pending"];
 // dropped it off and before staff have processed it: that vehicle is not free
 // to be marked Available by someone passing the detail page.
 const RA_LOCKS_VEHICLE_STATUS = ["open_rental_agreement", "customer_return"];
+
+// The only rental agreement status change a person may make by hand: finishing
+// a Close Pending agreement, which is the paperwork step and nothing else.
+//
+// Everything before that is the return process's to decide. Close Rental reads
+// the closing mileage and fuel, records the leg, asks about damage, works out
+// where the vehicle goes and works out whether the agreement owes anything.
+// A button that jumped an open rental straight to closed skipped all of it:
+// no leg, no odometer, no damage answer, no gas charge, and a vehicle left On
+// Rent with nobody holding it. The rental looked finished and none of the
+// things that finish a rental had happened.
+//
+// One function so the buttons and the command bar cannot disagree. Answering
+// with the message rather than a boolean keeps the refusal in one place too.
+function manualRaTransition(from, to) {
+  if (from === "close_pending" && to === "closed") {
+    return { ok: true, error: null };
+  }
+  if (from === "open_rental_agreement" || from === "customer_return") {
+    return { ok: false, error:
+      "This rental has to go through Close Rental. It records the closing mileage and fuel, the damage answer and the vehicle's next status, and it decides whether the agreement can be closed or is held for charges. Open Close Rental for this reservation." };
+  }
+  return { ok: false, error:
+    "The only rental agreement status that can be changed by hand is a Close Pending one, which can be closed. Everything else is set by opening a rental or by Close Rental." };
+}
 
 // ─── CustomerLink ─────────────────────────────────────────────────────────────
 
@@ -7966,6 +7992,15 @@ function FleetrCommandBar() {
       raResCode = res?.resCode || raRow?.resCode;
       if (!raResCode) return fail("Could not find that rental agreement.");
 
+      // The same rule the buttons follow. Without this the command bar is a way
+      // around them: the model can be asked to close an open rental and the
+      // write is the one the buttons stopped offering.
+      const fromStatus =
+        rentalAgreements.find((x) => x.resCode === raResCode)?.rentalAgreementStatus
+        || res?.rentalAgreementStatus;
+      const allowed = manualRaTransition(fromStatus, check.status);
+      if (!allowed.ok) return fail(allowed.error);
+
       if (check.status === "open_rental_agreement") {
         const ra    = raRow || rentalAgreements.find((x) => x.resCode === raResCode);
         const plate = ra?.plate || res?.plate;
@@ -9623,6 +9658,7 @@ function CloseRentalPage() {
   const { reservations, setReservations, rentalAgreements, fleet, setFleet, syncRAStatus, guardAction, currentUser } =
     React.useContext(AppContext);
   const navigate = useNavigate();
+  const location = useLocation();
   const [selectedId, setSelectedId] = React.useState(null);
   const [readings,   setReadings]   = React.useState(EMPTY_CLOSE_READINGS);
   const [closing,    setClosing]    = React.useState(null);
@@ -9643,6 +9679,20 @@ function CloseRentalPage() {
   // Self-returns included: this is the flow that inspects a vehicle the
   // customer app already sent to Ready Returns. Switch Out leaves the default.
   const openRows = useOpenRentalRows({ includeSelfReturns: true });
+
+  // Arriving from the Close Rental button on a customer page, which is now the
+  // only way an open or customer_return agreement can be moved at all. Taken
+  // once, and only for a rental this screen would have listed anyway: an id
+  // that is not in openRows means it is not closeable, and seeding it would
+  // strand the flow on a step with no rental behind it.
+  const handoffId = location.state?.rentalAgreementId || null;
+  const handoffTaken = React.useRef(false);
+  React.useEffect(() => {
+    if (handoffTaken.current || !handoffId) return;
+    if (!openRows.some((r) => r.id === handoffId)) return;
+    handoffTaken.current = true;
+    setSelectedId(handoffId);
+  }, [handoffId, openRows]);
   const row     = openRows.find((r) => r.id === (final?.rentalAgreementId || selectedId)) || null;
   const ra      = (rentalAgreements || []).find((a) => a.id === final?.rentalAgreementId) || null;
   const vehicle = row?.plate
@@ -10781,6 +10831,19 @@ function CustomerPage() {
   };
 
   const updateRentalAgreementStatus = (status) => {
+    // The rule, checked here as well as enforced by which buttons exist below.
+    // A refusal reaching this point means a button got out of step with the
+    // rule, so it says so rather than writing and being wrong quietly.
+    const allowed = manualRaTransition(rentalAgreementStatus, status);
+    if (!allowed.ok) {
+      window.alert(allowed.error);
+      logAudit({
+        actionType: "ra.advance", tableName: "reservations", recordId: resCode,
+        outcome: "refused",
+        description: `Refused a manual status change ${rentalAgreementStatus} -> ${status}: not a permitted manual transition.`,
+      });
+      return;
+    }
     // Reopening a rental agreement is the same soft block as opening one.
     if (status === "open_rental_agreement" && !confirmRentalDespitePm(pmVehicle)) {
       console.log("rental reopen cancelled: vehicle flagged for PM", pmVehicle?.plate);
@@ -10870,22 +10933,26 @@ function CustomerPage() {
     },
   }, isDamaged ? "Damage Flagged" : "Flag Damage");
 
+  // Hands the agreement across, so Close Rental opens on this rental rather
+  // than on its search step with the person retyping what they just clicked.
+  const closeRentalBtn = React.createElement("button", {
+    type: "button", className: "customerRentalAgreementBtn customerRentalAgreementBtn--pending",
+    onClick: () => navigate("/close-rental", { state: { rentalAgreementId: ra?.id || null } }),
+  }, "Close Rental");
+
   const rentalAgreementOptionsBody = () => {
     if (rentalAgreementStatus === "reservation") {
       return React.createElement("div", { className: "customerRentalAgreementBtnRow" },
         deleteBtn
       );
     }
-    if (rentalAgreementStatus === "open_rental_agreement") {
+    // Out, or just back from the customer and not yet inspected. Both are
+    // Close Rental's to move: the two buttons that used to sit here wrote a
+    // status and nothing else.
+    if (rentalAgreementStatus === "open_rental_agreement"
+        || rentalAgreementStatus === "customer_return") {
       return React.createElement("div", { className: "customerRentalAgreementBtnRow" },
-        React.createElement("button", {
-          type: "button", className: "customerRentalAgreementBtn customerRentalAgreementBtn--pending",
-          onClick: () => updateRentalAgreementStatus("close_pending"),
-        }, "Close Pending"),
-        React.createElement("button", {
-          type: "button", className: "customerRentalAgreementBtn customerRentalAgreementBtn--close",
-          onClick: () => updateRentalAgreementStatus("closed"),
-        }, "Close Rental Agreement"),
+        closeRentalBtn,
         flagDamageBtn,
         deleteBtn
       );
