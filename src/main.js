@@ -2186,6 +2186,32 @@ function statusLabel(s) {
   return s || "";
 }
 
+// Every rental agreement badge takes its class from here. There were four
+// copies of this, written as if/else ladders that each ended in a bare "else
+// closed", so a status none of them named was painted red and labelled Closed:
+// the most final-looking answer in the set, given to the one case where the
+// code does not know the answer. A status is going to be added to this system
+// before long, and four ladders is four chances to miss one.
+//
+// An explicit map instead. A status that is not in it gets the neutral badge,
+// which looks like the others and claims nothing. statusLabel already returns
+// an unrecognised status verbatim, so the badge reads as the raw value, which
+// is the one thing that tells whoever sees it what actually needs adding here.
+const RA_BADGE_VARIANTS = {
+  open_rental_agreement: "rentalAgreementBadge--open",
+  close_pending:         "rentalAgreementBadge--pending",
+  closed:                "rentalAgreementBadge--closed",
+  // Not a rental agreement yet. Neutral rather than one of the three live
+  // states: the two ladders that used to reach it painted it as Closed.
+  reservation:           "rentalAgreementBadge--neutral",
+};
+
+// meta: the larger variant the customer page header uses.
+function raBadgeClass(status, { meta = false } = {}) {
+  const variant = RA_BADGE_VARIANTS[status] || "rentalAgreementBadge--neutral";
+  return `rentalAgreementBadge ${variant}${meta ? " rentalAgreementBadge--meta" : ""}`;
+}
+
 // ─── CustomerLink ─────────────────────────────────────────────────────────────
 
 function CustomerLink({ name, resCode, label, hideBadge }) {
@@ -2194,11 +2220,7 @@ function CustomerLink({ name, resCode, label, hideBadge }) {
   const res = reservations.find((r) => r.resCode === resCode);
   const raStatus = res?.rentalAgreementStatus;
   const showBadge = !hideBadge && label === undefined && raStatus && raStatus !== "reservation";
-  const badgeClass =
-    raStatus === "open_rental_agreement" ? "rentalAgreementBadge rentalAgreementBadge--open"
-    : raStatus === "close_pending"       ? "rentalAgreementBadge rentalAgreementBadge--pending"
-    : raStatus === "closed"              ? "rentalAgreementBadge rentalAgreementBadge--closed"
-    : null;
+  const badgeClass = raBadgeClass(raStatus);
   const displayText = label !== undefined ? label
     : resCode ? `${name} — ${resCode}` : name;
   return React.createElement(
@@ -2209,7 +2231,7 @@ function CustomerLink({ name, resCode, label, hideBadge }) {
       className: "customerLink",
       onClick: () => { setOpenCustomer({ name, resCode }); navigate("/customer"); },
     }, displayText),
-    showBadge && badgeClass &&
+    showBadge &&
       React.createElement("span", { className: badgeClass }, statusLabel(raStatus))
   );
 }
@@ -8476,10 +8498,7 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
     return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
   };
 
-  const statusClass =
-    rentalAgreement.status === "open_rental_agreement" ? "rentalAgreementBadge rentalAgreementBadge--open"
-    : rentalAgreement.status === "close_pending"       ? "rentalAgreementBadge rentalAgreementBadge--pending"
-    : "rentalAgreementBadge rentalAgreementBadge--closed";
+  const statusClass = raBadgeClass(rentalAgreement.status);
 
   const section = (key, title, content) =>
     React.createElement("section", { className: "dashboardSection", key },
@@ -8627,10 +8646,7 @@ function RentalAgreementsPage() {
       : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
   };
 
-  const statusBadgeClass = (s) =>
-    s === "open_rental_agreement" ? "rentalAgreementBadge rentalAgreementBadge--open"
-    : s === "close_pending"       ? "rentalAgreementBadge rentalAgreementBadge--pending"
-    : "rentalAgreementBadge rentalAgreementBadge--closed";
+  const statusBadgeClass = (s) => raBadgeClass(s);
 
   const selectedRes = selectedId ? reservations.find((r) => r.resCode === selectedId) : null;
   if (selectedRes) {
@@ -11503,11 +11519,7 @@ function CustomerPage() {
       (() => {
         const raStatus = localRecord?.rentalAgreementStatus;
         if (!raStatus || raStatus === "reservation") return null;
-        const cls = raStatus === "open_rental_agreement"
-          ? "rentalAgreementBadge rentalAgreementBadge--open rentalAgreementBadge--meta"
-          : raStatus === "close_pending"
-          ? "rentalAgreementBadge rentalAgreementBadge--pending rentalAgreementBadge--meta"
-          : "rentalAgreementBadge rentalAgreementBadge--closed rentalAgreementBadge--meta";
+        const cls = raBadgeClass(raStatus, { meta: true });
         return React.createElement("span", { className: cls }, statusLabel(raStatus));
       })()
     ),
@@ -14779,6 +14791,10 @@ body, * {
 .rentalAgreementBadge--closed {
   background: #fee2e2;
   color: #991b1b;
+}
+.rentalAgreementBadge--neutral {
+  background: #e5e7eb;
+  color: #374151;
 }
 .rentalAgreementBadge--meta {
   font-size: 18px;
