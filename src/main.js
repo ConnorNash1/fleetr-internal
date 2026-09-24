@@ -9396,11 +9396,37 @@ function CloseRentalPhotoStep({ row, rentalAgreementId, note, photos, setPhotos,
 const EMPTY_CLOSE_READINGS = { mileage: "", gasIndex: null, lowConfirmed: false };
 const EMPTY_DAMAGE_DRAFT   = { choice: null, note: "" };
 
-// Where a closed rental lands. Not "closed": the vehicle is back and inspected,
-// but the charges screen does not exist yet, so the paperwork is genuinely not
-// finished, and Close Pending is the status the rest of the app already uses
-// for an agreement waiting on it.
-const CLOSE_RENTAL_RA_STATUS = "close_pending";
+// Where a closed rental lands. Every close used to land on close_pending
+// because there was no charges screen, so nothing could be called finished.
+// Most returns owe nothing: the vehicle came back undamaged and as full as it
+// went out, and holding those open made close_pending a pile of finished work
+// with the few that need attention buried in it.
+//
+// So: close_pending when there is something to charge for, closed otherwise.
+//
+//   damage        a claim to settle, whatever the fuel says
+//   fuel shortage returned lower than it went out, which is the gas charge
+//                 complete_return already computes into gasOwed
+//
+// Unknown either side is treated as a shortage. A missing or unrecognised level
+// means the comparison could not be made, and closing an agreement because a
+// value was absent is the one outcome that cannot be undone by a person
+// noticing later.
+//
+// No prepaid-fuel exemption, because there is no such field. The system has
+// gasOwed, gasCollected, gasMarkupPercent and gasPrices, all about charging for
+// fuel after the fact, and nothing recording that a customer bought a tank up
+// front. If that is added, it belongs here.
+function closeRentalOutcome({ damageFound, pickupGas, returnGas }) {
+  if (damageFound) return { status: "close_pending", reason: "damage" };
+
+  const from = FUEL_LABELS.indexOf(pickupGas);
+  const to   = FUEL_LABELS.indexOf(returnGas);
+  if (from === -1 || to === -1) return { status: "close_pending", reason: "fuel_unknown" };
+  if (to < from)                return { status: "close_pending", reason: "fuel_short" };
+
+  return { status: "closed", reason: null };
+}
 
 // ─── Open rental search, shared by Close Rental and Switch Out ───────────────
 // One row per rental the caller may act on, joined to its reservation
@@ -9458,7 +9484,7 @@ function useOpenRentalRows({ includeSelfReturns = false } = {}) {
           // processable; it needs the vehicle check because close_pending is
           // also where a staff-processed rental sits.
           selfReturn: ra.rentalAgreementStatus === "customer_return"
-                      || (ra.rentalAgreementStatus === CLOSE_RENTAL_RA_STATUS
+                      || (ra.rentalAgreementStatus === "close_pending"
                           && vehicle?.status === "Ready Returns"),
           raStatus:   ra.rentalAgreementStatus,
         };
@@ -9615,6 +9641,14 @@ function CloseRentalPage() {
   // maintenance goes to PM rather than back into service.
   const vehicleStatus = resolvePmStatus(vehicle, final?.newDamageFound ? "Damaged" : "Needs Cleaning");
 
+  // Where the agreement lands. Independent of the vehicle's status: a vehicle
+  // can need cleaning without the customer owing anything for it.
+  const agreementOutcome = React.useMemo(() => closeRentalOutcome({
+    damageFound: !!final?.newDamageFound,
+    pickupGas:   ra?.fuelAtPickup,
+    returnGas:   final?.closingGasLevel,
+  }), [final?.newDamageFound, ra?.fuelAtPickup, final?.closingGasLevel]);
+
   const resetFlow = () => {
     setSelectedId(null); setReadings(EMPTY_CLOSE_READINGS); setClosing(null);
     setDamageDraft(EMPTY_DAMAGE_DRAFT); setReview(null); setFinal(null); clearPhotos();
@@ -9692,11 +9726,11 @@ function CloseRentalPage() {
         // close_pending, so it returns before writing anything, which is also
         // what keeps it from firing its own fleet write underneath the one
         // below.
-        await syncRAStatus(ra.resCode, CLOSE_RENTAL_RA_STATUS);
+        await syncRAStatus(ra.resCode, agreementOutcome.status);
         const stamp = raCloseStamp(returnedAtIso ? new Date(returnedAtIso) : new Date());
         runWrite(supabase.from("reservations").update(stamp).eq("resCode", ra.resCode), "close rental: return stamp");
         setReservations((prev) => prev.map((r) => (
-          r.resCode === ra.resCode ? { ...r, ...stamp, rentalAgreementStatus: CLOSE_RENTAL_RA_STATUS } : r
+          r.resCode === ra.resCode ? { ...r, ...stamp, rentalAgreementStatus: agreementOutcome.status } : r
         )));
 
         // The vehicle. close_pending moves it to Ready Returns, which is the
@@ -9726,6 +9760,7 @@ function CloseRentalPage() {
           closingMileage: final.closingMileage,
           closingGas:    final.closingGasLevel,
           damageFound:   !!final.newDamageFound,
+          agreementStatus: agreementOutcome.status,
           vehicleStatus: vehicle ? vehicleStatus.status : null,
           forcedMessage: vehicle && vehicleStatus.forced ? vehicleStatus.message : null,
           legSaved:      !legRes?.error,
@@ -9760,7 +9795,7 @@ function CloseRentalPage() {
       line("Closing mileage", `${done.closingMileage.toLocaleString("en-CA")} km`),
       line("Closing gas level", done.closingGas),
       line("New damage found", done.damageFound ? "Yes" : "No"),
-      line("Agreement status", statusLabel(CLOSE_RENTAL_RA_STATUS)),
+      line("Agreement status", statusLabel(done.agreementStatus)),
       done.vehicleStatus && line("Vehicle status", done.vehicleStatus),
       done.forcedMessage && React.createElement("div", { className: "closeRentalWarning" }, done.forcedMessage),
       !done.plate && React.createElement("div", { className: "closeRentalWarning" },
@@ -9801,7 +9836,7 @@ function CloseRentalPage() {
         final.photos.map((p, i) => React.createElement("div", { key: p.id, className: "damagePhotoThumb" },
           React.createElement("img", { src: p.url, alt: `New damage photo ${i + 1}` })))
       ),
-      line("Agreement moves to", statusLabel(CLOSE_RENTAL_RA_STATUS)),
+      line("Agreement moves to", statusLabel(agreementOutcome.status)),
       vehicle && line("Vehicle moves to", vehicleStatus.status),
       vehicle && vehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, vehicleStatus.message),
       React.createElement("p", { className: "page__body" }, "Final charges are coming soon."),
