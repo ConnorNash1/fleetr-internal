@@ -592,7 +592,31 @@ const AUDIT_ID_FIELDS = {
   app_settings:      ["key"],
 };
 
-function auditRecordId(table, match, data) {
+// damage_claims is the one table with no human key of its own: it stores a
+// plate, a rentalAgreementId and a description, so ["id"] above is a uuid and
+// nothing else. Logging that told a reader which row changed in a language
+// only Postgres speaks. The code is two hops away -- claim to agreement to
+// resCode -- the same hop enrichDamageClaim makes for the claims tables, so
+// the log can say it in the same words every other entry uses.
+function damageClaimResCode(claim, rentalAgreements) {
+  if (!claim?.rentalAgreementId) return null;
+  return (rentalAgreements || []).find((a) => a.id === claim.rentalAgreementId)?.resCode || null;
+}
+
+// context carries the lists the lookup above needs. It is optional: a caller
+// that has no claims or agreements to hand still gets the uuid rather than an
+// error, which is the same answer this function gave before.
+function auditRecordId(table, match, data, context) {
+  if (table === "damage_claims") {
+    // The payload first, since an insert names its agreement directly, then
+    // the stored row, which is where an update matching on id has to look.
+    const claim = data?.rentalAgreementId
+      ? data
+      : (context?.damageClaims || []).find((c) => String(c.id) === String(match?.id)) || null;
+    const code = damageClaimResCode(claim, context?.rentalAgreements);
+    if (code) return code;
+  }
+
   const fields = AUDIT_ID_FIELDS[table] || ["id"];
   for (const f of fields) {
     if (match && match[f] != null && String(match[f]).trim() !== "") return String(match[f]);
@@ -969,7 +993,6 @@ function enrichDamageClaim(claim, rentalAgreements, reservations) {
     resCode:           ra?.resCode || null,
     description:       claim.description || "No description",
     claimStatus:       damageClaimStatusLabel(claim.status),
-    rentalAgreementId: claim.rentalAgreementId || null,
     _status:           claim.status || "open",
   };
 }
@@ -4478,7 +4501,7 @@ function VehicleDetailPage() {
         "table", { className: "dashboardTable" },
         React.createElement("thead", null,
           React.createElement("tr", null,
-            ["Customer", "Res Code", "Damage Description", "Status", "Rental Agreement"].map((col) =>
+            ["Customer", "Res Code", "Damage Description", "Status"].map((col) =>
               React.createElement("th", { key: col }, col)
             )
           )
@@ -4490,8 +4513,7 @@ function VehicleDetailPage() {
               React.createElement("td", null, React.createElement("button", { type: "button", className: "rentalAgreementLink rentalAgreementLink--dark", onClick: () => { setOpenRentalAgreementId(c.resCode); navigate("/rental-agreements"); } }, c.customer)),
               React.createElement("td", null, React.createElement("button", { type: "button", className: "rentalAgreementLink rentalAgreementLink--dark", onClick: () => { setOpenRentalAgreementId(c.resCode); navigate("/rental-agreements"); } }, c.resCode)),
               React.createElement("td", null, c.description),
-              React.createElement("td", null, React.createElement("span", { className: statusCls }, c.claimStatus)),
-              React.createElement("td", null, c.rentalAgreementId || "\u2014")
+              React.createElement("td", null, React.createElement("span", { className: statusCls }, c.claimStatus))
             );
           })
         )
@@ -5998,14 +6020,14 @@ function FleetDamageClaimsPage() {
       supabase.from("damage_claims").update({ status: "resolved", resolvedAt: now, updatedAt: now }).eq("id", claim.id).then(({ error }) => {
         if (error) console.warn("damage_claims update failed:", claim.id, error);
       }).catch((e) => console.warn("damage_claims update:", e));
-    }, { tableName: "damage_claims", recordId: claim.id, description: `Damage claim marked resolved${claim.plate ? ` on ${claim.plate}` : ""}.` });
+    }, { tableName: "damage_claims", recordId: claim.resCode || claim.id, description: `Damage claim marked resolved${claim.plate ? ` on ${claim.plate}` : ""}.` });
   };
 
   const renderTable = (claims, showResolve) =>
     React.createElement("table", { className: "dashboardTable" },
       React.createElement("thead", null,
         React.createElement("tr", null,
-          [...["Plate", "Vehicle", "Customer", "Res Code", "Damage Description", "Status", "Rental Agreement"],
+          [...["Plate", "Vehicle", "Customer", "Res Code", "Damage Description", "Status"],
            ...(showResolve ? ["Action"] : [])].map((col) =>
             React.createElement("th", { key: col }, col)
           )
@@ -6036,7 +6058,6 @@ function FleetDamageClaimsPage() {
             React.createElement("td", null,
               React.createElement("span", { className: CLAIM_CLS[c.claimStatus] || "claimStatus" }, c.claimStatus)
             ),
-            React.createElement("td", null, c.rentalAgreementId || "N/A"),
             showResolve && React.createElement("td", null,
               React.createElement("button", {
                 type: "button",
@@ -7721,7 +7742,7 @@ function FleetrCommandBar() {
       actor:       AI_ACTOR,
       actionType:  key,
       tableName:   pendingAction?.table || null,
-      recordId:    auditRecordId(pendingAction?.table, pendingAction?.match, editableData),
+      recordId:    auditRecordId(pendingAction?.table, pendingAction?.match, editableData, { damageClaims, rentalAgreements }),
       outcome:     "refused",
       description: `${msg} Asked by ${actorName(currentUser)}.`,
     });
@@ -7749,7 +7770,7 @@ function FleetrCommandBar() {
     guardAction(key, () => executeAction(plan), {
       actor:       AI_ACTOR,
       tableName:   plan.table,
-      recordId:    auditRecordId(plan.table, plan.match, plan.data),
+      recordId:    auditRecordId(plan.table, plan.match, plan.data, { damageClaims, rentalAgreements }),
       description: `${auditDescribe(plan.data) || plan.operation}. Asked by ${actorName(currentUser)}.`,
     });
   };
@@ -8523,13 +8544,11 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
       React.createElement("div", { className: "rentalAgreementDetailTitle" },
         React.createElement("h1", { className: "page__title", style: { margin: 0 } }, rentalAgreement.resCode ? `${rentalAgreement.customer} — ${rentalAgreement.resCode}` : rentalAgreement.customer),
         React.createElement("span", { className: statusClass }, statusLabel(rentalAgreement.status))
-      ),
-      React.createElement("p", { className: "rentalAgreementDetailMeta" }, `${rentalAgreement.id} · Res Code ${rentalAgreement.resCode}`)
+      )
     ),
     React.createElement("div", { className: "page__titleUnderline" }),
     section("resInfo", "Reservation Information",
       React.createElement("div", { className: "rentalAgreementFields" },
-        field("Rental Agreement #", rentalAgreement.id),
         field("Res Code", rentalAgreement.resCode),
         field("Customer", rentalAgreement.customer),
         field("Status", statusLabel(rentalAgreement.status)),
@@ -8855,7 +8874,7 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
     React.createElement("div", { className: "closeRentalSummary" },
       React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
       React.createElement("div", { className: "closeRentalSummary__meta" },
-        row ? [row.customer, row.plate || null].filter(Boolean).join(" · ") : rentalAgreementId)
+        row ? [row.customer, row.plate || null].filter(Boolean).join(" · ") : "Rental not found")
     ),
     React.createElement("h2", { className: "closeRentalStepTitle" }, L.stepTitle),
     React.createElement("div", { className: "closeRentalForm" },
@@ -8978,7 +8997,7 @@ function DamagePhotoViewer({ url, onClose }) {
 //
 // Then a Yes/No for new damage, with no default, so the answer is always a
 // deliberate one. Yes needs a description before moving on.
-function CloseRentalDamageStep({ row, rentalAgreementId, damageDraft, setDamageDraft, onBack, onNext, pageTitle }) {
+function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, onBack, onNext, pageTitle }) {
   const { damageClaims, rentalAgreements } = React.useContext(AppContext);
   const [viewing,   setViewing]   = React.useState(null);
   const [attempted, setAttempted] = React.useState(false);
@@ -9022,7 +9041,7 @@ function CloseRentalDamageStep({ row, rentalAgreementId, damageDraft, setDamageD
     React.createElement("div", { className: "closeRentalSummary" },
       React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
       React.createElement("div", { className: "closeRentalSummary__meta" },
-        row ? [row.customer, row.plate || null].filter(Boolean).join(" · ") : rentalAgreementId)
+        row ? [row.customer, row.plate || null].filter(Boolean).join(" · ") : "Rental not found")
     ),
     React.createElement("h2", { className: "closeRentalStepTitle" }, "Previous damage"),
     React.createElement("div", { className: "closeRentalDamageList" },
@@ -9143,7 +9162,7 @@ async function uploadDamagePhotos({ operatorId, rentalAgreementId, photos }) {
   return { paths, failures, reason: null };
 }
 
-function CloseRentalPhotoStep({ row, rentalAgreementId, note, photos, setPhotos, onBack, onNext, pageTitle }) {
+function CloseRentalPhotoStep({ row, note, photos, setPhotos, onBack, onNext, pageTitle }) {
   const videoRef   = React.useRef(null);
   const streamRef  = React.useRef(null);
   const pendingRef = React.useRef(null);
@@ -9263,7 +9282,7 @@ function CloseRentalPhotoStep({ row, rentalAgreementId, note, photos, setPhotos,
     React.createElement("div", { className: "closeRentalSummary" },
       React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
       React.createElement("div", { className: "closeRentalSummary__meta" },
-        row ? [row.customer, row.plate || null].filter(Boolean).join(" · ") : rentalAgreementId)
+        row ? [row.customer, row.plate || null].filter(Boolean).join(" · ") : "Rental not found")
     ),
     React.createElement("h2", { className: "closeRentalStepTitle" }, "Photos of the new damage"),
     note && React.createElement("p", { className: "closeRentalPhotoNote" },
@@ -9841,7 +9860,7 @@ function CloseRentalPage() {
       }
     }, {
       tableName: "rental_agreements",
-      recordId: ra.id,
+      recordId: ra.resCode || ra.id,
       description: `Closed rental agreement ${ra.resCode || ra.id}: ${row?.plate || "vehicle"} back at ` +
         `${final.closingMileage.toLocaleString("en-CA")} km, gas ${final.closingGasLevel}, ` +
         (final.newDamageFound ? `new damage reported (${final.newDamageNote})` : "no new damage") +
@@ -9906,7 +9925,7 @@ function CloseRentalPage() {
       React.createElement("h1", { className: "page__title" }, "Close Rental"),
       React.createElement("div", { className: "page__titleUnderline" }),
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Confirm the close"),
-      line("Rental agreement", final.rentalAgreementId),
+      line("Rental agreement", ra?.resCode || "—"),
       line("Closing mileage", `${final.closingMileage.toLocaleString("en-CA")} km`),
       line("Closing gas level", final.closingGasLevel),
       line("New damage found", final.newDamageFound ? "Yes" : "No"),
@@ -9944,7 +9963,6 @@ function CloseRentalPage() {
   if (review) {
     return React.createElement(CloseRentalPhotoStep, {
       row: openRows.find((r) => r.id === review.rentalAgreementId) || null,
-      rentalAgreementId: review.rentalAgreementId,
       note: review.newDamageNote,
       photos, setPhotos,
       onBack: () => setReview(null),
@@ -9958,7 +9976,6 @@ function CloseRentalPage() {
   if (closing) {
     return React.createElement(CloseRentalDamageStep, {
       row: openRows.find((r) => r.id === closing.rentalAgreementId) || null,
-      rentalAgreementId: closing.rentalAgreementId,
       damageDraft, setDamageDraft,
       onBack: () => setClosing(null),
       onNext: (answer) => {
@@ -10320,7 +10337,7 @@ function SwitchOutPage() {
       }
     }, {
       tableName: "rental_agreements",
-      recordId: ra.id,
+      recordId: ra.resCode || ra.id,
       description: `Switched ${row?.plate || "the vehicle"} out for ${newVehicle.plate} on rental agreement ${ra.resCode || ra.id}: ` +
         `back at ${closing.closingMileage.toLocaleString("en-CA")} km, gas ${closing.closingGasLevel}, ` +
         (review.newDamageFound ? `new damage reported (${review.newDamageNote})` : "no new damage") +
@@ -10402,7 +10419,7 @@ function SwitchOutPage() {
   // Step 4: photos, only after a Yes.
   if (review) {
     return React.createElement(CloseRentalPhotoStep, {
-      row, rentalAgreementId: review.rentalAgreementId, note: review.newDamageNote,
+      row, note: review.newDamageNote,
       photos, setPhotos, pageTitle: "Switch Out",
       onBack: () => setReview(null),
       onNext: () => setPhotosDone(true),
@@ -10412,7 +10429,7 @@ function SwitchOutPage() {
   // Step 3: previous damage, and whether there is new damage.
   if (closing) {
     return React.createElement(CloseRentalDamageStep, {
-      row, rentalAgreementId: closing.rentalAgreementId,
+      row,
       damageDraft, setDamageDraft, pageTitle: "Switch Out",
       onBack: () => setClosing(null),
       onNext: (answer) => {
@@ -15073,11 +15090,6 @@ body, * {
   display: flex;
   align-items: center;
   gap: 12px;
-}
-.rentalAgreementDetailMeta {
-  margin: 0;
-  font-size: 12px;
-  color: #7b8fa8;
 }
 .rentalAgreementFields {
   display: grid;
