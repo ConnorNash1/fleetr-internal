@@ -9417,6 +9417,20 @@ const EMPTY_DAMAGE_DRAFT   = { choice: null, note: "" };
 // gasOwed, gasCollected, gasMarkupPercent and gasPrices, all about charging for
 // fuel after the fact, and nothing recording that a customer bought a tank up
 // front. If that is added, it belongs here.
+// What to tell the person, for each reason closeRentalOutcome holds an
+// agreement open. A closed agreement has no reason and says nothing: the
+// status is the whole story there.
+//
+// fuel_unknown names the pickup level specifically, which is where it comes
+// from in practice: the closing level is picked from FUEL_LABELS on the
+// readings step and cannot be anything else, while fuelAtPickup is nullable on
+// agreements written before the customer app filled it in.
+const CLOSE_RENTAL_REASONS = {
+  damage:       "Damage marked",
+  fuel_short:   "Returned with less fuel",
+  fuel_unknown: "Pickup fuel level unknown",
+};
+
 function closeRentalOutcome({ damageFound, pickupGas, returnGas }) {
   if (damageFound) return { status: "close_pending", reason: "damage" };
 
@@ -9761,6 +9775,7 @@ function CloseRentalPage() {
           closingGas:    final.closingGasLevel,
           damageFound:   !!final.newDamageFound,
           agreementStatus: agreementOutcome.status,
+          agreementReason: agreementOutcome.reason,
           vehicleStatus: vehicle ? vehicleStatus.status : null,
           forcedMessage: vehicle && vehicleStatus.forced ? vehicleStatus.message : null,
           legSaved:      !legRes?.error,
@@ -9796,6 +9811,8 @@ function CloseRentalPage() {
       line("Closing gas level", done.closingGas),
       line("New damage found", done.damageFound ? "Yes" : "No"),
       line("Agreement status", statusLabel(done.agreementStatus)),
+      done.agreementReason && CLOSE_RENTAL_REASONS[done.agreementReason] &&
+        line("Reason", CLOSE_RENTAL_REASONS[done.agreementReason]),
       done.vehicleStatus && line("Vehicle status", done.vehicleStatus),
       done.forcedMessage && React.createElement("div", { className: "closeRentalWarning" }, done.forcedMessage),
       !done.plate && React.createElement("div", { className: "closeRentalWarning" },
@@ -9837,6 +9854,8 @@ function CloseRentalPage() {
           React.createElement("img", { src: p.url, alt: `New damage photo ${i + 1}` })))
       ),
       line("Agreement moves to", statusLabel(agreementOutcome.status)),
+      agreementOutcome.reason && CLOSE_RENTAL_REASONS[agreementOutcome.reason] &&
+        line("Reason", CLOSE_RENTAL_REASONS[agreementOutcome.reason]),
       vehicle && line("Vehicle moves to", vehicleStatus.status),
       vehicle && vehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, vehicleStatus.message),
       React.createElement("p", { className: "page__body" }, "Final charges are coming soon."),
