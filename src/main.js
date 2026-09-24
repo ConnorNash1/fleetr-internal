@@ -9554,7 +9554,7 @@ function OpenRentalSearch({ rows, onSelect }) {
 }
 
 function CloseRentalPage() {
-  const { reservations, setReservations, rentalAgreements, fleet, setFleet, syncRAStatus, guardAction, currentUser } =
+  const { reservations, setReservations, rentalAgreements, fleet, setFleet, syncRAStatus, setDamageClaims, guardAction, currentUser } =
     React.useContext(AppContext);
   const navigate = useNavigate();
   const location = useLocation();
@@ -9679,6 +9679,33 @@ function CloseRentalPage() {
             })
           : { paths: [], failures: [] };
 
+        // Damage found on a return is a claim, the same as damage a staff
+        // member flags by hand. It was only written onto the leg before, which
+        // nothing reads, so a customer could be owed for damage that appeared
+        // on no screen anybody looks at.
+        //
+        // After the upload, so the claim carries the paths rather than an empty
+        // array somebody has to go and fill. The customer and the reservation
+        // code are not stored: enrichDamageClaim derives both from
+        // rentalAgreementId, so that is the field that has to be right.
+        let claimRes = null;
+        if (final.newDamageFound) {
+          const claim = {
+            id:                crypto.randomUUID(),
+            plate:             vehicle?.plate || ra.plate || row?.plate || null,
+            rentalAgreementId: ra.id,
+            description:       final.newDamageNote || null,
+            photos:            upload.paths,
+            status:            "open",
+          };
+          claimRes = await supabase.from("damage_claims").insert(claim);
+          if (claimRes?.error) {
+            console.warn("close rental: damage claim insert failed:", claimRes.error);
+          } else {
+            setDamageClaims((prev) => [...prev, { ...claim, reportedAt: new Date().toISOString() }]);
+          }
+        }
+
         // syncRAStatus owns the status change: it writes rental_agreements,
         // and moves the vehicle for open_rental_agreement and close_pending.
         // It does NOT touch reservations, so the mirror on the reservation is
@@ -9725,6 +9752,7 @@ function CloseRentalPage() {
           vehicleStatus: vehicle ? vehicleStatus.status : null,
           forcedMessage: vehicle && vehicleStatus.forced ? vehicleStatus.message : null,
           legSaved:      !legRes?.error,
+          claimSaved:    !claimRes?.error,
           photosTaken:   final.photos.length,
           photosUploaded: upload.paths.length,
           photosFailed:  upload.failures.length,
@@ -9763,6 +9791,9 @@ function CloseRentalPage() {
       done.forcedMessage && React.createElement("div", { className: "closeRentalWarning" }, done.forcedMessage),
       !done.plate && React.createElement("div", { className: "closeRentalWarning" },
         "This agreement has no vehicle on file, so no vehicle status was changed. Check the fleet by hand."),
+      !done.claimSaved && React.createElement("div", { className: "closeRentalWarning" },
+        "The damage claim could not be saved, so this damage is not in Ongoing Damage Claims. " +
+        "Flag it by hand from the customer's page before anyone is billed."),
       !done.legSaved && React.createElement("div", { className: "closeRentalWarning" },
         "The vehicle's return record could not be saved. The agreement and the vehicle were still updated. Tell support before this vehicle goes out again."),
       done.photosTaken > 0 && line("Damage photos uploaded", `${done.photosUploaded} of ${done.photosTaken}`),
@@ -10025,7 +10056,7 @@ const SWITCH_OUT_READINGS_LABELS = {
 };
 
 function SwitchOutPage() {
-  const { reservations, rentalAgreements, setRentalAgreements, fleet, setFleet, guardAction, currentUser } =
+  const { reservations, rentalAgreements, setRentalAgreements, fleet, setFleet, setDamageClaims, guardAction, currentUser } =
     React.useContext(AppContext);
   const navigate = useNavigate();
   const [selectedId,  setSelectedId]  = React.useState(null);
@@ -10129,6 +10160,28 @@ function SwitchOutPage() {
             })
           : { paths: [], failures: [] };
 
+        // Damage on the vehicle coming back is a claim, as it is on a return.
+        // The plate is the OLD vehicle's: the agreement is about to carry the
+        // replacement's, and a claim naming the vehicle that was not damaged
+        // would be worse than no claim at all.
+        let claimRes = null;
+        if (review.newDamageFound) {
+          const claim = {
+            id:                crypto.randomUUID(),
+            plate:             oldVehicle?.plate || row?.plate || null,
+            rentalAgreementId: ra.id,
+            description:       review.newDamageNote || null,
+            photos:            upload.paths,
+            status:            "open",
+          };
+          claimRes = await supabase.from("damage_claims").insert(claim);
+          if (claimRes?.error) {
+            console.warn("switch out: damage claim insert failed:", claimRes.error);
+          } else {
+            setDamageClaims((prev) => [...prev, { ...claim, reportedAt: new Date().toISOString() }]);
+          }
+        }
+
         // The leg starting now. Opened only after the old one is closed: one
         // agreement may hold one open leg, which is what makes an endedAt of
         // null mean "this is the vehicle the customer is on".
@@ -10166,6 +10219,7 @@ function SwitchOutPage() {
           newGas: baseline.closingGasLevel,
           resCode: ra.resCode || null,
           legsSaved: !closeError && !openRes?.error,
+          claimSaved: !claimRes?.error,
           photosTaken: photos.length,
           photosUploaded: upload.paths.length,
           photosFailed: upload.failures.length,
@@ -10198,6 +10252,9 @@ function SwitchOutPage() {
       line("Now on", `${done.newPlate}, On Rent`),
       line("Starting mileage", `${done.newMileage.toLocaleString("en-CA")} km`),
       line("Starting gas level", done.newGas),
+      !done.claimSaved && React.createElement("div", { className: "closeRentalWarning" },
+        "The damage claim could not be saved, so this damage is not in Ongoing Damage Claims. " +
+        "Flag it by hand from the customer's page before anyone is billed."),
       !done.legsSaved && React.createElement("div", { className: "closeRentalWarning" },
         "The vehicle history for this agreement could not be saved. The vehicles and the agreement were still updated. Tell support before either vehicle goes out again."),
       done.photosTaken > 0 && line("Damage photos uploaded", `${done.photosUploaded} of ${done.photosTaken}`),
