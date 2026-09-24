@@ -9357,19 +9357,34 @@ const EMPTY_DAMAGE_DRAFT   = { choice: null, note: "" };
 const CLOSE_RENTAL_RA_STATUS = "close_pending";
 
 // ─── Open rental search, shared by Close Rental and Switch Out ───────────────
-// One row per open agreement, joined to its reservation (customer, pickup
-// date) and its vehicle (description, province). The agreement's plate wins;
-// the reservation's is the fallback for an agreement whose plate was never
-// filled in, the same fallback syncRAStatus uses.
+// One row per rental the caller may act on, joined to its reservation
+// (customer, pickup date) and its vehicle (description, province). The
+// agreement's plate wins; the reservation's is the fallback for an agreement
+// whose plate was never filled in, the same fallback syncRAStatus uses.
 //
-// Only open agreements: close_pending and closed ones are not returnable and
-// not switchable, so neither flow may reach them.
-function useOpenRentalRows() {
+// The two flows do not reach the same rentals, which is why this takes an
+// option rather than one of them filtering the other's rows afterwards.
+//
+// Both reach an open agreement. Only Close Rental reaches a SELF-RETURN: an
+// agreement the customer app already moved to close_pending, whose vehicle is
+// sitting in Ready Returns waiting for someone to look at it. complete_return
+// records what the customer entered and moves the vehicle to that queue, and
+// nothing after that inspects it, so without this those rentals had no way
+// through the flow that exists to inspect them.
+//
+// The vehicle being in Ready Returns is part of the test, not decoration. A
+// close_pending agreement whose vehicle has already been moved on has been
+// dealt with by someone, and offering it again would invite a second close
+// over the top of the first.
+//
+// Switch Out still reaches open agreements only. A vehicle that is back is not
+// one a customer can be switched onto another of, so close_pending is as out
+// of reach there as it ever was. Neither flow reaches closed.
+function useOpenRentalRows({ includeSelfReturns = false } = {}) {
   const { reservations, rentalAgreements, fleet } = React.useContext(AppContext);
   return React.useMemo(() => {
     const resByCode = Object.fromEntries((reservations || []).map((r) => [r.resCode, r]));
     return (rentalAgreements || [])
-      .filter((ra) => ra.rentalAgreementStatus === "open_rental_agreement")
       .map((ra) => {
         const res = resByCode[ra.resCode] || {};
         const rowPlate = ra.plate || res.plate || "";
@@ -9389,9 +9404,16 @@ function useOpenRentalRows() {
           pickupDate: res.date || "",
           pickupMileage:  ra.mileage ?? null,
           odometerOnFile: vehicle?.currentOdometer ?? null,
+          // Carried on the row so the flow does not have to re-derive it, and
+          // so the screens can say which kind of return they are handling.
+          selfReturn: ra.rentalAgreementStatus === CLOSE_RENTAL_RA_STATUS
+                      && vehicle?.status === "Ready Returns",
+          raStatus:   ra.rentalAgreementStatus,
         };
-      });
-  }, [reservations, rentalAgreements, fleet]);
+      })
+      .filter((row) =>
+        row.raStatus === "open_rental_agreement" || (includeSelfReturns && row.selfReturn));
+  }, [reservations, rentalAgreements, fleet, includeSelfReturns]);
 }
 
 // Plate and province, or customer last name. Nothing is listed until something
@@ -9526,7 +9548,9 @@ function CloseRentalPage() {
   React.useEffect(() => () => releasePhotos(photosRef.current), []);
   const clearPhotos = () => { releasePhotos(photosRef.current); setPhotos([]); };
 
-  const openRows = useOpenRentalRows();
+  // Self-returns included: this is the flow that inspects a vehicle the
+  // customer app already sent to Ready Returns. Switch Out leaves the default.
+  const openRows = useOpenRentalRows({ includeSelfReturns: true });
   const row     = openRows.find((r) => r.id === (final?.rentalAgreementId || selectedId)) || null;
   const ra      = (rentalAgreements || []).find((a) => a.id === final?.rentalAgreementId) || null;
   const vehicle = row?.plate
@@ -9553,6 +9577,19 @@ function CloseRentalPage() {
   // finished would be a claim nothing has earned. It is the status the return
   // already used everywhere else, and Close Pending is where an agreement
   // waiting on charges belongs.
+  // When the vehicle actually came back. For a staff return that is now. For a
+  // self-return it is what the customer app stamped on the agreement at the
+  // time, and the staff inspection may be hours later: writing "now" would
+  // record the moment someone got round to looking at it as the moment the
+  // customer brought it back, which is the one fact this flow must not invent.
+  // Falls back to now if returnedAt is missing or unparseable, since a wrong
+  // timestamp is worse than a late one.
+  const returnedAtIso = React.useMemo(() => {
+    if (!row?.selfReturn || !ra?.returnedAt) return null;
+    const d = new Date(ra.returnedAt);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }, [row?.selfReturn, ra?.returnedAt]);
+
   const completeClose = () => {
     if (!final || !ra) return;
     guardAction("ra.advance", async () => {
@@ -9560,12 +9597,13 @@ function CloseRentalPage() {
       try {
         // The leg. Pickup readings come off the agreement's own record, which
         // is where the vehicle went out on them; the closing pair is what was
-        // just entered. endedAt is now, which is what makes this leg finished
-        // and lets the next one open.
+        // just entered. A non-null endedAt is what makes this leg finished and
+        // lets the next one open, and it is when the vehicle came back rather
+        // than when this ran, which differ on a self-return.
         const leg = {
           rentalAgreementId: ra.id,
           vehicleId:         vehicle?.id || null,
-          endedAt:           new Date().toISOString(),
+          endedAt:           returnedAtIso || new Date().toISOString(),
           pickupMileage:     ra.mileage ?? null,
           pickupGas:         ra.fuelAtPickup ?? null,
           closingMileage:    final.closingMileage,
@@ -9598,8 +9636,12 @@ function CloseRentalPage() {
         // patched into local state below, as every other caller of it does.
         // Closing also stamps the return time, exactly as the status control
         // on the agreement page does.
+        // For a self-return syncRAStatus is a no-op: the agreement is already
+        // close_pending, so it returns before writing anything, which is also
+        // what keeps it from firing its own fleet write underneath the one
+        // below.
         await syncRAStatus(ra.resCode, CLOSE_RENTAL_RA_STATUS);
-        const stamp = raCloseStamp();
+        const stamp = raCloseStamp(returnedAtIso ? new Date(returnedAtIso) : new Date());
         runWrite(supabase.from("reservations").update(stamp).eq("resCode", ra.resCode), "close rental: return stamp");
         setReservations((prev) => prev.map((r) => (
           r.resCode === ra.resCode ? { ...r, ...stamp, rentalAgreementStatus: CLOSE_RENTAL_RA_STATUS } : r
