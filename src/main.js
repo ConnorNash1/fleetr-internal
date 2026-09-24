@@ -516,7 +516,6 @@ const ACTION_POLICY = {
 
   // ── Confirm: routine, reversible, done many times a day ────────────────────
   "vehicle.status":     { tier: "confirm", label: "Change vehicle status" },
-  "vehicle.collected":  { tier: "confirm", label: "Mark vehicle collected" },
   // Switch Out swaps which vehicle a rental is on. It opens and closes nothing
   // and moves no money: two vehicle statuses change and the agreement points at
   // the new plate, all of which a second switch undoes. Confirm, like the other
