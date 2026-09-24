@@ -3147,22 +3147,6 @@ function DashboardPage() {
   const isMobile = useMobile();
   const readyReturns = fleet.filter((v) => v.status === "Ready Returns");
   const navigate = useNavigate();
-  const [collectedOpenId, setCollectedOpenId] = React.useState(null);
-  const handleCollected = (entry, status) => {
-    // Advancing a vehicle out of Ready Returns is the point where a pending PM
-    // takes over: the requested status is replaced with PM so it cannot be
-    // handed out unserviced.
-    const vehicle = fleet.find((fv) => fv.plate === entry.plate) || entry;
-    const { status: finalStatus, forced, message } = resolvePmStatus(vehicle, status);
-    guardAction("vehicle.collected", () => {
-      setFleet((prev) => prev.map((fv) =>
-        fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
-      ));
-      runWrite(supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id), "fleet update");
-      setCollectedOpenId(null);
-      if (forced) window.alert(message);
-    });
-  };
   const [collapsedSections, setCollapsedSections] = React.useState({
     reservations: true,
     nonDriveIntake: true,
@@ -3549,14 +3533,14 @@ function DashboardPage() {
                     React.createElement("table", { className: "dashboardTable" },
                       React.createElement("thead", null,
                         React.createElement("tr", null,
-                          ["Plate", "Vehicle", "Type", "Location", ""].map((col) =>
+                          ["Plate", "Vehicle", "Type", "Location"].map((col) =>
                             React.createElement("th", { key: col }, col)
                           )
                         )
                       ),
                       React.createElement("tbody", null,
                         readyReturns.length === 0
-                          ? React.createElement("tr", null, React.createElement("td", { colSpan: 5, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
+                          ? React.createElement("tr", null, React.createElement("td", { colSpan: 4, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
                           : readyReturns.map((r) => {
                               const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
                               const loc = matchRA?.returnVehicleLocation || "";
@@ -3564,27 +3548,7 @@ function DashboardPage() {
                                 React.createElement("td", null, React.createElement(PlateLink, { plate: r.plate })),
                                 React.createElement("td", null, `${r.make} ${r.model}`),
                                 React.createElement("td", null, r.fileType || ""),
-                                React.createElement("td", null, loc),
-                                React.createElement("td", null,
-                                  collectedOpenId === r.id
-                                    ? React.createElement("select", {
-                                        className: "gasStatusSelect",
-                                        autoFocus: true,
-                                        defaultValue: "",
-                                        onChange: (e) => { if (e.target.value) handleCollected(r, e.target.value); },
-                                        onBlur: () => setCollectedOpenId(null),
-                                      },
-                                        React.createElement("option", { value: "", disabled: true }, "Select status…"),
-                                        FLEET_STATUS_OPTS.filter((s) => s.value !== "All").map((s) =>
-                                          React.createElement("option", { key: s.value, value: s.value }, s.label)
-                                        )
-                                      )
-                                    : React.createElement("button", {
-                                        type: "button",
-                                        className: "collectedBtn",
-                                        onClick: () => setCollectedOpenId(r.id),
-                                      }, "Collected")
-                                )
+                                React.createElement("td", null, loc)
                               );
                             })
                       )
@@ -4542,22 +4506,6 @@ function VehicleDetailPage() {
 function FleetPage() {
   const { fleet, setFleet, rentalAgreements, guardAction } = React.useContext(AppContext);
   const readyReturns = fleet.filter((v) => v.status === "Ready Returns");
-  const [collectedOpenId, setCollectedOpenId] = React.useState(null);
-  const handleCollected = (entry, status) => {
-    // Advancing a vehicle out of Ready Returns is the point where a pending PM
-    // takes over: the requested status is replaced with PM so it cannot be
-    // handed out unserviced.
-    const vehicle = fleet.find((fv) => fv.plate === entry.plate) || entry;
-    const { status: finalStatus, forced, message } = resolvePmStatus(vehicle, status);
-    guardAction("vehicle.collected", () => {
-      setFleet((prev) => prev.map((fv) =>
-        fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
-      ));
-      runWrite(supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id), "fleet update");
-      setCollectedOpenId(null);
-      if (forced) window.alert(message);
-    });
-  };
   const [collapsed, setCollapsed] = React.useState(false);
   const [fleetGroupCollapsed, setFleetGroupCollapsed] = React.useState({
     available: true, needsCleaning: true, readyReturns: true, pm: true, damaged: true, onRent: true,
@@ -4676,14 +4624,14 @@ function FleetPage() {
                   React.createElement("table", { className: "dashboardTable" },
                     React.createElement("thead", null,
                       React.createElement("tr", null,
-                        ["Plate", "Vehicle", "Type", "Location", ""].map((col) =>
+                        ["Plate", "Vehicle", "Type", "Location"].map((col) =>
                           React.createElement("th", { key: col }, col)
                         )
                       )
                     ),
                     React.createElement("tbody", null,
                       readyReturns.length === 0
-                        ? React.createElement("tr", null, React.createElement("td", { colSpan: 5, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
+                        ? React.createElement("tr", null, React.createElement("td", { colSpan: 4, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
                         : readyReturns.map((r) => {
                             const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
                             const loc = matchRA?.returnVehicleLocation || "";
@@ -4691,27 +4639,7 @@ function FleetPage() {
                               React.createElement("td", null, React.createElement(PlateLink, { plate: r.plate })),
                               React.createElement("td", null, `${r.make} ${r.model}`),
                               React.createElement("td", null, r.fileType || ""),
-                              React.createElement("td", null, loc),
-                              React.createElement("td", null,
-                                collectedOpenId === r.id
-                                  ? React.createElement("select", {
-                                      className: "gasStatusSelect",
-                                      autoFocus: true,
-                                      defaultValue: "",
-                                      onChange: (e) => { if (e.target.value) handleCollected(r, e.target.value); },
-                                      onBlur: () => setCollectedOpenId(null),
-                                    },
-                                      React.createElement("option", { value: "", disabled: true }, "Select status…"),
-                                      FLEET_STATUS_OPTS.filter((s) => s.value !== "All").map((s) =>
-                                        React.createElement("option", { key: s.value, value: s.value }, s.label)
-                                      )
-                                    )
-                                  : React.createElement("button", {
-                                      type: "button",
-                                      className: "collectedBtn",
-                                      onClick: () => setCollectedOpenId(r.id),
-                                    }, "Collected")
-                              )
+                              React.createElement("td", null, loc)
                             );
                           })
                     )
@@ -5506,22 +5434,6 @@ function FleetFilterBar({ filterState }) {
 function FleetVehiclesPage() {
   const { fleet, setFleet, rentalAgreements, guardAction } = React.useContext(AppContext);
   const { filtered, filterState } = useFleetFilter(fleet);
-  const [collectedOpenId, setCollectedOpenId] = React.useState(null);
-  const handleCollected = (entry, status) => {
-    // Advancing a vehicle out of Ready Returns is the point where a pending PM
-    // takes over: the requested status is replaced with PM so it cannot be
-    // handed out unserviced.
-    const vehicle = fleet.find((fv) => fv.plate === entry.plate) || entry;
-    const { status: finalStatus, forced, message } = resolvePmStatus(vehicle, status);
-    guardAction("vehicle.collected", () => {
-      setFleet((prev) => prev.map((fv) =>
-        fv.plate === entry.plate ? { ...fv, status: finalStatus, currentRenter: null, dueBack: null, fileType: null } : fv
-      ));
-      runWrite(supabase.from("fleet").update({ status: finalStatus, currentRenter: null, dueBack: null, fileType: null }).eq("id", entry.id), "fleet update");
-      setCollectedOpenId(null);
-      if (forced) window.alert(message);
-    });
-  };
 
   // Status dropdown change: update fleet state immediately then persist
   const handleStatusChange = (vehicle, newStatus) => {
@@ -5704,14 +5616,14 @@ function FleetVehiclesPage() {
                   React.createElement("table", { className: "dashboardTable" },
                     React.createElement("thead", null,
                       React.createElement("tr", null,
-                        ["Plate", "Vehicle", "Type", "Location", ""].map((col) =>
+                        ["Plate", "Vehicle", "Type", "Location"].map((col) =>
                           React.createElement("th", { key: col }, col)
                         )
                       )
                     ),
                     React.createElement("tbody", null,
                       filteredRR.length === 0
-                        ? React.createElement("tr", null, React.createElement("td", { colSpan: 5, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
+                        ? React.createElement("tr", null, React.createElement("td", { colSpan: 4, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
                         : filteredRR.map((r) => {
                             const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
                             const loc = matchRA?.returnVehicleLocation || "";
@@ -5719,27 +5631,7 @@ function FleetVehiclesPage() {
                               React.createElement("td", null, React.createElement(PlateLink, { plate: r.plate })),
                               React.createElement("td", null, `${r.make} ${r.model}`),
                               React.createElement("td", null, r.fileType || ""),
-                              React.createElement("td", null, loc),
-                              React.createElement("td", null,
-                                collectedOpenId === r.id
-                                  ? React.createElement("select", {
-                                      className: "gasStatusSelect",
-                                      autoFocus: true,
-                                      defaultValue: "",
-                                      onChange: (e) => { if (e.target.value) handleCollected(r, e.target.value); },
-                                      onBlur: () => setCollectedOpenId(null),
-                                    },
-                                      React.createElement("option", { value: "", disabled: true }, "Select status…"),
-                                      FLEET_STATUS_OPTS.filter((s) => s.value !== "All").map((s) =>
-                                        React.createElement("option", { key: s.value, value: s.value }, s.label)
-                                      )
-                                    )
-                                  : React.createElement("button", {
-                                      type: "button",
-                                      className: "collectedBtn",
-                                      onClick: (e) => { e.stopPropagation(); setCollectedOpenId(r.id); },
-                                    }, "Collected")
-                              )
+                              React.createElement("td", null, loc)
                             );
                           })
                     )
@@ -15299,22 +15191,6 @@ body, * {
 }
 .gasStatusSelect:hover {
   border-color: #42a4ff;
-}
-.collectedBtn {
-  background: none;
-  border: 1.5px solid #d3dbe8;
-  border-radius: 6px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #1F1E1D;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
-  white-space: nowrap;
-}
-.collectedBtn:hover {
-  border-color: #42a4ff;
-  color: #42a4ff;
 }
 `;
 document.head.appendChild(style);
