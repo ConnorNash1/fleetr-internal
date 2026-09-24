@@ -1589,7 +1589,15 @@ function AppProvider({ children, currentUser, signOut }) {
   // ── syncRAStatus: explicit direct write for rentalAgreementStatus changes ──
   // Called at each action point that changes status; updates rental_agreements
   // directly without any batch sync.
-  async function syncRAStatus(resCode, status) {
+  //
+  // It also moves the vehicle, because for most callers the status change IS
+  // the whole action and nothing else is going to. skipFleet is for the caller
+  // that sets the vehicle itself: Close Rental works out Needs Cleaning,
+  // Damaged or PM from what it found on the return, and the Ready Returns write
+  // this would otherwise fire was not awaited, so the two raced and the wrong
+  // one could land last. That left a freshly damaged vehicle sitting in the
+  // returns queue looking ready to hand out.
+  async function syncRAStatus(resCode, status, { skipFleet = false } = {}) {
     try {
       const existing = raRef.current.find((ra) => ra.resCode === resCode);
       if (existing) {
@@ -1612,7 +1620,7 @@ function AppProvider({ children, currentUser, signOut }) {
         setRentalAgreementsState(updated);
 
         // Enforce vehicle status rules driven by RA status
-        if (plate) {
+        if (plate && !skipFleet) {
           const newFleetStatus =
             status === "open_rental_agreement" ? "On Rent" :
             status === "customer_return"       ? "Ready Returns" :
@@ -1640,7 +1648,7 @@ function AppProvider({ children, currentUser, signOut }) {
 
         // Enforce vehicle status rules driven by RA status (first-time insert)
         const plate = data?.plate || reservations.find((r) => r.resCode === resCode)?.plate;
-        if (plate) {
+        if (plate && !skipFleet) {
           const newFleetStatus =
             status === "open_rental_agreement" ? "On Rent" :
             status === "customer_return"       ? "Ready Returns" :
@@ -9677,34 +9685,31 @@ function CloseRentalPage() {
         // patched into local state below, as every other caller of it does.
         // Closing also stamps the return time, exactly as the status control
         // on the agreement page does.
-        // For a self-return syncRAStatus is a no-op: the agreement is already
-        // close_pending, so it returns before writing anything, which is also
-        // what keeps it from firing its own fleet write underneath the one
-        // below.
-        await syncRAStatus(ra.resCode, agreementOutcome.status);
+        // skipFleet: the vehicle is this flow's to set, a few lines down, from
+        // what the return actually found. Letting syncRAStatus move it to Ready
+        // Returns as well put two writes on one row with no order between them.
+        await syncRAStatus(ra.resCode, agreementOutcome.status, { skipFleet: true });
         const stamp = raCloseStamp(returnedAtIso ? new Date(returnedAtIso) : new Date());
         runWrite(supabase.from("reservations").update(stamp).eq("resCode", ra.resCode), "close rental: return stamp");
         setReservations((prev) => prev.map((r) => (
           r.resCode === ra.resCode ? { ...r, ...stamp, rentalAgreementStatus: agreementOutcome.status } : r
         )));
 
-        // The vehicle. close_pending moves it to Ready Returns, which is the
-        // queue for a vehicle that is back but not yet looked at; this flow
-        // has just looked at it, so it goes straight to where that inspection
-        // puts it, and its renter fields are cleared as they are when staff
-        // mark one collected.
+        // The vehicle, from what this return found: Needs Cleaning, or Damaged,
+        // or PM when it is due for service. Ready Returns is the queue for a
+        // vehicle that is back and has not been looked at, and this flow has
+        // just looked at it, so it goes straight to where the inspection puts
+        // it, with its renter fields cleared.
         //
-        // Read back once: the Ready Returns write syncRAStatus fires is not
-        // awaited, so two writes to one row can be in flight together and land
-        // in either order. Checking costs one request and removes the only way
-        // this ends with a vehicle sitting in the wrong queue.
+        // The only write to this row now, which is why there is no read-back.
+        // There used to be one: syncRAStatus fired its own un-awaited Ready
+        // Returns write above, the two could land in either order, and reading
+        // the row afterwards was how that was caught. skipFleet stops the
+        // second write existing, so the ordering it guarded against cannot
+        // arise.
         if (vehicle) {
           const patch = { status: vehicleStatus.status, currentRenter: null, dueBack: null, fileType: null };
           await supabase.from("fleet").update(patch).eq("id", vehicle.id);
-          const check = await supabase.from("fleet").select("status").eq("id", vehicle.id).maybeSingle();
-          if (check?.data && check.data.status !== patch.status) {
-            runWrite(supabase.from("fleet").update(patch).eq("id", vehicle.id), "close rental: vehicle status");
-          }
           setFleet((prev) => prev.map((v) => (v.id === vehicle.id ? { ...v, ...patch } : v)));
         }
 
