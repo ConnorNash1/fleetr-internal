@@ -368,10 +368,11 @@ Reservations operation rules:
 - If any required field is missing, ask for it in "message" rather than emitting the action.
 
 Rental agreement lifecycle:
-- A rental agreement moves through four statuses: "reservation" (not yet picked up), "open_rental_agreement" (the vehicle is out), "close_pending" (returned, paperwork not finished), "closed" (done).
+- A rental agreement moves through five statuses, in this order: "reservation" (not yet picked up), "open_rental_agreement" (the vehicle is out), "customer_return" (the customer returned it through the customer app and staff have not processed it yet), "close_pending" (staff have processed the return, paperwork not finished), "closed" (done).
 - To change it, use operation "raStatus" on table "reservations", match on "resCode", and data containing only rentalAgreementStatus. Example: {"table":"reservations","operation":"raStatus","match":{"resCode":"ABC 123 456"},"data":{"rentalAgreementStatus":"open_rental_agreement"}}
 - Never change rentalAgreementStatus through an "update", and never send any other field in the same action.
-- Opening sets the vehicle to On Rent. Moving to close_pending sets it to Ready Returns. Both happen automatically, do not also send a fleet status change.
+- Opening sets the vehicle to On Rent. Moving to customer_return or to close_pending sets it to Ready Returns. All of these happen automatically, do not also send a fleet status change.
+- Do not set customer_return yourself. The customer app writes it when a customer returns a vehicle, and it records that a customer did so; setting it by hand would claim a return that did not happen that way.
 - Opening a rental on a vehicle flagged needsPm raises a confirmation for the staff member. They can rent it anyway, or cancel, in which case nothing is written. Say in "message" that the vehicle is flagged, rather than promising the rental is open.
 - Closing (close_pending or closed) stamps the return date and time automatically. Never supply returnDate, returnTime or returnMeridiem yourself.
 - Use the rental agreements data passed in the user message to find the current status of an agreement, and the reservations data to find the resCode.
@@ -1614,6 +1615,7 @@ function AppProvider({ children, currentUser, signOut }) {
         if (plate) {
           const newFleetStatus =
             status === "open_rental_agreement" ? "On Rent" :
+            status === "customer_return"       ? "Ready Returns" :
             status === "close_pending"         ? "Ready Returns" : null;
           if (newFleetStatus) {
             setFleetState((prev) =>
@@ -1641,6 +1643,7 @@ function AppProvider({ children, currentUser, signOut }) {
         if (plate) {
           const newFleetStatus =
             status === "open_rental_agreement" ? "On Rent" :
+            status === "customer_return"       ? "Ready Returns" :
             status === "close_pending"         ? "Ready Returns" : null;
           if (newFleetStatus) {
             setFleetState((prev) =>
@@ -2180,6 +2183,7 @@ const EMPTY_RES_FORM = {
 
 function statusLabel(s) {
   if (s === "open_rental_agreement") return "Open";
+  if (s === "customer_return")       return "Customer Return";
   if (s === "close_pending")         return "Close Pending";
   if (s === "closed")                return "Closed";
   if (s === "reservation")           return "Reservation";
@@ -2199,6 +2203,11 @@ function statusLabel(s) {
 // is the one thing that tells whoever sees it what actually needs adding here.
 const RA_BADGE_VARIANTS = {
   open_rental_agreement: "rentalAgreementBadge--open",
+  // Returned by the customer, not yet processed by staff. Its own colour
+  // rather than sharing Close Pending's: the whole point of the state is that
+  // nobody has looked at the vehicle yet, and a queue you cannot pick out at a
+  // glance is not a queue.
+  customer_return:       "rentalAgreementBadge--customerReturn",
   close_pending:         "rentalAgreementBadge--pending",
   closed:                "rentalAgreementBadge--closed",
   // Not a rental agreement yet. Neutral rather than one of the three live
@@ -2211,6 +2220,24 @@ function raBadgeClass(status, { meta = false } = {}) {
   const variant = RA_BADGE_VARIANTS[status] || "rentalAgreementBadge--neutral";
   return `rentalAgreementBadge ${variant}${meta ? " rentalAgreementBadge--meta" : ""}`;
 }
+
+// ─── Status groups ───────────────────────────────────────────────────────────
+// Named where more than one screen asks the same question of a status, so the
+// answer cannot drift between them. Each of these was a literal comparison
+// repeated across the file, which is how close_pending came to mean two
+// different things depending on which screen was asking.
+
+// A vehicle is sitting in Ready Returns under one of these. Both mean the
+// vehicle is physically back: customer_return because the customer app put it
+// there, close_pending because a rental returned before customer_return
+// existed did. Used to find the agreement behind a row in that queue.
+const RA_IN_READY_RETURNS = ["customer_return", "close_pending"];
+
+// The vehicle's status may not be set by hand under one of these. The rental
+// owns the vehicle while it is out, and it still owns it once the customer has
+// dropped it off and before staff have processed it: that vehicle is not free
+// to be marked Available by someone passing the detail page.
+const RA_LOCKS_VEHICLE_STATUS = ["open_rental_agreement", "customer_return"];
 
 // ─── CustomerLink ─────────────────────────────────────────────────────────────
 
@@ -3505,7 +3532,7 @@ function DashboardPage() {
                         readyReturns.length === 0
                           ? React.createElement("tr", null, React.createElement("td", { colSpan: 5, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
                           : readyReturns.map((r) => {
-                              const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && a.rentalAgreementStatus === "close_pending");
+                              const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
                               const loc = matchRA?.returnVehicleLocation || "";
                               return React.createElement("tr", { key: r.id },
                                 React.createElement("td", null, React.createElement(PlateLink, { plate: r.plate })),
@@ -4116,7 +4143,7 @@ function VehicleDetailPage() {
 
   // Active RA for this plate (open rental) \u2014 used for currentRenter, resCode, returnDate
   const activeRa = plate
-    ? rentalAgreements.find((ra) => ra.plate === plate && ra.rentalAgreementStatus === "open_rental_agreement") || null
+    ? rentalAgreements.find((ra) => ra.plate === plate && RA_LOCKS_VEHICLE_STATUS.includes(ra.rentalAgreementStatus)) || null
     : null;
 
   // Most recent RA for this plate by inspectedAt \u2014 used for odometer and fuel level
@@ -4632,7 +4659,7 @@ function FleetPage() {
                       readyReturns.length === 0
                         ? React.createElement("tr", null, React.createElement("td", { colSpan: 5, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
                         : readyReturns.map((r) => {
-                            const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && a.rentalAgreementStatus === "close_pending");
+                            const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
                             const loc = matchRA?.returnVehicleLocation || "";
                             return React.createElement("tr", { key: r.id },
                               React.createElement("td", null, React.createElement(PlateLink, { plate: r.plate })),
@@ -5331,7 +5358,9 @@ function resolveGasSettingsUpdate(data, currentPrices, knownRegions) {
 // same name on reservations is a stale mirror that gets overwritten from
 // rental_agreements at load, so writing it directly looks like it worked and
 // then silently reverts. Everything goes through syncRAStatus instead.
-const RA_STATUSES = ["reservation", "open_rental_agreement", "close_pending", "closed"];
+// In lifecycle order. validateRaStatus prints this list back on a refusal, so
+// the order is what a person reads to understand the sequence.
+const RA_STATUSES = ["reservation", "open_rental_agreement", "customer_return", "close_pending", "closed"];
 
 function validateRaStatus(status) {
   const s = String(status ?? "").trim();
@@ -5658,7 +5687,7 @@ function FleetVehiclesPage() {
                       filteredRR.length === 0
                         ? React.createElement("tr", null, React.createElement("td", { colSpan: 5, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
                         : filteredRR.map((r) => {
-                            const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && a.rentalAgreementStatus === "close_pending");
+                            const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
                             const loc = matchRA?.returnVehicleLocation || "";
                             return React.createElement("tr", { key: r.id },
                               React.createElement("td", null, React.createElement(PlateLink, { plate: r.plate })),
@@ -8612,6 +8641,7 @@ function RentalAgreementsPage() {
   const { openRentalAgreementId, setOpenRentalAgreementId, reservations, rentalAgreements, setRentalAgreements } = React.useContext(AppContext);
   const TABS = [
     { label: "Open",          value: "open_rental_agreement" },
+    { label: "Customer Return", value: "customer_return" },
     { label: "Close Pending", value: "close_pending" },
     { label: "Closed",        value: "closed" },
   ];
@@ -9422,8 +9452,14 @@ function useOpenRentalRows({ includeSelfReturns = false } = {}) {
           odometerOnFile: vehicle?.currentOdometer ?? null,
           // Carried on the row so the flow does not have to re-derive it, and
           // so the screens can say which kind of return they are handling.
-          selfReturn: ra.rentalAgreementStatus === CLOSE_RENTAL_RA_STATUS
-                      && vehicle?.status === "Ready Returns",
+          // customer_return says so on its own. close_pending with the vehicle
+          // still in Ready Returns is the same thing recorded before that
+          // status existed, and stays recognised so those rentals remain
+          // processable; it needs the vehicle check because close_pending is
+          // also where a staff-processed rental sits.
+          selfReturn: ra.rentalAgreementStatus === "customer_return"
+                      || (ra.rentalAgreementStatus === CLOSE_RENTAL_RA_STATUS
+                          && vehicle?.status === "Ready Returns"),
           raStatus:   ra.rentalAgreementStatus,
         };
       })
@@ -14791,6 +14827,10 @@ body, * {
 .rentalAgreementBadge--open {
   background: #d1fae5;
   color: #065f46;
+}
+.rentalAgreementBadge--customerReturn {
+  background: #dbeafe;
+  color: #1e40af;
 }
 .rentalAgreementBadge--pending {
   background: #fef3c7;
