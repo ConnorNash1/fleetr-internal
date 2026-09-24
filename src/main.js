@@ -10645,7 +10645,15 @@ function CustomerPage() {
   });
   const toggle = (key) => setSect((prev) => ({ ...prev, [key]: !prev[key] }));
 
-  const rentalAgreementStatus = localRecord?.rentalAgreementStatus || "reservation";
+  // The agreement is authoritative. localRecord is this page's own fetch of the
+  // reservation row, straight from the database and never passed through the
+  // load-time merge, so its rentalAgreementStatus is the raw mirror column:
+  // complete_pickup writes it and complete_return does not, which left a
+  // customer self-return reading Open here for good, on the page the rental
+  // agreements list actually opens. Kept as the fallback for a reservation with
+  // no agreement yet, and "reservation" when there is neither.
+  const rentalAgreementStatus =
+    ra?.rentalAgreementStatus || localRecord?.rentalAgreementStatus || "reservation";
 
   // The vehicle this reservation will actually go out on. Checked before a
   // rental agreement is opened so a PM-due vehicle cannot be rented silently.
@@ -11517,7 +11525,7 @@ function CustomerPage() {
       { className: "customerPageMeta" },
       React.createElement("span", { className: "customerPageMetaCode" }, resCode),
       (() => {
-        const raStatus = localRecord?.rentalAgreementStatus;
+        const raStatus = rentalAgreementStatus;
         if (!raStatus || raStatus === "reservation") return null;
         const cls = raBadgeClass(raStatus, { meta: true });
         return React.createElement("span", { className: cls }, statusLabel(raStatus));
