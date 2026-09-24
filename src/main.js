@@ -8640,7 +8640,11 @@ function RentalAgreementsPage() {
       raId:        matchingRa?.id || null,
       resCode:     selectedRes.resCode,
       customer:    selectedRes.customer,
-      status:      selectedRes.rentalAgreementStatus,
+      // The agreement is authoritative; the column on the reservation is a
+      // mirror that is only refreshed at load, so it reads as Open on an
+      // agreement that moved to close_pending somewhere else in the session.
+      // Same precedence as the overdue list.
+      status:      matchingRa?.rentalAgreementStatus || selectedRes.rentalAgreementStatus,
       vehicle:     [selectedRes.vehicleYear, selectedRes.vehicleMake, selectedRes.vehicleModel].filter(Boolean).join(" ") || selectedRes.vehicleClass || "—",
       vehicleClass: selectedRes.vehicleClass || "—",
       pickupDate:  selectedRes.date,
@@ -9588,9 +9592,12 @@ function CloseRentalPage() {
             })
           : { paths: [], failures: [] };
 
-        // syncRAStatus owns the status change: it writes rental_agreements and
-        // keeps the reservation mirror in step. Closing also stamps the return
-        // time, exactly as the status control on the agreement page does.
+        // syncRAStatus owns the status change: it writes rental_agreements,
+        // and moves the vehicle for open_rental_agreement and close_pending.
+        // It does NOT touch reservations, so the mirror on the reservation is
+        // patched into local state below, as every other caller of it does.
+        // Closing also stamps the return time, exactly as the status control
+        // on the agreement page does.
         await syncRAStatus(ra.resCode, CLOSE_RENTAL_RA_STATUS);
         const stamp = raCloseStamp();
         runWrite(supabase.from("reservations").update(stamp).eq("resCode", ra.resCode), "close rental: return stamp");
