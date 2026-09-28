@@ -8409,6 +8409,27 @@ function Layout() {
 
 // ─── PreRentalCheckPage ─────────────────────────────────────────────────────────────────
 
+// What the pre-rental text did, from its notifications_sent row. status is
+// what the worker did (claimed, then sent or failed); deliveryStatus is what
+// Twilio reported afterwards through /twilio-status.
+function preRentalTextStatus(note) {
+  if (!note) return { label: "Not sent yet", title: "The text goes out automatically the business day before pickup." };
+  if (note.status === "failed") return { label: "Failed", title: "Twilio refused the message when it was sent." };
+  if (note.status !== "sent") return { label: "Queued", title: "Being sent now." };
+  const d = note.deliveryStatus;
+  if (d === "delivered" || d === "read") return { label: "Delivered", title: "Delivered to the customer's phone." };
+  if (d === "undelivered" || d === "failed") {
+    return { label: "Failed", title: `The carrier did not deliver it${note.errorCode ? ` (Twilio error ${note.errorCode})` : ""}.` };
+  }
+  if (d === "sent" || d === "sending") return { label: "Sent", title: "Handed to the carrier; waiting for delivery." };
+  return { label: "Queued", title: "Accepted by Twilio; waiting to go out." };
+}
+
+// How often the page re-reads the statuses while it is open. Twilio's receipts
+// land within seconds to minutes, and Realtime is not enabled on this project
+// (see the note in App), so the page asks again rather than being told.
+const PRE_RENTAL_STATUS_POLL_MS = 20000;
+
 function PreRentalCheckPage() {
   const { reservations } = React.useContext(AppContext);
   const tomorrowIso = isoOffset(1);
@@ -8418,6 +8439,33 @@ function PreRentalCheckPage() {
   })();
 
   const tomorrowRows = reservations.filter((r) => r.date === tomorrowIso);
+
+  // Each row's pre_rental text, by res code. Re-read on an interval and when
+  // the tab comes back into view, so a status moves without a reload.
+  const resCodesKey = tomorrowRows.map((r) => r.resCode).filter(Boolean).sort().join(",");
+  const [textNotes, setTextNotes] = React.useState({});
+  React.useEffect(() => {
+    const codes = resCodesKey ? resCodesKey.split(",") : [];
+    if (codes.length === 0) { setTextNotes({}); return undefined; }
+    let live = true;
+    const load = async () => {
+      const { data, error } = await supabase.from("notifications_sent")
+        .select("resCode, status, deliveryStatus, errorCode")
+        .eq("type", "pre_rental").in("resCode", codes);
+      if (!live) return;
+      if (error) { console.warn("pre-rental text status load failed:", error); return; }
+      setTextNotes(Object.fromEntries((data || []).map((n) => [n.resCode, n])));
+    };
+    load();
+    const timer = setInterval(load, PRE_RENTAL_STATUS_POLL_MS);
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [resCodesKey]);
 
   return React.createElement(
     "div",
@@ -8475,9 +8523,10 @@ function PreRentalCheckPage() {
                     React.createElement("td", { key: `${row.resCode}-3` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })),
                     React.createElement("td", { key: `${row.resCode}-4` }, row.vehicleClass),
                     React.createElement("td", { key: `${row.resCode}-5` }, row.winterTires),
-                    React.createElement("td", { key: `${row.resCode}-6` },
-                      React.createElement("span", { className: "preRentalCheckDone" }, "Queued")
-                    )
+                    React.createElement("td", { key: `${row.resCode}-6` }, (() => {
+                      const st = preRentalTextStatus(textNotes[row.resCode]);
+                      return React.createElement("span", { className: "preRentalCheckDone", title: st.title }, st.label);
+                    })())
                   )
                 )
               )
