@@ -9655,6 +9655,70 @@ function OpenRentalSearch({ rows, onSelect }) {
   );
 }
 
+// ─── Pending pickups ─────────────────────────────────────────────────────────
+// Switch Out moves a rental onto a vehicle the customer then picks up in the
+// customer app. Until they do, the agreement's open history row has no
+// pickedUpAt, and neither Close Rental nor another Switch Out may touch it:
+// there is nothing to close, and no vehicle the customer is actually on to
+// switch away from.
+async function fetchPendingPickup(rentalAgreementId) {
+  const { data, error } = await supabase.from("rental_agreement_vehicles")
+    .select("id, vehicleId").eq("rentalAgreementId", rentalAgreementId)
+    .is("endedAt", null).is("pickedUpAt", null).maybeSingle();
+  return { leg: data || null, error: error || null };
+}
+
+// The same check for the agreement a flow has selected, so a pending pickup is
+// refused as soon as the rental is picked rather than after every step. A
+// failed check blocks nothing here; the check made again before writing does.
+function usePendingPickup(rentalAgreementId) {
+  const { fleet } = React.useContext(AppContext);
+  const [state, setState] = React.useState({ id: null, leg: null });
+  React.useEffect(() => {
+    if (!rentalAgreementId) { setState({ id: null, leg: null }); return undefined; }
+    let live = true;
+    fetchPendingPickup(rentalAgreementId).then((r) => { if (live) setState({ id: rentalAgreementId, leg: r.leg }); });
+    return () => { live = false; };
+  }, [rentalAgreementId]);
+  const leg = state.id === rentalAgreementId ? state.leg : null;
+  if (!leg) return null;
+  const vehicle = (fleet || []).find((v) => v.id === leg.vehicleId) || null;
+  return { ...leg, plate: vehicle?.plate || null };
+}
+
+const PENDING_PICKUP_CHECK_FAILED =
+  "Could not check whether this rental has a vehicle waiting to be picked up. Try again.";
+
+const closeRentalPendingMessage = (plate) =>
+  `The customer hasn't picked up the new vehicle${plate ? ` (${plate})` : ""} yet. ` +
+  "They need to pick it up in the customer app before this rental can be closed.";
+
+const switchOutPendingMessage = (plate) =>
+  `This rental is already switched to ${plate || "another vehicle"}, and the customer hasn't picked it up yet. ` +
+  "They need to pick it up in the customer app before it can be switched again.";
+
+function PendingPickupRefusal({ pageTitle, message, onBack }) {
+  return React.createElement("div", { className: "page" },
+    React.createElement("h1", { className: "page__title" }, pageTitle),
+    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement("div", { className: "closeRentalWarning" }, message),
+    React.createElement("div", { className: "closeRentalActions" },
+      React.createElement("button", { type: "button", className: "resModalCancel", onClick: onBack }, "Back")
+    )
+  );
+}
+
+// The check made immediately before a flow writes anything, outside
+// guardAction so a refusal is not audited as the action. Returns the message
+// to show, or null when the flow may go ahead.
+async function pendingPickupRefusal(rentalAgreementId, fleet, messageFor) {
+  const { leg, error } = await fetchPendingPickup(rentalAgreementId);
+  if (error) return PENDING_PICKUP_CHECK_FAILED;
+  if (!leg) return null;
+  const plate = (fleet || []).find((v) => v.id === leg.vehicleId)?.plate || null;
+  return messageFor(plate);
+}
+
 function CloseRentalPage() {
   const { reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, syncRAStatus, setDamageClaims, appSettings, guardAction, currentUser } =
     React.useContext(AppContext);
@@ -9669,6 +9733,8 @@ function CloseRentalPage() {
   const [final,      setFinal]      = React.useState(null);
   const [busy,       setBusy]       = React.useState(false);
   const [done,       setDone]       = React.useState(null);
+  const [refusal,    setRefusal]    = React.useState(null);
+  const pendingPickup = usePendingPickup(selectedId);
 
   // Captured photos live only in memory, as object URLs over their blobs.
   // Released when the page closes, so a walk away mid-flow leaks nothing.
@@ -9728,7 +9794,7 @@ function CloseRentalPage() {
 
   const resetFlow = () => {
     setSelectedId(null); setReadings(EMPTY_CLOSE_READINGS); setClosing(null);
-    setDamageDraft(EMPTY_DAMAGE_DRAFT); setReview(null); setFinal(null); clearPhotos();
+    setDamageDraft(EMPTY_DAMAGE_DRAFT); setReview(null); setFinal(null); setRefusal(null); clearPhotos();
   };
 
   // Closing the rental. One audited action: the leg this vehicle just finished
@@ -9753,8 +9819,16 @@ function CloseRentalPage() {
     return Number.isNaN(d.getTime()) ? null : d.toISOString();
   }, [row?.selfReturn, ra?.returnedAt]);
 
-  const completeClose = () => {
+  const completeClose = async () => {
     if (!final || !ra) return;
+    // A rental switched onto a vehicle the customer has not collected has
+    // nothing to close. Checked again here, since the pickup may have been
+    // assigned after the rental was selected.
+    setRefusal(null);
+    setBusy(true);
+    const refused = await pendingPickupRefusal(ra.id, fleet, closeRentalPendingMessage);
+    setBusy(false);
+    if (refused) { setRefusal(refused); return; }
     guardAction("ra.advance", async () => {
       setBusy(true);
       try {
@@ -9980,6 +10054,13 @@ function CloseRentalPage() {
     );
   }
 
+  // Any step, once the selected rental turns out to have a pickup pending.
+  if (selectedId && pendingPickup) {
+    return React.createElement(PendingPickupRefusal, {
+      pageTitle: "Close Rental", message: closeRentalPendingMessage(pendingPickup.plate), onBack: resetFlow,
+    });
+  }
+
   // Step 5. Everything steps 1 to 4 collected, and the button that writes it.
   // Back returns to whichever step came before it: photos after a Yes, damage
   // review after a No.
@@ -10016,6 +10097,7 @@ function CloseRentalPage() {
       vehicle && line("Vehicle moves to", vehicleStatus.status),
       vehicle && vehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, vehicleStatus.message),
       React.createElement("p", { className: "page__body" }, "Final charges are coming soon."),
+      refusal && React.createElement("div", { className: "closeRentalWarning" }, refusal),
       React.createElement("div", { className: "closeRentalActions" },
         React.createElement("button", {
           type: "button", className: "resModalCancel", disabled: busy,
@@ -10083,9 +10165,14 @@ function CloseRentalPage() {
 //
 // Steps 1 to 4 are Close Rental's own screens, reused as they are: find the
 // open agreement, closing mileage and gas, previous damage and a new damage
-// answer, and live camera photos when there is new damage. Then two screens of
-// its own, the replacement vehicle and its starting readings, and a confirm.
-// There is no charges screen: nothing new is billed by a switch.
+// answer, and live camera photos when there is new damage. Then the
+// replacement vehicle and a confirm. There is no charges screen: nothing new
+// is billed by a switch.
+//
+// The replacement is not handed over here. It goes to Ready for Pickup with a
+// pending history row, and the customer picks it up in the customer app,
+// which records its starting mileage, gas, photos and signature. Until then
+// the rental can be neither closed nor switched again.
 
 // Only a vehicle sitting Available can be handed over. Ready for Pickup is
 // deliberately not included: it is prepared for a particular booking, and
@@ -10188,10 +10275,10 @@ function SwitchOutVehicleStep({ row, onBack, onNext }) {
   );
 }
 
-// Step 7. Everything the switch is about to change, then one button. The
+// Step 6. Everything the switch is about to change, then one button. The
 // vehicle statuses shown are the ones that will be written, PM override
 // included, so nothing is decided after the confirm.
-function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, baseline, oldVehicleStatus, onBack, onComplete, busy }) {
+function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, oldVehicleStatus, refusal, onBack, onComplete, busy }) {
   const line = (label, value) =>
     React.createElement("p", { className: "page__body" }, `${label} `, React.createElement("strong", null, value));
   const describe = (v) => [v.year, v.make, v.model].filter(Boolean).join(" ") || v.vehicleClass || "-";
@@ -10213,10 +10300,13 @@ function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, baseli
     review.newDamageFound && line("New damage photos", String(photos.length)),
     line("Its new status", oldVehicleStatus.status),
     oldVehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, oldVehicleStatus.message),
-    React.createElement("h2", { className: "closeRentalStepTitle", style: { marginTop: 18 } }, "Going out"),
+    React.createElement("h2", { className: "closeRentalStepTitle", style: { marginTop: 18 } }, "Picked up next"),
     line("Replacement vehicle", `${describe(newVehicle)} (${newVehicle.plate})`),
-    line("Starting mileage", `${baseline.closingMileage.toLocaleString("en-CA")} km`),
-    line("Starting gas level", baseline.closingGasLevel),
+    line("Its new status", "Ready for Pickup"),
+    React.createElement("p", { className: "page__body" },
+      `The customer must now pick up ${newVehicle.plate} in the customer app, which records its starting mileage and gas. ` +
+      "Until they do, this rental cannot be closed or switched again."),
+    refusal && React.createElement("div", { className: "closeRentalWarning" }, refusal),
     React.createElement("div", { className: "closeRentalActions" },
       React.createElement("button", { type: "button", className: "resModalCancel", onClick: onBack, disabled: busy }, "Back"),
       React.createElement("button", { type: "button", className: "resModalSubmit", onClick: onComplete, disabled: busy },
@@ -10224,15 +10314,6 @@ function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, baseli
     )
   );
 }
-
-const SWITCH_OUT_READINGS_LABELS = {
-  pageTitle:      "Switch Out",
-  stepTitle:      "Starting mileage and gas",
-  mileageLabel:   "Starting mileage (km)",
-  mileageMissing: "Enter the starting mileage.",
-  gasLabel:       "Starting gas level",
-  gasMissing:     "Set the starting gas level.",
-};
 
 function SwitchOutPage() {
   const { reservations, rentalAgreements, setRentalAgreements, fleet, setFleet, setDamageClaims, guardAction, currentUser } =
@@ -10246,10 +10327,10 @@ function SwitchOutPage() {
   const [photos,      setPhotos]      = React.useState([]);
   const [photosDone,  setPhotosDone]  = React.useState(false);
   const [newVehicle,  setNewVehicle]  = React.useState(null);
-  const [newReadings, setNewReadings] = React.useState(EMPTY_CLOSE_READINGS);
-  const [baseline,    setBaseline]    = React.useState(null);
   const [busy,        setBusy]        = React.useState(false);
   const [done,        setDone]        = React.useState(null);
+  const [refusal,     setRefusal]     = React.useState(null);
+  const pendingPickup = usePendingPickup(selectedId);
 
   // As in Close Rental: photos are object URLs over blobs held in memory only,
   // released when the page closes.
@@ -10278,24 +10359,34 @@ function SwitchOutPage() {
   const resetFlow = () => {
     setSelectedId(null); setReadings(EMPTY_CLOSE_READINGS); setClosing(null);
     setDamageDraft(EMPTY_DAMAGE_DRAFT); setReview(null); setPhotosDone(false);
-    setNewVehicle(null); setNewReadings(EMPTY_CLOSE_READINGS); setBaseline(null);
+    setNewVehicle(null); setRefusal(null);
     clearPhotos();
   };
 
   // The switch itself. One audited action: the old vehicle is released, the
-  // new one goes out, and the agreement moves onto it with a fresh baseline.
-  // Nothing about the customer, the dates or the money is touched.
-  const completeSwitch = () => {
-    if (!ra || !newVehicle || !baseline || !closing || !review) return;
+  // new one is set aside for the customer, and the agreement moves onto it.
+  // Its starting mileage and gas are the customer's to record at pickup, so
+  // the agreement's mileage and fuelAtPickup are left for complete_switch_pickup
+  // to write. Nothing about the customer, the dates or the money is touched.
+  const completeSwitch = async () => {
+    if (!ra || !newVehicle || !closing || !review) return;
     const customer  = row?.customer && row.customer !== "-" ? row.customer : (res?.customer || null);
     const dueBack   = ra.returnDate || res?.returnDate || null;
     const raPatch = {
       plate:        newVehicle.plate,
       make:         newVehicle.make  || null,
       model:        newVehicle.model || null,
-      mileage:      baseline.closingMileage,
-      fuelAtPickup: baseline.closingGasLevel,
     };
+
+    // A second switch while the first is uncollected would strand the vehicle
+    // already set aside. Checked again here, since it may have been assigned
+    // after this rental was selected, and outside guardAction so a refusal is
+    // not audited as a switch.
+    setRefusal(null);
+    setBusy(true);
+    const refused = await pendingPickupRefusal(ra.id, fleet, switchOutPendingMessage);
+    setBusy(false);
+    if (refused) { setRefusal(refused); return; }
 
     guardAction("ra.switchOut", async () => {
       setBusy(true);
@@ -10363,36 +10454,36 @@ function SwitchOutPage() {
           }
         }
 
-        // The leg starting now. Opened only after the old one is closed: one
-        // agreement may hold one open leg, which is what makes an endedAt of
-        // null mean "this is the vehicle the customer is on".
+        // The leg starting now, pending: no readings and no pickedUpAt until
+        // the customer picks the vehicle up in the customer app. Opened only
+        // after the old one is closed: one agreement may hold one open leg.
         const openRes = await supabase.from("rental_agreement_vehicles").insert({
           rentalAgreementId: ra.id,
           vehicleId:         newVehicle.id,
           startedAt:         new Date().toISOString(),
-          // TEMPORARY until the switch pickup flow ships: staff hand the
-          // vehicle over here, so the leg starts picked up. Without this it
-          // reads as a pending pickup and the customer's return is refused.
-          pickedUpAt:        new Date().toISOString(),
-          pickupMileage:     baseline.closingMileage,
-          pickupGas:         baseline.closingGasLevel,
         });
         if (openRes?.error) console.warn("switch out: opening the new leg failed:", openRes.error);
 
         // The vehicle coming back. Its renter fields are cleared, as they are
-        // when a returned vehicle is marked collected.
+        // when a returned vehicle is marked collected. Every write from here
+        // is awaited, and local state follows only the ones that landed.
+        let oldRes = null;
         if (oldVehicle) {
           const oldPatch = { status: oldVehicleStatus.status, currentRenter: null, dueBack: null, fileType: null };
-          setFleet((prev) => prev.map((v) => (v.id === oldVehicle.id ? { ...v, ...oldPatch } : v)));
-          runWrite(supabase.from("fleet").update(oldPatch).eq("id", oldVehicle.id), "switch out: old vehicle");
+          oldRes = await supabase.from("fleet").update(oldPatch).eq("id", oldVehicle.id);
+          if (oldRes?.error) console.warn("switch out: old vehicle failed:", oldRes.error);
+          else setFleet((prev) => prev.map((v) => (v.id === oldVehicle.id ? { ...v, ...oldPatch } : v)));
         }
 
-        const newPatch = { status: "On Rent", currentRenter: customer, dueBack };
-        setFleet((prev) => prev.map((v) => (v.id === newVehicle.id ? { ...v, ...newPatch } : v)));
-        runWrite(supabase.from("fleet").update(newPatch).eq("id", newVehicle.id), "switch out: new vehicle");
+        // The replacement, set aside for this customer until they pick it up.
+        const newPatch = { status: "Ready for Pickup", currentRenter: customer, dueBack };
+        const newRes = await supabase.from("fleet").update(newPatch).eq("id", newVehicle.id);
+        if (newRes?.error) console.warn("switch out: new vehicle failed:", newRes.error);
+        else setFleet((prev) => prev.map((v) => (v.id === newVehicle.id ? { ...v, ...newPatch } : v)));
 
-        setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, ...raPatch } : a)));
-        runWrite(supabase.from("rental_agreements").update(raPatch).eq("id", ra.id), "switch out: rental agreement");
+        const raRes = await supabase.from("rental_agreements").update(raPatch).eq("id", ra.id);
+        if (raRes?.error) console.warn("switch out: rental agreement failed:", raRes.error);
+        else setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, ...raPatch } : a)));
 
         clearPhotos();
         setDone({
@@ -10402,10 +10493,12 @@ function SwitchOutPage() {
           oldStatus: oldVehicle ? oldVehicleStatus.status : null,
           forcedMessage: oldVehicle && oldVehicleStatus.forced ? oldVehicleStatus.message : null,
           newPlate: newVehicle.plate,
-          newMileage: baseline.closingMileage,
-          newGas: baseline.closingGasLevel,
           resCode: ra.resCode || null,
-          legsSaved: !closeError && !openRes?.error,
+          oldLegSaved: !closeError,
+          newLegSaved: !openRes?.error,
+          oldVehicleSaved: !oldRes?.error,
+          newVehicleSaved: !newRes?.error,
+          agreementSaved: !raRes?.error,
           claimSaved: !claimRes?.error,
           photosTaken: photos.length,
           photosUploaded: upload.paths.length,
@@ -10420,7 +10513,7 @@ function SwitchOutPage() {
       description: `Switched ${row?.plate || "the vehicle"} out for ${newVehicle.plate} on rental agreement ${ra.resCode || ra.id}: ` +
         `back at ${closing.closingMileage.toLocaleString("en-CA")} km, gas ${closing.closingGasLevel}, ` +
         (review.newDamageFound ? `new damage reported (${review.newDamageNote})` : "no new damage") +
-        `. Out again at ${baseline.closingMileage.toLocaleString("en-CA")} km, gas ${baseline.closingGasLevel}.`,
+        `. ${newVehicle.plate} is Ready for Pickup; the customer must now pick it up in the customer app.`,
     });
   };
 
@@ -10437,14 +10530,23 @@ function SwitchOutPage() {
       !done.oldStatus && React.createElement("div", { className: "closeRentalWarning" },
         "The vehicle coming back is not in the fleet list under that plate, so its status was left alone. Check it by hand."),
       done.forcedMessage && React.createElement("div", { className: "closeRentalWarning" }, done.forcedMessage),
-      line("Now on", `${done.newPlate}, On Rent`),
-      line("Starting mileage", `${done.newMileage.toLocaleString("en-CA")} km`),
-      line("Starting gas level", done.newGas),
+      line("Replacement", `${done.newPlate}, Ready for Pickup`),
+      React.createElement("p", { className: "page__body" },
+        `The customer must now pick up ${done.newPlate} in the customer app, which records its starting mileage and gas. ` +
+        "Until they do, this rental cannot be closed or switched again."),
       !done.claimSaved && React.createElement("div", { className: "closeRentalWarning" },
         "The damage claim could not be saved, so this damage is not in Ongoing Damage Claims. " +
         "Flag it by hand from the customer's page before anyone is billed."),
-      !done.legsSaved && React.createElement("div", { className: "closeRentalWarning" },
-        "The vehicle history for this agreement could not be saved. The vehicles and the agreement were still updated. Tell support before either vehicle goes out again."),
+      !done.oldLegSaved && React.createElement("div", { className: "closeRentalWarning" },
+        `The history record for ${done.oldPlate || "the vehicle coming back"} could not be closed. Tell support before either vehicle goes out again.`),
+      !done.newLegSaved && React.createElement("div", { className: "closeRentalWarning" },
+        `The pickup for ${done.newPlate} could not be recorded, so the customer app will not offer it to the customer. Tell support before the customer arrives.`),
+      !done.oldVehicleSaved && React.createElement("div", { className: "closeRentalWarning" },
+        `${done.oldPlate || "The vehicle coming back"} could not be moved to ${done.oldStatus}. Set its status by hand on the fleet page.`),
+      !done.newVehicleSaved && React.createElement("div", { className: "closeRentalWarning" },
+        `${done.newPlate} could not be moved to Ready for Pickup. Set its status by hand on the fleet page.`),
+      !done.agreementSaved && React.createElement("div", { className: "closeRentalWarning" },
+        `The rental agreement could not be moved onto ${done.newPlate}, so it still shows ${done.oldPlate || "the old vehicle"}. Tell support before the customer arrives.`),
       done.photosTaken > 0 && line("Damage photos uploaded", `${done.photosUploaded} of ${done.photosTaken}`),
       done.photosFailed > 0 && React.createElement("div", { className: "closeRentalWarning" },
         `${done.photosFailed} photo${done.photosFailed === 1 ? "" : "s"} could not be uploaded. Photograph the damage again from the vehicle's page.`),
@@ -10458,32 +10560,19 @@ function SwitchOutPage() {
     );
   }
 
-  // Step 7: confirm.
-  if (baseline) {
-    return React.createElement(SwitchOutConfirmStep, {
-      row, closing, review, photos, newVehicle, baseline, oldVehicleStatus, busy,
-      onBack: () => setBaseline(null),
-      onComplete: completeSwitch,
+  // Any step, once the selected rental turns out to have a pickup pending.
+  if (selectedId && pendingPickup) {
+    return React.createElement(PendingPickupRefusal, {
+      pageTitle: "Switch Out", message: switchOutPendingMessage(pendingPickup.plate), onBack: resetFlow,
     });
   }
 
-  // Step 6: the replacement vehicle's starting readings, Close Rental's
-  // readings screen with pickup wording. The vehicle's own odometer is the
-  // last reading, so a lower figure warns here too.
+  // Step 6: confirm.
   if (newVehicle) {
-    return React.createElement(CloseRentalReadingsStep, {
-      row: {
-        vehicle: [newVehicle.year, newVehicle.make, newVehicle.model].filter(Boolean).join(" ") || newVehicle.vehicleClass || "-",
-        customer: row?.customer || "",
-        plate: newVehicle.plate,
-        odometerOnFile: newVehicle.currentOdometer ?? null,
-        pickupMileage: null,
-      },
-      rentalAgreementId: selectedId,
-      readings: newReadings, setReadings: setNewReadings,
-      labels: SWITCH_OUT_READINGS_LABELS,
-      onBack: () => { setNewVehicle(null); setNewReadings(EMPTY_CLOSE_READINGS); },
-      onNext: setBaseline,
+    return React.createElement(SwitchOutConfirmStep, {
+      row, closing, review, photos, newVehicle, oldVehicleStatus, refusal, busy,
+      onBack: () => { setNewVehicle(null); setRefusal(null); },
+      onComplete: completeSwitch,
     });
   }
 
