@@ -993,6 +993,7 @@ function enrichDamageClaim(claim, rentalAgreements, reservations) {
     resCode:           ra?.resCode || null,
     description:       claim.description || "No description",
     claimStatus:       damageClaimStatusLabel(claim.status),
+    vehicleRentable:   typeof claim.vehicleRentable === "boolean" ? claim.vehicleRentable : null,
     _status:           claim.status || "open",
   };
 }
@@ -4501,7 +4502,7 @@ function VehicleDetailPage() {
         "table", { className: "dashboardTable" },
         React.createElement("thead", null,
           React.createElement("tr", null,
-            ["Customer", "Res Code", "Damage Description", "Status"].map((col) =>
+            ["Customer", "Res Code", "Damage Description", "Status", "Rentable"].map((col) =>
               React.createElement("th", { key: col }, col)
             )
           )
@@ -4513,7 +4514,8 @@ function VehicleDetailPage() {
               React.createElement("td", null, React.createElement("button", { type: "button", className: "rentalAgreementLink rentalAgreementLink--dark", onClick: () => { setOpenRentalAgreementId(c.resCode); navigate("/rental-agreements"); } }, c.customer)),
               React.createElement("td", null, React.createElement("button", { type: "button", className: "rentalAgreementLink rentalAgreementLink--dark", onClick: () => { setOpenRentalAgreementId(c.resCode); navigate("/rental-agreements"); } }, c.resCode)),
               React.createElement("td", null, c.description),
-              React.createElement("td", null, React.createElement("span", { className: statusCls }, c.claimStatus))
+              React.createElement("td", null, React.createElement("span", { className: statusCls }, c.claimStatus)),
+              React.createElement("td", null, vehicleRentableLabel(c.vehicleRentable))
             );
           })
         )
@@ -6027,7 +6029,7 @@ function FleetDamageClaimsPage() {
     React.createElement("table", { className: "dashboardTable" },
       React.createElement("thead", null,
         React.createElement("tr", null,
-          [...["Plate", "Vehicle", "Customer", "Res Code", "Damage Description", "Status"],
+          [...["Plate", "Vehicle", "Customer", "Res Code", "Damage Description", "Status", "Rentable"],
            ...(showResolve ? ["Action"] : [])].map((col) =>
             React.createElement("th", { key: col }, col)
           )
@@ -6058,6 +6060,7 @@ function FleetDamageClaimsPage() {
             React.createElement("td", null,
               React.createElement("span", { className: CLAIM_CLS[c.claimStatus] || "claimStatus" }, c.claimStatus)
             ),
+            React.createElement("td", null, vehicleRentableLabel(c.vehicleRentable)),
             showResolve && React.createElement("td", null,
               React.createElement("button", {
                 type: "button",
@@ -9001,7 +9004,7 @@ function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, onBack, onNex
   const { damageClaims, rentalAgreements } = React.useContext(AppContext);
   const [viewing,   setViewing]   = React.useState(null);
   const [attempted, setAttempted] = React.useState(false);
-  const { choice, note } = damageDraft;
+  const { choice, note, rentable } = damageDraft;
 
   const fmtDate = (iso) => {
     if (!iso) return null;
@@ -9021,12 +9024,24 @@ function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, onBack, onNex
     .sort((a, b) => String(b.reportedAt || b.createdAt || "").localeCompare(String(a.reportedAt || a.createdAt || "")));
 
   const noteError = choice === "yes" && !note.trim() ? "Describe the new damage." : null;
+  const rentableError = choice === "yes" && !rentable ? "Choose whether the vehicle can still be rented." : null;
 
   const handleNext = () => {
     setAttempted(true);
-    if (!choice || noteError) return;
-    onNext({ newDamageFound: choice === "yes", newDamageNote: choice === "yes" ? note.trim() : null });
+    if (!choice || noteError || rentableError) return;
+    onNext({
+      newDamageFound:  choice === "yes",
+      newDamageNote:   choice === "yes" ? note.trim() : null,
+      vehicleRentable: choice === "yes" ? rentable === "rentable" : null,
+    });
   };
+
+  const rentableBtn = (value, label) =>
+    React.createElement("button", {
+      type: "button", "aria-pressed": rentable === value,
+      className: rentable === value ? "closeRentalChoice closeRentalChoice--active" : "closeRentalChoice",
+      onClick: () => setDamageDraft((prev) => ({ ...prev, rentable: value })),
+    }, label);
 
   const choiceBtn = (value, label) =>
     React.createElement("button", {
@@ -9078,7 +9093,15 @@ function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, onBack, onNex
           onChange: (e) => setDamageDraft((prev) => ({ ...prev, note: e.target.value })),
         })
       ),
-      attempted && noteError && React.createElement("div", { className: "closeRentalError" }, noteError)
+      attempted && noteError && React.createElement("div", { className: "closeRentalError" }, noteError),
+      React.createElement("h2", { className: "closeRentalStepTitle" }, "Can the vehicle still be rented?"),
+      React.createElement("div", { className: "closeRentalChoiceRow", role: "group", "aria-label": "Can the vehicle still be rented?" },
+        rentableBtn("rentable",   "Rentable"),
+        rentableBtn("unrentable", "Unrentable")
+      ),
+      React.createElement("div", { className: "closeRentalHint" },
+        "Rentable sends it to Needs Cleaning, or to PM if it is due for service. Unrentable sends it to Damaged."),
+      attempted && rentableError && React.createElement("div", { className: "closeRentalError" }, rentableError)
     ),
     React.createElement("div", { className: "closeRentalActions" },
       React.createElement("button", { type: "button", className: "resModalCancel", onClick: onBack }, "Back"),
@@ -9347,7 +9370,28 @@ function CloseRentalPhotoStep({ row, note, photos, setPhotos, onBack, onNext, pa
 }
 
 const EMPTY_CLOSE_READINGS = { mileage: "", gasIndex: null, lowConfirmed: false };
-const EMPTY_DAMAGE_DRAFT   = { choice: null, note: "" };
+const EMPTY_DAMAGE_DRAFT   = { choice: null, note: "", rentable: null };
+
+// Whether a vehicle that came back damaged can still go out. Asked whenever
+// damage is marked, because damage covers everything from a scuffed bumper to
+// a car that cannot be driven, and only the second belongs in Damaged: sending
+// every marked vehicle there took rentable cars out of the fleet until someone
+// noticed. null means the question was never asked, which is every claim
+// raised before it existed and every claim raised through Flag Damage.
+function vehicleRentableLabel(rentable) {
+  if (rentable === true)  return "Rentable";
+  if (rentable === false) return "Unrentable";
+  return "Not recorded";
+}
+
+// The status a returning vehicle is ASKED to take. Callers pass the result
+// through resolvePmStatus, which still has the last word on its own terms: a
+// Rentable vehicle due for preventative maintenance goes to PM instead of Needs
+// Cleaning, while an Unrentable one stays Damaged, because resolvePmStatus
+// treats Damaged as the more urgent of the two and leaves it alone.
+function returnedVehicleStatus(damageFound, rentable) {
+  return damageFound && rentable === false ? "Damaged" : "Needs Cleaning";
+}
 
 // Where a closed rental lands. Every close used to land on close_pending
 // because there was no charges screen, so nothing could be called finished.
@@ -9660,7 +9704,7 @@ function CloseRentalPage() {
   // they move one out of Ready Returns: damage reported beats the default, and
   // resolvePmStatus has the last word, so a vehicle flagged for preventative
   // maintenance goes to PM rather than back into service.
-  const vehicleStatus = resolvePmStatus(vehicle, final?.newDamageFound ? "Damaged" : "Needs Cleaning");
+  const vehicleStatus = resolvePmStatus(vehicle, returnedVehicleStatus(!!final?.newDamageFound, final?.vehicleRentable));
 
   // Where the agreement lands. Independent of the vehicle's status: a vehicle
   // can need cleaning without the customer owing anything for it.
@@ -9767,6 +9811,7 @@ function CloseRentalPage() {
             description:       final.newDamageNote || null,
             photos:            upload.paths,
             status:            "open",
+            vehicleRentable:   final.vehicleRentable,
           };
           claimRes = await supabase.from("damage_claims").insert(claim);
           if (claimRes?.error) {
@@ -9842,6 +9887,7 @@ function CloseRentalPage() {
           closingMileage: final.closingMileage,
           closingGas:    final.closingGasLevel,
           damageFound:   !!final.newDamageFound,
+          vehicleRentable: final.newDamageFound ? final.vehicleRentable : null,
           agreementStatus: agreementOutcome.status,
           agreementReason: agreementOutcome.reason,
           vehicleStatus: vehicle ? vehicleStatus.status : null,
@@ -9883,6 +9929,7 @@ function CloseRentalPage() {
       line("Closing mileage", `${done.closingMileage.toLocaleString("en-CA")} km`),
       line("Closing gas level", done.closingGas),
       line("New damage found", done.damageFound ? "Yes" : "No"),
+      done.damageFound && line("Vehicle", vehicleRentableLabel(done.vehicleRentable)),
       line("Agreement status", statusLabel(done.agreementStatus)),
       done.agreementReason && CLOSE_RENTAL_REASONS[done.agreementReason] &&
         line("Reason", CLOSE_RENTAL_REASONS[done.agreementReason]),
@@ -9930,6 +9977,7 @@ function CloseRentalPage() {
       line("Closing gas level", final.closingGasLevel),
       line("New damage found", final.newDamageFound ? "Yes" : "No"),
       final.newDamageFound && line("New damage note", final.newDamageNote),
+      final.newDamageFound && line("Vehicle", vehicleRentableLabel(final.vehicleRentable)),
       final.newDamageFound && line("New damage photos", String(final.photos.length)),
       final.photos.length > 0 && React.createElement("div", { className: "damagePhotoRow", style: { marginBottom: 12 } },
         final.photos.map((p, i) => React.createElement("div", { key: p.id, className: "damagePhotoThumb" },
@@ -10139,6 +10187,7 @@ function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, baseli
     line("Closing gas level", closing.closingGasLevel),
     line("New damage found", review.newDamageFound ? "Yes" : "No"),
     review.newDamageFound && line("New damage note", review.newDamageNote),
+    review.newDamageFound && line("Vehicle", vehicleRentableLabel(review.vehicleRentable)),
     review.newDamageFound && line("New damage photos", String(photos.length)),
     line("Its new status", oldVehicleStatus.status),
     oldVehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, oldVehicleStatus.message),
@@ -10201,7 +10250,7 @@ function SwitchOutPage() {
   // move one out of Ready Returns.
   const oldVehicleStatus = resolvePmStatus(
     oldVehicle,
-    review?.newDamageFound ? "Damaged" : "Needs Cleaning"
+    returnedVehicleStatus(!!review?.newDamageFound, review?.vehicleRentable)
   );
 
   const resetFlow = () => {
@@ -10281,6 +10330,7 @@ function SwitchOutPage() {
             description:       review.newDamageNote || null,
             photos:            upload.paths,
             status:            "open",
+            vehicleRentable:   review.vehicleRentable,
           };
           claimRes = await supabase.from("damage_claims").insert(claim);
           if (claimRes?.error) {
@@ -10320,6 +10370,8 @@ function SwitchOutPage() {
         clearPhotos();
         setDone({
           oldPlate: row?.plate || null,
+          oldDamageFound: !!review.newDamageFound,
+          oldVehicleRentable: review.newDamageFound ? review.vehicleRentable : null,
           oldStatus: oldVehicle ? oldVehicleStatus.status : null,
           forcedMessage: oldVehicle && oldVehicleStatus.forced ? oldVehicleStatus.message : null,
           newPlate: newVehicle.plate,
@@ -10354,6 +10406,7 @@ function SwitchOutPage() {
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Switch complete"),
       done.resCode && line("Rental agreement", done.resCode),
       done.oldPlate && line("Came back", `${done.oldPlate}${done.oldStatus ? `, now ${done.oldStatus}` : ""}`),
+      done.oldDamageFound && line("New damage found", `Yes, ${vehicleRentableLabel(done.oldVehicleRentable).toLowerCase()}`),
       !done.oldStatus && React.createElement("div", { className: "closeRentalWarning" },
         "The vehicle coming back is not in the fleet list under that plate, so its status was left alone. Check it by hand."),
       done.forcedMessage && React.createElement("div", { className: "closeRentalWarning" }, done.forcedMessage),
