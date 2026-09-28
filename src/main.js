@@ -3176,6 +3176,13 @@ function NonDriveIntakeSection({ standalone }) {
 function DashboardPage() {
   const { reservations, setReservations, fleet, setFleet, setOpenRentalAgreementId, rentalAgreements, guardAction } = React.useContext(AppContext);
   const isMobile = useMobile();
+  // Props that make a whole header bar a toggle, for mobile, where the small
+  // plus button alone is too easy to miss.
+  const tapToToggle = (onToggle) => ({
+    role: "button", tabIndex: 0, style: { cursor: "pointer" },
+    onClick: onToggle,
+    onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } },
+  });
   const readyReturns = fleet.filter((v) => v.status === "Ready Returns");
   const navigate = useNavigate();
   const [collapsedSections, setCollapsedSections] = React.useState({
@@ -3465,14 +3472,20 @@ function DashboardPage() {
           { className: "dashboardSection__header" },
           React.createElement(
             "div",
-            { className: "dashboardSection__headerRow" },
+            {
+              className: "dashboardSection__headerRow",
+              // On mobile the whole bar toggles, not just the small button;
+              // the button's own tap then reaches the bar instead of toggling
+              // twice.
+              ...(isMobile ? tapToToggle(() => toggleSection("fleetAvailability")) : {}),
+            },
             React.createElement("span", null, "Vehicle Status"),
             React.createElement(
               "button",
               {
                 type: "button",
                 className: "sectionToggleCircle",
-                onClick: () => toggleSection("fleetAvailability"),
+                onClick: isMobile ? undefined : () => toggleSection("fleetAvailability"),
               },
               collapsedSections.fleetAvailability ? "+" : "-"
             )
@@ -3489,6 +3502,31 @@ function DashboardPage() {
                 return Number.isNaN(d.getTime()) ? iso
                   : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
               };
+              const fleetStatusClass = (status) =>
+                status === "Available" ? "fleetStatus--available"
+                : status === "Needs Cleaning" ? "fleetStatus--cleaning"
+                : status === "PM" ? "fleetStatus--pm"
+                : status === "Damaged" ? "fleetStatus--damaged"
+                : status === "On Rent" ? "fleetStatus--onRent"
+                : "";
+              // Mobile: one stacked card per vehicle, the pattern the
+              // reservations list above already uses, so nothing is wider than
+              // the screen.
+              const noneCard = () => React.createElement("div", { className: "resvEmpty" }, "None");
+              const fleetCards = (rows, showStatus) =>
+                rows.length === 0 ? [noneCard()] : rows.map((v) =>
+                  React.createElement("div", { key: v.id, className: "dashCard" },
+                    React.createElement("div", { className: "dashCard__header" },
+                      React.createElement("span", null, `${v.make} ${v.model}`),
+                      React.createElement(PlateLink, { plate: v.plate })
+                    ),
+                    React.createElement("div", { className: "dashCard__meta" },
+                      v.vehicleClass && React.createElement("span", { className: "dashCard__chip" }, v.vehicleClass),
+                      showStatus && React.createElement("span", { className: `dashCard__chip ${fleetStatusClass(v.status)}` }, v.status),
+                      v.winterTires === "Yes" && React.createElement("span", { className: "dashCard__chip dashCard__chip--winter" }, "Winter tires")
+                    )
+                  )
+                );
               const fleetTable = (rows, showStatus) =>
                 React.createElement(
                   "table",
@@ -3504,13 +3542,7 @@ function DashboardPage() {
                     rows.length === 0
                       ? React.createElement("tr", null, React.createElement("td", { colSpan: showStatus ? 5 : 4, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
                       : rows.map((v) => {
-                          const statusClass =
-                            v.status === "Available" ? "fleetStatus--available"
-                            : v.status === "Needs Cleaning" ? "fleetStatus--cleaning"
-                            : v.status === "PM" ? "fleetStatus--pm"
-                            : v.status === "Damaged" ? "fleetStatus--damaged"
-                            : v.status === "On Rent" ? "fleetStatus--onRent"
-                            : "";
+                          const statusClass = fleetStatusClass(v.status);
                           return React.createElement("tr", { key: v.id },
                             React.createElement("td", null, React.createElement(PlateLink, { plate: v.plate })),
                             React.createElement("td", null, `${v.make} ${v.model}`),
@@ -3530,18 +3562,21 @@ function DashboardPage() {
 
               const group = (label, cls, key, rows, showStatus, children) =>
                 React.createElement("div", { className: "fleetGroup" },
-                  React.createElement("div", { className: `fleetGroupHeader fleetGroupHeader--${cls}` },
+                  React.createElement("div", {
+                    className: `fleetGroupHeader fleetGroupHeader--${cls}`,
+                    ...(isMobile ? tapToToggle(() => toggleFleetGroup(key)) : {}),
+                  },
                     React.createElement("span", null, label),
                     React.createElement("div", { className: "fleetGroupHeaderRight" },
                       React.createElement("span", { className: "fleetGroupCount" }, rows.length),
                       React.createElement("button", {
                         type: "button",
                         className: "fleetGroupToggle",
-                        onClick: () => toggleFleetGroup(key),
+                        onClick: isMobile ? undefined : () => toggleFleetGroup(key),
                       }, fleetGroupCollapsed[key] ? "+" : "−")
                     )
                   ),
-                  ...(fleetGroupCollapsed[key] ? [] : (children || [fleetTable(rows, showStatus)]))
+                  ...(fleetGroupCollapsed[key] ? [] : (children || (isMobile ? fleetCards(rows, showStatus) : [fleetTable(rows, showStatus)])))
                 );
 
               return React.createElement(React.Fragment, null,
@@ -3549,18 +3584,37 @@ function DashboardPage() {
                 group("Needs Cleaning", "cleaning", "needsCleaning", cleaning, false),
                 // Ready Returns — two sub-sections: returned & ready + projected
                 React.createElement("div", { className: "fleetGroup" },
-                  React.createElement("div", { className: "fleetGroupHeader fleetGroupHeader--readyReturns" },
+                  React.createElement("div", {
+                    className: "fleetGroupHeader fleetGroupHeader--readyReturns",
+                    ...(isMobile ? tapToToggle(() => toggleFleetGroup("readyReturns")) : {}),
+                  },
                     React.createElement("span", null, "Ready Returns"),
                     React.createElement("div", { className: "fleetGroupHeaderRight" },
                       React.createElement("span", { className: "fleetGroupCount" }, readyReturns.length),
                       React.createElement("button", {
                         type: "button",
                         className: "fleetGroupToggle",
-                        onClick: () => toggleFleetGroup("readyReturns"),
+                        onClick: isMobile ? undefined : () => toggleFleetGroup("readyReturns"),
                       }, fleetGroupCollapsed.readyReturns ? "+" : "−")
                     )
                   ),
-                  ...(!fleetGroupCollapsed.readyReturns ? [
+                  ...(!fleetGroupCollapsed.readyReturns && isMobile
+                    ? (readyReturns.length === 0 ? [noneCard()] : readyReturns.map((r) => {
+                        const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
+                        const loc = matchRA?.returnVehicleLocation || "";
+                        return React.createElement("div", { key: r.id, className: "dashCard" },
+                          React.createElement("div", { className: "dashCard__header" },
+                            React.createElement("span", null, `${r.make} ${r.model}`),
+                            React.createElement(PlateLink, { plate: r.plate })
+                          ),
+                          (r.fileType || loc) && React.createElement("div", { className: "dashCard__meta" },
+                            r.fileType && React.createElement("span", { className: "dashCard__chip" }, r.fileType),
+                            loc && React.createElement("span", { className: "dashCard__chip" }, loc)
+                          )
+                        );
+                      }))
+                    : []),
+                  ...(!fleetGroupCollapsed.readyReturns && !isMobile ? [
                     React.createElement("table", { className: "dashboardTable" },
                       React.createElement("thead", null,
                         React.createElement("tr", null,
