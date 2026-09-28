@@ -8436,9 +8436,89 @@ function PreRentalCheckPage() {
 
 // ─── RentalAgreementDetail ────────────────────────────────────────────────────────────
 
+// ─── AgreementVehicleHistory ─────────────────────────────────────────────────
+// Every vehicle one rental agreement has been on, oldest first, from
+// rental_agreement_vehicles. Make, model and plate come from the fleet by the
+// row's vehicleId; a vehicle since retired has lost that link and shows as no
+// longer in the fleet. Rows are identified to staff by position and plate,
+// never by id.
+const vehicleHistoryLabel = (leg, isLast) => {
+  if (!leg.pickedUpAt) return "Pickup pending";
+  if (!leg.endedAt) return "Current";
+  if (leg.endReason === "switched_out") return "Switched out";
+  if (leg.endReason === "returned") return "Returned";
+  // Rows closed before endReason existed: a later row means the customer moved
+  // onto another vehicle, none means this one came back at the end.
+  return isLast ? "Returned" : "Switched out";
+};
+
+function AgreementVehicleHistory({ rentalAgreementId, resCode }) {
+  const { fleet } = React.useContext(AppContext);
+  const [state, setState] = React.useState({ id: null, legs: [], error: null, loading: true });
+
+  React.useEffect(() => {
+    if (!rentalAgreementId) { setState({ id: null, legs: [], error: null, loading: false }); return undefined; }
+    let live = true;
+    setState({ id: rentalAgreementId, legs: [], error: null, loading: true });
+    supabase.from("rental_agreement_vehicles")
+      .select("vehicleId, startedAt, endedAt, endReason, pickedUpAt, pickupMileage, pickupGas, closingMileage, closingGas")
+      .eq("rentalAgreementId", rentalAgreementId)
+      .order("startedAt", { ascending: true })
+      .then(({ data, error }) => {
+        if (!live) return;
+        if (error) console.warn("vehicle history load failed:", error);
+        setState({ id: rentalAgreementId, legs: data || [], error: error || null, loading: false });
+      });
+    return () => { live = false; };
+  }, [rentalAgreementId]);
+
+  const fmtWhen = (iso) => {
+    if (!iso) return "-";
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? "-"
+      : d.toLocaleString("en-CA", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+  };
+  const fmtKm = (n) => (n === null || n === undefined || n === "" ? "-" : `${Number(n).toLocaleString("en-CA")} km`);
+  const label = resCode || "this rental agreement";
+
+  if (!rentalAgreementId) {
+    return React.createElement("div", { className: "resvEmpty" }, "No rental agreement yet, so no vehicles to show.");
+  }
+  if (state.loading) return React.createElement("div", { className: "resvEmpty" }, "Loading vehicles...");
+  if (state.error) return React.createElement("div", { className: "resvEmpty" }, `The vehicles for ${label} could not be loaded.`);
+  if (state.legs.length === 0) return React.createElement("div", { className: "resvEmpty" }, `No vehicles recorded for ${label} yet.`);
+
+  return React.createElement("div", { style: { overflowX: "auto" } },
+    React.createElement("table", { className: "dashboardTable" },
+      React.createElement("thead", null,
+        React.createElement("tr", null,
+          ["Plate", "Vehicle", "Start", "End", "Start mileage", "End mileage", "Start fuel", "End fuel", "Status"]
+            .map((col) => React.createElement("th", { key: col }, col))
+        )
+      ),
+      React.createElement("tbody", null,
+        state.legs.map((leg, i) => {
+          const v = leg.vehicleId ? (fleet || []).find((f) => f.id === leg.vehicleId) || null : null;
+          return React.createElement("tr", { key: i },
+            React.createElement("td", null, v?.plate ? React.createElement(PlateLink, { plate: v.plate }) : "-"),
+            React.createElement("td", null, v ? ([v.make, v.model].filter(Boolean).join(" ") || "-") : "No longer in the fleet"),
+            React.createElement("td", null, fmtWhen(leg.pickedUpAt)),
+            React.createElement("td", null, fmtWhen(leg.endedAt)),
+            React.createElement("td", null, fmtKm(leg.pickupMileage)),
+            React.createElement("td", null, fmtKm(leg.closingMileage)),
+            React.createElement("td", null, leg.pickupGas || "-"),
+            React.createElement("td", null, leg.closingGas || "-"),
+            React.createElement("td", null, vehicleHistoryLabel(leg, i === state.legs.length - 1))
+          );
+        })
+      )
+    )
+  );
+}
+
 function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements }) {
   const [sect, setSect] = React.useState({
-    resInfo: true, datesRates: true, billTo: true, charges: true, notes: true,
+    resInfo: true, vehicles: true, datesRates: true, billTo: true, charges: true, notes: true,
   });
   const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
 
@@ -8560,6 +8640,9 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
         field("Pickup Date", pickupDateDisplay),
         pickupTimeDisplay ? field("Pickup Time", pickupTimeDisplay) : null
       )
+    ),
+    section("vehicles", "Vehicles",
+      React.createElement(AgreementVehicleHistory, { rentalAgreementId: rentalAgreement.raId, resCode: rentalAgreement.resCode })
     ),
     section("datesRates", "Dates & Rates",
       React.createElement("div", { className: "rentalAgreementFields" },
@@ -11447,7 +11530,9 @@ function CustomerPage() {
         )
       : React.createElement("div", { className: "customerPlaceholder" },
           "Populated automatically when the customer completes check-in on the fleetr app."
-        )
+        ),
+    React.createElement("div", { className: "cdetailSubGroup" }, "Vehicles on this rental"),
+    React.createElement(AgreementVehicleHistory, { rentalAgreementId: ra?.id || null, resCode })
   );
 
   // ── Rates & Billing helpers ───────────────────────────────────────────────
