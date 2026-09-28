@@ -10403,13 +10403,24 @@ function SwitchOutPage() {
           damageReported: !!review.newDamageFound,
           damageNote:     review.newDamageFound ? review.newDamageNote : null,
         };
+        //
+        // The two history rows are written before anything else. If either
+        // fails the switch stops there, before any photo, claim, vehicle status
+        // or agreement write, so a failure leaves nothing half switched. undo
+        // puts the old leg back as it was if the new one cannot be opened.
         const openLeg = await supabase.from("rental_agreement_vehicles")
           .select("id").eq("rentalAgreementId", ra.id).is("endedAt", null).maybeSingle();
         let closeError = openLeg?.error || null;
-        if (openLeg?.data?.id) {
+        let undoClose  = null;
+        if (!closeError && openLeg?.data?.id) {
           const res = await supabase.from("rental_agreement_vehicles").update(legClose).eq("id", openLeg.data.id);
-          closeError = res?.error || closeError;
-        } else {
+          closeError = res?.error || null;
+          if (!closeError) {
+            undoClose = () => supabase.from("rental_agreement_vehicles").update({
+              endedAt: null, endReason: null, closingMileage: null, closingGas: null, damageReported: false, damageNote: null,
+            }).eq("id", openLeg.data.id);
+          }
+        } else if (!closeError) {
           // No signature: a switch is not a return, and nothing in this flow
           // collects one. The agreement's own signatures belong to the pickup
           // and to the final return, so neither is this leg's.
@@ -10420,10 +10431,35 @@ function SwitchOutPage() {
             pickupGas:         ra.fuelAtPickup ?? null,
             ...(ra.inspectedAt ? { startedAt: ra.inspectedAt } : {}),
             ...legClose,
-          });
-          closeError = res?.error || closeError;
+          }).select("id").single();
+          closeError = res?.error || null;
+          if (!closeError) undoClose = () => supabase.from("rental_agreement_vehicles").delete().eq("id", res.data.id);
         }
         if (closeError) console.warn("switch out: closing the old leg failed:", closeError);
+
+        // The leg starting now, pending: no readings and no pickedUpAt until
+        // the customer picks the vehicle up in the customer app. Opened only
+        // after the old one is closed: one agreement may hold one open leg.
+        const openRes = closeError ? null : await supabase.from("rental_agreement_vehicles").insert({
+          rentalAgreementId: ra.id,
+          vehicleId:         newVehicle.id,
+          startedAt:         new Date().toISOString(),
+        });
+        if (openRes?.error) console.warn("switch out: opening the new leg failed:", openRes.error);
+
+        if (closeError || openRes?.error) {
+          let undone = true;
+          if (undoClose) {
+            const undoRes = await undoClose();
+            if (undoRes?.error) { undone = false; console.warn("switch out: undoing the old leg failed:", undoRes.error); }
+          }
+          setRefusal(undone
+            ? "Nothing was switched: the vehicle history could not be saved. Try again."
+            : `Nothing was switched: the vehicle history could not be saved, and the history record for ${row?.plate || "the vehicle coming back"} ` +
+              "was left closed. Tell support before trying again.");
+          // Thrown so the audit log records the attempt as failed, not completed.
+          throw new Error("vehicle history could not be saved; nothing was switched");
+        }
 
         const upload = photos.length
           ? await uploadDamagePhotos({
@@ -10453,16 +10489,6 @@ function SwitchOutPage() {
             setDamageClaims((prev) => [...prev, { ...claim, reportedAt: new Date().toISOString() }]);
           }
         }
-
-        // The leg starting now, pending: no readings and no pickedUpAt until
-        // the customer picks the vehicle up in the customer app. Opened only
-        // after the old one is closed: one agreement may hold one open leg.
-        const openRes = await supabase.from("rental_agreement_vehicles").insert({
-          rentalAgreementId: ra.id,
-          vehicleId:         newVehicle.id,
-          startedAt:         new Date().toISOString(),
-        });
-        if (openRes?.error) console.warn("switch out: opening the new leg failed:", openRes.error);
 
         // The vehicle coming back. Its renter fields are cleared, as they are
         // when a returned vehicle is marked collected. Every write from here
@@ -10494,8 +10520,6 @@ function SwitchOutPage() {
           forcedMessage: oldVehicle && oldVehicleStatus.forced ? oldVehicleStatus.message : null,
           newPlate: newVehicle.plate,
           resCode: ra.resCode || null,
-          oldLegSaved: !closeError,
-          newLegSaved: !openRes?.error,
           oldVehicleSaved: !oldRes?.error,
           newVehicleSaved: !newRes?.error,
           agreementSaved: !raRes?.error,
@@ -10537,10 +10561,6 @@ function SwitchOutPage() {
       !done.claimSaved && React.createElement("div", { className: "closeRentalWarning" },
         "The damage claim could not be saved, so this damage is not in Ongoing Damage Claims. " +
         "Flag it by hand from the customer's page before anyone is billed."),
-      !done.oldLegSaved && React.createElement("div", { className: "closeRentalWarning" },
-        `The history record for ${done.oldPlate || "the vehicle coming back"} could not be closed. Tell support before either vehicle goes out again.`),
-      !done.newLegSaved && React.createElement("div", { className: "closeRentalWarning" },
-        `The pickup for ${done.newPlate} could not be recorded, so the customer app will not offer it to the customer. Tell support before the customer arrives.`),
       !done.oldVehicleSaved && React.createElement("div", { className: "closeRentalWarning" },
         `${done.oldPlate || "The vehicle coming back"} could not be moved to ${done.oldStatus}. Set its status by hand on the fleet page.`),
       !done.newVehicleSaved && React.createElement("div", { className: "closeRentalWarning" },
