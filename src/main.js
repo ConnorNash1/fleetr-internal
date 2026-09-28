@@ -9763,12 +9763,9 @@ function CloseRentalPage() {
         // just entered. A non-null endedAt is what makes this leg finished and
         // lets the next one open, and it is when the vehicle came back rather
         // than when this ran, which differ on a self-return.
-        const leg = {
-          rentalAgreementId: ra.id,
-          vehicleId:         vehicle?.id || null,
+        const legClose = {
           endedAt:           returnedAtIso || new Date().toISOString(),
-          pickupMileage:     ra.mileage ?? null,
-          pickupGas:         ra.fuelAtPickup ?? null,
+          endReason:         "returned",
           closingMileage:    final.closingMileage,
           closingGas:        final.closingGasLevel,
           damageReported:    !!final.newDamageFound,
@@ -9779,13 +9776,38 @@ function CloseRentalPage() {
           // leaves it empty rather than inventing one.
           signature:         ra.returnSignature || null,
         };
-        // startedAt defaults to now, which would be wrong for a leg that is
-        // ending: it began when the vehicle went out. The pickup inspection
-        // stamp is the closest thing on record, and its absence leaves the
-        // default rather than a guessed date.
-        if (ra.inspectedAt) leg.startedAt = ra.inspectedAt;
-        const legRes = await supabase.from("rental_agreement_vehicles").insert(leg);
-        if (legRes?.error) console.warn("close rental: vehicle leg insert failed:", legRes.error);
+        // The leg to close: the open one, which pickup opens for every
+        // agreement, or the one a self-return already closed, which these
+        // readings supersede. Only an agreement with neither, one opened here
+        // by a status change, gets a leg inserted, so a close never leaves a
+        // second row beside the first.
+        const existingLeg = await supabase.from("rental_agreement_vehicles")
+          .select("id").eq("rentalAgreementId", ra.id)
+          .or("endedAt.is.null,endReason.eq.returned")
+          .order("startedAt", { ascending: false }).limit(1).maybeSingle();
+        // A failed lookup writes nothing: inserting blind could be the duplicate
+        // this is here to prevent. The done screen reports it as not saved.
+        let legRes;
+        if (existingLeg?.error) {
+          legRes = existingLeg;
+        } else if (existingLeg?.data?.id) {
+          legRes = await supabase.from("rental_agreement_vehicles").update(legClose).eq("id", existingLeg.data.id);
+        } else {
+          const leg = {
+            rentalAgreementId: ra.id,
+            vehicleId:         vehicle?.id || null,
+            pickupMileage:     ra.mileage ?? null,
+            pickupGas:         ra.fuelAtPickup ?? null,
+            ...legClose,
+          };
+          // startedAt defaults to now, which would be wrong for a leg that is
+          // ending: it began when the vehicle went out. The pickup inspection
+          // stamp is the closest thing on record, and its absence leaves the
+          // default rather than a guessed date.
+          if (ra.inspectedAt) leg.startedAt = ra.inspectedAt;
+          legRes = await supabase.from("rental_agreement_vehicles").insert(leg);
+        }
+        if (legRes?.error) console.warn("close rental: vehicle leg write failed:", legRes.error);
 
         const upload = final.photos.length
           ? await uploadDamagePhotos({
@@ -10284,6 +10306,7 @@ function SwitchOutPage() {
         // switch is no reason to lose what the vehicle came back on.
         const legClose = {
           endedAt:        new Date().toISOString(),
+          endReason:      "switched_out",
           closingMileage: closing.closingMileage,
           closingGas:     closing.closingGasLevel,
           damageReported: !!review.newDamageFound,
@@ -10347,6 +10370,10 @@ function SwitchOutPage() {
           rentalAgreementId: ra.id,
           vehicleId:         newVehicle.id,
           startedAt:         new Date().toISOString(),
+          // TEMPORARY until the switch pickup flow ships: staff hand the
+          // vehicle over here, so the leg starts picked up. Without this it
+          // reads as a pending pickup and the customer's return is refused.
+          pickedUpAt:        new Date().toISOString(),
           pickupMileage:     baseline.closingMileage,
           pickupGas:         baseline.closingGasLevel,
         });
