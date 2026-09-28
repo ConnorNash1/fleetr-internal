@@ -14529,6 +14529,14 @@ body, * {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
   }
+
+  /* Mobile browsers zoom in on any field whose text is under 16px when it is
+     tapped. 16px on every field stops that without touching the viewport, so
+     pinch zoom still works. !important because many fields set a smaller size
+     through their own class or an inline style, which would otherwise win. */
+  input, select, textarea{
+    font-size: 16px !important;
+  }
 }
 
 .fleetStatus--available { color: #42a4ff; font-weight: 700; }
