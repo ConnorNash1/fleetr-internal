@@ -9000,6 +9000,33 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
 
   const setGas = (value) => setReadings((prev) => ({ ...prev, gasIndex: Number(value) }));
 
+  // The fuel slider takes the finger directly. iPhone Safari does not honour
+  // touch-action on a range input and lets a drag that strays even slightly
+  // vertical scroll the page, and a tap focuses the input and can scroll it
+  // into view. React's touch listeners are passive and cannot preventDefault,
+  // so these are attached by hand with passive: false: the page never sees
+  // the touch, and the value follows the finger along the track. Mouse and
+  // keyboard still go through onChange.
+  const fuelRef = React.useRef(null);
+  React.useEffect(() => {
+    const range = fuelRef.current;
+    if (!range) return undefined;
+    const onTouch = (e) => {
+      if (e.touches.length !== 1) return;
+      e.preventDefault();
+      const r    = range.getBoundingClientRect();
+      const pad  = Math.min(12, r.width / 10); // the thumb's centre stops short of each end
+      const frac = Math.min(1, Math.max(0, (e.touches[0].clientX - r.left - pad) / (r.width - 2 * pad)));
+      setGas(Math.round(frac * 8));
+    };
+    range.addEventListener("touchstart", onTouch, { passive: false });
+    range.addEventListener("touchmove",  onTouch, { passive: false });
+    return () => {
+      range.removeEventListener("touchstart", onTouch);
+      range.removeEventListener("touchmove",  onTouch);
+    };
+  }, []);
+
   const handleNext = () => {
     setAttempted(true);
     if (mileageError || gasError || lowError) return;
@@ -9049,6 +9076,7 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
         React.createElement("span", { className: "resFormLabel", id: "closeRentalGasLabel" }, L.gasLabel),
         React.createElement("div", { className: "closeRentalFuel__value" }, gasIndex === null ? "Not set" : FUEL_LABELS[gasIndex]),
         React.createElement("input", {
+          ref: fuelRef,
           type: "range", min: 0, max: 8, step: 1,
           className: gasIndex === null ? "closeRentalFuel closeRentalFuel--unset" : "closeRentalFuel",
           "aria-labelledby": "closeRentalGasLabel",
@@ -13971,6 +13999,8 @@ body, * {
   accent-color: #42a4ff;
   cursor: pointer;
   margin: 2px 0 0;
+  /* A drag on the slider is never a scroll; see the touch handlers on it. */
+  touch-action: none;
 }
 .closeRentalFuel--unset{
   opacity: 0.45;
