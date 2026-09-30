@@ -380,20 +380,6 @@ function defaultVehicleClass(fallback, preferred = "Compact Car") {
   return options.includes(preferred) ? preferred : options[0];
 }
 
-// The Rates vehicle class picker. With the company's list every class is its
-// own entry and carries its own rate. A record saved under the old grouping
-// ("Car" with a size) keeps that group on offer.
-function vehicleClassCatsFor(current) {
-  const mine = companyLists
-    ? companyLists.vehicleClasses.filter((c) => c.active).map((c) => c.name)
-    : [];
-  if (!mine.length) return RATES_VCLASS_CATS;
-  const cats = Object.fromEntries(mine.map((name) => [name, []]));
-  const curCat = String(current || "").split(LIST_SEP)[0];
-  if (curCat && !cats[curCat]) cats[curCat] = RATES_VCLASS_CATS[curCat] || [];
-  return cats;
-}
-
 // The rate to pre-fill for a source and a rates vehicle class, or undefined
 // when there is none. Both arrive as stored: a source with its specific
 // source after LIST_SEP, and either a class name or the old group and size.
@@ -411,9 +397,18 @@ function dailyRateFor(source, vehicleClass) {
     : src.startsWith("Corporate")           ? "Corporate" : null;
   const vcCat = vc === "Minivan" ? "Minivan"
     : vc === "Truck"             ? "Truck"
-    : vc.startsWith("Car")       ? "Car"
-    : vc.startsWith("SUV")       ? "SUV" : null;
+    : vc.startsWith("Car") || vc.endsWith(" Car") ? "Car"
+    : vc.startsWith("SUV") || vc.endsWith(" SUV") ? "SUV" : null;
   return srcCat && vcCat ? DAILY_RATES[srcCat]?.[vcCat] : undefined;
+}
+
+// A reservation form with its daily rate filled for its source and vehicle
+// class. Called when either of the two changes, so a rate staff typed stays
+// until one of them changes again. No rate for the pair leaves it blank.
+function withDailyRate(form) {
+  if (!form.source || !form.vehicleClass) return form;
+  const rate = dailyRateFor(form.source, form.vehicleClass);
+  return { ...form, dailyRate: rate !== undefined ? String(rate) : "" };
 }
 
 // Non-Drive Intake offers who the work came from: the insurance sources by
@@ -2496,7 +2491,6 @@ const EMPTY_RES_FORM = {
   firstName: "", lastName: "", phone: "", email: "", licenseNumber: "",
   returnDate: "", returnTime: "",
   source: "", sourceDetail: "",
-  ratesVehicleClass: "", ratesVehicleSize: "",
   dailyRate: "", adjusterName: "", claimNumber: "",
   fileNumber: "", authNumber: "", poNumber: "",
   paymentMethod: "Credit Card",
@@ -2800,9 +2794,6 @@ function ReservationsPage() {
       returnDate: form.returnDate, returnTime: form.returnTime,
       vehicleClass: form.vehicleClass, winterTires: form.winterTires,
       source: form.source, sourceDetail: form.sourceDetail,
-      ratesVehicleClass: form.ratesVehicleClass && form.ratesVehicleSize
-        ? `${form.ratesVehicleClass} — ${form.ratesVehicleSize}`
-        : form.ratesVehicleClass || "",
       dailyRate: form.dailyRate,
       adjusterName: form.adjusterName, claimNumber: form.claimNumber,
       fileNumber: form.fileNumber, authNumber: form.authNumber,
@@ -3036,7 +3027,7 @@ function ReservationsPage() {
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Vehicle Class"),
-                React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => updateForm("vehicleClass", e.target.value) },
+                React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => setForm((p) => withDailyRate({ ...p, vehicleClass: e.target.value })) },
                   vehicleClassOptions(RES_VEHICLE_CLASSES, form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
                 )
               ),
@@ -3052,7 +3043,7 @@ function ReservationsPage() {
             React.createElement("div", { className: "resFormRow" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Source"),
-                React.createElement("select", { className: "resFormInput", value: form.source, onChange: (e) => setForm((p) => ({ ...p, source: e.target.value, sourceDetail: "" })) },
+                React.createElement("select", { className: "resFormInput", value: form.source, onChange: (e) => setForm((p) => withDailyRate({ ...p, source: e.target.value, sourceDetail: "" })) },
                   React.createElement("option", { value: "" }, "Select source"),
                   Object.keys(sourceCatsFor(form.source)).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
                 )
@@ -3066,20 +3057,6 @@ function ReservationsPage() {
               )
             ),
             React.createElement("div", { className: "resFormRow" },
-              React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Rates Vehicle Class"),
-                React.createElement("select", { className: "resFormInput", value: form.ratesVehicleClass, onChange: (e) => setForm((p) => ({ ...p, ratesVehicleClass: e.target.value, ratesVehicleSize: "" })) },
-                  React.createElement("option", { value: "" }, "Select class"),
-                  Object.keys(vehicleClassCatsFor(form.ratesVehicleClass)).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
-                )
-              ),
-              form.ratesVehicleClass && (vehicleClassCatsFor(form.ratesVehicleClass)[form.ratesVehicleClass] || []).length > 0 && React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Size"),
-                React.createElement("select", { className: "resFormInput", value: form.ratesVehicleSize, onChange: (e) => updateForm("ratesVehicleSize", e.target.value) },
-                  React.createElement("option", { value: "" }, "Select…"),
-                  vehicleClassCatsFor(form.ratesVehicleClass)[form.ratesVehicleClass].map((s) => React.createElement("option", { key: s, value: s }, s))
-                )
-              ),
               tf("Daily Rate ($)", "dailyRate", "0.00")
             ),
             ...(() => {
@@ -3585,9 +3562,6 @@ function DashboardPage() {
       returnDate: form.returnDate, returnTime: form.returnTime,
       vehicleClass: form.vehicleClass, winterTires: form.winterTires,
       source: form.source, sourceDetail: form.sourceDetail,
-      ratesVehicleClass: form.ratesVehicleClass && form.ratesVehicleSize
-        ? `${form.ratesVehicleClass} — ${form.ratesVehicleSize}`
-        : form.ratesVehicleClass || "",
       dailyRate: form.dailyRate,
       adjusterName: form.adjusterName, claimNumber: form.claimNumber,
       fileNumber: form.fileNumber, authNumber: form.authNumber,
@@ -4025,7 +3999,7 @@ function DashboardPage() {
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Vehicle Class"),
-                React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => updateForm("vehicleClass", e.target.value) },
+                React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => setForm((p) => withDailyRate({ ...p, vehicleClass: e.target.value })) },
                   vehicleClassOptions(RES_VEHICLE_CLASSES, form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
                 )
               ),
@@ -4041,7 +4015,7 @@ function DashboardPage() {
             React.createElement("div", { className: "resFormRow" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Source"),
-                React.createElement("select", { className: "resFormInput", value: form.source, onChange: (e) => setForm((p) => ({ ...p, source: e.target.value, sourceDetail: "" })) },
+                React.createElement("select", { className: "resFormInput", value: form.source, onChange: (e) => setForm((p) => withDailyRate({ ...p, source: e.target.value, sourceDetail: "" })) },
                   React.createElement("option", { value: "" }, "Select source"),
                   Object.keys(sourceCatsFor(form.source)).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
                 )
@@ -4055,20 +4029,6 @@ function DashboardPage() {
               )
             ),
             React.createElement("div", { className: "resFormRow" },
-              React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Rates Vehicle Class"),
-                React.createElement("select", { className: "resFormInput", value: form.ratesVehicleClass, onChange: (e) => setForm((p) => ({ ...p, ratesVehicleClass: e.target.value, ratesVehicleSize: "" })) },
-                  React.createElement("option", { value: "" }, "Select class"),
-                  Object.keys(vehicleClassCatsFor(form.ratesVehicleClass)).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
-                )
-              ),
-              form.ratesVehicleClass && (vehicleClassCatsFor(form.ratesVehicleClass)[form.ratesVehicleClass] || []).length > 0 && React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Size"),
-                React.createElement("select", { className: "resFormInput", value: form.ratesVehicleSize, onChange: (e) => updateForm("ratesVehicleSize", e.target.value) },
-                  React.createElement("option", { value: "" }, "Select…"),
-                  vehicleClassCatsFor(form.ratesVehicleClass)[form.ratesVehicleClass].map((s) => React.createElement("option", { key: s, value: s }, s))
-                )
-              ),
               tf("Daily Rate ($)", "dailyRate", "0.00")
             ),
             ...(() => {
@@ -12021,7 +11981,18 @@ function CustomerPage() {
   const [ratesForm, setRatesForm] = React.useState({
     source: "", vehicleClass: "", winterTires: "No",
   });
-  const updateRates = (f, v) => setRatesForm((p) => ({ ...p, [f]: v }));
+  // Picking a source or a vehicle class refills the daily rate from the
+  // company's rates, blank when there is none for the pair. Only a change
+  // does: opening a file leaves the rate it was saved with, including one
+  // staff typed over.
+  const updateRates = (f, v) => {
+    const next = { ...ratesForm, [f]: v };
+    setRatesForm(next);
+    if ((f === "source" || f === "vehicleClass") && next.source && next.vehicleClass) {
+      const rate = dailyRateFor(next.source, next.vehicleClass);
+      setBillToForm((p) => ({ ...p, dailyRate: rate !== undefined ? String(rate) : "" }));
+    }
+  };
   const [openRatesPicker, setOpenRatesPicker] = React.useState(null);
   const [ratesPickerAnchor, setRatesPickerAnchor] = React.useState({ x: 0, y: 0 });
   const [ratesHoverCat, setRatesHoverCat] = React.useState(null);
@@ -12043,7 +12014,6 @@ function CustomerPage() {
 
   // Derived from rentalAgreements for read-only fields and auto-population
   const ra = rentalAgreements.find((r) => r.resCode === resCode) || null;
-  const raVehicleClass = ra?.vehicleClass || null;
 
   // Populate rental vehicle from rental_agreements when an RA exists for this resCode.
   // Year and province come from the fleet record first, falling back to VEHICLE_EXTRA_DATA.
@@ -12110,10 +12080,8 @@ function CustomerPage() {
     const srcStr = localRecord.sourceDetail
       ? `${localRecord.source} — ${localRecord.sourceDetail}`
       : (localRecord.source || "");
-    const vcStr = localRecord.vehicleSize
-      ? `${localRecord.vehicleClass || ""} — ${localRecord.vehicleSize}`
-      : (localRecord.ratesVehicleClass || "");
-    setRatesForm({ source: srcStr, vehicleClass: vcStr, winterTires: localRecord.winterTires || "No" });
+    // One vehicle class for the whole reservation: the one it was booked with.
+    setRatesForm({ source: srcStr, vehicleClass: localRecord.vehicleClass || "", winterTires: localRecord.winterTires || "No" });
     setBillToForm({
       adjusterName:  localRecord.adjusterName  || "",
       fileNumber:    localRecord.fileNumber    || "",
@@ -12143,23 +12111,6 @@ function CustomerPage() {
       setPayments(ra.payments);
     }
   }, [ra]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Auto-populate Rates & Billing vehicle class from the RA's fleet vehicleClass
-  // (fires only when the RA's vehicleClass first appears or changes).
-  React.useEffect(() => {
-    if (!raVehicleClass) return;
-    const parts = raVehicleClass.split(" ");
-    // "Regular Car" → "Car — Regular", "Compact SUV" → "SUV — Compact", etc.
-    const mapped = parts.length === 2 ? `${parts[1]} — ${parts[0]}` : raVehicleClass;
-    updateRates("vehicleClass", mapped);
-  }, [raVehicleClass]);
-
-  React.useEffect(() => {
-    const rate = dailyRateFor(ratesForm.source, ratesForm.vehicleClass);
-    if (rate !== undefined) {
-      setBillToForm((p) => ({ ...p, dailyRate: String(rate) }));
-    }
-  }, [ratesForm.source, ratesForm.vehicleClass]);
 
   React.useEffect(() => {
     const d1 = resInfoForm.pickupDate ? new Date(`${resInfoForm.pickupDate}T00:00:00`) : null;
@@ -12195,8 +12146,6 @@ function CustomerPage() {
     try {
       const srcParts = ratesForm.source.includes(" — ")
         ? ratesForm.source.split(" — ") : [ratesForm.source, ""];
-      const vcParts  = ratesForm.vehicleClass.includes(" — ")
-        ? ratesForm.vehicleClass.split(" — ") : [ratesForm.vehicleClass, ""];
       // Build the full candidate payload (form → Supabase field names)
       const candidate = {
         firstName:       resInfoForm.firstName,
@@ -12216,7 +12165,7 @@ function CustomerPage() {
         licenseExpiry:   resInfoForm.licenseExpiry,
         source:          srcParts[0] || "",
         sourceDetail:    srcParts[1] || "",
-        vehicleSize:     vcParts[1]  || "",
+        vehicleClass:    ratesForm.vehicleClass,
         dailyRate:       billToForm.dailyRate,
         winterTires:     ratesForm.winterTires,
         vehicleYear:     customerVehicleForm.year,
@@ -12788,7 +12737,9 @@ function CustomerPage() {
   const ratesBillingBody = React.createElement("div", { className: "cdetailForm" },
     React.createElement("div", { className: "resFormRow" },
       twoLevelPicker("Source",        "source",       sourceCatsFor(ratesForm.source), "Select source"),
-      twoLevelPicker("Vehicle Class", "vehicleClass", vehicleClassCatsFor(ratesForm.vehicleClass), "Select class"),
+      twoLevelPicker("Vehicle Class", "vehicleClass",
+        Object.fromEntries(vehicleClassOptions(RES_VEHICLE_CLASSES, ratesForm.vehicleClass).map((c) => [c, []])),
+        "Select class"),
       React.createElement("label", { className: "resFormGroup" },
         React.createElement("span", { className: "resFormLabel" }, "Winter Tires"),
         React.createElement("select", {
