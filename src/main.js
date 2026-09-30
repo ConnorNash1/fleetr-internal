@@ -13830,6 +13830,25 @@ body, * {
   flex-direction: column;
   gap: 16px;
 }
+/* Fixed to the left of the screen for the full height of the window, with
+   its own scrollbar, so it stays in view while the page scrolls. It fills the
+   first grid column, which is kept for it, and the page sits in the second.
+   Desktop only: below 768px the sidebar is not shown and the mobile menu
+   takes over. */
+@media (min-width: 768px){
+  .sidebar{
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 290px;
+    overflow-y: auto;
+  }
+  .main{ grid-column: 2; }
+}
+@media (min-width: 768px) and (max-width: 900px){
+  .sidebar{ width: 76px; }
+}
 .sidebar__section{
   padding: 0 0 0 14px;
 }
