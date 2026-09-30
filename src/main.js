@@ -523,17 +523,30 @@ function requestReservationConfirmation(resCode) {
 // how it previews and measures a text. These mirror worker.js (fleetr-infra),
 // which is what actually sends: DEFAULT_TEMPLATES, fillTemplate, cancelSuffix,
 // isGsm7 and gsm7Length. If the worker's copy changes, change this one.
+//
+// suffix is what the worker adds after the wording, as it will look in the
+// preview: the cancel link on the texts sent before pickup, the fuel note on
+// the return reminder, nothing on the no-show texts.
+const TEXT_SAMPLE_LINK = " Cancel: https://app.fleetr.ai/#c=XXXXXXXXXXXXXXXXXXXXXX";
 const TEXT_TEMPLATE_KINDS = [
   { kind: "confirmation", title: "Reservation confirmation", when: "Sent when a reservation is created.",
-    fallback: "Hi [first name], your reservation with [company] at [location] is confirmed for [date] at [time]." },
+    fallback: "Hi [first name], your reservation with [company] at [location] is confirmed for [date] at [time].",
+    suffix: TEXT_SAMPLE_LINK, suffixNote: "the cancel link" },
   { kind: "pre_rental", title: "Pre-Rental Check", when: "Sent the day before pickup.",
-    fallback: "Hi [first name], your rental pickup is tomorrow at our [location] location. Please bring your license and reply with your arrival time." },
+    fallback: "Hi [first name], your rental pickup is tomorrow at our [location] location. Please bring your license and reply with your arrival time.",
+    suffix: TEXT_SAMPLE_LINK, suffixNote: "the cancel link" },
+  { kind: "no_show_2hr", title: "No-show, after 2 hours", when: "Sent 2 hours after a pickup time when the customer has not arrived. [time] is the pickup time.",
+    fallback: "Hi [first name], your pickup was at [time] and we have not seen you. Reply YES if you are on your way, or RESCHEDULE for a new time.",
+    suffix: "", suffixNote: "" },
+  { kind: "no_show_24hr", title: "No-show, the next day", when: "Sent a day after the 2 hour no-show text, if the customer still has not arrived.",
+    fallback: "Hi [first name], we have not heard from you about yesterday's rental. Please reply or call us to let us know your plans.",
+    suffix: "", suffixNote: "" },
+  { kind: "return_reminder", title: "Return reminder", when: "Sent the day before an open rental is due back. [date] and [time] are when it is due back. When the fuel level at pickup is known, a note asking for it back at that level is added after the wording.",
+    fallback: "Hi [first name], your rental is due back tomorrow at [time]. Complete your return in the fleetr app.",
+    suffix: " Return fuel at Full to avoid a charge.", suffixNote: "the fuel note" },
 ];
 const TEXT_PLACEHOLDERS = ["[first name]", "[company]", "[location]", "[date]", "[time]"];
 const TEXT_TEMPLATE_MAX = 240;
-// The link the worker adds to the end of both texts. The token here is a
-// stand-in of the real length, so the count below is the real count.
-const TEXT_SAMPLE_LINK = " Cancel: https://app.fleetr.ai/#c=XXXXXXXXXXXXXXXXXXXXXX";
 
 const fillTextTemplate = (template, values) =>
   String(template).replace(/\[(first name|company|location|date|time)\]/gi,
@@ -8100,7 +8113,7 @@ function CustomerTextsSettings() {
       "The wording of the texts your customers receive, for every branch of the company. ",
       "Use these placeholders and each customer's own details are filled in: ",
       React.createElement("strong", null, TEXT_PLACEHOLDERS.join(", ")),
-      ". A link the customer can use to cancel is added to the end of both texts automatically and cannot be removed or edited."),
+      ". A link the customer can use to cancel is added to the end of the confirmation and Pre-Rental Check texts automatically and cannot be removed or edited. The link's token in the preview is a stand-in of the real length, so the count is the real count."),
     loadErr && React.createElement("div", { className: "closeRentalWarning" },
       "The saved wording could not be loaded, so the default wording is shown. Saving here will replace whatever is saved."),
 
@@ -8109,7 +8122,7 @@ function CustomerTextsSettings() {
       const trimmed  = draft.trim();
       const current  = saved[k.kind] ?? k.fallback;
       const isCustom = saved[k.kind] != null;
-      const preview  = fillTextTemplate(trimmed, sample) + TEXT_SAMPLE_LINK;
+      const preview  = fillTextTemplate(trimmed, sample) + k.suffix;
       const m        = measureText(preview);
       const tooLong  = trimmed.length > TEXT_TEMPLATE_MAX;
       const unknown  = (trimmed.match(/\[[^\][]*\]/g) || []).filter((ph) => !TEXT_PLACEHOLDERS.includes(ph.toLowerCase()));
@@ -8130,7 +8143,7 @@ function CustomerTextsSettings() {
         React.createElement("div", { className: "gasSettingSubhead" }, "Preview"),
         React.createElement("div", { className: "closeRentalSummary" }, preview),
         React.createElement("p", { className: "closeRentalHint" },
-          `${m.length} characters with the link, sent as ${m.segments} text${m.segments === 1 ? "" : "s"} ` +
+          `${m.length} characters${k.suffixNote ? ` with ${k.suffixNote}` : ""}, sent as ${m.segments} text${m.segments === 1 ? "" : "s"} ` +
           `(${m.perSegment} characters fit in one). A longer name, company or branch adds to this.`),
 
         m.segments > 1 && React.createElement("div", { className: "closeRentalWarning" },
