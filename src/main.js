@@ -6987,8 +6987,7 @@ function CompanyPage() {
 
     // ── Branches ──
     React.createElement(
-      "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
-      React.createElement("h2", null, "Branches"),
+      CompanySection, { title: "Branches", style: { marginBottom: "24px" } },
       React.createElement(
         "div", { style: { overflowX: "auto" } },
         React.createElement(
@@ -7056,8 +7055,7 @@ function CompanyPage() {
 
     // ── Pricing ──
     React.createElement(
-      "div", { className: "dashboardSection" },
-      React.createElement("h2", null, "Fuel pricing"),
+      CompanySection, { title: "Fuel pricing" },
       React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
         "Every branch at once. These two change what future customers are charged, so each edit is recorded against the branch it applies to, not the one you are acting in."),
       React.createElement(
@@ -7147,6 +7145,24 @@ const BILLING_TYPE_LABELS = [
   ["retail",              "Retail"],
 ];
 
+// A section of the Company page. Closed until its header is tapped, so the
+// page opens as a short list of headings rather than seven screens of tables.
+// What is inside is only drawn while it is open.
+function CompanySection({ title, style, children }) {
+  const [open, setOpen] = React.useState(false);
+  const toggle = () => setOpen((o) => !o);
+  return React.createElement(
+    "div", { className: "dashboardSection", style },
+    React.createElement("h2", {
+      role: "button", tabIndex: 0, "aria-expanded": open,
+      style: { cursor: "pointer", userSelect: "none" },
+      onClick: toggle,
+      onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } },
+    }, `${open ? "▾" : "▸"} ${title}`),
+    open && children
+  );
+}
+
 // One price in a grid. Keeps its own draft, for the reason GasRow does: a
 // shared draft would let typing in one cell save into another. Saves when the
 // cell is left, and only if it changed. Blank means no price.
@@ -7154,17 +7170,67 @@ function ListPriceCell({ value, disabled, onSave }) {
   const shown = value == null ? "" : String(value);
   const [draft, setDraft] = React.useState(shown);
   React.useEffect(() => { setDraft(shown); }, [shown]);
-  return React.createElement("input", {
-    className: "resFormInput", style: { width: "84px" },
-    inputMode: "decimal", value: draft, disabled,
-    onChange: (e) => setDraft(e.target.value),
-    onKeyDown: (e) => { if (e.key === "Enter") e.currentTarget.blur(); },
-    onBlur: async () => {
-      const typed = draft.trim();
-      if (typed === shown) { setDraft(shown); return; }
-      if (!(await onSave(typed))) setDraft(shown);
-    },
-  });
+  return React.createElement(
+    "span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" } },
+    React.createElement("span", { style: { opacity: 0.7 } }, "$"),
+    React.createElement("input", {
+      className: "resFormInput", style: { width: "62px", padding: "4px 6px" },
+      inputMode: "decimal", value: draft, disabled,
+      onChange: (e) => setDraft(e.target.value),
+      onKeyDown: (e) => { if (e.key === "Enter") e.currentTarget.blur(); },
+      onBlur: async () => {
+        const typed = draft.trim();
+        if (typed === shown) { setDraft(shown); return; }
+        if (!(await onSave(typed))) setDraft(shown);
+      },
+    })
+  );
+}
+
+// An entry's name, renamed where it stands: click it, type, Enter or Save.
+// Escape or Cancel puts it back. A pickup location's code is edited with it.
+function ListInlineName({ name, code, withCode, disabled, onSave }) {
+  const [editing, setEditing] = React.useState(false);
+  const [draft,   setDraft]   = React.useState(name);
+  const [draftCode, setDraftCode] = React.useState(code || "");
+
+  const start = () => {
+    if (disabled) return;
+    setDraft(name); setDraftCode(code || ""); setEditing(true);
+  };
+  const save = async () => {
+    if (draft.trim() === name && (!withCode || draftCode.trim() === (code || ""))) { setEditing(false); return; }
+    if (await onSave(draft, draftCode)) setEditing(false);
+  };
+  const onKeyDown = (e) => {
+    if (e.key === "Enter")  { e.preventDefault(); save(); }
+    if (e.key === "Escape") { e.preventDefault(); setEditing(false); }
+  };
+
+  if (!editing) {
+    return React.createElement("span", {
+      role: "button", tabIndex: 0, title: "Click to rename",
+      style: { cursor: "text" },
+      onClick: start,
+      onKeyDown: (e) => { if (e.key === "Enter") start(); },
+    }, withCode && code ? `${name} (${code})` : name);
+  }
+  const small = { width: "auto", padding: "5px 9px" };
+  return React.createElement(
+    "span", { style: { display: "inline-flex", gap: "6px", flexWrap: "wrap", alignItems: "center" } },
+    React.createElement("input", {
+      className: "resFormInput", style: { width: "180px", padding: "5px 8px" }, maxLength: 60,
+      autoFocus: true, value: draft, disabled, onKeyDown,
+      onChange: (e) => setDraft(e.target.value),
+    }),
+    withCode && React.createElement("input", {
+      className: "resFormInput", style: { width: "90px", padding: "5px 8px" }, maxLength: 8,
+      placeholder: "Code", value: draftCode, disabled, onKeyDown,
+      onChange: (e) => setDraftCode(e.target.value.toUpperCase()),
+    }),
+    React.createElement("button", { className: "loginBtn", style: small, disabled, onClick: save }, "Save"),
+    React.createElement("button", { className: "loginBtn", style: small, disabled, onClick: () => setEditing(false) }, "Cancel")
+  );
 }
 
 // The "add one" row under a list. Its own component so each list, and each
@@ -7202,11 +7268,19 @@ function CompanyListsSections({ branches }) {
   const { currentUser } = React.useContext(AppContext);
   const [ready,  setReady]  = React.useState(false);
   const [busy,   setBusy]   = React.useState(false);
-  // { at, text }: a refusal is shown in the section it happened in, since the
-  // sections run well past one screen.
+  // { at, text }: a refusal is shown in the section it happened in.
   const [error,  setError]  = React.useState(null);
   const [prices, setPrices] = React.useState([]);
   const [, setDrawn] = React.useState(0);
+  // Which sources are expanded to show their specific sources.
+  const [openSources, setOpenSources] = React.useState({});
+  // "kind:id" of the entry whose Delete is waiting to be confirmed.
+  const [confirming, setConfirming] = React.useState("");
+  // The product whose price grid is on screen.
+  const [priceProduct, setPriceProduct] = React.useState("");
+  // { listKey, from, over } while a row is being dragged.
+  const [drag, setDrag] = React.useState(null);
+  const dragRef = React.useRef(null);
 
   const reload = React.useCallback(async () => {
     await loadCompanyLists(currentUser);
@@ -7232,13 +7306,13 @@ function CompanyListsSections({ branches }) {
     return ok;
   };
 
-  // Moves one entry up or down, then renumbers whatever is out of step, so the
-  // order holds however the numbers stood before.
-  const move = async (at, list, index, dir, saveCall) => {
-    const to = index + dir;
-    if (to < 0 || to >= list.length) return;
+  // Moves one entry to a new place, then renumbers whatever is out of step, so
+  // the order holds however the numbers stood before.
+  const reorderTo = async (at, list, from, to, saveCall) => {
+    if (from === to || to < 0 || to >= list.length) return;
     const next = [...list];
-    [next[index], next[to]] = [next[to], next[index]];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
     setBusy(true); setError(null);
     for (let i = 0; i < next.length; i++) {
       if (next[i].sortOrder === i + 1) continue;
@@ -7250,8 +7324,38 @@ function CompanyListsSections({ branches }) {
     setBusy(false);
   };
 
-  const setActive = (at, kind, entry) =>
-    act(at, "set_reference_active", { p_kind: kind, p_id: entry.id, p_active: !entry.active });
+  // Dragging is done with pointer events rather than the browser's own drag
+  // and drop, which does nothing on a touch screen. The handle takes the
+  // press; the row under the pointer when it lifts is where the entry lands.
+  const startDrag = (e, info) => {
+    if (busy) return;
+    e.preventDefault();
+    dragRef.current = { ...info, over: info.from };
+    setDrag({ listKey: info.listKey, from: info.from, over: info.from });
+    const onMove = (ev) => {
+      const cur = dragRef.current;
+      if (!cur) return;
+      const under = document.elementFromPoint(ev.clientX, ev.clientY);
+      const row = under && under.closest && under.closest("[data-reorder-list]");
+      if (!row || row.getAttribute("data-reorder-list") !== cur.listKey) return;
+      const over = Number(row.getAttribute("data-reorder-index"));
+      if (over === cur.over) return;
+      cur.over = over;
+      setDrag({ listKey: cur.listKey, from: cur.from, over });
+    };
+    const finish = (ev) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      const cur = dragRef.current;
+      dragRef.current = null;
+      setDrag(null);
+      if (cur && ev.type === "pointerup") reorderTo(cur.at, cur.list, cur.from, cur.over, cur.saveCall);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  };
 
   const parsePrice = (at, typed) => {
     if (typed === "") return { ok: true, amount: null };
@@ -7270,8 +7374,7 @@ function CompanyListsSections({ branches }) {
   }, label);
   const errorLine = (at) => error && error.at === at && el("div", { className: "loginError" }, error.text);
   const section = (title, intro, at, ...children) => el(
-    "div", { className: "dashboardSection", style: { marginTop: "24px" } },
-    el("h2", null, title),
+    CompanySection, { title, style: { marginTop: "24px" } },
     el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, intro),
     errorLine(at),
     ...children
@@ -7279,18 +7382,68 @@ function CompanyListsSections({ branches }) {
   const subHeading = (text, faded) => el("div", {
     style: { fontWeight: 600, margin: "18px 0 8px", opacity: faded ? 0.5 : 1 },
   }, text);
-  const rowStyle = (entry) => (entry.active ? null : { opacity: 0.5 });
-  const actions = (...buttons) => el("td", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } }, ...buttons);
-  const onOff = (at, kind, entry) =>
-    btn(entry.active ? "Switch off" : "Switch back on", () => setActive(at, kind, entry));
   const table = (minWidth, heads, rows) => el(
     "div", { style: { overflowX: "auto" } },
     el("table", { className: "dashboardTable", style: { minWidth } },
       el("thead", null, el("tr", null, heads.map((h, i) => el("th", { key: i }, h)))),
       el("tbody", null, rows)));
-  const askName = (what, current) => {
-    const name = window.prompt(`New name for this ${what}`, current);
-    return name == null ? null : name;
+
+  // One entry in a list: drag handle, name, anything extra, on/off, Delete.
+  //   reorder   { listKey, list, index, saveCall } or null when the list has
+  //             no order of its own
+  //   rename    (name, code) => the save to make
+  //   goesWith  what a delete takes with it, as a sentence, or ""
+  const entryRow = ({ at, kind, entry, reorder, rename, withCode, goesWith, lead, extra, indent }) => {
+    const key = `${kind}:${entry.id}`;
+    const dragging = drag && reorder && drag.listKey === reorder.listKey;
+    const isFrom   = dragging && drag.from === reorder.index;
+    const isOver   = dragging && drag.over === reorder.index && drag.over !== drag.from;
+    const style = {
+      ...(entry.active ? null : { opacity: 0.5 }),
+      ...(isFrom ? { opacity: 0.35 } : null),
+      ...(isOver ? { outline: "2px solid currentColor", outlineOffset: "-2px" } : null),
+    };
+    const rowProps = { key: entry.id, style };
+    if (reorder) {
+      rowProps["data-reorder-list"]  = reorder.listKey;
+      rowProps["data-reorder-index"] = reorder.index;
+    }
+    return el("tr", rowProps,
+      el("td", { style: { width: "1%", paddingRight: 0 } },
+        reorder
+          ? el("span", {
+              title: "Drag to reorder", "aria-label": "Drag to reorder",
+              style: { cursor: busy ? "default" : "grab", touchAction: "none", userSelect: "none", padding: "4px 6px", opacity: 0.6 },
+              onPointerDown: (e) => startDrag(e, {
+                at, listKey: reorder.listKey, list: reorder.list, from: reorder.index, saveCall: reorder.saveCall,
+              }),
+            }, "⋮⋮")
+          : null),
+      el("td", { style: indent ? { paddingLeft: "28px" } : null },
+        lead || null,
+        el(ListInlineName, {
+          name: entry.name, code: entry.code, withCode, disabled: busy,
+          onSave: (name, code) => { const [fn, args] = rename(name, code); return act(at, fn, args); },
+        })),
+      extra || el("td", null),
+      el("td", null,
+        el("label", { style: { display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer" } },
+          el("input", {
+            type: "checkbox", checked: !!entry.active, disabled: busy,
+            onChange: () => act(at, "set_reference_active", { p_kind: kind, p_id: entry.id, p_active: !entry.active }),
+          }),
+          entry.active ? "On" : "Off")),
+      confirming === key
+        ? el("td", { style: { whiteSpace: "normal", minWidth: "260px" } },
+            el("div", { style: { marginBottom: "6px" } },
+              `Delete ${entry.name}? ${goesWith ? goesWith + " " : ""}Old records keep the name.`),
+            el("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
+              btn("Delete", async () => {
+                await act(at, "delete_reference", { p_kind: kind, p_id: entry.id });
+                setConfirming("");
+              }),
+              btn("Cancel", () => setConfirming(""))))
+        : el("td", null, btn("Delete", () => setConfirming(key))));
   };
 
   if (!ready) {
@@ -7306,35 +7459,55 @@ function CompanyListsSections({ branches }) {
   }
 
   const { pickupLocations, vehicleClasses, sources, protectionProducts, rates } = companyLists;
-  const activeClasses = vehicleClasses.filter((c) => c.active);
-  const activeSources = sources.filter((x) => x.active);
+  const activeClasses  = vehicleClasses.filter((c) => c.active);
+  const activeSources  = sources.filter((x) => x.active);
+  const activeProducts = protectionProducts.filter((pr) => pr.active);
+  const shownProduct   = activeProducts.find((pr) => pr.id === priceProduct) || activeProducts[0] || null;
 
   // A closed branch is listed only if it still has pickup locations to show.
   const pickupBranches = (branches || []).filter((b) =>
     b.active || pickupLocations.some((p) => p.locationId === b.id));
 
+  // Compact, with the vehicle class column and the header row held in place
+  // while the rest scrolls. The background on the held cells is the table's
+  // own, so what scrolls underneath does not show through.
+  const held = { position: "sticky", background: "#F9F9F7" };
   const priceGrid = (at, valueFor, saveFor) =>
     (!activeClasses.length || !activeSources.length)
       ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
           "Prices need at least one vehicle class and one source switched on.")
-      : table(`${220 + activeSources.length * 120}px`,
-          ["Vehicle class", ...activeSources.map((x) => x.name)],
-          activeClasses.map((c) => el("tr", { key: c.id },
-            el("td", null, c.name),
-            activeSources.map((x) => el("td", { key: x.id },
-              el(ListPriceCell, {
-                value: valueFor(c, x), disabled: busy,
-                onSave: (typed) => {
-                  const parsed = parsePrice(at, typed);
-                  return parsed.ok ? saveFor(c, x, parsed.amount) : Promise.resolve(false);
-                },
-              }))))));
+      : el("div", { style: { overflow: "auto", maxHeight: "70vh" } },
+          el("table", { className: "dashboardTable", style: { minWidth: `${170 + activeSources.length * 104}px` } },
+            el("thead", null, el("tr", null,
+              el("th", { style: { ...held, top: 0, left: 0, zIndex: 3, padding: "6px 10px" } }, "Vehicle class"),
+              activeSources.map((x) => el("th", {
+                key: x.id, style: { ...held, top: 0, zIndex: 2, padding: "6px 8px" },
+              }, x.name)))),
+            el("tbody", null, activeClasses.map((c) => el("tr", { key: c.id },
+              el("td", { style: { ...held, left: 0, zIndex: 1, padding: "4px 10px", fontWeight: 600 } }, c.name),
+              activeSources.map((x) => el("td", { key: x.id, style: { padding: "4px 8px" } },
+                el(ListPriceCell, {
+                  value: valueFor(c, x), disabled: busy,
+                  onSave: (typed) => {
+                    const parsed = parsePrice(at, typed);
+                    return parsed.ok ? saveFor(c, x, parsed.amount) : Promise.resolve(false);
+                  },
+                }))))))));
 
   const protectionPrice = (product, c, x) => {
     const row = prices.find((r) =>
       r.productId === product.id && r.vehicleClassId === c.id && r.sourceId === x.id);
     return row ? Number(row.amount) : null;
   };
+
+  const saveClass   = (c, order) => ["save_vehicle_class", { p_id: c.id, p_name: c.name, p_sort: order }];
+  const saveSource  = (x, order) => ["save_source",
+    { p_id: x.id, p_name: x.name, p_billing_type: x.billingType, p_sort: order }];
+  const saveProduct = (pr, order) => ["save_protection_product", { p_id: pr.id, p_name: pr.name, p_sort: order }];
+  const savePickup  = (pl, order) => ["save_pickup_location",
+    { p_id: pl.id, p_location_id: pl.locationId, p_name: pl.name, p_code: pl.code || "", p_sort: order }];
+
+  const listHeads = (name, middle) => ["", name, middle || "", "On", ""];
 
   return el(React.Fragment, null,
 
@@ -7346,22 +7519,14 @@ function CompanyListsSections({ branches }) {
         const mine = pickupLocations.filter((p) => p.locationId === b.id);
         return el("div", { key: b.id },
           subHeading(b.active ? b.name : `${b.name} (closed)`, !b.active),
-          mine.length > 0 && table("520px", ["Pickup location", "Code", "Status", ""],
-            mine.map((entry) => el("tr", { key: entry.id, style: rowStyle(entry) },
-              el("td", null, entry.name),
-              el("td", null, entry.code || ""),
-              el("td", null, entry.active ? "On" : "Off"),
-              actions(
-                btn("Rename", () => {
-                  const name = askName("pickup location", entry.name);
-                  if (name == null) return;
-                  const code = window.prompt("Code (optional, up to 8 letters or numbers)", entry.code || "");
-                  if (code == null) return;
-                  act("pickup", "save_pickup_location", {
-                    p_id: entry.id, p_location_id: entry.locationId, p_name: name, p_code: code, p_sort: null,
-                  });
-                }),
-                onOff("pickup", "pickup_location", entry))))),
+          mine.length > 0 && table("520px", listHeads("Pickup location"),
+            mine.map((entry, i) => entryRow({
+              at: "pickup", kind: "pickup_location", entry, withCode: true,
+              reorder: { listKey: `pickup:${b.id}`, list: mine, index: i, saveCall: savePickup },
+              rename: (name, code) => ["save_pickup_location", {
+                p_id: entry.id, p_location_id: entry.locationId, p_name: name, p_code: code, p_sort: null,
+              }],
+            }))),
           b.active && el(ListAddRow, {
             placeholder: "New pickup location", label: "Add", withCode: true, disabled: busy,
             onAdd: (name, code) => act("pickup", "save_pickup_location", {
@@ -7374,20 +7539,13 @@ function CompanyListsSections({ branches }) {
     section("Vehicle classes",
       "One list for reservations, the fleet and rates, in the order shown here.",
       "classes",
-      table("520px", ["Vehicle class", "Status", ""],
-        vehicleClasses.map((entry, i) => el("tr", { key: entry.id, style: rowStyle(entry) },
-          el("td", null, entry.name),
-          el("td", null, entry.active ? "On" : "Off"),
-          actions(
-            btn("Up",   () => move("classes", vehicleClasses, i, -1,
-              (c, order) => ["save_vehicle_class", { p_id: c.id, p_name: c.name, p_sort: order }]), i === 0),
-            btn("Down", () => move("classes", vehicleClasses, i, 1,
-              (c, order) => ["save_vehicle_class", { p_id: c.id, p_name: c.name, p_sort: order }]), i === vehicleClasses.length - 1),
-            btn("Rename", () => {
-              const name = askName("vehicle class", entry.name);
-              if (name != null) act("classes", "save_vehicle_class", { p_id: entry.id, p_name: name, p_sort: null });
-            }),
-            onOff("classes", "vehicle_class", entry))))),
+      table("520px", listHeads("Vehicle class"),
+        vehicleClasses.map((entry, i) => entryRow({
+          at: "classes", kind: "vehicle_class", entry,
+          reorder: { listKey: "classes", list: vehicleClasses, index: i, saveCall: saveClass },
+          rename: (name) => ["save_vehicle_class", { p_id: entry.id, p_name: name, p_sort: null }],
+          goesWith: "Its daily rates and protection prices go with it.",
+        }))),
       el(ListAddRow, {
         placeholder: "New vehicle class", label: "Add", disabled: busy,
         onAdd: (name) => act("classes", "save_vehicle_class", { p_id: null, p_name: name, p_sort: null }),
@@ -7395,54 +7553,52 @@ function CompanyListsSections({ branches }) {
 
     // ── Sources ──
     section("Sources",
-      "Who the work comes from. The billing type decides which billing fields a reservation asks for, so a source can be renamed freely. Specific sources are the named companies under each one.",
+      "Who the work comes from. The billing type decides which billing fields a reservation asks for, so a source can be renamed freely. Open a source to see the specific sources under it.",
       "sources",
-      sources.map((entry, i) => {
-        const saveSource = (x, order) => ["save_source",
-          { p_id: x.id, p_name: x.name, p_billing_type: x.billingType, p_sort: order }];
-        return el("div", { key: entry.id, style: { marginBottom: "20px" } },
-          table("620px", ["Source", "Billing type", "Status", ""], [
-            el("tr", { key: entry.id, style: rowStyle(entry) },
-              el("td", null, entry.name),
-              el("td", null,
-                el("select", {
-                  className: "resFormInput", style: { width: "auto" }, disabled: busy,
-                  value: entry.billingType,
-                  onChange: (e) => act("sources", "save_source", {
-                    p_id: entry.id, p_name: entry.name, p_billing_type: e.target.value, p_sort: null,
+      table("640px", listHeads("Source", "Billing type"),
+        sources.map((entry, i) => {
+          const isOpen = !!openSources[entry.id];
+          const n = entry.details.length;
+          const rows = [entryRow({
+            at: "sources", kind: "source", entry,
+            reorder: { listKey: "sources", list: sources, index: i, saveCall: saveSource },
+            rename: (name) => ["save_source", {
+              p_id: entry.id, p_name: name, p_billing_type: entry.billingType, p_sort: null,
+            }],
+            goesWith: `Its ${n} specific source${n === 1 ? "" : "s"}, its daily rates and its protection prices go with it.`,
+            lead: el("button", {
+              type: "button", "aria-expanded": isOpen,
+              title: isOpen ? "Hide specific sources" : "Show specific sources",
+              style: { background: "none", border: "none", color: "inherit", font: "inherit", cursor: "pointer", padding: "0 8px 0 0" },
+              onClick: () => setOpenSources((p) => ({ ...p, [entry.id]: !p[entry.id] })),
+            }, isOpen ? "▾" : "▸"),
+            extra: el("td", null,
+              el("select", {
+                className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, disabled: busy,
+                value: entry.billingType,
+                onChange: (e) => act("sources", "save_source", {
+                  p_id: entry.id, p_name: entry.name, p_billing_type: e.target.value, p_sort: null,
+                }),
+              }, BILLING_TYPE_LABELS.map(([v, l]) => el("option", { key: v, value: v }, l)))),
+          })];
+          if (isOpen) {
+            entry.details.forEach((d) => rows.push(entryRow({
+              at: "sources", kind: "source_detail", entry: d, reorder: null, indent: true,
+              rename: (name) => ["save_source_detail", { p_id: d.id, p_source_id: entry.id, p_name: name }],
+              extra: el("td", null, "Specific source"),
+            })));
+            rows.push(el("tr", { key: `${entry.id}:add` },
+              el("td", null),
+              el("td", { colSpan: 4, style: { paddingLeft: "28px" } },
+                el(ListAddRow, {
+                  placeholder: `New specific source under ${entry.name}`, label: "Add", disabled: busy,
+                  onAdd: (name) => act("sources", "save_source_detail", {
+                    p_id: null, p_source_id: entry.id, p_name: name,
                   }),
-                }, BILLING_TYPE_LABELS.map(([v, l]) => el("option", { key: v, value: v }, l)))),
-              el("td", null, entry.active ? "On" : "Off"),
-              actions(
-                btn("Up",   () => move("sources", sources, i, -1, saveSource), i === 0),
-                btn("Down", () => move("sources", sources, i, 1, saveSource), i === sources.length - 1),
-                btn("Rename", () => {
-                  const name = askName("source", entry.name);
-                  if (name != null) act("sources", "save_source", {
-                    p_id: entry.id, p_name: name, p_billing_type: entry.billingType, p_sort: null,
-                  });
-                }),
-                onOff("sources", "source", entry))),
-            ...entry.details.map((d) => el("tr", { key: d.id, style: rowStyle(d) },
-              el("td", { style: { paddingLeft: "28px" } }, d.name),
-              el("td", null, "Specific source"),
-              el("td", null, d.active ? "On" : "Off"),
-              actions(
-                btn("Rename", () => {
-                  const name = askName("specific source", d.name);
-                  if (name != null) act("sources", "save_source_detail", {
-                    p_id: d.id, p_source_id: entry.id, p_name: name,
-                  });
-                }),
-                onOff("sources", "source_detail", d)))),
-          ]),
-          el(ListAddRow, {
-            placeholder: `New specific source under ${entry.name}`, label: "Add", disabled: busy,
-            onAdd: (name) => act("sources", "save_source_detail", {
-              p_id: null, p_source_id: entry.id, p_name: name,
-            }),
-          }));
-      }),
+                }))));
+          }
+          return rows;
+        })),
       subHeading("Add a source"),
       el(ListAddRow, {
         placeholder: "New source", label: "Add source", withType: true, disabled: busy,
@@ -7463,29 +7619,37 @@ function CompanyListsSections({ branches }) {
 
     // ── Protection products ──
     section("Protection products",
-      "Each product has a price per day for every vehicle class and source. A cell saves when you leave it. Blank means no price.",
+      "Each product has a price per day for every vehicle class and source. Pick a product to see its prices. A cell saves when you leave it. Blank means no price.",
       "protection",
-      protectionProducts.length > 0 && table("520px", ["Protection product", "Status", ""],
-        protectionProducts.map((entry) => el("tr", { key: entry.id, style: rowStyle(entry) },
-          el("td", null, entry.name),
-          el("td", null, entry.active ? "On" : "Off"),
-          actions(
-            btn("Rename", () => {
-              const name = askName("protection product", entry.name);
-              if (name != null) act("protection", "save_protection_product", { p_id: entry.id, p_name: name, p_sort: null });
-            }),
-            onOff("protection", "protection_product", entry))))),
+      protectionProducts.length > 0 && table("520px", listHeads("Protection product"),
+        protectionProducts.map((entry, i) => entryRow({
+          at: "protection", kind: "protection_product", entry,
+          reorder: { listKey: "products", list: protectionProducts, index: i, saveCall: saveProduct },
+          rename: (name) => ["save_protection_product", { p_id: entry.id, p_name: name, p_sort: null }],
+          goesWith: "Its protection prices go with it.",
+        }))),
       el(ListAddRow, {
         placeholder: "New protection product", label: "Add", disabled: busy,
         onAdd: (name) => act("protection", "save_protection_product", { p_id: null, p_name: name, p_sort: null }),
       }),
-      protectionProducts.filter((pr) => pr.active).map((pr) => el("div", { key: pr.id },
-        subHeading(`${pr.name}: price per day`),
-        priceGrid("protection",
-          (c, x) => protectionPrice(pr, c, x),
-          (c, x, amount) => act("protection", "set_protection_price", {
-            p_product_id: pr.id, p_class_id: c.id, p_source_id: x.id, p_amount: amount,
-          })))))
+      shownProduct
+        ? el("div", null,
+            el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", margin: "18px 0 8px" } },
+              el("span", { style: { fontWeight: 600 } }, "Price per day for"),
+              el("select", {
+                className: "resFormInput", style: { width: "auto" },
+                value: shownProduct.id, onChange: (e) => setPriceProduct(e.target.value),
+              }, activeProducts.map((pr) => el("option", { key: pr.id, value: pr.id }, pr.name)))),
+            // Keyed by product, so a cell's draft never carries from one
+            // product's grid into another's.
+            el("div", { key: shownProduct.id },
+              priceGrid("protection",
+                (c, x) => protectionPrice(shownProduct, c, x),
+                (c, x, amount) => act("protection", "set_protection_price", {
+                  p_product_id: shownProduct.id, p_class_id: c.id, p_source_id: x.id, p_amount: amount,
+                }))))
+        : el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+            "Switch a product on to set its prices."))
   );
 }
 
