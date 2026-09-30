@@ -547,6 +547,11 @@ const TEXT_TEMPLATE_KINDS = [
 ];
 const TEXT_PLACEHOLDERS = ["[first name]", "[company]", "[location]", "[date]", "[time]"];
 const TEXT_TEMPLATE_MAX = 240;
+// The insert buttons above a text box, in the order a text usually reads.
+const TEXT_PLACEHOLDER_BUTTONS = [
+  ["First name", "[first name]"], ["Company", "[company]"], ["Location", "[location]"],
+  ["Date", "[date]"], ["Time", "[time]"],
+];
 
 const fillTextTemplate = (template, values) =>
   String(template).replace(/\[(first name|company|location|date|time)\]/gi,
@@ -8055,6 +8060,8 @@ function CustomerTextsSettings() {
   const [loadErr, setLoadErr] = React.useState(false);
   const [busy,    setBusy]    = React.useState(null);
   const [notice,  setNotice]  = React.useState({});   // kind -> { ok, text }
+  const [editing, setEditing] = React.useState({});   // kind -> true while its text box is open
+  const boxes = React.useRef({});                      // kind -> its text box, for inserting at the cursor
 
   React.useEffect(() => {
     let live = true;
@@ -8096,7 +8103,7 @@ function CustomerTextsSettings() {
       const text = error ? "The wording could not be saved. Check your connection and try again." : textTemplateRefusal(data);
       setNotice((p) => ({ ...p, [k.kind]: { ok: false, text } }));
       logAudit({ ...entry, outcome: "refused", description: `${k.title} wording not changed (${error ? "request failed" : data?.reason}).` });
-      return;
+      return false;
     }
     const reset = !!data.reset;
     setSaved((p) => { const next = { ...p }; if (reset) delete next[k.kind]; else next[k.kind] = data.body; return next; });
@@ -8104,6 +8111,26 @@ function CustomerTextsSettings() {
     setNotice((p) => ({ ...p, [k.kind]: { ok: true, text: reset ? "Back to the default wording." : "Wording saved." } }));
     logAudit({ ...entry, outcome: "completed",
       description: reset ? `${k.title} wording reset to the default.` : `${k.title} wording changed to: ${data.body}` });
+    setEditing((p) => ({ ...p, [k.kind]: false }));
+    return true;
+  };
+
+  // Puts a placeholder where the cursor is in that text's box, replacing any
+  // selected text, and leaves the cursor just after it.
+  const insertPlaceholder = (kind, placeholder) => {
+    const box = boxes.current[kind];
+    const value = drafts[kind] ?? "";
+    const start = box ? box.selectionStart : value.length;
+    const end   = box ? box.selectionEnd   : value.length;
+    setDrafts((p) => ({ ...p, [kind]: value.slice(0, start) + placeholder + value.slice(end) }));
+    setNotice((p) => ({ ...p, [kind]: null }));
+    // After React has put the new value in, which moves the cursor to the end.
+    setTimeout(() => {
+      const b = boxes.current[kind];
+      if (!b) return;
+      b.focus();
+      b.setSelectionRange(start + placeholder.length, start + placeholder.length);
+    }, 0);
   };
 
   if (!loaded) return React.createElement("div", { className: "resvEmpty" }, "Loading the current wording...");
@@ -8128,48 +8155,88 @@ function CustomerTextsSettings() {
       const unknown  = (trimmed.match(/\[[^\][]*\]/g) || []).filter((ph) => !TEXT_PLACEHOLDERS.includes(ph.toLowerCase()));
       const note     = notice[k.kind];
 
+      const isEditing = !!editing[k.kind];
+      // What the customer gets today, shown when the box is closed.
+      const savedPreview = fillTextTemplate(current, sample) + k.suffix;
+
+      const measures = [
+        React.createElement("p", { key: "len", className: "closeRentalHint" },
+          `${m.length} characters${k.suffixNote ? ` with ${k.suffixNote}` : ""}, sent as ${m.segments} text${m.segments === 1 ? "" : "s"} ` +
+          `(${m.perSegment} characters fit in one). A longer name, company or branch adds to this.`),
+        m.segments > 1 && React.createElement("div", { key: "seg", className: "closeRentalWarning" },
+          `This is over one text segment, so each customer is sent ${m.segments} texts' worth and it costs ${m.segments} times as much. ` +
+          "Shorten the wording to bring it back to one."),
+        m.costly.length > 0 && React.createElement("div", { key: "cost", className: "closeRentalWarning" },
+          `These characters raise the cost: ${m.costly.map((ch) => (ch === "\n" ? "line break" : ch)).join("  ")}. ` +
+          "A text containing any of them holds 70 characters per segment instead of 160. Curly quotes and apostrophes are the usual cause: retype them as straight ones."),
+        tooLong && React.createElement("div", { key: "long", className: "closeRentalWarning" },
+          `The wording is ${trimmed.length - TEXT_TEMPLATE_MAX} characters over the ${TEXT_TEMPLATE_MAX} allowed and cannot be saved.`),
+        unknown.length > 0 && React.createElement("div", { key: "ph", className: "closeRentalWarning" },
+          `${unknown.join(", ")} ${unknown.length === 1 ? "is not a placeholder" : "are not placeholders"} and cannot be saved. Use only ${TEXT_PLACEHOLDERS.join(", ")}.`),
+      ];
+
       return React.createElement("div", { key: k.kind, style: { marginBottom: "22px" } },
         React.createElement("div", { className: "gasSettingSubhead" }, k.title),
         React.createElement("p", { className: "closeRentalHint" },
           `${k.when} ${isCustom ? "Using your company's own wording." : "Using the default wording."}`),
-        React.createElement("textarea", {
-          className: "resFormInput resFormTextarea", rows: 4, value: draft,
-          "aria-label": `${k.title} wording`,
-          onChange: (e) => { setDrafts((p) => ({ ...p, [k.kind]: e.target.value })); setNotice((p) => ({ ...p, [k.kind]: null })); },
-        }),
-        React.createElement("p", { className: "closeRentalHint" },
-          `${trimmed.length} of ${TEXT_TEMPLATE_MAX} characters of wording.`),
 
-        React.createElement("div", { className: "gasSettingSubhead" }, "Preview"),
-        React.createElement("div", { className: "closeRentalSummary" }, preview),
-        React.createElement("p", { className: "closeRentalHint" },
-          `${m.length} characters${k.suffixNote ? ` with ${k.suffixNote}` : ""}, sent as ${m.segments} text${m.segments === 1 ? "" : "s"} ` +
-          `(${m.perSegment} characters fit in one). A longer name, company or branch adds to this.`),
+        !isEditing && React.createElement(React.Fragment, null,
+          React.createElement("div", { className: "closeRentalSummary" }, savedPreview),
+          note && React.createElement("div", { className: note.ok ? "addVehicleSuccess" : "closeRentalWarning" }, note.text),
+          React.createElement("div", { className: "closeRentalActions" },
+            React.createElement("button", {
+              type: "button", className: "resModalCancel",
+              disabled: busy === k.kind || !isCustom,
+              onClick: () => save(k, ""),
+            }, "Use default wording"),
+            React.createElement("button", {
+              type: "button", className: "resModalSubmit",
+              disabled: busy === k.kind,
+              onClick: () => {
+                setDrafts((p) => ({ ...p, [k.kind]: current }));
+                setNotice((p) => ({ ...p, [k.kind]: null }));
+                setEditing((p) => ({ ...p, [k.kind]: true }));
+              },
+            }, "Edit"))),
 
-        m.segments > 1 && React.createElement("div", { className: "closeRentalWarning" },
-          `This is over one text segment, so each customer is sent ${m.segments} texts' worth and it costs ${m.segments} times as much. ` +
-          "Shorten the wording to bring it back to one."),
-        m.costly.length > 0 && React.createElement("div", { className: "closeRentalWarning" },
-          `These characters raise the cost: ${m.costly.map((ch) => (ch === "\n" ? "line break" : ch)).join("  ")}. ` +
-          "A text containing any of them holds 70 characters per segment instead of 160. Curly quotes and apostrophes are the usual cause: retype them as straight ones."),
-        tooLong && React.createElement("div", { className: "closeRentalWarning" },
-          `The wording is ${trimmed.length - TEXT_TEMPLATE_MAX} characters over the ${TEXT_TEMPLATE_MAX} allowed and cannot be saved.`),
-        unknown.length > 0 && React.createElement("div", { className: "closeRentalWarning" },
-          `${unknown.join(", ")} ${unknown.length === 1 ? "is not a placeholder" : "are not placeholders"} and cannot be saved. Use only ${TEXT_PLACEHOLDERS.join(", ")}.`),
-        note && React.createElement("div", { className: note.ok ? "addVehicleSuccess" : "closeRentalWarning" }, note.text),
+        isEditing && React.createElement(React.Fragment, null,
+          React.createElement("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "8px" } },
+            TEXT_PLACEHOLDER_BUTTONS.map(([label, placeholder]) =>
+              React.createElement("button", {
+                key: placeholder, type: "button", className: "resModalCancel",
+                // Keeps the cursor in the box, so the insert lands where it was.
+                onMouseDown: (e) => e.preventDefault(),
+                onClick: () => insertPlaceholder(k.kind, placeholder),
+              }, label))),
+          React.createElement("textarea", {
+            className: "resFormInput resFormTextarea", rows: 4, value: draft,
+            "aria-label": `${k.title} wording`, autoFocus: true,
+            ref: (node) => { boxes.current[k.kind] = node; },
+            onChange: (e) => { setDrafts((p) => ({ ...p, [k.kind]: e.target.value })); setNotice((p) => ({ ...p, [k.kind]: null })); },
+          }),
+          React.createElement("p", { className: "closeRentalHint" },
+            `${trimmed.length} of ${TEXT_TEMPLATE_MAX} characters of wording.`),
 
-        React.createElement("div", { className: "closeRentalActions" },
-          React.createElement("button", {
-            type: "button", className: "resModalCancel",
-            disabled: busy === k.kind || !isCustom,
-            onClick: () => save(k, ""),
-          }, "Use default wording"),
-          React.createElement("button", {
-            type: "button", className: "resModalSubmit",
-            disabled: busy === k.kind || !trimmed || trimmed === current || tooLong || unknown.length > 0,
-            onClick: () => save(k, trimmed),
-          }, busy === k.kind ? "Saving..." : "Save wording")
-        )
+          React.createElement("div", { className: "gasSettingSubhead" }, "Preview"),
+          React.createElement("div", { className: "closeRentalSummary" }, preview),
+          ...measures,
+          note && React.createElement("div", { className: note.ok ? "addVehicleSuccess" : "closeRentalWarning" }, note.text),
+
+          React.createElement("div", { className: "closeRentalActions" },
+            React.createElement("button", {
+              type: "button", className: "resModalCancel",
+              disabled: busy === k.kind,
+              onClick: () => {
+                setDrafts((p) => ({ ...p, [k.kind]: current }));
+                setNotice((p) => ({ ...p, [k.kind]: null }));
+                setEditing((p) => ({ ...p, [k.kind]: false }));
+              },
+            }, "Cancel"),
+            React.createElement("button", {
+              type: "button", className: "resModalSubmit",
+              disabled: busy === k.kind || !trimmed || trimmed === current || tooLong || unknown.length > 0,
+              onClick: () => save(k, trimmed),
+            }, busy === k.kind ? "Saving..." : "Save")))
       );
     })
   );
