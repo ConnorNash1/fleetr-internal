@@ -419,7 +419,7 @@ function ndiSourceOptions(current) {
   if (companyLists) {
     companyLists.sources.filter((x) => x.active).forEach((x) => {
       if (x.billingType === "insurance") {
-        if (isFeatureEnabled("insurance_rentals") || x.name === current) mine.push(x.name);
+        if (offerInsuranceSource(current)) mine.push(x.name);
       } else if (x.billingType === "bodyshop_dealership") {
         x.details.filter((d) => d.active).forEach((d) => mine.push(d.name));
       }
@@ -429,6 +429,26 @@ function ndiSourceOptions(current) {
     ? mine
     : NDI_SOURCE_OPTIONS.filter((opt) => opt !== "Insurance" || offerInsuranceSource(current));
   return withCurrentOption(options, current);
+}
+
+// What kind of billing a source means: "insurance", "bodyshop_dealership",
+// "corporate", "retail", or null. Every rule that depends on the kind of
+// source asks this rather than reading the name, so an Exec can rename a
+// source without the billing fields, the bill-to rules or the Time of Repair
+// list losing track of it.
+//
+// Takes the source as stored, with or without a specific source after it. A
+// source the company's list does not have (an old record, or the list did not
+// load) is recognised by the four built-in names, as it always was.
+function sourceBillingType(source) {
+  const src  = String(source || "");
+  const name = src.split(LIST_SEP)[0];
+  const known = companyLists && companyLists.sources.find((x) => x.name === name);
+  if (known) return known.billingType;
+  return src === "Retail"                      ? "retail"
+    : src.startsWith("Bodyshop/Dealership")    ? "bodyshop_dealership"
+    : src.startsWith("Insurance")              ? "insurance"
+    : src.startsWith("Corporate")              ? "corporate" : null;
 }
 
 const quotedList = (names) => names.map((n) => `"${n}"`).join(", ");
@@ -3059,17 +3079,17 @@ function ReservationsPage() {
               tf("Daily Rate ($)", "dailyRate", "0.00")
             ),
             ...(() => {
-              if (form.source === "Insurance") return [
+              if (sourceBillingType(form.source) === "insurance") return [
                 React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Adjuster Name", "adjusterName", "Adjuster name"), tf("Claim Number", "claimNumber", "Claim #")),
                 React.createElement("div", { className: "resFormRow", key: "rb2" }, tf("File Number", "fileNumber", "File #"), tf("Authorization Number", "authNumber", "Auth #")),
               ];
-              if (form.source === "Bodyshop") return [
+              if (sourceBillingType(form.source) === "bodyshop_dealership") return [
                 React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Claim Number", "claimNumber", "Claim #"), tf("Authorization Number", "authNumber", "Auth #")),
               ];
-              if (form.source === "Corporate") return [
+              if (sourceBillingType(form.source) === "corporate") return [
                 React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("PO Number", "poNumber", "PO #")),
               ];
-              if (form.source === "Retail") return [
+              if (sourceBillingType(form.source) === "retail") return [
                 React.createElement("div", { className: "resFormRow", key: "rb1" },
                   React.createElement("label", { className: "resFormGroup" },
                     React.createElement("span", { className: "resFormLabel" }, "Payment Method"),
@@ -4048,17 +4068,17 @@ function DashboardPage() {
               tf("Daily Rate ($)", "dailyRate", "0.00")
             ),
             ...(() => {
-              if (form.source === "Insurance") return [
+              if (sourceBillingType(form.source) === "insurance") return [
                 React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Adjuster Name", "adjusterName", "Adjuster name"), tf("Claim Number", "claimNumber", "Claim #")),
                 React.createElement("div", { className: "resFormRow", key: "rb2" }, tf("File Number", "fileNumber", "File #"), tf("Authorization Number", "authNumber", "Auth #")),
               ];
-              if (form.source === "Bodyshop") return [
+              if (sourceBillingType(form.source) === "bodyshop_dealership") return [
                 React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Claim Number", "claimNumber", "Claim #"), tf("Authorization Number", "authNumber", "Auth #")),
               ];
-              if (form.source === "Corporate") return [
+              if (sourceBillingType(form.source) === "corporate") return [
                 React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("PO Number", "poNumber", "PO #")),
               ];
-              if (form.source === "Retail") return [
+              if (sourceBillingType(form.source) === "retail") return [
                 React.createElement("div", { className: "resFormRow", key: "rb1" },
                   React.createElement("label", { className: "resFormGroup" },
                     React.createElement("span", { className: "resFormLabel" }, "Payment Method"),
@@ -5043,7 +5063,7 @@ function TORPage() {
 
   const rows = reservations.filter(
     (r) =>
-      (r.source === "Bodyshop/Dealership" || r.source === "Insurance") &&
+      ["bodyshop_dealership", "insurance"].includes(sourceBillingType(r.source)) &&
       !r.repairDateConfirmed
   );
 
@@ -11346,7 +11366,7 @@ const RATES_SOURCE_CATS = {
 // Nothing else about insurance rentals changes when the flag is off: existing
 // insurance records display and bill exactly as before.
 function offerInsuranceSource(current) {
-  return isFeatureEnabled("insurance_rentals") || String(current || "").startsWith("Insurance");
+  return isFeatureEnabled("insurance_rentals") || sourceBillingType(current) === "insurance";
 }
 
 function sourceCatsFor(current) {
@@ -12169,10 +12189,14 @@ function CustomerPage() {
       )
     );
 
-  const btSrcCat = ratesForm.source === "Retail" ? "Retail"
-    : ratesForm.source.startsWith("Bodyshop/Dealership") ? "Bodyshop/Dealership"
-    : ratesForm.source.startsWith("Insurance")           ? "Insurance"
-    : ratesForm.source.startsWith("Corporate")           ? "Corporate" : null;
+  // Decided by the source's billing type. The four labels are what the rules
+  // below have always branched on, whatever the company calls the source.
+  const btSrcCat = {
+    retail:              "Retail",
+    bodyshop_dealership: "Bodyshop/Dealership",
+    insurance:           "Insurance",
+    corporate:           "Corporate",
+  }[sourceBillingType(ratesForm.source)] || null;
   const btSrcName = ratesForm.source.includes(" \u2014 ")
     ? ratesForm.source.split(" \u2014 ")[1] : ratesForm.source;
 
