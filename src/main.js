@@ -205,6 +205,7 @@ function readStoredSession() {
 
 function clearSession() {
   companyFeatures = {};
+  companyLists = null;
   try {
     localStorage.removeItem(PROFILE_KEY);
     // Left over from the previous scheme. Removed so a stale token cannot
@@ -255,6 +256,182 @@ function isFeatureEnabled(featureKey) {
   return Object.prototype.hasOwnProperty.call(companyFeatures, featureKey)
     && companyFeatures[featureKey] === true;
 }
+
+// ─── Company lists ────────────────────────────────────────────────────────────
+// The pickup locations, vehicle classes, sources, specific sources, daily rates
+// and protection products the company's Exec manages, read from the database
+// with the rest of the data at start. null means they could not be read, and
+// every helper below then answers from the constants this file has always
+// carried, so a failed load looks exactly like the app did before.
+//
+// Records keep their own text copy of what they were saved with. A value that
+// has since been renamed or switched off is still offered on the record that
+// holds it, so opening and saving that record does not change it.
+let companyLists = null;
+
+const LIST_SEP = " \u2014 ";
+
+const byListOrder = (a, b) =>
+  ((a.sortOrder ?? 0) - (b.sortOrder ?? 0)) || String(a.name).localeCompare(String(b.name));
+
+async function loadCompanyLists(user) {
+  companyLists = null;
+  const operatorId = user?.operatorId;
+  if (!operatorId) return;
+  try {
+    // Filtered on the company explicitly, as loadCompanyFeatures is.
+    const own = (table, cols) => supabase.from(table).select(cols).eq("operatorId", operatorId);
+    const results = await Promise.all([
+      own("pickup_locations",    "id,locationId,name,code,active,sortOrder"),
+      own("vehicle_classes",     "id,name,active,sortOrder"),
+      own("sources",             "id,name,billingType,active,sortOrder"),
+      own("source_details",      "id,sourceId,name,active"),
+      own("daily_rates",         "vehicleClassId,sourceId,amount"),
+      own("protection_products", "id,name,active,sortOrder"),
+    ]);
+    const failed = results.find((r) => r.error);
+    if (failed) {
+      console.warn("Fleetr: company lists could not be loaded, using the built-in ones:", failed.error.message);
+      return;
+    }
+    const [pl, vc, so, sd, dr, pp] = results.map((r) => r.data || []);
+    // A company with no classes or no sources has not been set up. The
+    // built-in lists are more use than two empty dropdowns.
+    if (!vc.length || !so.length) {
+      console.warn("Fleetr: this company has no lists yet, using the built-in ones.");
+      return;
+    }
+
+    // The branch a new reservation belongs to: the one an Exec is acting in,
+    // or the staff member's own.
+    let branchId = user.locationId || null;
+    if (roleAtLeast(user.role, "Exec")) {
+      const { data } = await supabase.rpc("my_acting_location");
+      branchId = data && data.ok ? data.locationId || null : null;
+    }
+
+    const classNames  = Object.fromEntries(vc.map((c) => [c.id, c.name]));
+    const sourceNames = Object.fromEntries(so.map((x) => [x.id, x.name]));
+    const rates = {};
+    dr.forEach((r) => {
+      const src = sourceNames[r.sourceId];
+      const cls = classNames[r.vehicleClassId];
+      const amount = Number(r.amount);
+      if (!src || !cls || !Number.isFinite(amount)) return;
+      (rates[src] = rates[src] || {})[cls] = amount;
+    });
+
+    companyLists = {
+      branchId,
+      pickupLocations:    [...pl].sort(byListOrder),
+      vehicleClasses:     [...vc].sort(byListOrder),
+      sources:            [...so].sort(byListOrder).map((x) => ({
+        ...x,
+        details: sd.filter((d) => d.sourceId === x.id)
+          .sort((a, b) => String(a.name).localeCompare(String(b.name))),
+      })),
+      rates,
+      protectionProducts: [...pp].sort(byListOrder),
+    };
+  } catch (e) {
+    companyLists = null;
+    console.warn("Fleetr: company lists could not be loaded, using the built-in ones:", e.message || String(e));
+  }
+}
+
+// Keeps a record's own value on offer when the list no longer has it.
+const withCurrentOption = (options, current) => {
+  const cur = String(current ?? "");
+  return !cur || options.includes(cur) ? options : [...options, cur];
+};
+
+// Pickup locations for the branch the reservation is being made in. A branch
+// with none entered yet is offered the old location codes, so the dropdown is
+// never empty.
+function pickupLocationOptions(current) {
+  const mine = companyLists
+    ? companyLists.pickupLocations
+        .filter((p) => p.active && p.locationId === companyLists.branchId)
+        .map((p) => p.name)
+    : [];
+  return withCurrentOption(mine.length ? mine : LOCATION_OPTIONS, current);
+}
+
+function defaultPickupLocation() {
+  const options = pickupLocationOptions("");
+  return options.includes("WI") ? "WI" : options[0];
+}
+
+// `fallback` is the built-in list the caller used before: the reservation
+// forms and the fleet had different ones.
+function vehicleClassOptions(fallback, current) {
+  const mine = companyLists
+    ? companyLists.vehicleClasses.filter((c) => c.active).map((c) => c.name)
+    : [];
+  return withCurrentOption(mine.length ? mine : fallback, current);
+}
+
+function defaultVehicleClass(fallback, preferred = "Compact Car") {
+  const options = vehicleClassOptions(fallback, "");
+  return options.includes(preferred) ? preferred : options[0];
+}
+
+// The Rates vehicle class picker. With the company's list every class is its
+// own entry and carries its own rate. A record saved under the old grouping
+// ("Car" with a size) keeps that group on offer.
+function vehicleClassCatsFor(current) {
+  const mine = companyLists
+    ? companyLists.vehicleClasses.filter((c) => c.active).map((c) => c.name)
+    : [];
+  if (!mine.length) return RATES_VCLASS_CATS;
+  const cats = Object.fromEntries(mine.map((name) => [name, []]));
+  const curCat = String(current || "").split(LIST_SEP)[0];
+  if (curCat && !cats[curCat]) cats[curCat] = RATES_VCLASS_CATS[curCat] || [];
+  return cats;
+}
+
+// The rate to pre-fill for a source and a rates vehicle class, or undefined
+// when there is none. Both arrive as stored: a source with its specific
+// source after LIST_SEP, and either a class name or the old group and size.
+function dailyRateFor(source, vehicleClass) {
+  const src = String(source || "");
+  const vc  = String(vehicleClass || "");
+  if (companyLists) {
+    const parts = vc.split(LIST_SEP);
+    const className = parts.length > 1 ? `${parts[1]} ${parts[0]}` : vc;
+    return companyLists.rates[src.split(LIST_SEP)[0]]?.[className];
+  }
+  const srcCat = src === "Retail" ? "Retail"
+    : src.startsWith("Bodyshop/Dealership") ? "Bodyshop/Dealership"
+    : src.startsWith("Insurance")           ? "Insurance"
+    : src.startsWith("Corporate")           ? "Corporate" : null;
+  const vcCat = vc === "Minivan" ? "Minivan"
+    : vc === "Truck"             ? "Truck"
+    : vc.startsWith("Car")       ? "Car"
+    : vc.startsWith("SUV")       ? "SUV" : null;
+  return srcCat && vcCat ? DAILY_RATES[srcCat]?.[vcCat] : undefined;
+}
+
+// Non-Drive Intake offers who the work came from: the insurance sources by
+// name, and the specific bodyshops and dealerships.
+function ndiSourceOptions(current) {
+  const mine = [];
+  if (companyLists) {
+    companyLists.sources.filter((x) => x.active).forEach((x) => {
+      if (x.billingType === "insurance") {
+        if (isFeatureEnabled("insurance_rentals") || x.name === current) mine.push(x.name);
+      } else if (x.billingType === "bodyshop_dealership") {
+        x.details.filter((d) => d.active).forEach((d) => mine.push(d.name));
+      }
+    });
+  }
+  const options = mine.length
+    ? mine
+    : NDI_SOURCE_OPTIONS.filter((opt) => opt !== "Insurance" || offerInsuranceSource(current));
+  return withCurrentOption(options, current);
+}
+
+const quotedList = (names) => names.map((n) => `"${n}"`).join(", ");
 
 // ─── New-version check ────────────────────────────────────────────────────────
 // A deploy does not reach an open tab. Signing in never reloads the page, and
@@ -401,7 +578,7 @@ Rules:
 
 Fleet table fields:
 - id (primary key, do not modify), plate (e.g. "ABC-123"), make, model, year (number), colour, vin (exactly 17 characters, no I, O or Q), province (e.g. "NL")
-- vehicleClass: one of "Compact Car", "Regular Car", "Large Car", "Compact SUV", "Regular SUV", "Large SUV", "Minivan", "Truck"
+- vehicleClass: one of {{FLEET_VEHICLE_CLASSES}}
 - status: one of "Available", "Needs Cleaning", "Ready for Pickup", "PM", "Damaged", "On Rent", "Ready Returns"
 - "PM" means Preventative Maintenance (the vehicle is due for scheduled service).
 - winterTires: "Yes" or "No"
@@ -423,7 +600,7 @@ Editing an existing vehicle:
 - Put ALL the fields the user asked to change into ONE action. Never split a single request into several actions; the staff member confirms one card once.
 - None of these may be set to blank. If the user wants a field emptied, say it cannot be blank rather than sending an empty value.
 - tankSizeLiters is in LITRES and pmIntervalKm is in KILOMETRES. If the user speaks in gallons or miles, convert (1 gallon = 3.785411784 litres, 1 mile = 1.609344 km). Both must be positive. Reply in whatever unit the person used: if they said "12 gallons", send 45.4 and say 12 gallons in "message".
-- year is a four digit year. vehicleClass must be one of the eight classes listed above. province must be a two letter province or state code.
+- year is a four digit year. vehicleClass must be one of the classes listed above. province must be a two letter province or state code.
 - vin must be exactly 17 characters, letters and digits only, and never the letters I, O or Q, which a real VIN does not use. Anything else is rejected. If the user reads out a VIN that is not 17 characters, say so and ask them to check it rather than sending it.
 - Changing a plate is allowed, but not while the vehicle has a rental agreement that is not closed, because other records point at the old plate. That is refused with an explanation.
 - needsPm, lastPmOdometer, currentOdometer, id and created_at can never be written this way. Odometer figures come from the vehicle itself, and the PM baseline is set by pmComplete.
@@ -464,7 +641,7 @@ Settings (app_settings):
 
 Non-drive intake (ndi_rows) table fields:
 - id (primary key, do not modify), rescode, customer, phone, type, rate (read-only, not editable)
-- source: one of "Insurance", "AF", "FA", "CCS", "CSTAR", "CCTOP", "CA", "Janes", "Brian's"
+- source: one of {{NDI_SOURCES}}
 - aiDate (ISO date), aiTime (4 digit string, e.g. "1140"), aiMeridiem ("AM" or "PM")
 - agentRequested, requestedAtMs (read-only, not editable through this AI)
 
@@ -499,6 +676,14 @@ Gas collections:
 - To mark a balance as fully paid, use table "rental_agreements", operation "update", match on id, and data containing gasCollected: true and gasOwed: "0".
 - To mark a balance as unpaid again, use data containing gasCollected: false.
 - Use the rental agreements data passed in the user message to find records with an outstanding gasOwed balance and their ids.`;
+
+// The prompt with the company's own lists written in, so the AI offers the
+// same vehicle classes and intake sources the forms do.
+function claudeSystem() {
+  return CLAUDE_SYSTEM
+    .replace("{{FLEET_VEHICLE_CLASSES}}", quotedList(fleetVehicleClasses()))
+    .replace("{{NDI_SOURCES}}", quotedList(ndiSourceOptions("")));
+}
 
 // ─── Twilio SMS ──────────────────────────────────────────────────────────────
 // The client-side sendSMS helper was removed along with the automated texting
@@ -1816,6 +2001,9 @@ function AppProvider({ children, currentUser, signOut }) {
         supabase.from("damage_claims").select("*"),
         supabase.from("app_settings").select("*").eq("locationId", currentUser?.locationId ?? null),
         supabase.from("archived_vehicles").select("*").order("disposalDate", { ascending: false }),
+        // Fills companyLists rather than returning rows, and never throws: a
+        // failure leaves the built-in lists in charge.
+        loadCompanyLists(currentUser),
       ]);
 
       // maybeSeED used to live here. Both of its call sites passed an empty
@@ -2290,6 +2478,13 @@ const EMPTY_RES_FORM = {
   paymentMethod: "Credit Card",
 };
 
+// The blank form, with the location and class the company's own lists start on.
+const emptyResForm = () => ({
+  ...EMPTY_RES_FORM,
+  location: defaultPickupLocation(),
+  vehicleClass: defaultVehicleClass(RES_VEHICLE_CLASSES),
+});
+
 // ─── Status label helper ──────────────────────────────────────────────────────
 
 function statusLabel(s) {
@@ -2459,7 +2654,7 @@ function ReservationsPage() {
   const navigate = useNavigate();
   const todayIso = new Date().toISOString().slice(0, 10);
   const [showModal, setShowModal] = React.useState(false);
-  const [form, setForm] = React.useState(EMPTY_RES_FORM);
+  const [form, setForm] = React.useState(emptyResForm);
   const [srchFirst, setSrchFirst] = React.useState("");
   const [srchLast,  setSrchLast]  = React.useState("");
   const [srchPhone, setSrchPhone] = React.useState("");
@@ -2620,7 +2815,7 @@ function ReservationsPage() {
       });
       return next;
     });
-    setForm(EMPTY_RES_FORM);
+    setForm(emptyResForm());
     setShowModal(false);
   };
 
@@ -2812,13 +3007,13 @@ function ReservationsPage() {
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Location"),
                 React.createElement("select", { className: "resFormInput", value: form.location, onChange: (e) => updateForm("location", e.target.value) },
-                  LOCATION_OPTIONS.map((l) => React.createElement("option", { key: l, value: l }, l))
+                  pickupLocationOptions(form.location).map((l) => React.createElement("option", { key: l, value: l }, l))
                 )
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Vehicle Class"),
                 React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => updateForm("vehicleClass", e.target.value) },
-                  RES_VEHICLE_CLASSES.map((c) => React.createElement("option", { key: c, value: c }, c))
+                  vehicleClassOptions(RES_VEHICLE_CLASSES, form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
                 )
               ),
               React.createElement("label", { className: "resFormGroup" },
@@ -2838,11 +3033,11 @@ function ReservationsPage() {
                   Object.keys(sourceCatsFor(form.source)).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
                 )
               ),
-              form.source && RATES_SOURCE_CATS[form.source] && React.createElement("label", { className: "resFormGroup" },
+              form.source && (sourceCatsFor(form.source)[form.source] || []).length > 0 && React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Specific Source"),
                 React.createElement("select", { className: "resFormInput", value: form.sourceDetail, onChange: (e) => updateForm("sourceDetail", e.target.value) },
                   React.createElement("option", { value: "" }, "Select…"),
-                  RATES_SOURCE_CATS[form.source].map((s) => React.createElement("option", { key: s, value: s }, s))
+                  sourceCatsFor(form.source)[form.source].map((s) => React.createElement("option", { key: s, value: s }, s))
                 )
               )
             ),
@@ -2851,14 +3046,14 @@ function ReservationsPage() {
                 React.createElement("span", { className: "resFormLabel" }, "Rates Vehicle Class"),
                 React.createElement("select", { className: "resFormInput", value: form.ratesVehicleClass, onChange: (e) => setForm((p) => ({ ...p, ratesVehicleClass: e.target.value, ratesVehicleSize: "" })) },
                   React.createElement("option", { value: "" }, "Select class"),
-                  Object.keys(RATES_VCLASS_CATS).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
+                  Object.keys(vehicleClassCatsFor(form.ratesVehicleClass)).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
                 )
               ),
-              form.ratesVehicleClass && RATES_VCLASS_CATS[form.ratesVehicleClass] && React.createElement("label", { className: "resFormGroup" },
+              form.ratesVehicleClass && (vehicleClassCatsFor(form.ratesVehicleClass)[form.ratesVehicleClass] || []).length > 0 && React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Size"),
                 React.createElement("select", { className: "resFormInput", value: form.ratesVehicleSize, onChange: (e) => updateForm("ratesVehicleSize", e.target.value) },
                   React.createElement("option", { value: "" }, "Select…"),
-                  RATES_VCLASS_CATS[form.ratesVehicleClass].map((s) => React.createElement("option", { key: s, value: s }, s))
+                  vehicleClassCatsFor(form.ratesVehicleClass)[form.ratesVehicleClass].map((s) => React.createElement("option", { key: s, value: s }, s))
                 )
               ),
               tf("Daily Rate ($)", "dailyRate", "0.00")
@@ -2996,10 +3191,10 @@ function NonDriveIntakeSection({ standalone }) {
     const newRes = {
       date: target.aiDate,
       time: pickupTime,
-      location: "CCS",
+      location: pickupLocationOptions("").includes("CCS") ? "CCS" : pickupLocationOptions("")[0],
       resCode: target.rescode,
       customer: target.customer,
-      vehicleClass: "Regular SUV",
+      vehicleClass: defaultVehicleClass(RES_VEHICLE_CLASSES, "Regular SUV"),
       winterTires: "Yes",
       preRentalCheck: "NOT Pre-Rental Check'd",
       notesLog: [{ author: "ADJ", text: `From red car intake (${target.aiDate})` }],
@@ -3090,8 +3285,7 @@ function NonDriveIntakeSection({ standalone }) {
                       value: row.source,
                       onChange: (e) => handleAiFieldUpdate(row.id, "source", e.target.value),
                     },
-                    NDI_SOURCE_OPTIONS
-                      .filter((opt) => opt !== "Insurance" || offerInsuranceSource(row.source))
+                    ndiSourceOptions(row.source)
                       .map((opt) =>
                         React.createElement("option", { key: opt, value: opt }, opt)
                       )
@@ -3295,7 +3489,7 @@ function DashboardPage() {
   const [datePickerAnchor,  setDatePickerAnchor]  = React.useState({ x: 0, y: 0 });
   const [filterPickerMonth, setFilterPickerMonth] = React.useState(null);
   const [showModal, setShowModal] = React.useState(false);
-  const [form, setForm] = React.useState(EMPTY_RES_FORM);
+  const [form, setForm] = React.useState(emptyResForm);
   const updateForm = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
 
   const toggleSection = (sectionKey) => {
@@ -3406,7 +3600,7 @@ function DashboardPage() {
       });
       return next;
     });
-    setForm(EMPTY_RES_FORM);
+    setForm(emptyResForm());
     setShowModal(false);
   };
 
@@ -3802,13 +3996,13 @@ function DashboardPage() {
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Location"),
                 React.createElement("select", { className: "resFormInput", value: form.location, onChange: (e) => updateForm("location", e.target.value) },
-                  LOCATION_OPTIONS.map((l) => React.createElement("option", { key: l, value: l }, l))
+                  pickupLocationOptions(form.location).map((l) => React.createElement("option", { key: l, value: l }, l))
                 )
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Vehicle Class"),
                 React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => updateForm("vehicleClass", e.target.value) },
-                  RES_VEHICLE_CLASSES.map((c) => React.createElement("option", { key: c, value: c }, c))
+                  vehicleClassOptions(RES_VEHICLE_CLASSES, form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
                 )
               ),
               React.createElement("label", { className: "resFormGroup" },
@@ -3828,11 +4022,11 @@ function DashboardPage() {
                   Object.keys(sourceCatsFor(form.source)).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
                 )
               ),
-              form.source && RATES_SOURCE_CATS[form.source] && React.createElement("label", { className: "resFormGroup" },
+              form.source && (sourceCatsFor(form.source)[form.source] || []).length > 0 && React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Specific Source"),
                 React.createElement("select", { className: "resFormInput", value: form.sourceDetail, onChange: (e) => updateForm("sourceDetail", e.target.value) },
                   React.createElement("option", { value: "" }, "Select…"),
-                  RATES_SOURCE_CATS[form.source].map((s) => React.createElement("option", { key: s, value: s }, s))
+                  sourceCatsFor(form.source)[form.source].map((s) => React.createElement("option", { key: s, value: s }, s))
                 )
               )
             ),
@@ -3841,14 +4035,14 @@ function DashboardPage() {
                 React.createElement("span", { className: "resFormLabel" }, "Rates Vehicle Class"),
                 React.createElement("select", { className: "resFormInput", value: form.ratesVehicleClass, onChange: (e) => setForm((p) => ({ ...p, ratesVehicleClass: e.target.value, ratesVehicleSize: "" })) },
                   React.createElement("option", { value: "" }, "Select class"),
-                  Object.keys(RATES_VCLASS_CATS).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
+                  Object.keys(vehicleClassCatsFor(form.ratesVehicleClass)).map((cat) => React.createElement("option", { key: cat, value: cat }, cat))
                 )
               ),
-              form.ratesVehicleClass && RATES_VCLASS_CATS[form.ratesVehicleClass] && React.createElement("label", { className: "resFormGroup" },
+              form.ratesVehicleClass && (vehicleClassCatsFor(form.ratesVehicleClass)[form.ratesVehicleClass] || []).length > 0 && React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Size"),
                 React.createElement("select", { className: "resFormInput", value: form.ratesVehicleSize, onChange: (e) => updateForm("ratesVehicleSize", e.target.value) },
                   React.createElement("option", { value: "" }, "Select…"),
-                  RATES_VCLASS_CATS[form.ratesVehicleClass].map((s) => React.createElement("option", { key: s, value: s }, s))
+                  vehicleClassCatsFor(form.ratesVehicleClass)[form.ratesVehicleClass].map((s) => React.createElement("option", { key: s, value: s }, s))
                 )
               ),
               tf("Daily Rate ($)", "dailyRate", "0.00")
@@ -5173,6 +5367,16 @@ const FLEET_VEHICLE_CLASSES = [
   "Minivan", "Truck",
 ];
 
+// The classes a vehicle may be given: the company's own list once it has
+// loaded, the built-in one otherwise. Kept in this block, and reading
+// companyLists defensively, because the policy test runs these rules on their
+// own, where that variable does not exist.
+function fleetVehicleClasses() {
+  const lists = typeof companyLists !== "undefined" ? companyLists : null;
+  const mine = lists ? lists.vehicleClasses.filter((c) => c.active).map((c) => c.name) : [];
+  return mine.length ? mine : FLEET_VEHICLE_CLASSES;
+}
+
 // A VIN is 17 characters by international standard (ISO 3779), and the letters
 // I, O and Q are excluded from it precisely so they cannot be confused with the
 // digits 1 and 0. Both of those are worth enforcing: the length catches a
@@ -5292,8 +5496,8 @@ function validateVehicleEdit(data, provinces) {
     }
   }
 
-  if (touched.includes("vehicleClass") && !FLEET_VEHICLE_CLASSES.includes(String(data.vehicleClass).trim())) {
-    return { ok: false, error: `Vehicle class has to be one of: ${FLEET_VEHICLE_CLASSES.join(", ")}.` };
+  if (touched.includes("vehicleClass") && !fleetVehicleClasses().includes(String(data.vehicleClass).trim())) {
+    return { ok: false, error: `Vehicle class has to be one of: ${fleetVehicleClasses().join(", ")}.` };
   }
 
   if (touched.includes("vin")) {
@@ -5844,7 +6048,7 @@ function FleetAdditionsPage() {
 
   // tankSize / pmInterval are held in the CURRENTLY SELECTED display unit while
   // typing, and converted to canonical litres/km only at submit.
-  const BLANK_ADD    = { plate: "", province: "NL", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: "Compact Car", tankSize: "", pmInterval: "" };
+  const BLANK_ADD    = { plate: "", province: "NL", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: defaultVehicleClass(FLEET_VEHICLE_CLASSES), tankSize: "", pmInterval: "" };
   const [tankUnit, setTankUnit] = React.useState("L");
   const [pmUnit,   setPmUnit]   = React.useState("km");
   // Canonical litres / kilometres, kept alongside the displayed string so that
@@ -5894,7 +6098,7 @@ function FleetAdditionsPage() {
     guardAction("vehicle.add", () => {
       const newVehicle = {
         plate, make: addForm.make, model: addForm.model,
-        vehicleClass: addForm.vehicleClass || "Compact Car",
+        vehicleClass: addForm.vehicleClass || defaultVehicleClass(FLEET_VEHICLE_CLASSES),
         year: addForm.year || null,
         colour: addForm.colour || null,
         vin: candidate.vin,
@@ -6054,7 +6258,7 @@ function FleetAdditionsPage() {
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Vehicle Class"),
               React.createElement("select", { className: "addVehicleInput", value: addForm.vehicleClass, onChange: (e) => onAdd("vehicleClass", e.target.value) },
-                FLEET_VEHICLE_CLASSES.map((vc) =>
+                vehicleClassOptions(FLEET_VEHICLE_CLASSES, addForm.vehicleClass).map((vc) =>
                   React.createElement("option", { key: vc, value: vc }, vc)
                 )
               )
@@ -7976,7 +8180,7 @@ function FleetrCommandBar() {
         body: JSON.stringify({
           model:      CLAUDE_MODEL,
           max_tokens: 1024,
-          system:     CLAUDE_SYSTEM,
+          system:     claudeSystem(),
           messages:   [{ role: "user", content: userMsg }],
         }),
       });
@@ -11146,6 +11350,20 @@ function offerInsuranceSource(current) {
 }
 
 function sourceCatsFor(current) {
+  if (companyLists) {
+    // The same rule on the company's own list: an insurance source is offered
+    // when the feature is on, or when it is what the record already says.
+    const curCat = String(current || "").split(LIST_SEP)[0];
+    const cats = {};
+    companyLists.sources.forEach((x) => {
+      const isCurrent = x.name === curCat;
+      if (!x.active && !isCurrent) return;
+      if (x.billingType === "insurance" && !isFeatureEnabled("insurance_rentals") && !isCurrent) return;
+      cats[x.name] = x.details.filter((d) => d.active).map((d) => d.name);
+    });
+    if (curCat && !cats[curCat]) cats[curCat] = [];
+    return cats;
+  }
   if (offerInsuranceSource(current)) return RATES_SOURCE_CATS;
   const { Insurance, ...rest } = RATES_SOURCE_CATS;
   return rest;
@@ -11369,18 +11587,9 @@ function CustomerPage() {
   }, [raVehicleClass]);
 
   React.useEffect(() => {
-    const src = ratesForm.source;
-    const vc  = ratesForm.vehicleClass;
-    const srcCat = src === "Retail" ? "Retail"
-      : src.startsWith("Bodyshop/Dealership") ? "Bodyshop/Dealership"
-      : src.startsWith("Insurance")           ? "Insurance"
-      : src.startsWith("Corporate")           ? "Corporate" : null;
-    const vcCat = vc === "Minivan" ? "Minivan"
-      : vc === "Truck"             ? "Truck"
-      : vc.startsWith("Car")       ? "Car"
-      : vc.startsWith("SUV")       ? "SUV" : null;
-    if (srcCat && vcCat && DAILY_RATES[srcCat]?.[vcCat] !== undefined) {
-      setBillToForm((p) => ({ ...p, dailyRate: String(DAILY_RATES[srcCat][vcCat]) }));
+    const rate = dailyRateFor(ratesForm.source, ratesForm.vehicleClass);
+    if (rate !== undefined) {
+      setBillToForm((p) => ({ ...p, dailyRate: String(rate) }));
     }
   }, [ratesForm.source, ratesForm.vehicleClass]);
 
@@ -12007,7 +12216,7 @@ function CustomerPage() {
   const ratesBillingBody = React.createElement("div", { className: "cdetailForm" },
     React.createElement("div", { className: "resFormRow" },
       twoLevelPicker("Source",        "source",       sourceCatsFor(ratesForm.source), "Select source"),
-      twoLevelPicker("Vehicle Class", "vehicleClass", RATES_VCLASS_CATS, "Select class"),
+      twoLevelPicker("Vehicle Class", "vehicleClass", vehicleClassCatsFor(ratesForm.vehicleClass), "Select class"),
       React.createElement("label", { className: "resFormGroup" },
         React.createElement("span", { className: "resFormLabel" }, "Winter Tires"),
         React.createElement("select", {
