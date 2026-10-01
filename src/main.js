@@ -289,7 +289,7 @@ async function loadCompanyLists(user) {
       own("sources",             "id,name,billingType,active,sortOrder"),
       own("source_details",      "id,sourceId,name,active"),
       own("daily_rates",         "vehicleClassId,sourceId,amount"),
-      own("protection_products", "id,name,active,sortOrder"),
+      own("protection_products", "id,name,active,sortOrder,customerWording,declineWording,required"),
     ]);
     const failed = results.find((r) => r.error);
     if (failed) {
@@ -7114,6 +7114,10 @@ const LIST_REASONS = {
   bad_kind:         "That list cannot be changed from here.",
   bad_active:       "That did not work. Try again.",
   network:          "Could not reach the server.",
+  wording_too_long: "The customer wording is too long. Keep it to 600 characters.",
+  decline_too_long: "The decline wording is too long. Keep it to 300 characters.",
+  no_links:         "Links are not allowed in the wording.",
+  bad_required:     "That did not work. Try again.",
 };
 
 const BILLING_TYPE_LABELS = [
@@ -7239,6 +7243,87 @@ function ListAddRow({ placeholder, label, withCode, withType, disabled, onAdd })
         if (await onAdd(name, code, type)) { setName(""); setCode(""); setType(""); }
       },
     }, label)
+  );
+}
+
+// What the customer reads about one protection product at pickup, edited the
+// way Settings > Customer texts are: the preview until Edit is pressed, then
+// the boxes with their character counts, Save and Cancel. Required is a
+// switch beside it and saves on its own, keeping the wording as it is.
+const PROTECTION_WORDING_MAX = 600;
+const PROTECTION_DECLINE_MAX = 300;
+const PROTECTION_DECLINE_DEFAULT = "I decline this protection and accept responsibility for the costs it would have covered.";
+
+function ProtectionDetailsCard({ product, busy, onSave }) {
+  const savedWording = product.customerWording || "";
+  const savedDecline = product.declineWording || PROTECTION_DECLINE_DEFAULT;
+  const [editing, setEditing] = React.useState(false);
+  const [wording, setWording] = React.useState(savedWording);
+  const [decline, setDecline] = React.useState(savedDecline);
+
+  const w = wording.trim();
+  const d = decline.trim();
+  const wordingOver = w.length > PROTECTION_WORDING_MAX;
+  const declineOver = d.length > PROTECTION_DECLINE_MAX;
+  const unchanged = w === savedWording && (d || PROTECTION_DECLINE_DEFAULT) === savedDecline;
+
+  const open = () => { setWording(savedWording); setDecline(savedDecline); setEditing(true); };
+  const save = async () => {
+    if (await onSave(w, d, !!product.required)) setEditing(false);
+  };
+  const el = React.createElement;
+
+  return el("div", { style: { marginBottom: "22px", opacity: product.active ? 1 : 0.5 } },
+    el("div", { className: "gasSettingSubhead" }, product.active ? product.name : `${product.name} (off)`),
+    el("label", { style: { display: "inline-flex", alignItems: "center", gap: "8px", cursor: "pointer", margin: "4px 0 8px" } },
+      el("input", {
+        type: "checkbox", checked: !!product.required, disabled: busy,
+        onChange: (e) => onSave(savedWording, savedDecline, e.target.checked),
+      }),
+      "Required: included with every rental it is priced for, with no Decline"),
+
+    !editing && el(React.Fragment, null,
+      el("p", { className: "closeRentalHint" }, "What the customer reads:"),
+      el("div", { className: "closeRentalSummary" },
+        savedWording || "No wording yet. The customer sees the name and price per day only."),
+      !product.required && el(React.Fragment, null,
+        el("p", { className: "closeRentalHint" }, "What the customer ticks to decline:"),
+        el("div", { className: "closeRentalSummary" }, savedDecline)),
+      el("div", { className: "closeRentalActions" },
+        el("button", { type: "button", className: "resModalSubmit", disabled: busy, onClick: open }, "Edit"))),
+
+    editing && el(React.Fragment, null,
+      el("p", { className: "closeRentalHint" }, "What the customer reads. Leave it blank to show only the name and price per day."),
+      el("textarea", {
+        className: "resFormInput resFormTextarea", rows: 4, value: wording, autoFocus: true,
+        "aria-label": `${product.name} customer wording`,
+        onChange: (e) => setWording(e.target.value),
+      }),
+      el("p", { className: "closeRentalHint" }, `${w.length} of ${PROTECTION_WORDING_MAX} characters.`),
+      wordingOver && el("div", { className: "closeRentalWarning" },
+        `The wording is ${w.length - PROTECTION_WORDING_MAX} characters over the ${PROTECTION_WORDING_MAX} allowed and cannot be saved.`),
+
+      el("p", { className: "closeRentalHint" }, "What the customer ticks to decline. Leave it blank for the default."),
+      el("textarea", {
+        className: "resFormInput resFormTextarea", rows: 2, value: decline,
+        "aria-label": `${product.name} decline wording`,
+        onChange: (e) => setDecline(e.target.value),
+      }),
+      el("p", { className: "closeRentalHint" }, `${d.length} of ${PROTECTION_DECLINE_MAX} characters.`),
+      declineOver && el("div", { className: "closeRentalWarning" },
+        `The decline wording is ${d.length - PROTECTION_DECLINE_MAX} characters over the ${PROTECTION_DECLINE_MAX} allowed and cannot be saved.`),
+
+      el("div", { className: "gasSettingSubhead" }, "Preview"),
+      el("div", { className: "closeRentalSummary" }, w || "No wording. The customer sees the name and price per day only."),
+      !product.required && el("div", { className: "closeRentalSummary" }, d || PROTECTION_DECLINE_DEFAULT),
+
+      el("div", { className: "closeRentalActions" },
+        el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: () => setEditing(false) }, "Cancel"),
+        el("button", {
+          type: "button", className: "resModalSubmit",
+          disabled: busy || unchanged || wordingOver || declineOver,
+          onClick: save,
+        }, busy ? "Saving..." : "Save")))
   );
 }
 
@@ -7610,6 +7695,13 @@ function CompanyListsSections({ branches }) {
         placeholder: "New protection product", label: "Add", disabled: busy,
         onAdd: (name) => act("protection", "save_protection_product", { p_id: null, p_name: name, p_sort: null }),
       }),
+      protectionProducts.length > 0 && subHeading("What the customer sees at pickup"),
+      protectionProducts.map((pr) => el(ProtectionDetailsCard, {
+        key: pr.id, product: pr, busy,
+        onSave: (wording, decline, required) => act("protection", "set_protection_details", {
+          p_id: pr.id, p_wording: wording, p_decline_wording: decline, p_required: required,
+        }),
+      })),
       shownProduct
         ? el("div", null,
             el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", margin: "18px 0 8px" } },
@@ -9616,6 +9708,42 @@ const vehicleHistoryLabel = (leg, isLast) => {
   return isLast ? "Returned" : "Switched out";
 };
 
+// The protection the customer accepted or declined at pickup, as
+// complete_pickup recorded it: names and prices as they stood then, so a later
+// rename or reprice does not change what is shown. Read-only.
+function ProtectionChoicesList({ rentalAgreementId }) {
+  const { rentalAgreements } = React.useContext(AppContext);
+  const ra = rentalAgreementId
+    ? (rentalAgreements || []).find((a) => String(a.id) === String(rentalAgreementId))
+    : null;
+  const choices = ra && Array.isArray(ra.protectionChoices) ? ra.protectionChoices : null;
+  const el = React.createElement;
+
+  if (!choices) {
+    return el("div", { className: "customerPlaceholder" },
+      ra ? "This rental was opened before protection was offered on the fleetr app." : "Shown once the customer picks up on the fleetr app.");
+  }
+  if (choices.length === 0) {
+    return el("div", { className: "customerPlaceholder" }, "No protection was offered for this rental's source and vehicle class.");
+  }
+  const fmtWhen = (iso) => {
+    const d = iso ? new Date(iso) : null;
+    return d && !Number.isNaN(d.getTime())
+      ? d.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+      : "-";
+  };
+  const fmtPrice = (n) => (Number.isFinite(Number(n)) ? `$${Number(n).toFixed(2)}` : "-");
+  return el("div", { style: { overflowX: "auto" } },
+    el("table", { className: "dashboardTable", style: { minWidth: "520px" } },
+      el("thead", null, el("tr", null,
+        ["Product", "Choice", "Price per day", "Time"].map((h) => el("th", { key: h }, h)))),
+      el("tbody", null, choices.map((c, i) => el("tr", { key: c.productId || i },
+        el("td", null, c.name || "-"),
+        el("td", null, c.accepted ? (c.required ? "Included" : "Accepted") : "Declined"),
+        el("td", null, fmtPrice(c.pricePerDay)),
+        el("td", null, fmtWhen(c.decidedAt)))))));
+}
+
 function AgreementVehicleHistory({ rentalAgreementId, resCode }) {
   const { fleet } = React.useContext(AppContext);
   const [state, setState] = React.useState({ id: null, legs: [], error: null, loading: true });
@@ -9807,6 +9935,9 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
     ),
     section("vehicles", "Vehicles",
       React.createElement(AgreementVehicleHistory, { rentalAgreementId: rentalAgreement.raId, resCode: rentalAgreement.resCode })
+    ),
+    section("protection", "Protection",
+      React.createElement(ProtectionChoicesList, { rentalAgreementId: rentalAgreement.raId })
     ),
     section("datesRates", "Dates & Rates",
       React.createElement("div", { className: "rentalAgreementFields" },
@@ -11930,10 +12061,29 @@ const DEFAULT_LINE_ITEMS = [
   { key: "winter",  label: "Winter Tires",     applies: false, amount: "", qty: "", qtyPlaceholder: "Days", customerPay: false },
   { key: "gas",     label: "Gas",              applies: false, amount: "", qty: "", qtyPlaceholder: "Litres" },
   { key: "mileage", label: "Mileage",          applies: false, amount: "", qty: "", qtyPlaceholder: "Miles"  },
-  { key: "waiver",  label: "Damage Waiver",    applies: false, amount: "", qty: "", qtyPlaceholder: "Days", coveredByBillTo: false },
-  { key: "roadside",label: "Roadside",         applies: false, amount: "", qty: "", qtyPlaceholder: "Days", coveredByBillTo: false },
-  { key: "injury",  label: "Injury Insurance", applies: false, amount: "", qty: "", qtyPlaceholder: "Days", coveredByBillTo: false },
 ];
+
+// The protection lines on a customer's charges are the products they accepted
+// at pickup, one line each, priced per day as recorded then. Agreements made
+// before this kept three fixed lines under these keys; those still load from
+// lineItems as they were saved and behave as they always did.
+const LEGACY_PROTECTION_KEYS = ["waiver", "roadside", "injury"];
+const isProtectionLine = (item) => !!item.protection || LEGACY_PROTECTION_KEYS.includes(item.key);
+
+// Adds a line for each accepted product the charges do not have yet. A line
+// already there is left as staff last saved it.
+function withAcceptedProtection(items, choices, days) {
+  if (!Array.isArray(choices)) return items;
+  const have = new Set(items.map((it) => it.key));
+  const added = choices
+    .filter((c) => c && c.accepted && c.productId != null && !have.has(`protection:${c.productId}`))
+    .map((c) => ({
+      key: `protection:${c.productId}`, label: c.name || "Protection", protection: true,
+      applies: true, amount: c.pricePerDay != null ? String(c.pricePerDay) : "",
+      qty: days ? String(days) : "", qtyPlaceholder: "Days", coveredByBillTo: false,
+    }));
+  return added.length ? [...items, ...added] : items;
+}
 
 const DAILY_RATES = {
   "Bodyshop/Dealership": { Car: 35, SUV: 45, Minivan: 55, Truck: 55 },
@@ -12184,9 +12334,15 @@ function CustomerPage() {
   React.useEffect(() => {
     if (!ra?.id || ra.id === raHydratedId.current) return;
     raHydratedId.current = ra.id;
-    if (Array.isArray(ra.lineItems) && ra.lineItems.length > 0) {
-      setLineItems(ra.lineItems);
-    }
+    const saved = Array.isArray(ra.lineItems) && ra.lineItems.length > 0 ? ra.lineItems : null;
+    const startDays = (() => {
+      const d1 = resInfoForm.pickupDate ? new Date(`${resInfoForm.pickupDate}T00:00:00`) : null;
+      const d2 = resInfoForm.returnDate ? new Date(`${resInfoForm.returnDate}T00:00:00`) : null;
+      if (!d1 || !d2) return 0;
+      const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
+      return diff > 0 ? diff : 0;
+    })();
+    setLineItems((prev) => withAcceptedProtection(saved || prev, ra.protectionChoices, startDays));
     if (Array.isArray(ra.payments)) {
       setPayments(ra.payments);
     }
@@ -12199,7 +12355,7 @@ function CustomerPage() {
     const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
     const days = diff > 0 ? diff : 0;
     setLineItems((prev) => prev.map((item) =>
-      ["vehicle", "winter", "waiver", "roadside", "injury"].includes(item.key)
+      ["vehicle", "winter"].includes(item.key) || isProtectionLine(item)
         ? { ...item, qty: String(days) }
         : item
     ));
@@ -12718,7 +12874,9 @@ function CustomerPage() {
           "Populated automatically when the customer completes check-in on the fleetr app."
         ),
     React.createElement("div", { className: "cdetailSubGroup" }, "Vehicles on this rental"),
-    React.createElement(AgreementVehicleHistory, { rentalAgreementId: ra?.id || null, resCode })
+    React.createElement(AgreementVehicleHistory, { rentalAgreementId: ra?.id || null, resCode }),
+    React.createElement("div", { className: "cdetailSubGroup" }, "Protection"),
+    React.createElement(ProtectionChoicesList, { rentalAgreementId: ra?.id || null })
   );
 
   // ── Rates & Billing helpers ───────────────────────────────────────────────
@@ -12859,20 +13017,21 @@ function CustomerPage() {
   const updateLineItem = (key, field, value) =>
     setLineItems((prev) => prev.map((it) => it.key === key ? { ...it, [field]: value } : it));
 
-  const PERSONAL_KEYS = ["waiver", "roadside", "injury"];
+  // Protection lines, the accepted products and any old fixed lines, are the
+  // customer's to pay unless marked covered by the bill-to.
   const showCoverToggle = btSrcCat && btSrcCat !== "Retail";
   const rowBilledTo = (item) =>
-    PERSONAL_KEYS.includes(item.key)
+    isProtectionLine(item)
       ? (item.coveredByBillTo ? billedToName : name)
       : billedToName;
 
   const billToItems   = lineItems.filter((it) =>
     it.key === "winter" ? !it.customerPay
-    : !PERSONAL_KEYS.includes(it.key) || it.coveredByBillTo
+    : !isProtectionLine(it) || it.coveredByBillTo
   );
   const customerItems = lineItems.filter((it) =>
     it.key === "winter" ? it.customerPay
-    : PERSONAL_KEYS.includes(it.key) && !it.coveredByBillTo
+    : isProtectionLine(it) && !it.coveredByBillTo
   );
   const billToTotal   = billToItems.reduce((s, it) => s + (it.applies ? lineItemAmt(it) : 0), 0);
   const customerTotal = customerItems.reduce((s, it) => s + (it.applies ? lineItemAmt(it) : 0), 0);
@@ -12922,7 +13081,7 @@ function CustomerPage() {
                 "Customer Pay"
               )
             )
-          : PERSONAL_KEYS.includes(item.key) && showCoverToggle
+          : isProtectionLine(item) && showCoverToggle
             ? React.createElement("div", { className: "chargesItemWrap" },
                 React.createElement("span", null, item.label),
                 React.createElement("label", { className: "chargesCoverLabel" },
