@@ -9744,6 +9744,207 @@ function ProtectionChoicesList({ rentalAgreementId }) {
         el("td", null, fmtWhen(c.decidedAt)))))));
 }
 
+// ─── Photos & Signatures ──────────────────────────────────────────────────────
+// Every photo taken for one rental, from its folder in the private
+// damage-photos bucket (<operatorId>/rental-agreements/<id>/), and the
+// signatures on file.
+//
+// Photos are listed and shown through signed links that expire after five
+// minutes, minted again when one is opened full size. Both the listing and
+// the link are reads, and the bucket's "read own" policy only lets staff read
+// their own company's folder, so another company's rental shows nothing.
+//
+// Where a photo belongs comes from its file name and when it was taken:
+//   pickup-*        the customer app at pickup. Matched to the vehicle the
+//                   customer picked up then: the first is the Pickup, a later
+//                   one is the pickup after a switch-out.
+//   return-*        the customer app at return: the Return.
+//   <stamp>-<id>    staff, in Close Rental or Switch Out: matched to the
+//                   vehicle whose time on the rental ended nearest to it, a
+//                   Return or a Switch-out depending on how that time ended.
+const RENTAL_PHOTO_LINK_SECONDS = 300;
+
+const rentalPhotoLink = async (path) => {
+  const res = await supabase.storage.from(DAMAGE_PHOTO_BUCKET).createSignedUrl(path, RENTAL_PHOTO_LINK_SECONDS);
+  return res?.data?.signedURL || res?.data?.signedUrl || res?.signedURL || null;
+};
+
+// When a photo was taken, from its file name, else when it was stored.
+function rentalPhotoTime(name, createdAt) {
+  const customer = /-(\d{12,14})-\d+\.\w+$/.exec(name);
+  if (customer) return new Date(Number(customer[1]));
+  const staff = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})-/.exec(name);
+  if (staff) return new Date(Date.UTC(+staff[1], +staff[2] - 1, +staff[3], +staff[4], +staff[5], +staff[6]));
+  const d = createdAt ? new Date(createdAt) : null;
+  return d && !Number.isNaN(d.getTime()) ? d : null;
+}
+
+const RENTAL_PHOTO_LABELS = {
+  "pickup-damage": "Damage", "pickup-odometer": "Odometer",
+  "return-damage": "Damage", "return-odometer": "Odometer", "return-fuel": "Fuel",
+};
+
+// Which event and vehicle a photo belongs to. legs are the rental's vehicle
+// history rows, oldest first.
+function placeRentalPhoto(name, time, legs) {
+  const t = time ? time.getTime() : null;
+  const ms = (iso) => (iso ? new Date(iso).getTime() : NaN);
+  const prefix = (/^(pickup|return)-[a-z]+/.exec(name) || [])[0] || null;
+  const label = RENTAL_PHOTO_LABELS[prefix] || "Staff photo";
+
+  if (prefix && prefix.startsWith("pickup")) {
+    // The latest vehicle picked up at or before the photo. Photos upload just
+    // after the pickup is recorded, so a minute of slack covers clock drift.
+    let idx = -1;
+    legs.forEach((l, i) => { if (t != null && ms(l.pickedUpAt) <= t + 60000) idx = i; });
+    if (idx < 0 && legs.length) idx = 0;
+    return { event: idx > 0 ? "Switch-out" : "Pickup", leg: legs[idx] || null, label };
+  }
+  if (prefix && prefix.startsWith("return")) {
+    const returned = [...legs].reverse().find((l) => l.endReason === "returned") || legs[legs.length - 1] || null;
+    return { event: "Return", leg: returned, label };
+  }
+  // Staff: the vehicle whose time ended nearest the photo.
+  let best = null, bestGap = Infinity;
+  legs.forEach((l) => {
+    const end = ms(l.endedAt);
+    if (Number.isNaN(end) || t == null) return;
+    const gap = Math.abs(end - t);
+    if (gap < bestGap) { bestGap = gap; best = l; }
+  });
+  return { event: best && best.endReason === "switched_out" ? "Switch-out" : "Return", leg: best || legs[legs.length - 1] || null, label };
+}
+
+function RentalPhotoTile({ photo, onOpen }) {
+  const [url, setUrl] = React.useState(null);
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => {
+    let live = true;
+    rentalPhotoLink(photo.path)
+      .then((u) => { if (!live) return; if (u) setUrl(u); else setFailed(true); })
+      .catch(() => { if (live) setFailed(true); });
+    return () => { live = false; };
+  }, [photo.path]);
+  const when = photo.time
+    ? photo.time.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    : "Time unknown";
+  return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: "4px", width: "96px" } },
+    failed
+      ? React.createElement("div", { className: "damagePhotoThumb damagePhotoThumb--empty" }, "Photo unavailable")
+      : !url
+        ? React.createElement("div", { className: "damagePhotoThumb damagePhotoThumb--empty" }, "Loading...")
+        : React.createElement("button", {
+            type: "button", className: "damagePhotoThumb", "aria-label": `View ${photo.label} photo full size`,
+            onClick: () => onOpen(photo.path),
+          }, React.createElement("img", { src: url, alt: `${photo.label} photo` })),
+    React.createElement("div", { style: { fontSize: "11px", lineHeight: 1.3 } }, photo.label),
+    React.createElement("div", { style: { fontSize: "11px", lineHeight: 1.3, opacity: 0.7 } }, when));
+}
+
+function RentalPhotosAndSignatures({ rentalAgreementId }) {
+  const { rentalAgreements, fleet, archivedVehicles } = React.useContext(AppContext);
+  const ra = rentalAgreementId
+    ? (rentalAgreements || []).find((a) => String(a.id) === String(rentalAgreementId))
+    : null;
+  const [state, setState] = React.useState({ loading: true, photos: [], legs: [], error: null });
+  const [viewing, setViewing] = React.useState(null);
+
+  React.useEffect(() => {
+    if (!ra?.id || !ra?.operatorId) { setState({ loading: false, photos: [], legs: [], error: null }); return undefined; }
+    let live = true;
+    setState((p) => ({ ...p, loading: true, error: null }));
+    (async () => {
+      const folder = `${ra.operatorId}/rental-agreements/${ra.id}`;
+      const [listed, legsRes] = await Promise.all([
+        supabase.storage.from(DAMAGE_PHOTO_BUCKET).list(folder, { limit: 1000, sortBy: { column: "name", order: "asc" } }),
+        supabase.from("rental_agreement_vehicles")
+          .select("id, vehicleId, startedAt, pickedUpAt, endedAt, endReason, pickupSignature")
+          .eq("rentalAgreementId", ra.id).order("startedAt", { ascending: true }),
+      ]);
+      if (!live) return;
+      if (listed?.error) console.warn("rental photos list failed:", listed.error);
+      if (legsRes?.error) console.warn("rental photos vehicle history failed:", legsRes.error);
+      const legs = legsRes?.data || [];
+      const photos = (listed?.data || [])
+        .filter((f) => f && f.name && /\.(jpe?g|png|heic|webp)$/i.test(f.name))
+        .map((f) => {
+          const time = rentalPhotoTime(f.name, f.created_at);
+          return { path: `${folder}/${f.name}`, name: f.name, time, ...placeRentalPhoto(f.name, time, legs) };
+        });
+      setState({ loading: false, photos, legs, error: listed?.error || null });
+    })().catch((e) => { if (live) { console.warn("rental photos:", e); setState({ loading: false, photos: [], legs: [], error: e }); } });
+    return () => { live = false; };
+  }, [ra?.id, ra?.operatorId]);
+
+  const vehicleName = (leg) => {
+    const id = leg?.vehicleId;
+    const v = id != null
+      ? (fleet || []).find((f) => String(f.id) === String(id)) || (archivedVehicles || []).find((f) => String(f.id) === String(id))
+      : null;
+    if (v) return [v.plate, [v.make, v.model].filter(Boolean).join(" ")].filter(Boolean).join(" · ");
+    return leg ? "Vehicle no longer on file" : (ra?.plate || "Vehicle");
+  };
+
+  // Full size: a fresh link, so one opened late is not already expired.
+  const open = async (path) => {
+    const u = await rentalPhotoLink(path).catch(() => null);
+    if (u) setViewing(u);
+  };
+
+  const el = React.createElement;
+  const sub = (text) => el("div", { className: "cdetailSubGroup" }, text);
+  const note = (text) => el("div", { className: "customerPlaceholder" }, text);
+  const isImage = (v) => /^data:image\/(png|jpeg);base64,/.test(String(v || ""));
+  const signature = (label, value) => el("div", { key: label, style: { display: "flex", flexDirection: "column", gap: "4px" } },
+    el("div", { style: { fontSize: "12px", fontWeight: 600 } }, label),
+    el("img", { src: value, alt: `${label} signature`, style: { maxWidth: "280px", width: "100%", border: "1px solid #d9dee8", borderRadius: "8px", background: "#ffffff" } }));
+
+  if (!ra) return note("Shown once the customer picks up on the fleetr app.");
+
+  const events = ["Pickup", "Switch-out", "Return"];
+  const grouped = events.map((event) => {
+    const mine = state.photos.filter((p) => p.event === event);
+    const byVehicle = new Map();
+    mine.forEach((p) => {
+      const key = p.leg ? p.leg.id : "none";
+      if (!byVehicle.has(key)) byVehicle.set(key, { leg: p.leg, photos: [] });
+      byVehicle.get(key).photos.push(p);
+    });
+    byVehicle.forEach((g) => g.photos.sort((a, b) => (a.time?.getTime() || 0) - (b.time?.getTime() || 0)));
+    // Vehicles in the order they were on the rental: after a switch-out, the
+    // one coming back before the one going out.
+    const order = (g) => { const i = state.legs.findIndex((l) => g.leg && l.id === g.leg.id); return i < 0 ? 999 : i; };
+    return { event, vehicles: [...byVehicle.values()].sort((a, b) => order(a) - order(b)) };
+  }).filter((g) => g.vehicles.length);
+
+  const signatures = [
+    isImage(ra.pickupSignature) ? ["Pickup", ra.pickupSignature] : null,
+    ...state.legs.slice(1).filter((l) => isImage(l.pickupSignature))
+      .map((l) => [`Pickup after switch-out, ${vehicleName(l)}`, l.pickupSignature]),
+    isImage(ra.returnSignature) ? ["Return", ra.returnSignature] : null,
+  ].filter(Boolean);
+
+  return el("div", null,
+    state.loading
+      ? note("Loading photos...")
+      : state.error
+        ? note("The photos could not be loaded. Reload the page to try again.")
+        : grouped.length === 0
+          ? note("No photos for this rental yet.")
+          : grouped.map((g) => el("div", { key: g.event },
+              sub(g.event),
+              g.vehicles.map((v) => el("div", { key: v.leg ? v.leg.id : "none", style: { marginBottom: "12px" } },
+                el("div", { style: { fontSize: "12px", fontWeight: 600, margin: "4px 0 8px" } }, vehicleName(v.leg)),
+                el("div", { className: "damagePhotoRow" },
+                  v.photos.map((p) => el(RentalPhotoTile, { key: p.path, photo: p, onOpen: open }))))))),
+    sub("Signatures"),
+    signatures.length
+      ? el("div", { style: { display: "flex", gap: "16px", flexWrap: "wrap" } }, signatures.map(([label, value]) => signature(label, value)))
+      : note("No signatures on file yet."),
+    viewing && el(DamagePhotoViewer, { url: viewing, onClose: () => setViewing(null) })
+  );
+}
+
 function AgreementVehicleHistory({ rentalAgreementId, resCode }) {
   const { fleet } = React.useContext(AppContext);
   const [state, setState] = React.useState({ id: null, legs: [], error: null, loading: true });
@@ -9938,6 +10139,9 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
     ),
     section("protection", "Protection",
       React.createElement(ProtectionChoicesList, { rentalAgreementId: rentalAgreement.raId })
+    ),
+    section("photos", "Photos & Signatures",
+      React.createElement(RentalPhotosAndSignatures, { rentalAgreementId: rentalAgreement.raId })
     ),
     section("datesRates", "Dates & Rates",
       React.createElement("div", { className: "rentalAgreementFields" },
@@ -12876,7 +13080,9 @@ function CustomerPage() {
     React.createElement("div", { className: "cdetailSubGroup" }, "Vehicles on this rental"),
     React.createElement(AgreementVehicleHistory, { rentalAgreementId: ra?.id || null, resCode }),
     React.createElement("div", { className: "cdetailSubGroup" }, "Protection"),
-    React.createElement(ProtectionChoicesList, { rentalAgreementId: ra?.id || null })
+    React.createElement(ProtectionChoicesList, { rentalAgreementId: ra?.id || null }),
+    React.createElement("div", { className: "cdetailSubGroup" }, "Photos & Signatures"),
+    React.createElement(RentalPhotosAndSignatures, { rentalAgreementId: ra?.id || null })
   );
 
   // ── Rates & Billing helpers ───────────────────────────────────────────────
