@@ -13589,7 +13589,8 @@ function CustomerPage() {
                       onChange: (e) => updatePayment(p.id, "amount", e.target.value),
                     })
                   ),
-                  React.createElement("select", {
+                  // Who paid only matters when someone else is the bill-to.
+                  btSrcCat !== "Retail" && React.createElement("select", {
                     className: "resFormInput paymentSelect",
                     value: p.paidBy || "Bill-To",
                     onChange: (e) => updatePayment(p.id, "paidBy", e.target.value),
@@ -13607,7 +13608,22 @@ function CustomerPage() {
             )
           ),
       React.createElement("button", { type: "button", className: "addPaymentBtn", onClick: addPayment }, "+ Add Payment"),
-      React.createElement("div", { className: "paymentsTotals" },
+      // A retail customer has one total paid and one balance, as at the top.
+      btSrcCat === "Retail" && React.createElement("div", { className: "paymentsTotals" },
+        React.createElement("div", { className: "chargesTotalRow" },
+          React.createElement("span", { className: "chargesTotalLabel" }, "Paid"),
+          React.createElement("span", { className: "chargesTotalValue" }, fmtMoney(totalPaid))
+        ),
+        React.createElement("div", { className: "chargesTotalRow chargesTotalRow--balance" },
+          React.createElement("span", { className: "chargesTotalLabel" }, "Balance owing"),
+          React.createElement("span", {
+            className: grandTotal - totalPaid > 0 ? "chargesTotalValue chargesTotalValue--owing"
+              : grandTotal - totalPaid < 0 ? "chargesTotalValue chargesTotalValue--credit"
+              : "chargesTotalValue",
+          }, fmtMoney(Math.abs(grandTotal - totalPaid)) + (grandTotal - totalPaid < 0 ? " CR" : grandTotal - totalPaid > 0 ? " owing" : ""))
+        )
+      ),
+      btSrcCat !== "Retail" && React.createElement("div", { className: "paymentsTotals" },
         React.createElement("div", { className: "chargesTotalRow" },
           React.createElement("span", { className: "chargesTotalLabel" }, "Bill-To Paid"),
           React.createElement("span", { className: "chargesTotalValue" }, fmtMoney(billToPaid))
