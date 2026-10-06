@@ -10220,6 +10220,57 @@ function ContractAcknowledgementRecord({ rentalAgreementId }) {
       el("img", { src: sig, alt: "Pickup signature", style: { maxWidth: "320px", width: "100%", background: "#fff", borderRadius: "6px" } })));
 }
 
+// ─── Licence name check ───────────────────────────────────────────────────────
+// complete_pickup records nameMismatch when the main driver's licence last name
+// does not match the reservation's (capitals, spaces, hyphens and accents
+// aside). Shown as a warning until someone marks it reviewed, through
+// mark_name_mismatch_reviewed, which keeps the difference on record with who
+// reviewed it and writes the audit entry. Nothing shows when there is no flag.
+function NameMismatchWarning({ rentalAgreementId }) {
+  const { rentalAgreements, setRentalAgreements } = React.useContext(AppContext);
+  const ra = (rentalAgreements || []).find((a) => String(a.id) === String(rentalAgreementId)) || null;
+  const flag = ra && ra.nameMismatch && typeof ra.nameMismatch === "object" ? ra.nameMismatch : null;
+  const [busy,  setBusy]  = React.useState(false);
+  const [error, setError] = React.useState("");
+  if (!flag) return null;
+  const el = React.createElement;
+  const when = (iso) => {
+    const d = iso ? new Date(iso) : null;
+    return d && !Number.isNaN(d.getTime())
+      ? d.toLocaleString("en-CA", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })
+      : "";
+  };
+
+  if (flag.reviewedAt) {
+    return el("p", { className: "closeRentalHint" },
+      `Licence name ${flag.licenceLastName} differs from the reservation's ${flag.reservationLastName}. ` +
+      `Reviewed by ${flag.reviewedByName || "staff"}${flag.reviewedAt ? `, ${when(flag.reviewedAt)}` : ""}.`);
+  }
+
+  const review = async () => {
+    setBusy(true); setError("");
+    const { data, error: err } = await supabase.rpc("mark_name_mismatch_reviewed", { p_rental_agreement_id: ra.id });
+    setBusy(false);
+    if (err || !data || !data.ok) {
+      setError(err ? "Could not reach the server." : "That did not work. Try again.");
+      return;
+    }
+    setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, nameMismatch: data.nameMismatch } : a)));
+  };
+
+  return el("div", { className: "closeRentalWarning", role: "alert", style: { marginBottom: "16px" } },
+    el("div", { style: { fontWeight: 700, marginBottom: "4px" } }, "The driver's licence name does not match the reservation"),
+    el("div", null, `Licence last name: ${flag.licenceLastName}`),
+    el("div", null, `Reservation last name: ${flag.reservationLastName}`),
+    el("div", { style: { margin: "6px 0 8px" } },
+      "Check the customer's identity before the rental goes further, then mark it reviewed."),
+    error && el("div", { className: "loginError" }, error),
+    el("button", {
+      type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+      disabled: busy, onClick: review,
+    }, busy ? "Saving\u2026" : "Mark reviewed"));
+}
+
 // ─── Photos & Signatures ──────────────────────────────────────────────────────
 // Every photo taken for one rental, from its folder in the private
 // damage-photos bucket (<operatorId>/rental-agreements/<id>/), and the
@@ -10627,6 +10678,7 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
       )
     ),
     React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement(NameMismatchWarning, { rentalAgreementId: rentalAgreement.raId }),
     section("resInfo", "Reservation Information",
       React.createElement("div", { className: "rentalAgreementFields" },
         field("Res Code", rentalAgreement.resCode),
@@ -14206,6 +14258,7 @@ function CustomerPage() {
       })()
     ),
     React.createElement("div", { className: "page__titleUnderline" }),
+    ra?.id && React.createElement(NameMismatchWarning, { rentalAgreementId: ra.id }),
     makeSection("resInfo",      "Reservation Information", resInfoBody),
     makeSection("vehicles",     "Vehicles",               vehiclesBody),
     makeSection("ratesBilling", "Rates & Billing",        ratesBillingBody),
