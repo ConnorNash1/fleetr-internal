@@ -13474,7 +13474,7 @@ function CustomerPage() {
             React.createElement("th", { className: "chargesTh chargesTh--check" }, ""),
             React.createElement("th", { className: "chargesTh" }, "Item"),
             React.createElement("th", { className: "chargesTh chargesTh--qty" }, "Qty"),
-            React.createElement("th", { className: "chargesTh chargesTh--amt" }, "Cost Per Day"),
+            React.createElement("th", { className: "chargesTh chargesTh--amt" }, "Rate"),
             React.createElement("th", { className: "chargesTh chargesTh--total" }, "Total Cost")
           )
         ),
@@ -13531,17 +13531,26 @@ function CustomerPage() {
 
     // ── Payments tab ──
     chargesTab === "Payments" && React.createElement("div", { className: "cdetailForm" },
-      // Owes summary
-      React.createElement("div", { className: "chargesInfoRow" },
-        React.createElement("div", { className: "chargesInfoItem" },
-          React.createElement("span", { className: "chargesInfoLabel" }, "Bill-To Owes"),
-          React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(billToTotal))
-        ),
-        React.createElement("div", { className: "chargesInfoItem" },
-          React.createElement("span", { className: "chargesInfoLabel" }, "Customer Owes"),
-          React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(customerTotal))
-        )
-      ),
+      // Owes summary. A retail customer is their own bill-to, so they have one
+      // balance: every charge less every payment. The split is kept only when
+      // someone else pays.
+      btSrcCat === "Retail"
+        ? React.createElement("div", { className: "chargesInfoRow" },
+            React.createElement("div", { className: "chargesInfoItem" },
+              React.createElement("span", { className: "chargesInfoLabel" }, "Balance owing"),
+              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(grandTotal - totalPaid))
+            )
+          )
+        : React.createElement("div", { className: "chargesInfoRow" },
+            React.createElement("div", { className: "chargesInfoItem" },
+              React.createElement("span", { className: "chargesInfoLabel" }, "Bill-To Owes"),
+              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(billToTotal))
+            ),
+            React.createElement("div", { className: "chargesInfoItem" },
+              React.createElement("span", { className: "chargesInfoLabel" }, "Customer Owes"),
+              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(customerTotal))
+            )
+          ),
       // Payments list
       payments.length === 0
         ? React.createElement("div", { className: "customerPlaceholder" }, "No payments recorded yet.")
