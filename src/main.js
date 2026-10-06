@@ -685,7 +685,8 @@ Fleet table fields:
 Fleet operation rules:
 - To update a vehicle's status, use operation "update" with match on "id" and data containing the new "status".
 - When marking a "Ready Returns" vehicle as collected (changing its status to any other status), also include currentRenter: null, dueBack: null, fileType: null in data.
-- To add a vehicle to the fleet, use operation "insert". ALL of these are required and the action is rejected without them: plate, province, year, make, model, colour, tankSizeLiters, pmIntervalKm, vehicleClass, vin. Do not include status or winterTires in data -- those defaults are applied automatically.
+- To add a vehicle to the fleet, use operation "insert". ALL of these are required and the action is rejected without them: plate, province, year, make, model, colour, tankSizeLiters, pmIntervalKm, vehicleClass, vin, currentOdometer, currentFuelLevel. Do not include status or winterTires in data -- those defaults are applied automatically.
+- currentOdometer and currentFuelLevel are the vehicle's readings right now, which its first rental starts from. currentOdometer is a whole number of KILOMETRES; if the user gives miles, convert (1 mile = 1.609344 km) and round. currentFuelLevel must be exactly one of: Empty, ⅛, ¼, ⅜, ½, ⅝, ¾, ⅞, Full. If the user says "half" or "three quarters", send the matching one.
 - tankSizeLiters is the fuel tank size in LITRES and pmIntervalKm is the service interval in KILOMETRES. If the user gives gallons or miles, convert before sending: 1 gallon = 3.785411784 litres, 1 mile = 1.609344 km. Both must be positive numbers.
 - If the user has not given every required field, do NOT emit an insert action. Ask for the missing ones in "message" instead.
 - To retire a vehicle from the fleet, use operation "delete" with match on "id", and data containing disposalDate (ISO date) and reason. Both are required: the archive keeps them and the action is rejected without them. Look up the vehicle id from the fleet data using the plate.
@@ -701,7 +702,7 @@ Editing an existing vehicle:
 - year is a four digit year. vehicleClass must be one of the classes listed above. province must be a two letter province or state code.
 - vin must be exactly 17 characters, letters and digits only, and never the letters I, O or Q, which a real VIN does not use. Anything else is rejected. If the user reads out a VIN that is not 17 characters, say so and ask them to check it rather than sending it.
 - Changing a plate is allowed, but not while the vehicle has a rental agreement that is not closed, because other records point at the old plate. That is refused with an explanation.
-- needsPm, lastPmOdometer, currentOdometer, id and created_at can never be written this way. Odometer figures come from the vehicle itself, and the PM baseline is set by pmComplete.
+- needsPm, lastPmOdometer, currentOdometer, id and created_at can never be changed on a vehicle already in the fleet. Odometer figures come from the vehicle itself, and the PM baseline is set by pmComplete. The only time currentOdometer is sent is the starting reading when a vehicle is added.
 - Changing status is a separate thing, covered under Fleet operation rules above.
 
 PM Complete:
@@ -5580,6 +5581,25 @@ function validateVehicleEdit(data, provinces) {
   return { ok: true, error: null };
 }
 
+// The starting readings a vehicle is added with, required by the Add Vehicle
+// form and the command bar alike: the customer app no longer takes readings at
+// pickup, so a vehicle's first rental starts from these. currentOdometer is
+// whole kilometres; currentFuelLevel is one of the fuel labels.
+function validateStartingReadings(v) {
+  const missing = [];
+  const odo = String(v?.currentOdometer ?? "").trim();
+  const fuel = String(v?.currentFuelLevel ?? "").trim();
+  if (odo === "") missing.push("Current Odometer");
+  if (fuel === "") missing.push("Current Fuel Level");
+  if (missing.length) {
+    return { ok: false, error: missing.length === 1 ? `${missing[0]} is required.` : `These fields are required: ${missing.join(", ")}.` };
+  }
+  const n = Number(odo);
+  if (!Number.isFinite(n) || n < 0) return { ok: false, error: "Current odometer has to be a number of kilometres, zero or more." };
+  if (!FUEL_LABELS.includes(fuel)) return { ok: false, error: `Current fuel level has to be one of: ${FUEL_LABELS.join(", ")}.` };
+  return { ok: true, error: null, odometer: Math.round(n), fuelLevel: fuel };
+}
+
 function validateVehicle(v) {
   const missing = VEHICLE_REQUIRED_FIELDS
     .filter(([, key]) => String(v?.[key] ?? "").trim() === "")
@@ -9407,6 +9427,9 @@ function FleetrCommandBar() {
       if (data.plate) data = { ...data, plate: normalizePlate(data.plate) };
       const check = validateVehicle(data);
       if (!check.ok) return fail(check.error);
+      const readings = validateStartingReadings(data);
+      if (!readings.ok) return fail(readings.error);
+      data = { ...data, currentOdometer: readings.odometer, currentFuelLevel: readings.fuelLevel };
       // The AI could previously add a second vehicle on an existing plate; the
       // duplicate check lived only in the form's submit handler.
       const unique = validateVehicleUniqueness(data, fleet, null);
