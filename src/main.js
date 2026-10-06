@@ -6697,6 +6697,11 @@ const COMPANY_REASONS = {
   exec_only:      "Only an Exec can manage the company.",
   not_found:      "That branch is not part of this company.",
   bad_key:        "That setting cannot be changed from here.",
+  bad_taxes:      "That did not work. Try again.",
+  too_many_taxes: "A branch can have at most two taxes.",
+  bad_tax_name:   "Give each tax a name of 1 to 20 characters.",
+  bad_tax_rate:   "A tax rate is a percentage above 0 and below 100.",
+  duplicate_tax:  "The two taxes need different names.",
   bad_name:       "Give the branch a name.",
   bad_code:       "A branch code is 2 to 8 letters or numbers.",
   code_required:  "A branch code is required.",
@@ -6945,6 +6950,7 @@ function CompanyPage() {
 
   const [branches, setBranches] = React.useState([]);
   const [gas,      setGas]      = React.useState([]);
+  const [taxes,    setTaxes]    = React.useState([]);
   const [acting,   setActing]   = React.useState(null);
   const [busy,     setBusy]     = React.useState("");
   const [error,    setError]    = React.useState("");
@@ -6960,11 +6966,13 @@ function CompanyPage() {
   }, []);
 
   const refresh = React.useCallback(async () => {
-    const [ov, gs, act] = await Promise.all([
+    const [ov, gs, act, tx] = await Promise.all([
       call("company_overview"), call("company_gas_settings"), call("my_acting_location"),
+      call("company_sales_taxes"),
     ]);
     if (ov.ok)  setBranches(ov.branches || []);
     if (gs.ok)  setGas(gs.branches || []);
+    if (tx.ok)  setTaxes(tx.branches || []);
     if (act.ok) setActing(act);
     if (!ov.ok) setError(COMPANY_REASONS[ov.reason] || "Could not load the company.");
   }, [call]);
@@ -7108,6 +7116,22 @@ function CompanyPage() {
       )
     ),
 
+    // ── Sales tax ──
+    React.createElement(
+      CompanySection, { title: "Sales tax" },
+      React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+        "Up to two taxes per branch, each with a name and a rate, for example HST 15%, or GST 5% and PST 7%. They are added to every charge, and locked onto a rental agreement when the customer picks up, so a later change here does not reach rentals already out."),
+      React.createElement(
+        "div", { style: { overflowX: "auto" } },
+        React.createElement(
+          "table", { className: "dashboardTable", style: { minWidth: "620px" } },
+          React.createElement("thead", null, React.createElement("tr", null,
+            ["Branch", "First tax", "Second tax", ""].map((h) => React.createElement("th", { key: h }, h)))),
+          React.createElement("tbody", null, taxes.filter((t) => t.active).map((t) =>
+            React.createElement(SalesTaxRow, { key: t.locationId, row: t, busy, onSave: run }))))
+      )
+    ),
+
     // ── Lists and prices ──
     React.createElement(CompanyListsSections, { branches })
   );
@@ -7144,6 +7168,51 @@ function GasRow({ row, busy, onSave }) {
           onSave("gas", "set_company_gas_setting", {
             location_id: row.locationId, setting_key: "gasMarkupPercent", setting_value: n,
           });
+        },
+      }, "Save"))
+  );
+}
+
+// One branch's sales taxes. Its own component, for the reason GasRow is: each
+// branch keeps its own draft. A tax with a blank name and rate is left out;
+// both blank clears the branch's taxes. The database checks the rest.
+function SalesTaxRow({ row, busy, onSave }) {
+  const saved = Array.isArray(row.salesTaxes) ? row.salesTaxes : [];
+  const toDraft = (t) => ({ name: t ? String(t.name ?? "") : "", rate: t && t.rate != null ? String(t.rate) : "" });
+  const [drafts, setDrafts] = React.useState(() => [toDraft(saved[0]), toDraft(saved[1])]);
+  const savedKey = JSON.stringify(saved);
+  React.useEffect(() => { setDrafts([toDraft(saved[0]), toDraft(saved[1])]); }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const update = (i, field, value) =>
+    setDrafts((prev) => prev.map((d, j) => (j === i ? { ...d, [field]: value } : d)));
+
+  const taxCell = (i) =>
+    React.createElement("td", null,
+      React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: "6px" } },
+        React.createElement("input", {
+          className: "resFormInput", style: { width: "90px" }, placeholder: "Name", maxLength: 20,
+          value: drafts[i].name, onChange: (e) => update(i, "name", e.target.value),
+        }),
+        React.createElement("input", {
+          className: "resFormInput", style: { width: "70px" }, placeholder: "Rate", inputMode: "decimal",
+          value: drafts[i].rate, onChange: (e) => update(i, "rate", e.target.value),
+        }),
+        React.createElement("span", { style: { opacity: 0.7 } }, "%")));
+
+  return React.createElement(
+    "tr", null,
+    React.createElement("td", null, row.name),
+    taxCell(0),
+    taxCell(1),
+    React.createElement("td", null,
+      React.createElement("button", {
+        className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+        disabled: busy === "tax",
+        onClick: () => {
+          const list = drafts
+            .filter((d) => d.name.trim() !== "" || d.rate.trim() !== "")
+            .map((d) => ({ name: d.name.trim(), rate: d.rate.trim() === "" ? null : Number(d.rate) }));
+          onSave("tax", "set_branch_sales_taxes", { p_location_id: row.locationId, p_taxes: list });
         },
       }, "Save"))
   );
@@ -12583,6 +12652,26 @@ function CustomerPage() {
   // Derived from rentalAgreements for read-only fields and auto-population
   const ra = rentalAgreements.find((r) => r.resCode === resCode) || null;
 
+  // Sales tax. The taxes locked onto the agreement at pickup, or for an
+  // agreement with none locked (no agreement yet, one made before taxes, or a
+  // branch with none set at pickup) the branch's current taxes.
+  const taxBranchId = ra?.locationId || localRecord?.locationId || null;
+  const [branchTaxes, setBranchTaxes] = React.useState([]);
+  React.useEffect(() => {
+    if (!taxBranchId) { setBranchTaxes([]); return undefined; }
+    let live = true;
+    supabase.from("locations").select("salesTaxes").eq("id", taxBranchId).maybeSingle()
+      .then(({ data, error }) => {
+        if (!live) return;
+        if (error) console.warn("Sales tax could not be loaded:", error.message);
+        setBranchTaxes(!error && Array.isArray(data?.salesTaxes) ? data.salesTaxes : []);
+      });
+    return () => { live = false; };
+  }, [taxBranchId]);
+  const salesTaxes = (Array.isArray(ra?.salesTaxes) ? ra.salesTaxes : branchTaxes)
+    .filter((t) => t && String(t.name ?? "").trim() !== "" && Number(t.rate) > 0)
+    .slice(0, 2);
+
   // Populate rental vehicle from rental_agreements when an RA exists for this resCode.
   // Year and province come from the fleet record first, falling back to VEHICLE_EXTRA_DATA.
   React.useEffect(() => {
@@ -13375,12 +13464,25 @@ function CustomerPage() {
   );
   const billToTotal   = billToItems.reduce((s, it) => s + (it.applies ? lineItemAmt(it) : 0), 0);
   const customerTotal = customerItems.reduce((s, it) => s + (it.applies ? lineItemAmt(it) : 0), 0);
-  const grandTotal    = billToTotal + customerTotal;
+  // Each tax on a subtotal, to the cent. When someone else pays, each side is
+  // taxed on its own charges, so the two sides add up to what is shown.
+  const taxLinesFor = (subtotal) => salesTaxes.map((t) => ({
+    label: `${String(t.name).trim()} ${Number(t.rate)}%`,
+    amount: Math.round(subtotal * Number(t.rate)) / 100,
+  }));
+  const sumTax = (lines) => lines.reduce((s, l) => s + l.amount, 0);
+  const subTotal         = billToTotal + customerTotal;
+  const allTaxLines      = taxLinesFor(subTotal);
+  const billToTaxLines   = taxLinesFor(billToTotal);
+  const customerTaxLines = taxLinesFor(customerTotal);
+  const billToDue        = billToTotal + sumTax(billToTaxLines);
+  const customerDue      = customerTotal + sumTax(customerTaxLines);
+  const grandTotal       = btSrcCat === "Retail" ? subTotal + sumTax(allTaxLines) : billToDue + customerDue;
   const billToPaid      = payments.filter((p) => (p.paidBy || "Bill-To") === "Bill-To").reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
   const customerPaid    = payments.filter((p) => p.paidBy === "Customer").reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
   const totalPaid       = billToPaid + customerPaid;
-  const billToBalance   = billToTotal - billToPaid;
-  const customerBalance = customerTotal - customerPaid;
+  const billToBalance   = billToDue - billToPaid;
+  const customerBalance = customerDue - customerPaid;
 
   const addPayment = () =>
     setPayments((prev) => [...prev, { id: Date.now(), type: "Visa", last4: "", cardholderName: "", amount: "", paidBy: "Bill-To" }]);
@@ -13465,7 +13567,7 @@ function CustomerPage() {
       )
     );
 
-  const renderChargesSection = (title, items, sectionTotal) =>
+  const renderChargesSection = (title, items, sectionTotal, taxLines = []) =>
     React.createElement("div", { className: "chargesSection" },
       React.createElement("div", { className: "chargesSectionHeader" }, title),
       React.createElement("table", { className: "chargesTable" },
@@ -13483,7 +13585,12 @@ function CustomerPage() {
       React.createElement("div", { className: "chargesTotalRow chargesTotalRow--section" },
         React.createElement("span", { className: "chargesTotalLabel" }, `${title.split(" ")[0]} Total`),
         React.createElement("span", { className: "chargesTotalValue" }, fmtMoney(sectionTotal))
-      )
+      ),
+      taxLines.map((l) =>
+        React.createElement("div", { key: l.label, className: "chargesTotalRow" },
+          React.createElement("span", { className: "chargesTotalLabel" }, l.label),
+          React.createElement("span", { className: "chargesTotalValue" }, fmtMoney(l.amount))
+        ))
     );
 
   const chargesBody = React.createElement("div", { className: "chargesWrap" },
@@ -13518,10 +13625,10 @@ function CustomerPage() {
       // A retail customer is their own bill-to, so their charges are one list.
       // The split is kept only when someone else pays.
       btSrcCat === "Retail"
-        ? renderChargesSection("Charges", lineItems, grandTotal)
-        : renderChargesSection("Bill-To Charges", billToItems, billToTotal),
+        ? renderChargesSection("Charges", lineItems, subTotal, allTaxLines)
+        : renderChargesSection("Bill-To Charges", billToItems, billToTotal, billToTaxLines),
       // Additional Charges section, what the customer pays themselves
-      btSrcCat !== "Retail" && customerItems.length > 0 && renderChargesSection("Additional Charges", customerItems, customerTotal),
+      btSrcCat !== "Retail" && customerItems.length > 0 && renderChargesSection("Additional Charges", customerItems, customerTotal, customerTaxLines),
       // Grand Total
       React.createElement("div", { className: "chargesTotalRow chargesTotalRow--grand" },
         React.createElement("span", { className: "chargesTotalLabel" }, "Grand Total"),
@@ -13544,11 +13651,11 @@ function CustomerPage() {
         : React.createElement("div", { className: "chargesInfoRow" },
             React.createElement("div", { className: "chargesInfoItem" },
               React.createElement("span", { className: "chargesInfoLabel" }, "Bill-To Owes"),
-              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(billToTotal))
+              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(billToDue))
             ),
             React.createElement("div", { className: "chargesInfoItem" },
               React.createElement("span", { className: "chargesInfoLabel" }, "Customer Owes"),
-              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(customerTotal))
+              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(customerDue))
             )
           ),
       // Payments list
