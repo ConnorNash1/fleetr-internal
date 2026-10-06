@@ -13336,7 +13336,7 @@ function CustomerPage() {
           React.createElement("tr", null,
             React.createElement("th", { className: "chargesTh chargesTh--check" }, ""),
             React.createElement("th", { className: "chargesTh" }, "Item"),
-            React.createElement("th", { className: "chargesTh chargesTh--qty" }, "Quantity"),
+            React.createElement("th", { className: "chargesTh chargesTh--qty" }, "Days"),
             React.createElement("th", { className: "chargesTh chargesTh--amt" }, "Cost Per Day"),
             React.createElement("th", { className: "chargesTh chargesTh--total" }, "Total Cost")
           )
@@ -13378,10 +13378,13 @@ function CustomerPage() {
           React.createElement("span", { className: "chargesInfoValue" }, totalDays || "—")
         )
       ),
-      // Bill-To Charges section
-      renderChargesSection("Bill-To Charges", billToItems, billToTotal),
-      // Customer Charges section
-      customerItems.length > 0 && renderChargesSection("Customer Charges", customerItems, customerTotal),
+      // A retail customer is their own bill-to, so their charges are one list.
+      // The split is kept only when someone else pays.
+      btSrcCat === "Retail"
+        ? renderChargesSection("Charges", lineItems, grandTotal)
+        : renderChargesSection("Bill-To Charges", billToItems, billToTotal),
+      // Additional Charges section, what the customer pays themselves
+      btSrcCat !== "Retail" && customerItems.length > 0 && renderChargesSection("Additional Charges", customerItems, customerTotal),
       // Grand Total
       React.createElement("div", { className: "chargesTotalRow chargesTotalRow--grand" },
         React.createElement("span", { className: "chargesTotalLabel" }, "Grand Total"),
