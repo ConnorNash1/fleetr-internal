@@ -7308,6 +7308,8 @@ const LIST_REASONS = {
   decline_too_long: "The decline wording is too long. Keep it to 300 characters.",
   no_links:         "Links are not allowed in the wording.",
   bad_required:     "That did not work. Try again.",
+  empty_body:       "The acknowledgements cannot be empty.",
+  body_too_long:    "The acknowledgements are too long. Keep them to 4,000 characters.",
 };
 
 const BILLING_TYPE_LABELS = [
@@ -7517,6 +7519,94 @@ function ProtectionDetailsCard({ product, busy, onSave }) {
   );
 }
 
+// One row of deductibles: the company default, or one vehicle class's own.
+// Keeps its own drafts, for the reason GasRow does. A blank amount clears it;
+// on a class that means the company default applies.
+function DeductibleRow({ label, collision, comprehensive, placeholder, busy, onSave }) {
+  const shown = (v) => (v == null ? "" : String(Number(v)));
+  const [coll, setColl] = React.useState(shown(collision));
+  const [comp, setComp] = React.useState(shown(comprehensive));
+  React.useEffect(() => { setColl(shown(collision)); setComp(shown(comprehensive)); }, [collision, comprehensive]); // eslint-disable-line react-hooks/exhaustive-deps
+  const unchanged = coll.trim() === shown(collision) && comp.trim() === shown(comprehensive);
+  const el = React.createElement;
+  const money = (value, setValue, ph, name) =>
+    el("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" } },
+      el("span", { style: { opacity: 0.7 } }, "$"),
+      el("input", {
+        className: "resFormInput", style: { width: "100px" }, inputMode: "decimal",
+        placeholder: ph, value, disabled: busy, "aria-label": `${label} ${name}`,
+        onChange: (e) => setValue(e.target.value),
+      }));
+  return el("tr", null,
+    el("td", { style: { fontWeight: 600 } }, label),
+    el("td", null, money(coll, setColl, placeholder.collision, "collision")),
+    el("td", null, money(comp, setComp, placeholder.comprehensive, "comprehensive")),
+    el("td", null,
+      el("button", {
+        className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+        disabled: busy || unchanged, onClick: () => onSave(coll.trim(), comp.trim()),
+      }, "Save")));
+}
+
+// The contract acknowledgements: the current version as the customer will
+// read it, an Edit that saves a new version, and every earlier version.
+const CONTRACT_ACK_MAX = 4000;
+function ContractAcknowledgementsCard({ versions, busy, onSave }) {
+  const current = versions[0] || null;
+  const [editing, setEditing] = React.useState(false);
+  const [draft,   setDraft]   = React.useState("");
+  const [shownVersion, setShownVersion] = React.useState(null);
+  const el = React.createElement;
+  const when = (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString("en-CA", { year: "numeric", month: "short", day: "numeric" });
+  };
+  const body = (text) => el("div", { className: "closeRentalSummary", style: { whiteSpace: "pre-line" } }, text);
+  const d = draft.trim();
+  const over = d.length > CONTRACT_ACK_MAX;
+
+  const open = () => { setDraft(current ? current.body : ""); setEditing(true); };
+  const save = async () => { if (await onSave(d)) setEditing(false); };
+
+  return el(React.Fragment, null,
+    !editing && el(React.Fragment, null,
+      el("p", { className: "closeRentalHint" },
+        current ? `Version ${current.version}, saved ${when(current.createdAt)}. What the customer acknowledges:` : "No acknowledgements yet."),
+      current && body(current.body),
+      el("div", { className: "closeRentalActions" },
+        el("button", { type: "button", className: "resModalSubmit", disabled: busy, onClick: open }, "Edit"))),
+
+    editing && el(React.Fragment, null,
+      el("p", { className: "closeRentalHint" },
+        "One statement per line. Saving makes a new version; the earlier ones are kept exactly as they were."),
+      el("textarea", {
+        className: "resFormInput resFormTextarea", rows: 10, value: draft, autoFocus: true,
+        "aria-label": "Contract acknowledgements", onChange: (e) => setDraft(e.target.value),
+      }),
+      el("p", { className: "closeRentalHint" }, `${d.length} of ${CONTRACT_ACK_MAX.toLocaleString("en-CA")} characters.`),
+      over && el("div", { className: "closeRentalWarning" },
+        `This is ${d.length - CONTRACT_ACK_MAX} characters over the ${CONTRACT_ACK_MAX.toLocaleString("en-CA")} allowed and cannot be saved.`),
+      el("div", { className: "gasSettingSubhead" }, "Preview"),
+      body(d || "Nothing yet."),
+      el("div", { className: "closeRentalActions" },
+        el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: () => setEditing(false) }, "Cancel"),
+        el("button", {
+          type: "button", className: "resModalSubmit",
+          disabled: busy || !d || over || (current && d === current.body),
+          onClick: save,
+        }, busy ? "Saving..." : "Save as a new version"))),
+
+    versions.length > 1 && el(React.Fragment, null,
+      el("div", { className: "gasSettingSubhead", style: { marginTop: "18px" } }, "Version history"),
+      versions.slice(1).map((v) => el("div", { key: v.id, style: { marginBottom: "8px" } },
+        el("button", {
+          type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+          onClick: () => setShownVersion(shownVersion === v.id ? null : v.id),
+        }, `${shownVersion === v.id ? "\u25be" : "\u25b8"} Version ${v.version}, saved ${when(v.createdAt)}`),
+        shownVersion === v.id && body(v.body))))
+  );
+}
+
 function CompanyListsSections({ branches }) {
   const { currentUser } = React.useContext(AppContext);
   const [ready,  setReady]  = React.useState(false);
@@ -7524,6 +7614,10 @@ function CompanyListsSections({ branches }) {
   // { at, text }: a refusal is shown in the section it happened in.
   const [error,  setError]  = React.useState(null);
   const [prices, setPrices] = React.useState([]);
+  const [driverPrices, setDriverPrices] = React.useState([]);
+  const [deductibles,  setDeductibles]  = React.useState(null);
+  const [overrides,    setOverrides]    = React.useState([]);
+  const [ackVersions,  setAckVersions]  = React.useState([]);
   const [, setDrawn] = React.useState(0);
   // Which sources are expanded to show their specific sources.
   const [openSources, setOpenSources] = React.useState({});
@@ -7537,10 +7631,20 @@ function CompanyListsSections({ branches }) {
 
   const reload = React.useCallback(async () => {
     await loadCompanyLists(currentUser);
-    const { data, error: err } = await supabase
-      .from("protection_prices").select("productId,vehicleClassId,sourceId,amount")
-      .eq("operatorId", currentUser?.operatorId ?? null);
-    if (!err) setPrices(data || []);
+    const op = currentUser?.operatorId ?? null;
+    const [pp, odp, cd, dov, ack] = await Promise.all([
+      supabase.from("protection_prices").select("productId,vehicleClassId,sourceId,amount").eq("operatorId", op),
+      supabase.from("other_driver_prices").select("vehicleClassId,sourceId,amount").eq("operatorId", op),
+      supabase.from("company_deductibles").select("collision,comprehensive").eq("operatorId", op).maybeSingle(),
+      supabase.from("deductible_overrides").select("vehicleClassId,collision,comprehensive").eq("operatorId", op),
+      supabase.from("contract_acknowledgements").select("id,version,body,createdAt").eq("operatorId", op)
+        .order("version", { ascending: false }),
+    ]);
+    if (!pp.error)  setPrices(pp.data || []);
+    if (!odp.error) setDriverPrices(odp.data || []);
+    if (!cd.error)  setDeductibles(cd.data || null);
+    if (!dov.error) setOverrides(dov.data || []);
+    if (!ack.error) setAckVersions(ack.data || []);
     setReady(true);
     setDrawn((n) => n + 1);
   }, [currentUser]);
@@ -7909,7 +8013,62 @@ function CompanyListsSections({ branches }) {
                   p_product_id: shownProduct.id, p_class_id: c.id, p_source_id: x.id, p_amount: amount,
                 }))))
         : el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-            "Switch a product on to set its prices."))
+            "Switch a product on to set its prices.")),
+
+    // ── Other driver price ──
+    section("Other driver price",
+      "The price per day for each additional driver, for every vehicle class and source. A cell saves when you leave it. Blank means no charge.",
+      "otherDriver",
+      priceGrid("otherDriver",
+        (c, x) => {
+          const row = driverPrices.find((r) => r.vehicleClassId === c.id && r.sourceId === x.id);
+          return row ? Number(row.amount) : null;
+        },
+        (c, x, amount) => act("otherDriver", "set_other_driver_price", {
+          p_class_id: c.id, p_source_id: x.id, p_amount: amount,
+        }))),
+
+    // ── Deductibles ──
+    section("Deductibles",
+      "The company's collision and comprehensive deductibles, and any vehicle class that has its own. A blank amount on a class means it uses the company's.",
+      "deductibles",
+      table("560px", ["", "Collision", "Comprehensive", ""], [
+        el(DeductibleRow, {
+          key: "company", label: "Company default", busy,
+          collision: deductibles?.collision ?? null, comprehensive: deductibles?.comprehensive ?? null,
+          placeholder: { collision: "Not set", comprehensive: "Not set" },
+          onSave: (coll, comp) => {
+            const a = parsePrice("deductibles", coll), b = parsePrice("deductibles", comp);
+            if (!a.ok || !b.ok) return Promise.resolve(false);
+            return act("deductibles", "set_company_deductibles", { p_collision: a.amount, p_comprehensive: b.amount });
+          },
+        }),
+        ...activeClasses.map((c) => {
+          const o = overrides.find((r) => r.vehicleClassId === c.id);
+          const dflt = (v) => (v == null ? "Company default" : `Default ${Number(v)}`);
+          return el(DeductibleRow, {
+            key: c.id, label: c.name, busy,
+            collision: o?.collision ?? null, comprehensive: o?.comprehensive ?? null,
+            placeholder: { collision: dflt(deductibles?.collision), comprehensive: dflt(deductibles?.comprehensive) },
+            onSave: (coll, comp) => {
+              const a = parsePrice("deductibles", coll), b = parsePrice("deductibles", comp);
+              if (!a.ok || !b.ok) return Promise.resolve(false);
+              return act("deductibles", "set_deductible_override", {
+                p_class_id: c.id, p_collision: a.amount, p_comprehensive: b.amount,
+              });
+            },
+          });
+        }),
+      ])),
+
+    // ── Contract acknowledgements ──
+    section("Contract acknowledgements",
+      "What the customer acknowledges on the rental contract. Every save is a new version, and earlier versions are kept unchanged.",
+      "acknowledgements",
+      el(ContractAcknowledgementsCard, {
+        versions: ackVersions, busy,
+        onSave: (text) => act("acknowledgements", "save_contract_acknowledgements", { p_body: text }),
+      }))
   );
 }
 
