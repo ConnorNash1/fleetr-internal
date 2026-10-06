@@ -6113,7 +6113,7 @@ function FleetAdditionsPage() {
 
   // tankSize / pmInterval are held in the CURRENTLY SELECTED display unit while
   // typing, and converted to canonical litres/km only at submit.
-  const BLANK_ADD    = { plate: "", province: "NL", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: defaultVehicleClass(FLEET_VEHICLE_CLASSES), tankSize: "", pmInterval: "" };
+  const BLANK_ADD    = { plate: "", province: "NL", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: defaultVehicleClass(FLEET_VEHICLE_CLASSES), tankSize: "", pmInterval: "", odometer: "", fuelLevel: "" };
   const [tankUnit, setTankUnit] = React.useState(fuelUnit);
   const [pmUnit,   setPmUnit]   = React.useState(distanceUnit);
   // Canonical litres / kilometres, kept alongside the displayed string so that
@@ -6155,6 +6155,19 @@ function FleetAdditionsPage() {
     };
     const check = validateVehicle(candidate);
     if (!check.ok) { setAddError(check.error); return; }
+    // The starting readings. The customer app no longer takes them at pickup,
+    // so a vehicle's first rental starts from these. Typed in the company's
+    // distance unit, stored in whole kilometres.
+    const odoTyped = String(addForm.odometer).trim();
+    if (!/^\d+$/.test(odoTyped)) {
+      setAddError(`Enter the current odometer as a whole number of ${distanceUnitWord()}.`);
+      return;
+    }
+    if (!FUEL_LABELS.includes(addForm.fuelLevel)) {
+      setAddError("Choose the current fuel level.");
+      return;
+    }
+    const odometerKm = distanceToKm(Number(odoTyped));
     // Plate and VIN uniqueness, in the shared rule rather than inline here, so
     // the command bar enforces the same thing.
     const unique = validateVehicleUniqueness(candidate, fleet, null);
@@ -6171,7 +6184,8 @@ function FleetAdditionsPage() {
         tankSizeLiters: tankLiters,
         pmIntervalKm: pmKm,
         lastPmOdometer: null,
-        currentOdometer: null,
+        currentOdometer: odometerKm,
+        currentFuelLevel: addForm.fuelLevel,
         winterTires: "No", status: "Needs Cleaning",
         currentRenter: null, dueBack: null, fileType: null,
       };
@@ -6320,6 +6334,14 @@ function FleetAdditionsPage() {
               pmUnit === "km" ? "e.g. 8000" : "e.g. 5000",
               pmUnit, (u) => switchUnit("pmInterval", pmCanonical, u, setPmUnit),
               DISTANCE_UNITS, setPmCanonical),
+            fi(`Current Odometer (${distanceUnit()})`, "odometer", distanceUnit() === "mi" ? "e.g. 26000" : "e.g. 42000"),
+            React.createElement("div", { className: "addVehicleField" },
+              React.createElement("label", { className: "addVehicleLabel" }, "Current Fuel Level"),
+              React.createElement("select", { className: "addVehicleInput", value: addForm.fuelLevel, onChange: (e) => onAdd("fuelLevel", e.target.value) },
+                React.createElement("option", { value: "" }, "Choose"),
+                FUEL_LABELS.map((f) => React.createElement("option", { key: f, value: f }, f))
+              )
+            ),
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Vehicle Class"),
               React.createElement("select", { className: "addVehicleInput", value: addForm.vehicleClass, onChange: (e) => onAdd("vehicleClass", e.target.value) },
