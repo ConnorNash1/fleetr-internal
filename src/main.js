@@ -343,6 +343,62 @@ async function loadCompanyLists(user) {
   }
 }
 
+// ─── Company units ────────────────────────────────────────────────────────────
+// The units the company's Exec chose on the Company page: fuel in litres or US
+// gallons, distance in kilometres or miles. Display only. Every figure is
+// still stored in litres and kilometres (tank sizes, fuel prices per litre,
+// odometer readings, PM intervals), so the gas charge, the PM threshold and
+// every saved record mean the same whichever unit is shown. A failed read
+// leaves litres and kilometres, which is what the app always showed.
+let companyUnits = { fuel: "L", distance: "km" };
+
+async function loadCompanyUnits(user) {
+  const operatorId = user?.operatorId;
+  if (!operatorId) { companyUnits = { fuel: "L", distance: "km" }; return; }
+  try {
+    const { data, error } = await supabase.from("operators")
+      .select("fuelUnit,distanceUnit").eq("id", operatorId).maybeSingle();
+    if (error || !data) {
+      if (error) console.warn("Fleetr: company units could not be loaded, using litres and kilometres:", error.message);
+      return;
+    }
+    companyUnits = {
+      fuel:     data.fuelUnit === "gal" ? "gal" : "L",
+      distance: data.distanceUnit === "mi" ? "mi" : "km",
+    };
+  } catch (e) {
+    console.warn("Fleetr: company units could not be loaded, using litres and kilometres:", e.message || String(e));
+  }
+}
+
+const fuelUnit     = () => (companyUnits.fuel === "gal" ? "gal" : "L");
+const distanceUnit = () => (companyUnits.distance === "mi" ? "mi" : "km");
+const fuelUnitWord     = (plural = true) => (fuelUnit() === "gal" ? "gallon" : "litre") + (plural ? "s" : "");
+const distanceUnitWord = (plural = true) => (distanceUnit() === "mi" ? "mile" : "kilometre") + (plural ? "s" : "");
+
+// A stored kilometre figure, shown whole in the company's unit, or null.
+const fmtDistance = (km) => {
+  if (km === null || km === undefined || km === "" || !Number.isFinite(Number(km))) return null;
+  const n = Math.round(Number(toDisplayUnits(km, distanceUnit())));
+  return `${n.toLocaleString("en-CA")} ${distanceUnit()}`;
+};
+// A whole reading typed in the company's unit, as whole kilometres to store.
+const distanceToKm = (n) => (distanceUnit() === "mi" ? Math.round(n * KM_PER_MI) : n);
+const kmToDistance = (km) => (distanceUnit() === "mi" ? Math.round(km / KM_PER_MI) : km);
+
+// Fuel prices are stored per litre. Shown and typed per the company's unit; a
+// gallon price is kept to four places per litre, which shows back to the cent.
+const fuelPriceForDisplay = (perLitre) => {
+  const n = Number(perLitre);
+  if (perLitre === null || perLitre === undefined || perLitre === "" || !Number.isFinite(n)) return null;
+  return fuelUnit() === "gal" ? Math.round(n * L_PER_GAL * 1000) / 1000 : n;
+};
+const fuelPriceToLitre = (perUnit) =>
+  fuelUnit() === "gal" ? Math.round((perUnit / L_PER_GAL) * 10000) / 10000 : perUnit;
+
+const VOLUME_UNIT_OPTIONS   = [{ value: "L",  label: "Litres" },     { value: "gal", label: "US gallons" }];
+const DISTANCE_UNIT_OPTIONS = [{ value: "km", label: "Kilometres" }, { value: "mi",  label: "Miles" }];
+
 // Keeps a record's own value on offer when the list no longer has it.
 const withCurrentOption = (options, current) => {
   const cur = String(current ?? "");
@@ -2041,6 +2097,8 @@ function AppProvider({ children, currentUser, signOut }) {
         // Fills companyLists rather than returning rows, and never throws: a
         // failure leaves the built-in lists in charge.
         loadCompanyLists(currentUser),
+        // Fills companyUnits, and never throws: a failure leaves litres and km.
+        loadCompanyUnits(currentUser),
       ]);
 
       // maybeSeED used to live here. Both of its call sites passed an empty
@@ -4531,8 +4589,8 @@ function VehicleDetailPage() {
   // reliably). Both are stored canonically (litres / kilometres) and only
   // converted for display, so the unit toggle can never affect the gas charge
   // maths or the PM threshold comparison.
-  const [tankUnit, setTankUnit] = React.useState("L");
-  const [pmUnit,   setPmUnit]   = React.useState("km");
+  const [tankUnit, setTankUnit] = React.useState(fuelUnit);
+  const [pmUnit,   setPmUnit]   = React.useState(distanceUnit);
   const [tankInput, setTankInput] = React.useState("");
   const [pmInput,   setPmInput]   = React.useState("");
 
@@ -4676,8 +4734,8 @@ function VehicleDetailPage() {
         detailRow("Colour", vehicle.colour || extra.colour),
         detailRow("VIN", vehicle.vin || extra.vin),
         detailRow("Odometer", latestRa?.mileage != null
-          ? `${Number(latestRa.mileage).toLocaleString()} km`
-          : extra.odometer != null ? `${extra.odometer.toLocaleString()} km` : "\u2014"),
+          ? fmtDistance(latestRa.mileage)
+          : extra.odometer != null ? fmtDistance(extra.odometer) : "\u2014"),
         detailRow("Fuel Level", latestRa?.fuelAtPickup || extra.fuelLevel),
         React.createElement(
           "div", { className: "vehicleDetailRow" },
@@ -6051,8 +6109,8 @@ function FleetAdditionsPage() {
   // tankSize / pmInterval are held in the CURRENTLY SELECTED display unit while
   // typing, and converted to canonical litres/km only at submit.
   const BLANK_ADD    = { plate: "", province: "NL", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: defaultVehicleClass(FLEET_VEHICLE_CLASSES), tankSize: "", pmInterval: "" };
-  const [tankUnit, setTankUnit] = React.useState("L");
-  const [pmUnit,   setPmUnit]   = React.useState("km");
+  const [tankUnit, setTankUnit] = React.useState(fuelUnit);
+  const [pmUnit,   setPmUnit]   = React.useState(distanceUnit);
   // Canonical litres / kilometres, kept alongside the displayed string so that
   // toggling units re-renders the number without ever rewriting the value.
   const [tankCanonical, setTankCanonical] = React.useState(null);
@@ -7031,6 +7089,9 @@ function CompanyPage() {
       )
     ),
 
+    // ── Units ──
+    React.createElement(CompanyUnitsSection, { onSaved: () => setNotice("Units saved.") }),
+
     // ── Pricing ──
     React.createElement(
       CompanySection, { title: "Fuel pricing" },
@@ -7071,7 +7132,7 @@ function GasRow({ row, busy, onSave }) {
       })),
     React.createElement("td", { style: { fontSize: "0.85rem", opacity: 0.85 } },
       Object.keys(prices).length
-        ? Object.entries(prices).map(([k, v]) => `${k} ${v}`).join("  ")
+        ? Object.entries(prices).map(([k, v]) => `${k} ${fuelPriceForDisplay(v) ?? v} / ${fuelUnit()}`).join("  ")
         : "—"),
     React.createElement("td", null,
       React.createElement("button", {
@@ -7085,6 +7146,61 @@ function GasRow({ row, busy, onSave }) {
           });
         },
       }, "Save"))
+  );
+}
+
+// The company's fuel and distance units. Goes through set_company_units, which
+// checks the role, takes the company from the caller's profile and writes the
+// audit entry. Only what staff see changes: every stored figure stays in
+// litres and kilometres.
+const UNITS_REASONS = {
+  exec_only:         "Only an Exec can change the units.",
+  not_signed_in:     "You are signed out. Sign in again and retry.",
+  bad_fuel_unit:     "Choose litres or US gallons.",
+  bad_distance_unit: "Choose kilometres or miles.",
+  not_found:         "This account is not attached to a company.",
+  network:           "Could not reach the server.",
+};
+
+function CompanyUnitsSection({ onSaved }) {
+  const [fuel,     setFuel]     = React.useState(fuelUnit);
+  const [distance, setDistance] = React.useState(distanceUnit);
+  const [busy,     setBusy]     = React.useState(false);
+  const [error,    setError]    = React.useState("");
+  const changed = fuel !== fuelUnit() || distance !== distanceUnit();
+
+  const save = async () => {
+    setBusy(true); setError("");
+    const { data, error: err } = await supabase.rpc("set_company_units", { p_fuel: fuel, p_distance: distance });
+    setBusy(false);
+    if (err || !data || !data.ok) {
+      setError(err ? UNITS_REASONS.network : (UNITS_REASONS[data && data.reason] || "That did not work."));
+      return;
+    }
+    companyUnits = { fuel: data.fuelUnit, distance: data.distanceUnit };
+    if (onSaved) onSaved();
+  };
+
+  const select = (label, value, setValue, options) =>
+    React.createElement("label", { style: { display: "flex", flexDirection: "column", gap: "4px" } },
+      React.createElement("span", { className: "resFormLabel" }, label),
+      React.createElement("select", {
+        className: "resFormInput", style: { width: "auto" },
+        value, disabled: busy, onChange: (e) => setValue(e.target.value),
+      }, options.map((o) => React.createElement("option", { key: o.value, value: o.value }, o.label))));
+
+  return React.createElement(
+    CompanySection, { title: "Units" },
+    React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+      "How every branch reads and enters fuel and distance: tank sizes, fuel prices, odometer readings, PM intervals and charges. Figures already on file are converted for display, never changed."),
+    error && React.createElement("div", { className: "loginError" }, error),
+    React.createElement("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "flex-end" } },
+      select("Fuel", fuel, setFuel, VOLUME_UNIT_OPTIONS),
+      select("Distance", distance, setDistance, DISTANCE_UNIT_OPTIONS),
+      React.createElement("button", {
+        className: "loginBtn", style: { width: "auto", padding: "8px 14px" },
+        disabled: busy || !changed, onClick: save,
+      }, busy ? "Saving…" : "Save"))
   );
 }
 
@@ -8372,7 +8488,7 @@ function SettingsPage() {
   }, [appSettings.gasMarkupPercent]);
 
   React.useEffect(() => {
-    setPriceDrafts(Object.fromEntries(fleetRegions.map((r) => [r, gasPrices[r] != null ? String(gasPrices[r]) : ""])));
+    setPriceDrafts(Object.fromEntries(fleetRegions.map((r) => [r, gasPrices[r] != null ? String(fuelPriceForDisplay(gasPrices[r])) : ""])));
   }, [fleetRegions.join(","), JSON.stringify(gasPrices)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const flash = (msg) => { setSavedFlash(msg); setTimeout(() => setSavedFlash(""), 2000); };
@@ -8400,10 +8516,13 @@ function SettingsPage() {
     // that region's gas charges back to manual entry.
     const check = raw === "" ? { ok: true, value: null } : validateGasPrice(raw);
     if (!check.ok) {
-      setPriceDrafts((p) => ({ ...p, [region]: gasPrices[region] != null ? String(gasPrices[region]) : "" }));
+      setPriceDrafts((p) => ({ ...p, [region]: gasPrices[region] != null ? String(fuelPriceForDisplay(gasPrices[region])) : "" }));
       return;
     }
-    const n = check.value;
+    // Typed per the company's fuel unit, stored per litre. An unchanged
+    // gallon figure is not saved again, which would only move it by rounding.
+    if (check.value !== null && check.value === fuelPriceForDisplay(gasPrices[region])) return;
+    const n = check.value === null ? null : fuelPriceToLitre(check.value);
     if (n === (gasPrices[region] ?? null)) return;
     const next = { ...gasPrices };
     if (n === null) delete next[region]; else next[region] = n;
@@ -8417,7 +8536,7 @@ function SettingsPage() {
   const gasBody = React.createElement(React.Fragment, null,
     React.createElement("p", { className: "aiTabDesc" },
       "On return, if the vehicle comes back with less fuel than it left with, the charge is calculated as ",
-      React.createElement("em", null, "litres short × price per litre × (1 + markup)"),
+      React.createElement("em", null, `${fuelUnitWord()} short × price per ${fuelUnitWord(false)} × (1 + markup)`),
       " and written to Gas Collections automatically. Any missing value below leaves the charge blank for manual entry."
     ),
 
@@ -8435,7 +8554,7 @@ function SettingsPage() {
       )
     ),
 
-    React.createElement("div", { className: "gasSettingSubhead" }, "Price per litre by region"),
+    React.createElement("div", { className: "gasSettingSubhead" }, `Price per ${fuelUnitWord(false)} by region`),
     fleetRegions.length === 0
       ? React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "10px 0" } },
           "No vehicle regions yet. Add a vehicle with a province to set its fuel price.")
@@ -8451,7 +8570,7 @@ function SettingsPage() {
                 onBlur: () => commitPrice(region),
                 onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
               }),
-              React.createElement("span", { className: "gasSettingUnit" }, "/ L"),
+              React.createElement("span", { className: "gasSettingUnit" }, `/ ${fuelUnit()}`),
               gasPrices[region] == null &&
                 React.createElement("span", { className: "tankSizeMissing" }, "Not set")
             )
@@ -9971,7 +10090,7 @@ function AgreementVehicleHistory({ rentalAgreementId, resCode }) {
     return Number.isNaN(d.getTime()) ? "-"
       : d.toLocaleString("en-CA", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
   };
-  const fmtKm = (n) => (n === null || n === undefined || n === "" ? "-" : `${Number(n).toLocaleString("en-CA")} km`);
+  const fmtKm = (n) => fmtDistance(n) ?? "-";
   const label = resCode || "this rental agreement";
 
   if (!rentalAgreementId) {
@@ -10417,7 +10536,7 @@ const FUEL_LABELS = ["Empty", "⅛", "¼", "⅜", "½", "⅝", "¾", "⅞", "Ful
 const CLOSE_READINGS_LABELS = {
   pageTitle:      "Close Rental",
   stepTitle:      "Closing mileage and gas",
-  mileageLabel:   "Closing mileage (km)",
+  mileageLabel:   "Closing mileage",
   mileageMissing: "Enter the closing mileage.",
   gasLabel:       "Closing gas level",
   gasMissing:     "Set the closing gas level.",
@@ -10428,10 +10547,14 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
   const [attempted, setAttempted] = React.useState(false);
   const { mileage, gasIndex, lowConfirmed } = readings;
 
-  const lastReading = [row?.odometerOnFile, row?.pickupMileage]
+  // Readings are stored in kilometres and typed in the company's unit. The
+  // last reading is shown and compared in that unit too.
+  const lastReadingKm = [row?.odometerOnFile, row?.pickupMileage]
     .map((v) => (v === null || v === undefined || v === "" ? NaN : Number(v)))
     .filter((v) => Number.isFinite(v))
     .reduce((max, v) => (max === null || v > max ? v : max), null);
+  const lastReading = lastReadingKm === null ? null : kmToDistance(lastReadingKm);
+  const unit = distanceUnit();
 
   const trimmed    = String(mileage).trim();
   const mileageNum = /^\d+$/.test(trimmed) ? Number(trimmed) : null;
@@ -10439,7 +10562,7 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
 
   const mileageError = trimmed === ""
     ? L.mileageMissing
-    : mileageNum === null ? "Enter the mileage as a whole number of kilometres, digits only." : null;
+    : mileageNum === null ? `Enter the mileage as a whole number of ${distanceUnitWord()}, digits only.` : null;
   const gasError = gasIndex === null ? L.gasMissing : null;
   const lowError = isLow && !lowConfirmed ? "Confirm the lower reading to continue." : null;
 
@@ -10475,7 +10598,7 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
   const handleNext = () => {
     setAttempted(true);
     if (mileageError || gasError || lowError) return;
-    onNext({ rentalAgreementId, closingMileage: mileageNum, closingGasLevel: FUEL_LABELS[gasIndex] });
+    onNext({ rentalAgreementId, closingMileage: distanceToKm(mileageNum), closingGasLevel: FUEL_LABELS[gasIndex] });
   };
 
   const errorLine = (msg) => attempted && msg && React.createElement("div", { className: "closeRentalError" }, msg);
@@ -10491,7 +10614,7 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
     React.createElement("h2", { className: "closeRentalStepTitle" }, L.stepTitle),
     React.createElement("div", { className: "closeRentalForm" },
       React.createElement("label", { className: "resFormGroup" },
-        React.createElement("span", { className: "resFormLabel" }, L.mileageLabel),
+        React.createElement("span", { className: "resFormLabel" }, `${L.mileageLabel} (${unit})`),
         React.createElement("input", {
           className: "resFormInput closeRentalMileage", type: "number", inputMode: "numeric",
           min: 0, step: 1, placeholder: "e.g. 42500", autoComplete: "off",
@@ -10500,13 +10623,13 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
         }),
         React.createElement("span", { className: "closeRentalHint" },
           lastReading !== null
-            ? `Last recorded: ${lastReading.toLocaleString("en-CA")} km`
+            ? `Last recorded: ${lastReading.toLocaleString("en-CA")} ${unit}`
             : "No previous reading on file for this vehicle.")
       ),
       errorLine(mileageError),
       isLow && React.createElement("div", { className: "closeRentalWarning" },
         React.createElement("div", null,
-          `This is lower than the last recorded reading of ${lastReading.toLocaleString("en-CA")} km. ` +
+          `This is lower than the last recorded reading of ${lastReading.toLocaleString("en-CA")} ${unit}. ` +
           "That can happen after an odometer reset or an earlier data error. Check the reading before continuing."),
         React.createElement("label", { className: "closeRentalWarning__confirm" },
           React.createElement("input", {
@@ -11614,7 +11737,7 @@ function CloseRentalPage() {
       tableName: "rental_agreements",
       recordId: ra.resCode || ra.id,
       description: `Closed rental agreement ${ra.resCode || ra.id}: ${row?.plate || "vehicle"} back at ` +
-        `${final.closingMileage.toLocaleString("en-CA")} km, gas ${final.closingGasLevel}, ` +
+        `${fmtDistance(final.closingMileage)}, gas ${final.closingGasLevel}, ` +
         (final.newDamageFound ? `new damage reported (${final.newDamageNote})` : "no new damage") +
         (gasCharge ? `, gas charge $${gasCharge}` : "") + ".",
     });
@@ -11632,7 +11755,7 @@ function CloseRentalPage() {
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Rental closed"),
       done.resCode && line("Rental agreement", done.resCode),
       done.plate && line("Vehicle", done.plate),
-      line("Closing mileage", `${done.closingMileage.toLocaleString("en-CA")} km`),
+      line("Closing mileage", fmtDistance(done.closingMileage)),
       line("Closing gas level", done.closingGas),
       line("New damage found", done.damageFound ? "Yes" : "No"),
       done.damageFound && line("Vehicle", vehicleRentableLabel(done.vehicleRentable)),
@@ -11686,7 +11809,7 @@ function CloseRentalPage() {
       React.createElement("div", { className: "page__titleUnderline" }),
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Confirm the close"),
       line("Rental agreement", ra?.resCode || "—"),
-      line("Closing mileage", `${final.closingMileage.toLocaleString("en-CA")} km`),
+      line("Closing mileage", fmtDistance(final.closingMileage)),
       line("Closing gas level", final.closingGasLevel),
       line("New damage found", final.newDamageFound ? "Yes" : "No"),
       final.newDamageFound && line("New damage note", final.newDamageNote),
@@ -11902,7 +12025,7 @@ function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, oldVeh
     ),
     React.createElement("h2", { className: "closeRentalStepTitle" }, "Confirm the switch"),
     line("Vehicle coming back", `${row?.vehicle || "-"} (${row?.plate || "-"})`),
-    line("Closing mileage", `${closing.closingMileage.toLocaleString("en-CA")} km`),
+    line("Closing mileage", fmtDistance(closing.closingMileage)),
     line("Closing gas level", closing.closingGasLevel),
     line("New damage found", review.newDamageFound ? "Yes" : "No"),
     review.newDamageFound && line("New damage note", review.newDamageNote),
@@ -12145,7 +12268,7 @@ function SwitchOutPage() {
       tableName: "rental_agreements",
       recordId: ra.resCode || ra.id,
       description: `Switched ${row?.plate || "the vehicle"} out for ${newVehicle.plate} on rental agreement ${ra.resCode || ra.id}: ` +
-        `back at ${closing.closingMileage.toLocaleString("en-CA")} km, gas ${closing.closingGasLevel}, ` +
+        `back at ${fmtDistance(closing.closingMileage)}, gas ${closing.closingGasLevel}, ` +
         (review.newDamageFound ? `new damage reported (${review.newDamageNote})` : "no new damage") +
         `. ${newVehicle.plate} is Ready for Pickup; the customer must now pick it up in the customer app.`,
     });
@@ -12288,6 +12411,17 @@ function withAcceptedProtection(items, choices, days) {
     }));
   return added.length ? [...items, ...added] : items;
 }
+
+// What a charge line's quantity counts. Gas and mileage follow the company's
+// units; every other line is charged by the day. Worked out from the key, not
+// the saved line, so a line saved before the units changed shows the unit the
+// company uses now.
+const chargeQtyUnit = (item) =>
+  item.key === "gas" ? fuelUnit() : item.key === "mileage" ? distanceUnit() : "days";
+const chargeQtyPlaceholder = (item) =>
+  item.key === "gas"     ? (fuelUnit() === "gal" ? "Gallons" : "Litres")
+  : item.key === "mileage" ? (distanceUnit() === "mi" ? "Miles" : "Kilometres")
+  : item.qtyPlaceholder;
 
 const DAILY_RATES = {
   "Bodyshop/Dealership": { Car: 35, SUV: 45, Minivan: 55, Truck: 55 },
@@ -13067,7 +13201,7 @@ function CustomerPage() {
           React.createElement("div", { className: "resFormRow" },
             rvField("Starting Mileage",
               rentalVehicle.mileage
-                ? `${parseInt(rentalVehicle.mileage).toLocaleString("en-CA")} km`
+                ? fmtDistance(parseInt(rentalVehicle.mileage)) ?? ""
                 : "")
           ),
           React.createElement("div", { className: "resFormRow" },
@@ -13302,14 +13436,17 @@ function CustomerPage() {
             : item.label
       ),
       React.createElement("td", { className: "chargesTd chargesTd--qty" },
-        React.createElement("input", {
-          className: "resFormInput chargesQtyInput",
-          type: "text", inputMode: "decimal",
-          placeholder: item.qtyPlaceholder,
-          value: item.qty,
-          onChange: (e) => updateLineItem(item.key, "qty", e.target.value),
-          disabled: !item.applies,
-        })
+        React.createElement("div", { className: "chargesQtyWrap" },
+          React.createElement("input", {
+            className: "resFormInput chargesQtyInput",
+            type: "text", inputMode: "decimal",
+            placeholder: chargeQtyPlaceholder(item),
+            value: item.qty,
+            onChange: (e) => updateLineItem(item.key, "qty", e.target.value),
+            disabled: !item.applies,
+          }),
+          React.createElement("span", { className: "unitSuffix" }, chargeQtyUnit(item))
+        )
       ),
       React.createElement("td", { className: "chargesTd chargesTd--amt" },
         React.createElement("div", { className: "btDollarWrap" },
@@ -13336,7 +13473,7 @@ function CustomerPage() {
           React.createElement("tr", null,
             React.createElement("th", { className: "chargesTh chargesTh--check" }, ""),
             React.createElement("th", { className: "chargesTh" }, "Item"),
-            React.createElement("th", { className: "chargesTh chargesTh--qty" }, "Days"),
+            React.createElement("th", { className: "chargesTh chargesTh--qty" }, "Qty"),
             React.createElement("th", { className: "chargesTh chargesTh--amt" }, "Cost Per Day"),
             React.createElement("th", { className: "chargesTh chargesTh--total" }, "Total Cost")
           )
@@ -16618,7 +16755,7 @@ body, * {
   border-bottom: 1px solid #eef1f5;
 }
 .chargesTh--check{ width: 32px; }
-.chargesTh--qty{ width: 90px; }
+.chargesTh--qty{ width: 120px; }
 .chargesTh--amt{ width: 140px; text-align: right; }
 .chargesTh--total{ width: 120px; text-align: right; }
 .chargesRow:hover{ background: #f7f9fc; }
@@ -16639,6 +16776,7 @@ body, * {
 }
 .chargesCoverCheck{ width: 12px; height: 12px; cursor: pointer; accent-color: #42a4ff; }
 .chargesTd--qty{}
+.chargesQtyWrap{ display: flex; align-items: center; gap: 6px; }
 .chargesTd--amt{ text-align: right; }
 .chargesTd--total{ text-align: right; }
 .chargesCheck{
