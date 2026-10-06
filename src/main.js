@@ -10096,6 +10096,85 @@ function ProtectionChoicesList({ rentalAgreementId }) {
         el("td", null, fmtWhen(c.decidedAt)))))));
 }
 
+// ─── The contract signed at pickup ────────────────────────────────────────────
+// What complete_pickup recorded from the customer app's Contract step: the
+// drivers, the deductibles and the acknowledgements version, with the pickup
+// signature. Read-only. An agreement from before the Contract step has none
+// of it, and the sections are then left out altogether.
+const contractDrivers = (ra) => (ra && Array.isArray(ra.drivers) && ra.drivers.length ? ra.drivers : null);
+const contractDeductibles = (ra) =>
+  (ra && ra.deductibles && typeof ra.deductibles === "object" ? ra.deductibles : null);
+
+const fmtContractDate = (iso) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))) return iso || "-";
+  return new Date(`${iso}T12:00:00`).toLocaleDateString("en-CA", { year: "numeric", month: "short", day: "numeric" });
+};
+const fmtContractMoney = (n) => (n != null && Number.isFinite(Number(n)) ? `$${Number(n).toFixed(2)}` : "Not set");
+
+function ContractDriversList({ rentalAgreementId }) {
+  const { rentalAgreements } = React.useContext(AppContext);
+  const ra = (rentalAgreements || []).find((a) => String(a.id) === String(rentalAgreementId)) || null;
+  const drivers = contractDrivers(ra);
+  if (!drivers) return null;
+  const el = React.createElement;
+  return el("div", { style: { overflowX: "auto" } },
+    el("table", { className: "dashboardTable", style: { minWidth: "760px" } },
+      el("thead", null, el("tr", null,
+        ["", "Name", "Address", "Date of birth", "Licence", "Province", "Issued", "Expires"].map((h, i) => el("th", { key: i }, h)))),
+      el("tbody", null, drivers.map((d, i) => el("tr", { key: i },
+        el("td", { style: { fontWeight: 600 } }, i === 0 ? "Main" : "Other driver"),
+        el("td", null, [d.firstName, d.lastName].filter(Boolean).join(" ") || "-"),
+        el("td", null, [d.street, d.city, [d.province, d.postalCode].filter(Boolean).join(" ")].filter(Boolean).join(", ") || "-"),
+        el("td", null, fmtContractDate(d.dateOfBirth)),
+        el("td", null, d.licenceNumber || "-"),
+        el("td", null, d.licenceProvince || d.province || "-"),
+        el("td", null, fmtContractDate(d.licenceIssued)),
+        el("td", null, fmtContractDate(d.licenceExpiry)))))));
+}
+
+function ContractDeductiblesList({ rentalAgreementId }) {
+  const { rentalAgreements } = React.useContext(AppContext);
+  const ra = (rentalAgreements || []).find((a) => String(a.id) === String(rentalAgreementId)) || null;
+  const ded = contractDeductibles(ra);
+  if (!ded) return null;
+  const el = React.createElement;
+  return el("div", { className: "rentalAgreementFields" },
+    el("div", { className: "rentalAgreementField" },
+      el("span", { className: "rentalAgreementFieldLabel" }, "Collision"),
+      el("span", { className: "rentalAgreementFieldValue" }, fmtContractMoney(ded.collision))),
+    el("div", { className: "rentalAgreementField" },
+      el("span", { className: "rentalAgreementFieldLabel" }, "Comprehensive"),
+      el("span", { className: "rentalAgreementFieldValue" }, fmtContractMoney(ded.comprehensive))));
+}
+
+// The version is read by its id, so the text shown is exactly what the
+// customer read, whatever the company has saved since.
+function ContractAcknowledgementRecord({ rentalAgreementId }) {
+  const { rentalAgreements } = React.useContext(AppContext);
+  const ra = (rentalAgreements || []).find((a) => String(a.id) === String(rentalAgreementId)) || null;
+  const ackId = ra?.acknowledgementId || null;
+  const [version, setVersion] = React.useState(undefined);
+  React.useEffect(() => {
+    if (!ackId) { setVersion(undefined); return undefined; }
+    let live = true;
+    supabase.from("contract_acknowledgements").select("version,body,createdAt").eq("id", ackId).maybeSingle()
+      .then(({ data, error }) => { if (live) setVersion(error ? null : data || null); });
+    return () => { live = false; };
+  }, [ackId]);
+  if (!ackId) return null;
+  const el = React.createElement;
+  const sig = /^data:image\/(png|jpeg);base64,/.test(String(ra?.pickupSignature || "")) ? ra.pickupSignature : null;
+  return el("div", null,
+    version === undefined && el("div", { className: "customerPlaceholder" }, "Loading\u2026"),
+    version === null && el("div", { className: "customerPlaceholder" }, "The acknowledgements could not be loaded."),
+    version && el(React.Fragment, null,
+      el("p", { className: "closeRentalHint" }, `Version ${version.version}, agreed to at pickup:`),
+      el("div", { className: "closeRentalSummary", style: { whiteSpace: "pre-line" } }, version.body)),
+    sig && el(React.Fragment, null,
+      el("p", { className: "closeRentalHint" }, "Signature"),
+      el("img", { src: sig, alt: "Pickup signature", style: { maxWidth: "320px", width: "100%", background: "#fff", borderRadius: "6px" } })));
+}
+
 // ─── Photos & Signatures ──────────────────────────────────────────────────────
 // Every photo taken for one rental, from its folder in the private
 // damage-photos bucket (<operatorId>/rental-agreements/<id>/), and the
@@ -10362,6 +10441,8 @@ function AgreementVehicleHistory({ rentalAgreementId, resCode }) {
 }
 
 function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements }) {
+  const { rentalAgreements: allAgreements } = React.useContext(AppContext);
+  const raRecord = (allAgreements || []).find((a) => String(a.id) === String(rentalAgreement.raId)) || null;
   const [sect, setSect] = React.useState({
     resInfo: true, vehicles: true, datesRates: true, billTo: true, charges: true, notes: true,
   });
@@ -10491,6 +10572,15 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
     ),
     section("protection", "Protection",
       React.createElement(ProtectionChoicesList, { rentalAgreementId: rentalAgreement.raId })
+    ),
+    contractDrivers(raRecord) && section("drivers", "Drivers",
+      React.createElement(ContractDriversList, { rentalAgreementId: rentalAgreement.raId })
+    ),
+    contractDeductibles(raRecord) && section("deductibles", "Deductibles",
+      React.createElement(ContractDeductiblesList, { rentalAgreementId: rentalAgreement.raId })
+    ),
+    raRecord?.acknowledgementId && section("acknowledgements", "Acknowledgements",
+      React.createElement(ContractAcknowledgementRecord, { rentalAgreementId: rentalAgreement.raId })
     ),
     section("photos", "Photos & Signatures",
       React.createElement(RentalPhotosAndSignatures, { rentalAgreementId: rentalAgreement.raId })
@@ -12628,7 +12718,10 @@ const DEFAULT_LINE_ITEMS = [
 // before this kept three fixed lines under these keys; those still load from
 // lineItems as they were saved and behave as they always did.
 const LEGACY_PROTECTION_KEYS = ["waiver", "roadside", "injury"];
-const isProtectionLine = (item) => !!item.protection || LEGACY_PROTECTION_KEYS.includes(item.key);
+// The other driver's daily charge is treated the same way: an additional
+// charge the customer pays unless it is marked covered by the bill-to, priced
+// per day and refilled with the rental days.
+const isProtectionLine = (item) => !!item.protection || !!item.otherDriver || LEGACY_PROTECTION_KEYS.includes(item.key);
 
 // Adds a line for each accepted product the charges do not have yet. A line
 // already there is left as staff last saved it.
@@ -12643,6 +12736,20 @@ function withAcceptedProtection(items, choices, days) {
       qty: days ? String(days) : "", qtyPlaceholder: "Days", coveredByBillTo: false,
     }));
   return added.length ? [...items, ...added] : items;
+}
+
+// Adds the other driver's line, at the daily charge complete_pickup recorded,
+// when the agreement has an other driver and the charges do not have the line
+// yet. A line already there is left as staff last saved it.
+function withOtherDriver(items, otherDriver, days) {
+  if (!otherDriver || typeof otherDriver !== "object") return items;
+  if (items.some((it) => it.key === "otherDriver")) return items;
+  const charge = otherDriver.dailyCharge;
+  return [...items, {
+    key: "otherDriver", label: otherDriver.name ? `Other driver: ${otherDriver.name}` : "Other driver",
+    otherDriver: true, applies: true, amount: charge != null ? String(charge) : "",
+    qty: days ? String(days) : "", qtyPlaceholder: "Days", coveredByBillTo: false,
+  }];
 }
 
 // What a charge line's quantity counts. Gas and mileage follow the company's
@@ -12933,7 +13040,8 @@ function CustomerPage() {
       const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
       return diff > 0 ? diff : 0;
     })();
-    setLineItems((prev) => withAcceptedProtection(saved || prev, ra.protectionChoices, startDays));
+    setLineItems((prev) => withOtherDriver(
+      withAcceptedProtection(saved || prev, ra.protectionChoices, startDays), ra.otherDriver, startDays));
     if (Array.isArray(ra.payments)) {
       setPayments(ra.payments);
     }
@@ -13468,6 +13576,12 @@ function CustomerPage() {
     React.createElement(AgreementVehicleHistory, { rentalAgreementId: ra?.id || null, resCode }),
     React.createElement("div", { className: "cdetailSubGroup" }, "Protection"),
     React.createElement(ProtectionChoicesList, { rentalAgreementId: ra?.id || null }),
+    contractDrivers(ra) && React.createElement("div", { className: "cdetailSubGroup" }, "Drivers"),
+    contractDrivers(ra) && React.createElement(ContractDriversList, { rentalAgreementId: ra.id }),
+    contractDeductibles(ra) && React.createElement("div", { className: "cdetailSubGroup" }, "Deductibles"),
+    contractDeductibles(ra) && React.createElement(ContractDeductiblesList, { rentalAgreementId: ra.id }),
+    ra?.acknowledgementId && React.createElement("div", { className: "cdetailSubGroup" }, "Acknowledgements"),
+    ra?.acknowledgementId && React.createElement(ContractAcknowledgementRecord, { rentalAgreementId: ra.id }),
     React.createElement("div", { className: "cdetailSubGroup" }, "Photos & Signatures"),
     React.createElement(RentalPhotosAndSignatures, { rentalAgreementId: ra?.id || null })
   );
