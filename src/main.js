@@ -577,20 +577,25 @@ function requestReservationConfirmation(resCode) {
 // ─── Customer text wording ────────────────────────────────────────────────────
 // What the Settings editor shows before a company has changed anything, and
 // how it previews and measures a text. These mirror worker.js (fleetr-infra),
-// which is what actually sends: DEFAULT_TEMPLATES, fillTemplate, cancelSuffix,
-// isGsm7 and gsm7Length. If the worker's copy changes, change this one.
+// which is what actually sends: DEFAULT_TEMPLATES, fillTemplate, codeSuffix,
+// appSuffix, cancelSuffix, isGsm7 and gsm7Length. If the worker's copy
+// changes, change this one.
 //
 // suffix is what the worker adds after the wording, as it will look in the
-// preview: the cancel link on the texts sent before pickup, the fuel note on
-// the return reminder, nothing on the no-show texts.
+// preview: on the confirmation the reservation code, the app link and the
+// cancel link; on the Pre-Rental Check the app link and the cancel link; on
+// the return reminder the fuel note and the app link; nothing on the no-show
+// texts. The tokens are stand-ins of the real length.
 const TEXT_SAMPLE_LINK = " Cancel: https://app.fleetr.ai/#c=XXXXXXXXXXXXXXXXXXXXXX";
+const TEXT_SAMPLE_APP_LINK = " App: https://app.fleetr.ai/#a=XXXXXXXXXXXXXXXXXXXXXX";
+const TEXT_SAMPLE_CODE = " Reservation code: ABC 123 456.";
 const TEXT_TEMPLATE_KINDS = [
   { kind: "confirmation", title: "Reservation confirmation", when: "Sent when a reservation is created.",
     fallback: "Hi [first name], your reservation with [company] at [location] is confirmed for [date] at [time].",
-    suffix: TEXT_SAMPLE_LINK, suffixNote: "the cancel link" },
+    suffix: TEXT_SAMPLE_CODE + TEXT_SAMPLE_APP_LINK + TEXT_SAMPLE_LINK, suffixNote: "the reservation code, the app link and the cancel link" },
   { kind: "pre_rental", title: "Pre-Rental Check", when: "Sent the day before pickup.",
     fallback: "Hi [first name], your rental pickup is tomorrow at our [location] location. Please bring your license and reply with your arrival time.",
-    suffix: TEXT_SAMPLE_LINK, suffixNote: "the cancel link" },
+    suffix: TEXT_SAMPLE_APP_LINK + TEXT_SAMPLE_LINK, suffixNote: "the app link and the cancel link" },
   { kind: "no_show_2hr", title: "No-show, after 2 hours", when: "Sent 2 hours after a pickup time when the customer has not arrived. [time] is the pickup time.",
     fallback: "Hi [first name], your pickup was at [time] and we have not seen you. Reply YES if you are on your way, or RESCHEDULE for a new time.",
     suffix: "", suffixNote: "" },
@@ -599,7 +604,7 @@ const TEXT_TEMPLATE_KINDS = [
     suffix: "", suffixNote: "" },
   { kind: "return_reminder", title: "Return reminder", when: "Sent the day before an open rental is due back. [date] and [time] are when it is due back. When the fuel level at pickup is known, a note asking for it back at that level is added after the wording.",
     fallback: "Hi [first name], your rental is due back tomorrow at [time]. Complete your return in the fleetr app.",
-    suffix: " Return fuel at Full to avoid a charge.", suffixNote: "the fuel note" },
+    suffix: " Return fuel at Full to avoid a charge." + TEXT_SAMPLE_APP_LINK, suffixNote: "the fuel note and the app link" },
 ];
 const TEXT_PLACEHOLDERS = ["[first name]", "[company]", "[location]", "[date]", "[time]"];
 const TEXT_TEMPLATE_MAX = 240;
@@ -8417,7 +8422,7 @@ function CustomerTextsSettings() {
       "The wording of the texts your customers receive, for every branch of the company. ",
       "Use these placeholders and each customer's own details are filled in: ",
       React.createElement("strong", null, TEXT_PLACEHOLDERS.join(", ")),
-      ". A link the customer can use to cancel is added to the end of the confirmation and Pre-Rental Check texts automatically and cannot be removed or edited. The link's token in the preview is a stand-in of the real length, so the count is the real count."),
+      ". The system adds the rest automatically, and it cannot be removed or edited: the reservation code to the confirmation; the customer's personal app link to the confirmation, Pre-Rental Check and return reminder; and a link to cancel to the confirmation and Pre-Rental Check. The links' tokens in the preview are stand-ins of the real length, so the count is the real count."),
     loadErr && React.createElement("div", { className: "closeRentalWarning" },
       "The saved wording could not be loaded, so the default wording is shown. Saving here will replace whatever is saved."),
 
