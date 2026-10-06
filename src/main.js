@@ -10235,7 +10235,12 @@ function ContractAcknowledgementRecord({ rentalAgreementId }) {
 //                   customer picked up then: the first is the Pickup, a later
 //                   one is the pickup after a switch-out.
 //   return-*        the customer app at return: the Return.
-//   <stamp>-<id>    staff, in Close Rental or Switch Out: matched to the
+//   close-*         staff, in Close Rental: the Return, on the vehicle that
+//                   came back.
+//   switch-*        staff, in Switch Out: the Switch-out, on the vehicle
+//                   switched out (the one whose switch ended nearest the
+//                   photo, when there was more than one).
+//   <stamp>-<id>    staff photos from before the prefixes: matched to the
 //                   vehicle whose time on the rental ended nearest to it, a
 //                   Return or a Switch-out depending on how that time ended.
 const RENTAL_PHOTO_LINK_SECONDS = 300;
@@ -10247,10 +10252,12 @@ const rentalPhotoLink = async (path) => {
 
 // When a photo was taken, from its file name, else when it was stored.
 function rentalPhotoTime(name, createdAt) {
+  // Staff first: "close-<stamp>-<id>", "switch-<stamp>-<id>" or, from before
+  // the prefixes, "<stamp>-<id>".
+  const staff = /^(?:close-|switch-)?(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})-/.exec(name);
+  if (staff) return new Date(Date.UTC(+staff[1], +staff[2] - 1, +staff[3], +staff[4], +staff[5], +staff[6]));
   const customer = /-(\d{12,14})-\d+\.\w+$/.exec(name);
   if (customer) return new Date(Number(customer[1]));
-  const staff = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})-/.exec(name);
-  if (staff) return new Date(Date.UTC(+staff[1], +staff[2] - 1, +staff[3], +staff[4], +staff[5], +staff[6]));
   const d = createdAt ? new Date(createdAt) : null;
   return d && !Number.isNaN(d.getTime()) ? d : null;
 }
@@ -10280,7 +10287,26 @@ function placeRentalPhoto(name, time, legs) {
     const returned = [...legs].reverse().find((l) => l.endReason === "returned") || legs[legs.length - 1] || null;
     return { event: "Return", leg: returned, label };
   }
-  // Staff: the vehicle whose time ended nearest the photo.
+  // Staff, by the step in the name. Close Rental is the return of the vehicle
+  // that came back; Switch Out is a switch-out, and of the vehicles switched
+  // out, the one whose switch ended nearest the photo.
+  if (/^close-/.test(name)) {
+    const returned = [...legs].reverse().find((l) => l.endReason === "returned") || legs[legs.length - 1] || null;
+    return { event: "Return", leg: returned, label };
+  }
+  if (/^switch-/.test(name)) {
+    const switched = legs.filter((l) => l.endReason === "switched_out");
+    let pick = switched[switched.length - 1] || null, gapBest = Infinity;
+    switched.forEach((l) => {
+      const end = ms(l.endedAt);
+      if (Number.isNaN(end) || t == null) return;
+      const gap = Math.abs(end - t);
+      if (gap < gapBest) { gapBest = gap; pick = l; }
+    });
+    return { event: "Switch-out", leg: pick || legs[0] || null, label };
+  }
+  // Staff photos from before the prefixes: the vehicle whose time ended
+  // nearest the photo.
   let best = null, bestGap = Infinity;
   legs.forEach((l) => {
     const end = ms(l.endedAt);
@@ -11265,14 +11291,18 @@ const releasePhotos = (list) => (list || []).forEach((p) => { if (p?.url) URL.re
 // is known rather than silent. There is no delete policy on this bucket, so a
 // partial upload leaves the photos that did land, which is the right way round
 // for evidence.
-async function uploadDamagePhotos({ operatorId, rentalAgreementId, photos }) {
+// step is "close" or "switch", the screen the photos were taken on. It leads
+// the file name, as pickup- and return- do for the customer app's photos, so
+// Photos & Signatures can tell the two apart without matching by time.
+async function uploadDamagePhotos({ operatorId, rentalAgreementId, photos, step }) {
   const paths = [], failures = [];
   if (!operatorId || !rentalAgreementId) {
     return { paths, failures: (photos || []).map((p) => p.id), reason: "no operator or agreement on file" };
   }
   for (const photo of photos || []) {
     const stamp = (photo.capturedAt || new Date().toISOString()).replace(/[^0-9]/g, "").slice(0, 14);
-    const path  = `${operatorId}/rental-agreements/${rentalAgreementId}/${stamp}-${photo.id}.jpg`;
+    const lead  = step === "close" || step === "switch" ? `${step}-` : "";
+    const path  = `${operatorId}/rental-agreements/${rentalAgreementId}/${lead}${stamp}-${photo.id}.jpg`;
     try {
       const res = await supabase.storage.from(DAMAGE_PHOTO_BUCKET)
         .upload(path, photo.blob, { contentType: photo.type || "image/jpeg", cacheControl: "3600" });
@@ -11986,7 +12016,7 @@ function CloseRentalPage() {
 
         const upload = final.photos.length
           ? await uploadDamagePhotos({
-              operatorId: currentUser?.operatorId, rentalAgreementId: ra.id, photos: final.photos,
+              operatorId: currentUser?.operatorId, rentalAgreementId: ra.id, photos: final.photos, step: "close",
             })
           : { paths: [], failures: [] };
 
@@ -12564,7 +12594,7 @@ function SwitchOutPage() {
 
         const upload = photos.length
           ? await uploadDamagePhotos({
-              operatorId: currentUser?.operatorId, rentalAgreementId: ra.id, photos,
+              operatorId: currentUser?.operatorId, rentalAgreementId: ra.id, photos, step: "switch",
             })
           : { paths: [], failures: [] };
 
