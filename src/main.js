@@ -9561,8 +9561,156 @@ function MobileCommandBar() {
 
 // ─── Topbar ──────────────────────────────────────────────────────────────────
 
+// ─── Notification centre ─────────────────────────────────────────────────────
+// Execs only, for a company with fleet_notifications on. The worker's
+// scheduled run creates the notifications (supabase/fleet_notifications.sql);
+// this reads them, newest first, and marks them read through
+// mark_notifications_read. Read status is shared by the company's Execs.
+const NOTIFICATION_POLL_MS = 60 * 1000;
+
+function notificationAge(iso) {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return "";
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return new Date(iso).toLocaleDateString("en-CA", { month: "short", day: "numeric" });
+}
+
+function NotificationBell() {
+  const { setOpenCustomer } = React.useContext(AppContext);
+  const navigate = useNavigate();
+  const [items,  setItems]  = React.useState([]);
+  const [unread, setUnread] = React.useState(0);
+  const [open,   setOpen]   = React.useState(false);
+  const [pos,    setPos]    = React.useState(null);
+  const [error,  setError]  = React.useState("");
+  const btnRef  = React.useRef(null);
+  const listRef = React.useRef(null);
+
+  const load = React.useCallback(async () => {
+    const [list, count] = await Promise.all([
+      supabase.from("notifications").select("id,kind,title,body,link,locationId,createdAt,readAt")
+        .order("createdAt", { ascending: false }).limit(50),
+      supabase.from("notifications").select("id", { count: "exact", head: true }).is("readAt", null),
+    ]);
+    if (list.error) { setError("Notifications could not be loaded."); return; }
+    setError("");
+    setItems(list.data || []);
+    if (!count.error) setUnread(count.count || 0);
+  }, []);
+
+  React.useEffect(() => {
+    load();
+    const t = setInterval(() => { if (document.visibilityState === "visible") load(); }, NOTIFICATION_POLL_MS);
+    return () => clearInterval(t);
+  }, [load]);
+
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => {
+      if (listRef.current && listRef.current.contains(e.target)) return;
+      if (btnRef.current && btnRef.current.contains(e.target)) return;
+      setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  const toggle = () => {
+    if (open) { setOpen(false); return; }
+    const r = btnRef.current.getBoundingClientRect();
+    const width = Math.min(380, window.innerWidth - 16);
+    setPos({ top: r.bottom + 8, left: Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8)), width });
+    setOpen(true);
+    load();
+  };
+
+  const markRead = async (ids) => {
+    const { data, error: err } = await supabase.rpc("mark_notifications_read", { p_ids: ids });
+    if (err || !data || !data.ok) { setError("That did not work. Try again."); return false; }
+    await load();
+    return true;
+  };
+
+  // Opens what the notification is about. A notification from another branch
+  // switches the acting branch first, then reloads into that page, so the
+  // page shows that branch's data.
+  const follow = async (n) => {
+    if (!n.readAt) await markRead([n.id]);
+    setOpen(false);
+    const link = n.link || {};
+    const path = link.page === "customer" ? "/customer" : (link.path || "/dashboard");
+    const { data: acting } = await supabase.rpc("my_acting_location");
+    const here = acting && acting.ok ? acting.locationId : null;
+    if (n.locationId && here !== n.locationId) {
+      const { data, error: err } = await supabase.rpc("set_acting_location", { location_id: n.locationId });
+      if (err || !data || !data.ok) { setError("Could not switch to that branch."); setOpen(true); return; }
+      window.location.hash = `#${link.page === "customer" ? "/reservations" : path}`;
+      window.location.reload();
+      return;
+    }
+    if (link.page === "customer" && link.resCode) {
+      setOpenCustomer({ name: link.name || "Customer", resCode: link.resCode });
+    }
+    navigate(path);
+  };
+
+  const el = React.createElement;
+  return el(React.Fragment, null,
+    el("button", {
+      ref: btnRef, type: "button", onClick: toggle,
+      "aria-label": unread ? `Notifications, ${unread} unread` : "Notifications",
+      "aria-expanded": open, "aria-haspopup": "true",
+      style: {
+        marginLeft: "auto", position: "relative", display: "inline-flex", alignItems: "center", gap: "6px",
+        background: "transparent", border: "1px solid rgba(255,255,255,0.15)", color: "rgba(255,255,255,0.45)",
+        padding: "5px 10px", borderRadius: "999px", cursor: "pointer",
+      },
+    },
+      el("svg", { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+        el("path", { d: "M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" }),
+        el("path", { d: "M13.73 21a2 2 0 0 1-3.46 0" })),
+      unread > 0 && el("span", { className: "rentalAgreementBadge rentalAgreementBadge--closed", style: { padding: "0 6px" } },
+        unread > 99 ? "99+" : String(unread))),
+    open && pos && el("div", {
+      ref: listRef, className: "notesDropdown", role: "dialog", "aria-label": "Notifications",
+      style: { top: `${pos.top}px`, left: `${pos.left}px`, width: `${pos.width}px` },
+    },
+      el("div", { className: "notesRow", style: { alignItems: "center", justifyContent: "space-between" } },
+        el("span", { className: "notesAuthor", style: { width: "auto" } }, "Notifications"),
+        el("button", {
+          type: "button", className: "notesPagerBtn", style: { width: "auto", padding: "0 10px" },
+          disabled: unread === 0, onClick: () => markRead(null),
+        }, "Mark all read")),
+      error && el("div", { className: "notesEmpty" }, error),
+      el("div", { className: "notesList", style: { maxHeight: "60vh", overflowY: "auto" } },
+        items.length === 0
+          ? el("div", { className: "notesEmpty" }, "No notifications yet.")
+          : items.map((n) => el("div", {
+              key: n.id, className: "notesRow", role: "button", tabIndex: 0,
+              style: { cursor: "pointer", opacity: n.readAt ? 0.6 : 1 },
+              onClick: () => follow(n),
+              onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); follow(n); } },
+            },
+              el("div", { className: "notesText" },
+                el("div", { style: { fontWeight: n.readAt ? 500 : 700 } }, n.title),
+                n.body && el("div", { style: { whiteSpace: "pre-line", fontSize: "12px" } }, n.body),
+                el("div", { className: "notesAuthor", style: { width: "auto", fontWeight: 500, marginTop: "2px" } }, notificationAge(n.createdAt))),
+              !n.readAt && el("button", {
+                type: "button", className: "notesPagerBtn", style: { width: "auto", padding: "0 8px", flexShrink: 0 },
+                "aria-label": `Mark ${n.title} read`,
+                onClick: (e) => { e.stopPropagation(); markRead([n.id]); },
+              }, "Mark read"))))));
+}
+
 function Topbar() {
-  const { signOut } = React.useContext(AppContext);
+  const { signOut, currentUser } = React.useContext(AppContext);
+  const showBell = roleAtLeast(currentUser?.role, "Exec") && isFeatureEnabled("fleet_notifications");
   return React.createElement(
     "header",
     { className: "topbar" },
@@ -9579,10 +9727,11 @@ function Topbar() {
     // Not rendered at all when the company has it off. Sign Out is pushed
     // right by its own margin-left: auto, so the topbar needs no stand-in.
     isFeatureEnabled("ai_command_bar") && React.createElement(FleetrCommandBar),
+    showBell && React.createElement(NotificationBell),
     React.createElement("button", {
       onClick: signOut,
       style: {
-        marginLeft: "auto",
+        marginLeft: showBell ? 0 : "auto",
         background: "transparent",
         border: "1px solid rgba(255,255,255,0.15)",
         color: "rgba(255,255,255,0.45)",
