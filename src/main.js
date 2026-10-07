@@ -285,7 +285,7 @@ async function loadCompanyLists(user) {
     const own = (table, cols) => supabase.from(table).select(cols).eq("operatorId", operatorId);
     const results = await Promise.all([
       own("pickup_locations",    "id,locationId,name,code,active,sortOrder"),
-      own("vehicle_classes",     "id,name,active,sortOrder"),
+      own("vehicle_classes",     "id,name,active,sortOrder,category,seats,bags"),
       own("sources",             "id,name,billingType,active,sortOrder"),
       own("source_details",      "id,sourceId,name,active"),
       own("daily_rates",         "vehicleClassId,sourceId,amount"),
@@ -2694,6 +2694,14 @@ function CustomerLink({ name, resCode, label, hideBadge }) {
   );
 }
 
+// A reservation the customer booked themselves on fleetr.ai.
+function BookedOnFleetrTag({ meta }) {
+  return React.createElement("span", {
+    className: `rentalAgreementBadge rentalAgreementBadge--neutral${meta ? " rentalAgreementBadge--meta" : ""}`,
+    style: meta ? null : { marginLeft: "6px" },
+  }, "Booked on fleetr.ai");
+}
+
 // ─── PlateLink ────────────────────────────────────────────────────────────────
 
 function PlateLink({ plate, label, style }) {
@@ -3027,7 +3035,8 @@ function ReservationsPage() {
                     React.createElement("td", { key: `${row.resCode}-loc` }, row.location),
                     React.createElement("td", { key: `${row.resCode}-res` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
                     React.createElement("td", { key: `${row.resCode}-cust` },
-                      React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })
+                      React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer }),
+                      row.bookingChannel === "fleetr.ai" && React.createElement(BookedOnFleetrTag)
                     ),
                     React.createElement("td", { key: `${row.resCode}-vc` }, row.vehicleClass),
                     React.createElement("td", { key: `${row.resCode}-wt` }, row.winterTires),
@@ -7179,6 +7188,9 @@ function CompanyPage() {
       )
     ),
 
+    // ── fleetr.ai listing ──
+    React.createElement(ListingSection, { branches }),
+
     // ── Lists and prices ──
     React.createElement(CompanyListsSections, { branches })
   );
@@ -7317,6 +7329,463 @@ function CompanyUnitsSection({ onSaved }) {
         className: "loginBtn", style: { width: "auto", padding: "8px 14px" },
         disabled: busy || !changed, onClick: save,
       }, busy ? "Saving…" : "Save"))
+  );
+}
+
+// ─── fleetr.ai listing: one per branch ───────────────────────────────────────
+// What the public website shows for a branch, and its booking rules. Saved
+// through save_branch_listing (public_booking.sql), which checks the role,
+// takes the company from the caller's profile and writes the audit entry.
+// The photo and logo go to the public listing-photos bucket
+// (listing_photos_storage.sql) under <operatorId>/<locationId>/.
+const LISTING_BUCKET = "listing-photos";
+const LISTING_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+const LISTING_PHOTO_TYPES = { "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp" };
+const LISTING_DAYS = [
+  ["mon", "Monday"], ["tue", "Tuesday"], ["wed", "Wednesday"], ["thu", "Thursday"],
+  ["fri", "Friday"], ["sat", "Saturday"], ["sun", "Sunday"],
+];
+const LISTING_PAYMENT_METHODS = ["Visa", "Mastercard", "American Express", "Debit", "Cash"];
+const LISTING_DEFAULT_CENTRE = [47.5615, -52.7126];
+const LISTING_REASONS = {
+  exec_only:     "Only an Exec can change the listing.",
+  not_signed_in: "You are signed out. Sign in again and retry.",
+  not_found:     "That branch is not part of this company.",
+  bad_listing:   "That did not work. Try again.",
+  bad_time_zone: "That time zone is not recognised.",
+  bad_value:     "One of the values is out of range. Check the numbers and try again.",
+  network:       "Could not reach the server.",
+};
+
+const listingPhotoUrl = (path) =>
+  path ? supabase.storage.from(LISTING_BUCKET).getPublicUrl(path).data.publicUrl : null;
+
+// True when the company has a retail daily rate for a class that is switched
+// on: public booking quotes and books retail rates only.
+function listingHasRetailRate() {
+  if (!companyLists) return false;
+  const classes = companyLists.vehicleClasses.filter((c) => c.active);
+  return companyLists.sources
+    .filter((x) => x.active && x.billingType === "retail")
+    .some((x) => classes.some((c) => companyLists.rates[x.name] && companyLists.rates[x.name][c.name] != null));
+}
+
+const listingHasHours = (hours) =>
+  !!hours && typeof hours === "object" && LISTING_DAYS.some(([k]) => hours[k] && hours[k].open && hours[k].close);
+
+// What a listing still needs before it can show on fleetr.ai, as a sentence,
+// or "" when nothing is missing.
+function listingMissing(listing) {
+  const missing = [];
+  if (!listing || !String(listing.address || "").trim()) missing.push("an address");
+  if (!listing || !listingHasHours(listing.hours)) missing.push("opening hours");
+  if (!listingHasRetailRate()) missing.push("a retail daily rate (Daily rates, below)");
+  if (!missing.length) return "";
+  const list = missing.length === 1 ? missing[0]
+    : `${missing.slice(0, -1).join(", ")} and ${missing[missing.length - 1]}`;
+  return `Before this branch can show on fleetr.ai, add ${list}.`;
+}
+
+// Leaflet, loaded the first time a map is opened.
+let leafletPromise = null;
+function loadLeaflet() {
+  if (!leafletPromise) {
+    if (!document.querySelector("link[data-leaflet]")) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      link.setAttribute("data-leaflet", "");
+      document.head.appendChild(link);
+    }
+    leafletPromise = import("https://esm.sh/leaflet@1.9.4").then((m) => {
+      const L = m.default || m;
+      L.Icon.Default.imagePath = "https://unpkg.com/leaflet@1.9.4/dist/images/";
+      return L;
+    }).catch((e) => { leafletPromise = null; throw e; });
+  }
+  return leafletPromise;
+}
+
+// A map to place the branch's pin: click the map, or drag the pin.
+function ListingMapPin({ lat, lng, disabled, onPlace }) {
+  const boxRef    = React.useRef(null);
+  const mapRef    = React.useRef(null);
+  const markerRef = React.useRef(null);
+  const placeRef  = React.useRef(onPlace);
+  placeRef.current = onPlace;
+  const [failed, setFailed] = React.useState(false);
+  const has = Number.isFinite(lat) && Number.isFinite(lng);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    loadLeaflet().then((L) => {
+      if (cancelled || !boxRef.current) return;
+      const map = L.map(boxRef.current).setView(has ? [lat, lng] : LISTING_DEFAULT_CENTRE, has ? 15 : 11);
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19, attribution: "&copy; OpenStreetMap contributors",
+      }).addTo(map);
+      map.on("click", (e) => placeRef.current(e.latlng.lat, e.latlng.lng));
+      mapRef.current = map;
+      setTimeout(() => map.invalidateSize(), 0);
+    }).catch(() => { if (!cancelled) setFailed(true); });
+    return () => {
+      cancelled = true;
+      if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; markerRef.current = null; }
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  React.useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !leafletPromise) return;
+    leafletPromise.then((L) => {
+      if (!mapRef.current) return;
+      if (!has) {
+        if (markerRef.current) { markerRef.current.remove(); markerRef.current = null; }
+        return;
+      }
+      if (!markerRef.current) {
+        markerRef.current = L.marker([lat, lng], { draggable: !disabled }).addTo(map);
+        markerRef.current.on("dragend", (e) => {
+          const p = e.target.getLatLng();
+          placeRef.current(p.lat, p.lng);
+        });
+        if (!map.getBounds().contains([lat, lng])) map.setView([lat, lng], 15);
+      } else {
+        markerRef.current.setLatLng([lat, lng]);
+      }
+    });
+  });
+
+  if (failed) {
+    return React.createElement("p", { className: "closeRentalHint" },
+      "The map could not be loaded. Type the latitude and longitude instead.");
+  }
+  return React.createElement("div", {
+    ref: boxRef, style: { height: "280px", borderRadius: "10px", margin: "8px 0" },
+    "aria-label": "Map. Click to place the branch's pin.",
+  });
+}
+
+function ListingSection({ branches }) {
+  const { currentUser } = React.useContext(AppContext);
+  const [listings, setListings] = React.useState(null);
+  const [loadError, setLoadError] = React.useState("");
+
+  const reload = React.useCallback(async () => {
+    const { data, error } = await supabase.from("branch_listings").select("*")
+      .eq("operatorId", currentUser?.operatorId ?? null);
+    if (error) { setLoadError("The listings could not be loaded. Reload the page to try again."); return; }
+    setLoadError("");
+    setListings(data || []);
+  }, [currentUser]);
+
+  React.useEffect(() => { reload(); }, [reload]);
+
+  const open = (branches || []).filter((b) => b.active);
+  return React.createElement(
+    CompanySection, { title: "Listing", style: { marginTop: "24px" } },
+    React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+      "What fleetr.ai shows for each branch, and the rules for booking it online. A branch is hidden until Show on fleetr.ai is on. Photos and logos are public."),
+    loadError && React.createElement("div", { className: "loginError" }, loadError),
+    !listings && !loadError && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Loading…"),
+    listings && open.map((b) => React.createElement(ListingEditor, {
+      key: b.id, branch: b, operatorId: currentUser?.operatorId,
+      listing: listings.find((l) => l.locationId === b.id) || null, onSaved: reload,
+    })));
+}
+
+// One branch's listing. Its own component so each branch keeps its own draft.
+function ListingEditor({ branch, operatorId, listing, onSaved }) {
+  const toDraft = (l) => {
+    const hours = (l && l.hours && typeof l.hours === "object") ? l.hours : {};
+    const num = (v) => (v == null ? "" : String(Number(v)));
+    return {
+      description: (l && l.description) || "",
+      address:     (l && l.address) || "",
+      latitude:    num(l && l.latitude),
+      longitude:   num(l && l.longitude),
+      hours: Object.fromEntries(LISTING_DAYS.map(([k]) => {
+        const d = hours[k];
+        return [k, d && d.open && d.close
+          ? { on: true,  open: String(d.open).slice(0, 5), close: String(d.close).slice(0, 5) }
+          : { on: false, open: "09:00", close: "17:00" }];
+      })),
+      citiesServed:      ((l && l.citiesServed) || []).join(", "),
+      airportCodes:      ((l && l.airportCodes) || []).join(", "),
+      airportPickup:     !!(l && l.airportPickup),
+      delivery:          !!(l && l.delivery),
+      afterHoursDropoff: !!(l && l.afterHoursDropoff),
+      minimumAge:        num(l && l.minimumAge),
+      deposit:           num(l && l.deposit),
+      paymentMethods:    (l && l.paymentMethods) || [],
+      minNoticeHours:    l ? String(l.minNoticeHours) : "2",
+      maxRentalDays:     l ? String(l.maxRentalDays) : "30",
+      turnaroundHours:   l ? String(l.turnaroundHours) : "1",
+    };
+  };
+  const [draft, setDraft] = React.useState(() => toDraft(listing));
+  const savedKey = JSON.stringify(listing);
+  React.useEffect(() => { setDraft(toDraft(listing)); }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [busy,    setBusy]    = React.useState("");
+  const [error,   setError]   = React.useState("");
+  const [notice,  setNotice]  = React.useState("");
+  const set = (field, value) => setDraft((p) => ({ ...p, [field]: value }));
+  const setDay = (k, field, value) =>
+    setDraft((p) => ({ ...p, hours: { ...p.hours, [k]: { ...p.hours[k], [field]: value } } }));
+
+  const el = React.createElement;
+  const listed = !!(listing && listing.listed);
+
+  const save = async (label, fields) => {
+    setBusy(label); setError(""); setNotice("");
+    const { data, error: err } = await supabase.rpc("save_branch_listing", {
+      p_location_id: branch.id, p_listing: fields,
+    });
+    setBusy("");
+    if (err || !data || !data.ok) {
+      setError(err ? LISTING_REASONS.network : (LISTING_REASONS[data && data.reason] || "That did not work."));
+      return false;
+    }
+    await onSaved();
+    return true;
+  };
+
+  const toggleListed = async (on) => {
+    if (on) {
+      const missing = listingMissing(listing);
+      if (missing) { setError(missing); setNotice(""); return; }
+    }
+    if (await save("listed", { listed: on })) {
+      setNotice(on ? `${branch.name} now shows on fleetr.ai.` : `${branch.name} is hidden from fleetr.ai.`);
+    }
+  };
+
+  // Every field but the toggle, the photo and the logo, checked here so a
+  // mistake reads as a sentence rather than as the database's refusal.
+  const saveDetails = async () => {
+    const splitList = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
+    const optional = (s, min, max, label, whole) => {
+      const t = s.trim();
+      if (t === "") return { ok: true, value: null };
+      const n = Number(t);
+      if (!Number.isFinite(n) || n < min || n > max || (whole && !Number.isInteger(n))) {
+        return { ok: false, text: `${label} has to be ${whole ? "a whole number" : "a number"} from ${min} to ${max}.` };
+      }
+      return { ok: true, value: n };
+    };
+    const required = (s, min, max, label) => {
+      if (s.trim() === "") return { ok: false, text: `${label} is needed.` };
+      return optional(s, min, max, label, true);
+    };
+    const checks = {
+      latitude:        optional(draft.latitude, -90, 90, "Latitude"),
+      longitude:       optional(draft.longitude, -180, 180, "Longitude"),
+      minimumAge:      optional(draft.minimumAge, 16, 99, "Minimum age", true),
+      deposit:         optional(draft.deposit, 0, 99999, "Deposit"),
+      minNoticeHours:  required(draft.minNoticeHours, 0, 720, "Minimum notice"),
+      maxRentalDays:   required(draft.maxRentalDays, 1, 365, "Maximum rental length"),
+      turnaroundHours: required(draft.turnaroundHours, 0, 72, "Turnaround buffer"),
+    };
+    const bad = Object.values(checks).find((c) => !c.ok);
+    if (bad) { setError(bad.text); setNotice(""); return; }
+    if ((checks.latitude.value == null) !== (checks.longitude.value == null)) {
+      setError("Give both a latitude and a longitude, or neither."); setNotice(""); return;
+    }
+
+    const hours = {};
+    for (const [k, name] of LISTING_DAYS) {
+      const d = draft.hours[k];
+      if (!d.on) continue;
+      if (!d.open || !d.close || d.close <= d.open) {
+        setError(`${name}: the closing time has to be after the opening time.`); setNotice(""); return;
+      }
+      hours[k] = { open: d.open, close: d.close };
+    }
+
+    const airports = splitList(draft.airportCodes).map((x) => x.toUpperCase());
+    if (airports.some((x) => !/^[A-Z]{3,4}$/.test(x))) {
+      setError("Airport codes are 3 or 4 letters, separated by commas, for example YYT."); setNotice(""); return;
+    }
+    const description = draft.description.trim();
+    const address = draft.address.trim();
+    if (description.length > 2000) { setError("Keep the description to 2,000 characters."); setNotice(""); return; }
+    if (address.length > 300) { setError("Keep the address to 300 characters."); setNotice(""); return; }
+
+    const fields = {
+      description: description || null,
+      address: address || null,
+      latitude: checks.latitude.value,
+      longitude: checks.longitude.value,
+      hours,
+      citiesServed: splitList(draft.citiesServed),
+      airportCodes: airports,
+      airportPickup: draft.airportPickup,
+      delivery: draft.delivery,
+      afterHoursDropoff: draft.afterHoursDropoff,
+      minimumAge: checks.minimumAge.value,
+      deposit: checks.deposit.value,
+      paymentMethods: draft.paymentMethods,
+      minNoticeHours: checks.minNoticeHours.value,
+      maxRentalDays: checks.maxRentalDays.value,
+      turnaroundHours: checks.turnaroundHours.value,
+    };
+    if (listed) {
+      const missing = listingMissing({ ...listing, ...fields });
+      if (missing) {
+        setError(`${missing} Or turn off Show on fleetr.ai first.`); setNotice(""); return;
+      }
+    }
+    if (await save("details", fields)) setNotice("Listing saved.");
+  };
+
+  // Uploads a new photo or logo, points the listing at it, then removes the
+  // file it replaced. A file the listing never pointed at is removed again.
+  const uploadImage = async (kind, file) => {
+    if (!file) return;
+    const field = kind === "logo" ? "logoPath" : "photoPath";
+    const ext = LISTING_PHOTO_TYPES[file.type];
+    setError(""); setNotice("");
+    if (!ext) { setError("Choose a JPEG, PNG or WebP image."); return; }
+    if (file.size > LISTING_PHOTO_MAX_BYTES) { setError("That image is over 5 MB. Choose a smaller one."); return; }
+    if (!operatorId) { setError(LISTING_REASONS.not_signed_in); return; }
+    setBusy(kind);
+    const path = `${operatorId}/${branch.id}/${kind}-${Date.now()}.${ext}`;
+    const up = await supabase.storage.from(LISTING_BUCKET)
+      .upload(path, file, { contentType: file.type, cacheControl: "3600", upsert: false });
+    setBusy("");
+    if (up.error) { setError("The image could not be uploaded. Try again."); return; }
+    const old = listing && listing[field];
+    if (await save(kind, { [field]: path })) {
+      if (old) await supabase.storage.from(LISTING_BUCKET).remove([old]);
+      setNotice(kind === "logo" ? "Logo saved." : "Location photo saved.");
+    } else {
+      await supabase.storage.from(LISTING_BUCKET).remove([path]);
+    }
+  };
+
+  const removeImage = async (kind) => {
+    const field = kind === "logo" ? "logoPath" : "photoPath";
+    const old = listing && listing[field];
+    if (!old) return;
+    if (await save(kind, { [field]: null })) {
+      await supabase.storage.from(LISTING_BUCKET).remove([old]);
+      setNotice(kind === "logo" ? "Logo removed." : "Location photo removed.");
+    }
+  };
+
+  const field = (label, child, width) =>
+    el("label", { style: { display: "flex", flexDirection: "column", gap: "4px", width: width || "auto" } },
+      el("span", { className: "resFormLabel" }, label), child);
+  const input = (name, props) => el("input", {
+    className: "resFormInput", value: draft[name], disabled: !!busy,
+    onChange: (e) => set(name, e.target.value), ...props,
+  });
+  const check = (label, checked, onChange) =>
+    el("label", { style: { display: "inline-flex", alignItems: "center", gap: "8px", cursor: "pointer" } },
+      el("input", { type: "checkbox", checked, disabled: !!busy, onChange: (e) => onChange(e.target.checked) }),
+      label);
+  const row = (...children) =>
+    el("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "flex-end", marginBottom: "12px" } }, ...children);
+  const imageBlock = (kind, label) => {
+    const path = listing && listing[kind === "logo" ? "logoPath" : "photoPath"];
+    const url = listingPhotoUrl(path);
+    return el("div", { style: { display: "flex", flexDirection: "column", gap: "6px" } },
+      el("span", { className: "resFormLabel" }, label),
+      url
+        ? el("img", { src: url, alt: label, style: { maxWidth: kind === "logo" ? "120px" : "260px", maxHeight: "160px", objectFit: "contain", borderRadius: "8px" } })
+        : el("span", { className: "closeRentalHint" }, "None yet."),
+      el("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
+        el("label", { className: "loginBtn", style: { width: "auto", padding: "6px 10px", cursor: busy ? "default" : "pointer" } },
+          busy === kind ? "Uploading…" : (url ? "Replace" : "Upload"),
+          el("input", {
+            type: "file", accept: Object.keys(LISTING_PHOTO_TYPES).join(","), disabled: !!busy,
+            style: { display: "none" },
+            onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; uploadImage(kind, f); },
+          })),
+        url && el("button", {
+          type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+          disabled: !!busy, onClick: () => removeImage(kind),
+        }, "Remove")));
+  };
+
+  const lat = draft.latitude.trim() === "" ? NaN : Number(draft.latitude);
+  const lng = draft.longitude.trim() === "" ? NaN : Number(draft.longitude);
+
+  return el("div", { style: { marginBottom: "28px" } },
+    el("div", { className: "gasSettingSubhead" }, branch.name),
+    error  && el("div", { className: "loginError" }, error),
+    notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
+
+    el("div", { style: { marginBottom: "14px" } },
+      check(busy === "listed" ? "Saving…" : "Show on fleetr.ai", listed, toggleListed)),
+
+    row(imageBlock("logo", "Logo"), imageBlock("photo", "Location photo")),
+
+    field("Description",
+      el("textarea", {
+        className: "resFormInput resFormTextarea", rows: 4, value: draft.description, disabled: !!busy,
+        maxLength: 2000, onChange: (e) => set("description", e.target.value),
+      })),
+
+    el("div", { style: { height: "12px" } }),
+    field("Address", input("address", { maxLength: 300, placeholder: "Street, city, province" })),
+    row(
+      field("Latitude",  input("latitude",  { inputMode: "decimal", style: { width: "140px" } })),
+      field("Longitude", input("longitude", { inputMode: "decimal", style: { width: "140px" } }))),
+    el("p", { className: "closeRentalHint" }, "Click the map to place the pin, or drag it."),
+    el(ListingMapPin, {
+      lat, lng, disabled: !!busy,
+      onPlace: (a, b) => setDraft((p) => ({ ...p, latitude: a.toFixed(6), longitude: b.toFixed(6) })),
+    }),
+
+    el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Hours"),
+    LISTING_DAYS.map(([k, name]) => {
+      const d = draft.hours[k];
+      return el("div", { key: k, style: { display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", marginBottom: "6px" } },
+        el("span", { style: { width: "130px" } }, check(name, d.on, (on) => setDay(k, "on", on))),
+        d.on
+          ? el(React.Fragment, null,
+              el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, value: d.open, disabled: !!busy,
+                "aria-label": `${name} opening time`, onChange: (e) => setDay(k, "open", e.target.value) }),
+              el("span", null, "to"),
+              el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, value: d.close, disabled: !!busy,
+                "aria-label": `${name} closing time`, onChange: (e) => setDay(k, "close", e.target.value) }))
+          : el("span", { className: "closeRentalHint" }, "Closed"));
+    }),
+
+    el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Where it serves"),
+    row(
+      field("Cities served", input("citiesServed", { placeholder: "St. John's, Mount Pearl" }), "320px"),
+      field("Airport codes", input("airportCodes", { placeholder: "YYT" }), "160px")),
+    el("p", { className: "closeRentalHint" }, "Separate each with a comma. Customers find the branch by searching one of these."),
+
+    el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Perks"),
+    el("div", { style: { display: "flex", gap: "16px", flexWrap: "wrap", marginBottom: "12px" } },
+      check("Airport pickup", draft.airportPickup, (v) => set("airportPickup", v)),
+      check("Delivery", draft.delivery, (v) => set("delivery", v)),
+      check("After-hours drop-off", draft.afterHoursDropoff, (v) => set("afterHoursDropoff", v))),
+
+    el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Requirements"),
+    row(
+      field("Minimum age", input("minimumAge", { inputMode: "numeric", style: { width: "110px" } })),
+      field("Deposit ($)", input("deposit", { inputMode: "decimal", style: { width: "120px" } }))),
+    el("span", { className: "resFormLabel" }, "Accepted payment"),
+    el("div", { style: { display: "flex", gap: "16px", flexWrap: "wrap", margin: "6px 0 12px" } },
+      LISTING_PAYMENT_METHODS.map((m) => el("span", { key: m },
+        check(m, draft.paymentMethods.includes(m), (on) => set("paymentMethods",
+          on ? LISTING_PAYMENT_METHODS.filter((x) => x === m || draft.paymentMethods.includes(x))
+             : draft.paymentMethods.filter((x) => x !== m)))))),
+
+    el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Booking rules"),
+    row(
+      field("Minimum notice (hours)", input("minNoticeHours", { inputMode: "numeric", style: { width: "150px" } })),
+      field("Maximum rental length (days)", input("maxRentalDays", { inputMode: "numeric", style: { width: "150px" } })),
+      field("Turnaround buffer (hours)", input("turnaroundHours", { inputMode: "numeric", style: { width: "150px" } }))),
+
+    el("div", { className: "closeRentalActions" },
+      el("button", {
+        type: "button", className: "resModalSubmit", disabled: !!busy, onClick: saveDetails,
+      }, busy === "details" ? "Saving..." : "Save listing"))
   );
 }
 
@@ -7559,6 +8028,67 @@ function ProtectionDetailsCard({ product, busy, onSave }) {
           onClick: save,
         }, busy ? "Saving..." : "Save")))
   );
+}
+
+// The category fleetr.ai files a class under, guessed from its name until one
+// is saved.
+const VEHICLE_CATEGORIES = ["Car", "SUV", "Truck", "Van", "Luxury", "Other"];
+function guessVehicleCategory(name) {
+  const n = String(name || "").toLowerCase();
+  if (/\bsuv\b|crossover|4x4/.test(n)) return "SUV";
+  if (/truck|pickup|pick-up/.test(n)) return "Truck";
+  if (/\b(mini)?van\b|minivan|passenger/.test(n)) return "Van";
+  if (/luxury|premium|prestige/.test(n)) return "Luxury";
+  if (/\bcar\b|sedan|economy|compact|intermediate|mid-?size|full-?size|standard|hatchback|coupe|convertible/.test(n)) return "Car";
+  return "Other";
+}
+
+// One vehicle class's category, seats and bags, for fleetr.ai. Keeps its own
+// drafts, for the reason GasRow does.
+function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
+  const shown = () => ({
+    category: entry.category || guessVehicleCategory(entry.name),
+    seats: entry.seats == null ? "" : String(entry.seats),
+    bags:  entry.bags  == null ? "" : String(entry.bags),
+  });
+  const [draft, setDraft] = React.useState(shown);
+  React.useEffect(() => { setDraft(shown()); }, [entry.category, entry.seats, entry.bags, entry.name]); // eslint-disable-line react-hooks/exhaustive-deps
+  const saved = shown();
+  const unchanged = !!entry.category && draft.category === saved.category
+    && draft.seats.trim() === saved.seats && draft.bags.trim() === saved.bags;
+  const el = React.createElement;
+  const whole = (s, min, max) => {
+    const t = s.trim();
+    if (t === "") return { ok: true, value: null };
+    const n = Number(t);
+    return Number.isInteger(n) && n >= min && n <= max ? { ok: true, value: n } : { ok: false };
+  };
+  const save = () => {
+    const seats = whole(draft.seats, 1, 20), bags = whole(draft.bags, 0, 20);
+    if (!seats.ok) { onError("Seats has to be a whole number from 1 to 20."); return; }
+    if (!bags.ok)  { onError("Bags has to be a whole number from 0 to 20."); return; }
+    onSave(draft.category, seats.value, bags.value);
+  };
+  return el("span", { style: { display: "inline-flex", gap: "6px", alignItems: "center", flexWrap: "wrap" } },
+    el("select", {
+      className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, disabled: busy,
+      value: draft.category, "aria-label": `${entry.name} category`,
+      onChange: (e) => setDraft((p) => ({ ...p, category: e.target.value })),
+    }, VEHICLE_CATEGORIES.map((c) => el("option", { key: c, value: c }, c))),
+    el("input", {
+      className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric",
+      placeholder: "Seats", value: draft.seats, disabled: busy, "aria-label": `${entry.name} seats`,
+      onChange: (e) => setDraft((p) => ({ ...p, seats: e.target.value })),
+    }),
+    el("input", {
+      className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric",
+      placeholder: "Bags", value: draft.bags, disabled: busy, "aria-label": `${entry.name} bags`,
+      onChange: (e) => setDraft((p) => ({ ...p, bags: e.target.value })),
+    }),
+    el("button", {
+      className: "loginBtn", style: { width: "auto", padding: "5px 9px" },
+      disabled: busy || unchanged, onClick: save,
+    }, "Save"));
 }
 
 // One row of deductibles: the company default, or one vehicle class's own.
@@ -7938,12 +8468,19 @@ function CompanyListsSections({ branches }) {
     section("Vehicle classes",
       "One list for reservations, the fleet and rates, in the order shown here.",
       "classes",
-      table("520px", listHeads("Vehicle class"),
+      table("760px", listHeads("Vehicle class", "Category, seats and bags"),
         vehicleClasses.map((entry, i) => entryRow({
           at: "classes", kind: "vehicle_class", entry,
           reorder: { listKey: "classes", list: vehicleClasses, index: i, saveCall: saveClass },
           rename: (name) => ["save_vehicle_class", { p_id: entry.id, p_name: name, p_sort: null }],
           goesWith: "Its daily rates and protection prices go with it.",
+          extra: el("td", null, el(VehicleClassDetailsCell, {
+            entry, busy,
+            onError: (text) => setError({ at: "classes", text }),
+            onSave: (category, seats, bags) => act("classes", "save_vehicle_class_details", {
+              p_id: entry.id, p_category: category, p_seats: seats, p_bags: bags,
+            }),
+          })),
         }))),
       el(ListAddRow, {
         placeholder: "New vehicle class", label: "Add", disabled: busy,
@@ -14255,7 +14792,8 @@ function CustomerPage() {
         if (!raStatus || raStatus === "reservation") return null;
         const cls = raBadgeClass(raStatus, { meta: true });
         return React.createElement("span", { className: cls }, statusLabel(raStatus));
-      })()
+      })(),
+      localRecord?.bookingChannel === "fleetr.ai" && React.createElement(BookedOnFleetrTag, { meta: true })
     ),
     React.createElement("div", { className: "page__titleUnderline" }),
     ra?.id && React.createElement(NameMismatchWarning, { rentalAgreementId: ra.id }),
