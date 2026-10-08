@@ -76,7 +76,7 @@ const PROFILE_KEY    = "fleetr_profile";
 // The profile columns the app is allowed to hold. pinHash is deliberately
 // absent: it never leaves the database, because a hash in the browser is a hash
 // an attacker can take away and grind offline.
-const PROFILE_COLUMNS = "id,username,name,role,operatorId,locationId,active";
+const PROFILE_COLUMNS = "id,username,name,role,operatorId,locationId,active,pendingApprovalSince";
 
 async function fetchProfile() {
   // Filtered on the signed-in id, explicitly. This once relied on the row level
@@ -99,6 +99,9 @@ async function fetchProfile() {
   }
   const row = (data || [])[0];
   if (!row)        return { ok: false, reason: "no_profile" };
+  // Checked first: a pending account is inactive too, and "deactivated" would
+  // tell a new starter they had been let go.
+  if (row.pendingApprovalSince) return { ok: false, reason: "pending" };
   if (!row.active) return { ok: false, reason: "deactivated" };
   return { ok: true, profile: row };
 }
@@ -113,6 +116,7 @@ const LOGIN_REASONS = {
   load_failed:  "Signed in, but your account could not be loaded. Try again.",
   no_profile:   "Signed in, but no staff profile is linked to this account. Ask an administrator to add you.",
   deactivated:  "This account has been deactivated.",
+  pending:      "Your account is waiting for approval. An Admin at your company needs to approve it in Staff before you can sign in.",
   network:      "Could not reach the server.",
   // Carries the auth service's own wording when there is one. This entry is the
   // floor for the case where there is not.
@@ -6729,6 +6733,10 @@ function ReportsPage() {
 // The old label was `role === "Admin" ? "Make Agent" : "Make Admin"`, written
 // when Admin was the top. With Exec above it, an Exec's row offered "Make
 // Admin", which is a demotion described as a promotion.
+// A join code is stored as ten characters and shown as two groups of five.
+const fmtJoinCode = (code) =>
+  /^[A-Z0-9]{10}$/.test(code || "") ? `${code.slice(0, 5)}-${code.slice(5)}` : (code || "");
+
 const roleToggleLabel = (role) =>
   role === "Exec"  ? "Make Admin" :
   role === "Admin" ? "Make Agent" : "Make Admin";
@@ -6742,6 +6750,7 @@ const STAFF_REASONS = {
   target_is_exec: "An Exec is not attached to a branch.",
   bad_location:   "That is not a branch of this company.",
   last_exec:      "This is the only Exec. Appoint another one first.",
+  not_pending:    "That person has already been approved. Deactivate them instead.",
   location_required: "Choose the branch they should move to.",
 };
 
@@ -8692,7 +8701,7 @@ function StaffPage() {
     // own branch, or to the whole company for an Exec, and a filter here would
     // only hide a policy failure rather than prevent one.
     const { data, error: err } = await supabase
-      .from("users").select("id,username,name,role,active,locationId").order("username");
+      .from("users").select("id,username,name,role,active,locationId,pendingApprovalSince").order("username");
     if (err) setError(err.message || "Could not load the staff list.");
     else { setRows(data || []); setError(""); }
     setLoading(false);
@@ -8781,6 +8790,22 @@ function StaffPage() {
     { target_id: row.id, is_active: !row.active },
     `${row.username}: ${row.active ? "deactivated" : "reactivated"}`);
 
+  // Approving is activating: the database clears the pending mark when a
+  // pending account is switched on. Both are logged as staff.active, the same
+  // action as any other change to whether someone has access.
+  const approve = (row) => runStaffAction(
+    row, "staff.active", "set_staff_active",
+    { target_id: row.id, is_active: true },
+    `${row.username}: approved`);
+
+  const decline = (row) => {
+    if (!window.confirm(
+      `Decline ${row.name || row.username}?\n\n` +
+      `Their account is removed and they cannot sign in. If they should be here, they can sign up again with the join code.`)) return;
+    runStaffAction(row, "staff.active", "decline_staff",
+      { target_id: row.id }, `${row.username}: declined`);
+  };
+
   const reassign = (row) => {
     const dest = moveTo[row.id] || homeBranch || "";
     if (!dest) { setError(STAFF_REASONS.location_required); return; }
@@ -8802,6 +8827,11 @@ function StaffPage() {
   const branchName = (id) =>
     (branches.find((b) => b.id === id) || {}).name || (id ? "another branch" : "\u2014");
 
+  // New sign-ups waiting for approval are listed on their own, above everyone
+  // else, rather than as deactivated rows in the main list.
+  const pending = rows.filter((r) => r.pendingApprovalSince);
+  const staff   = rows.filter((r) => !r.pendingApprovalSince);
+
   if (!isAdmin) {
     return React.createElement(
       "div", { className: "page" },
@@ -8820,14 +8850,14 @@ function StaffPage() {
       "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
       React.createElement("h2", null, "Join code"),
       React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-        "New staff enter this code when they create their account. One code for the whole company: treat it like a door key, because anyone who has it can create an account here."),
+        "New staff enter this code when they create their account. One code for the whole company. Everyone who uses it waits for approval below before they can sign in, so keep it to people you mean to hire."),
       defaultLocation && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
         `New accounts start at ${defaultLocation}. Move them from the list below if they belong somewhere else.`),
       React.createElement(
         "div", { style: { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" } },
         React.createElement("code", {
           style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px", background: "rgba(66,164,255,0.12)" },
-        }, codeShown && code ? code : "••••••••"),
+        }, codeShown && code ? fmtJoinCode(code) : "•••••-•••••"),
         React.createElement("button", {
           className: "loginBtn",
           style: { width: "auto", padding: "8px 14px" },
@@ -8851,6 +8881,34 @@ function StaffPage() {
       codeError && React.createElement("div", { className: "loginError" }, codeError)
     ),
 
+    // ── Waiting for approval ──
+    pending.length > 0 && React.createElement(
+      "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
+      React.createElement("h2", null, `Waiting for approval (${pending.length})`),
+      React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+        "These people signed up with the join code. They cannot sign in or see anything until you approve them."),
+      React.createElement(
+        "div", { style: { overflowX: "auto" } },
+        React.createElement(
+          "table", { className: "dashboardTable", style: { minWidth: "560px" } },
+          React.createElement("thead", null, React.createElement("tr", null,
+            ["Username", "Name", "Signed up", ""].map((h) => React.createElement("th", { key: h }, h)))),
+          React.createElement("tbody", null, pending.map((row) =>
+            React.createElement("tr", { key: row.id },
+              React.createElement("td", null, row.username),
+              React.createElement("td", null, row.name),
+              React.createElement("td", null, new Date(row.pendingApprovalSince).toLocaleString("en-CA",
+                { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })),
+              React.createElement("td", { style: { display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" } },
+                React.createElement("button", {
+                  className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+                  disabled: busyId === row.id, onClick: () => approve(row),
+                }, "Approve"),
+                React.createElement("button", {
+                  className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+                  disabled: busyId === row.id, onClick: () => decline(row),
+                }, "Decline")))))))),
+
     // ── Staff list ──
     React.createElement(
       "div", { className: "dashboardSection" },
@@ -8858,15 +8916,15 @@ function StaffPage() {
         isExec ? "People in this company" : "People at this branch"),
       error   && React.createElement("div", { className: "loginError" }, error),
       loading && React.createElement("div", { className: "resvEmpty" }, "Loading…"),
-      !loading && rows.length === 0 && React.createElement("div", { className: "resvEmpty" }, "Nobody else has joined yet."),
-      !loading && rows.length > 0 && React.createElement(
+      !loading && staff.length === 0 && React.createElement("div", { className: "resvEmpty" }, "Nobody else has joined yet."),
+      !loading && staff.length > 0 && React.createElement(
         "div", { style: { overflowX: "auto" } },
         React.createElement(
         "table", { className: "dashboardTable", style: { minWidth: "760px" } },
         React.createElement("thead", null, React.createElement("tr", null,
           ["Username", "Name", "Role", "Branch", "Status", ""].map((h) =>
             React.createElement("th", { key: h }, h)))),
-        React.createElement("tbody", null, rows.map((row) => {
+        React.createElement("tbody", null, staff.map((row) => {
           const isSelf = row.id === currentUser?.id;
           return React.createElement("tr", { key: row.id, style: row.active ? null : { opacity: 0.5 } },
             React.createElement("td", null, row.username),
@@ -15391,7 +15449,7 @@ function SignupScreen({ onDone, onCancel }) {
       React.createElement("div", { className: "loginSubtitle" }, "Create your account."),
       React.createElement(
         "form", { className: "loginForm", onSubmit: submit },
-        field({ type: "text", placeholder: "Join code", maxLength: 8, autoCapitalize: "characters",
+        field({ type: "text", placeholder: "Join code (XXXXX-XXXXX)", maxLength: 11, autoCapitalize: "characters",
                 value: joinCode, onChange: (e) => { setJoinCode(e.target.value.toUpperCase()); setMessage(""); } }),
         field({ type: "text", placeholder: "Full name", maxLength: 60, autoComplete: "name",
                 value: name, onChange: (e) => { setName(e.target.value); setMessage(""); } }),
@@ -15563,7 +15621,7 @@ function App() {
         onCancel: () => setSigningUp(false),
         onDone:   (username) => {
           setSigningUp(false);
-          setSignupNotice(`Account ${username} created. Sign in to continue.`);
+          setSignupNotice(`Account ${username} created. An Admin at your company needs to approve it before you can sign in.`);
         },
       });
     }
