@@ -727,7 +727,7 @@ Rental agreement lifecycle:
 - Opening sets the vehicle to On Rent. Moving to customer_return or to close_pending sets it to Ready Returns. All of these happen automatically, do not also send a fleet status change.
 - Do not set customer_return yourself. The customer app writes it when a customer returns a vehicle, and it records that a customer did so; setting it by hand would claim a return that did not happen that way.
 - Opening a rental on a vehicle flagged needsPm raises a confirmation for the staff member. They can rent it anyway, or cancel, in which case nothing is written. Say in "message" that the vehicle is flagged, rather than promising the rental is open.
-- Closing (close_pending or closed) stamps the return date and time automatically. Never supply returnDate, returnTime or returnMeridiem yourself.
+- Closing (close_pending or closed) never changes the scheduled return date and time. Never supply returnDate, returnTime or returnMeridiem with a status change.
 - Use the rental agreements data passed in the user message to find the current status of an agreement, and the reservations data to find the resCode.
 
 Settings (app_settings):
@@ -4898,7 +4898,7 @@ function VehicleDetailPage() {
                     React.createElement("td", null, React.createElement(CustomerLink, { name: r.customer, resCode: r.resCode, label: r.customer })),
                     React.createElement("td", null, React.createElement(CustomerLink, { name: r.customer, resCode: r.resCode, label: r.resCode })),
                     React.createElement("td", null, fmtDate(r.date)),
-                    React.createElement("td", null, fmtDate(r.returnDate))
+                    React.createElement("td", null, fmtDate(actualReturnDay(rentalAgreements.find((a) => a.resCode === r.resCode)) || r.returnDate))
                   )
                 )
               )
@@ -5411,22 +5411,17 @@ function parseNotesLog(raw) {
   return [];
 }
 
-// Statuses that mean the rental is over. Closing stamps the return time, so a
-// closed agreement always carries when it came back.
+// Statuses that mean the rental is over.
 const RA_CLOSING_STATUSES = ["close_pending", "closed"];
 
-// The return timestamp written at the moment of close. Split out of
-// CustomerPage so the command bar cannot close an agreement without it.
-function raCloseStamp(now = new Date()) {
-  let h = now.getHours();
-  const m = now.getMinutes();
-  const meridiem = h >= 12 ? "PM" : "AM";
-  h = h % 12 || 12;
-  return {
-    returnDate:     now.toISOString().slice(0, 10),
-    returnTime:     String(h).padStart(2, "0") + String(m).padStart(2, "0"),
-    returnMeridiem: meridiem,
-  };
+// The day the vehicle actually came back, in local time, or null while it is
+// still out. returnedAt on the agreement is stamped by the customer app's
+// return and by Close Rental. The reservation's returnDate, returnTime and
+// returnMeridiem are the scheduled return and are never overwritten on close.
+function actualReturnDay(ra) {
+  if (!ra?.returnedAt) return null;
+  const d = new Date(ra.returnedAt);
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString("en-CA");
 }
 
 // Field rules for adding a vehicle. Every field is required. Returns the list of
@@ -10287,17 +10282,19 @@ function FleetrCommandBar() {
         // agreement if the reservation has none yet, and moves the vehicle to
         // On Rent or Ready Returns. Reproducing any of that here is how the two
         // paths would drift.
+        const before = rentalAgreements.find((a) => a.resCode === raResCode) || null;
         await syncRAStatus(raResCode, data.rentalAgreementStatus);
         setReservations((prev) => prev.map((r) =>
           r.resCode === raResCode ? { ...r, rentalAgreementStatus: data.rentalAgreementStatus } : r
         ));
-        // Closing stamps the return time, so a closed agreement always records
-        // when the vehicle came back.
-        if (RA_CLOSING_STATUSES.includes(data.rentalAgreementStatus)) {
-          const stamp = raCloseStamp();
-          ({ error } = await supabase.from("reservations").update(stamp).eq("resCode", raResCode));
+        // Closing a rental that was still out is when the vehicle came back, so
+        // that goes on the agreement. The reservation keeps its scheduled return.
+        if (RA_CLOSING_STATUSES.includes(data.rentalAgreementStatus) &&
+            before?.rentalAgreementStatus === "open_rental_agreement" && !before.returnedAt) {
+          const returnedAt = new Date().toISOString();
+          ({ error } = await supabase.from("rental_agreements").update({ returnedAt }).eq("id", before.id));
           if (!error) {
-            setReservations((prev) => prev.map((r) => (r.resCode === raResCode ? { ...r, ...stamp } : r)));
+            setRentalAgreements((prev) => prev.map((a) => (a.id === before.id ? { ...a, returnedAt } : a)));
           }
         }
       } else if (operation === "pmComplete") {
@@ -12833,10 +12830,19 @@ function CloseRentalPage() {
           }
         }
 
-        const stamp = raCloseStamp(returnedAtIso ? new Date(returnedAtIso) : new Date());
-        runWrite(supabase.from("reservations").update(stamp).eq("resCode", ra.resCode), "close rental: return stamp");
+        // When the vehicle came back goes on the agreement, the same time the
+        // leg ended, unless a self-return has already put it there. The
+        // reservation keeps the scheduled return it was booked with.
+        if (!ra.returnedAt) {
+          const retRes = await supabase.from("rental_agreements").update({ returnedAt: legClose.endedAt }).eq("id", ra.id);
+          if (retRes?.error) {
+            console.warn("close rental: return time write failed:", retRes.error);
+          } else {
+            setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, returnedAt: legClose.endedAt } : a)));
+          }
+        }
         setReservations((prev) => prev.map((r) => (
-          r.resCode === ra.resCode ? { ...r, ...stamp, rentalAgreementStatus: agreementOutcome.status } : r
+          r.resCode === ra.resCode ? { ...r, rentalAgreementStatus: agreementOutcome.status } : r
         )));
 
         // The vehicle, from what this return found: Needs Cleaning, or Damaged,
@@ -13852,6 +13858,10 @@ function CustomerPage() {
     setCustomerNotesLog(parseNotesLog(localRecord.notesLog));
   }, [localRecord]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Rental days run to the day the vehicle actually came back once it has,
+  // and to the scheduled return until then.
+  const billEndDate = actualReturnDay(ra) || resInfoForm.returnDate;
+
   // Hydrate lineItems and payments once from rental_agreements when the RA record first loads
   const raHydratedId = React.useRef(null);
   React.useEffect(() => {
@@ -13860,7 +13870,7 @@ function CustomerPage() {
     const saved = Array.isArray(ra.lineItems) && ra.lineItems.length > 0 ? ra.lineItems : null;
     const startDays = (() => {
       const d1 = resInfoForm.pickupDate ? new Date(`${resInfoForm.pickupDate}T00:00:00`) : null;
-      const d2 = resInfoForm.returnDate ? new Date(`${resInfoForm.returnDate}T00:00:00`) : null;
+      const d2 = billEndDate ? new Date(`${billEndDate}T00:00:00`) : null;
       if (!d1 || !d2) return 0;
       const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
       return diff > 0 ? diff : 0;
@@ -13874,7 +13884,7 @@ function CustomerPage() {
 
   React.useEffect(() => {
     const d1 = resInfoForm.pickupDate ? new Date(`${resInfoForm.pickupDate}T00:00:00`) : null;
-    const d2 = resInfoForm.returnDate ? new Date(`${resInfoForm.returnDate}T00:00:00`) : null;
+    const d2 = billEndDate ? new Date(`${billEndDate}T00:00:00`) : null;
     if (!d1 || !d2) return;
     const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
     const days = diff > 0 ? diff : 0;
@@ -13883,7 +13893,7 @@ function CustomerPage() {
         ? { ...item, qty: String(days) }
         : item
     ));
-  }, [resInfoForm.pickupDate, resInfoForm.returnDate]);
+  }, [resInfoForm.pickupDate, billEndDate]);
 
   React.useEffect(() => {
     const checked = ratesForm.winterTires === "Yes";
@@ -14062,15 +14072,6 @@ function CustomerPage() {
         prev.map((r) => r.resCode === resCode ? { ...r, rentalAgreementStatus: status } : r)
       );
       syncRAStatus(resCode, status);
-
-      // Auto-stamp return date/time at the moment of close
-      if (RA_CLOSING_STATUSES.includes(status)) {
-        const stamp = raCloseStamp();
-        setResInfoForm((p) => ({ ...p, ...stamp }));
-        supabase.from("reservations").update(stamp).eq("resCode", resCode)
-          .then((res) => console.log("reservations return date/time update:", res))
-          .catch((e) => console.warn("reservations return date/time update:", e));
-      }
     }, { tableName: "reservations", recordId: resCode, description: `Rental agreement status ${rentalAgreementStatus} -> ${status}.` });
   };
 
@@ -14530,9 +14531,9 @@ function CustomerPage() {
 
   // ── Charges & Payments body ───────────────────────────────────────────────
   const totalDays = (() => {
-    if (!resInfoForm.pickupDate || !resInfoForm.returnDate) return 0;
+    if (!resInfoForm.pickupDate || !billEndDate) return 0;
     const d1 = new Date(`${resInfoForm.pickupDate}T00:00:00`);
-    const d2 = new Date(`${resInfoForm.returnDate}T00:00:00`);
+    const d2 = new Date(`${billEndDate}T00:00:00`);
     const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
     return diff > 0 ? diff : 0;
   })();
