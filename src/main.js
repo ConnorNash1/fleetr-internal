@@ -989,6 +989,17 @@ function auditRecordId(table, match, data, context) {
   return firstMatch != null ? String(firstMatch) : null;
 }
 
+// Renter details never go into the log. The log keeps no renter's name or
+// contact details, so it says which field changed but not what to; the record
+// id says whose. The same fields the renter data purge clears.
+const AUDIT_PERSONAL_FIELDS = new Set([
+  "customer", "firstName", "lastName", "phone", "email", "drivers", "otherDriver", "nameMismatch",
+  "licenseNumber", "licenseNum", "licenseCountry", "licenseState", "licenseProvince", "licenseExpiry",
+  "adjusterName", "claimNumber", "fileNumber", "authNumber", "poNumber",
+  "pickupSignature", "returnSignature", "signature", "returnVehicleLocation",
+  "notes", "notesLog", "callOutcome", "callOutcomeAt",
+]);
+
 // A short "what changed" line from the payload, capped so one oversized field
 // cannot turn the log into a place nobody reads.
 function auditDescribe(data, limit = 160) {
@@ -997,6 +1008,7 @@ function auditDescribe(data, limit = 160) {
   const parts = entries.map(([k, v]) => {
     let shown;
     if (v === null || v === undefined) shown = "cleared";
+    else if (AUDIT_PERSONAL_FIELDS.has(k)) shown = "changed";
     else if (typeof v === "object")    shown = Array.isArray(v) ? `${v.length} item(s)` : "updated";
     else                                shown = String(v);
     if (shown.length > 40) shown = shown.slice(0, 37) + "...";
@@ -14076,7 +14088,7 @@ function CustomerPage() {
         console.warn("Delete reservation error:", e);
       }
       navigate(-1);
-    }, { tableName: "reservations", recordId: resCode, description: `Deleted reservation for ${name}.` });
+    }, { tableName: "reservations", recordId: resCode, description: `Deleted reservation ${resCode}.` });
   };
 
   const deleteBtn = React.createElement("button", {
