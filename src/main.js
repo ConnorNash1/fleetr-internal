@@ -15357,7 +15357,7 @@ function ForgotScreen({ onCancel }) {
               busy ? "Sending\u2026" : "Send a reset link"),
             err && React.createElement("div", { className: "loginError" }, err),
             React.createElement("div", { style: { opacity: 0.65, fontSize: "0.8rem", marginTop: "8px", textAlign: "center" } },
-              "The link goes to the personal email on your account, not to your fleetr username."),
+              "The link goes to the email on your account, not to your fleetr username."),
             React.createElement("button", {
               type: "button", onClick: onCancel,
               style: { background: "none", border: "none", color: "#42a4ff", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
@@ -15455,7 +15455,7 @@ function SignupScreen({ onDone, onCancel }) {
                 value: name, onChange: (e) => { setName(e.target.value); setMessage(""); } }),
         field({ type: "text", placeholder: "Username", minLength: USERNAME_MIN, maxLength: USERNAME_MAX, autoComplete: "username",
                 value: username, onChange: (e) => { setUsername(e.target.value.toLowerCase()); setMessage(""); } }),
-        field({ type: "email", placeholder: "Personal email (for account recovery)", maxLength: 120, autoComplete: "email",
+        field({ type: "email", placeholder: "Email", maxLength: 120, autoComplete: "email",
                 value: email, onChange: (e) => { setEmail(e.target.value); setMessage(""); } }),
         field({ type: "password", placeholder: "Password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX, autoComplete: "new-password",
                 value: password, onChange: (e) => { setPassword(e.target.value); setMessage(""); } }),
