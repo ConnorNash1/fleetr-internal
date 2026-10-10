@@ -6466,23 +6466,49 @@ const COMPANY_REASONS = {
   network:        "Could not reach the server.",
 };
 
-// The time zones a branch can be in, by the names Postgres also knows. A
-// branch has none until its Exec picks one; its texts, bookings and listing
-// all run on it.
-const BRANCH_TIME_ZONES = (typeof Intl !== "undefined" && Intl.supportedValuesOf
-  ? Intl.supportedValuesOf("timeZone") : []).filter((z) => z.startsWith("America/"));
+// The time zones a branch can be in, east to west: the ID stored (a name
+// Postgres also knows) and the name staff see. A branch has none until its
+// Exec picks one; its texts, bookings and listing all run on it.
+const BRANCH_TIME_ZONES = [
+  ["America/St_Johns",  "Newfoundland Time (NT)"],
+  ["America/Halifax",   "Atlantic Time (AT)"],
+  ["America/Toronto",   "Eastern Time (ET)"],
+  ["America/Winnipeg",  "Central Time (CT)"],
+  ["America/Regina",    "Central Time, no daylight saving (CST)"],
+  ["America/Edmonton",  "Mountain Time (MT)"],
+  ["America/Phoenix",   "Mountain Time, no daylight saving (MST)"],
+  ["America/Vancouver", "Pacific Time (PT)"],
+  ["America/Anchorage", "Alaska Time (AKT)"],
+  ["Pacific/Honolulu",  "Hawaii Time (HT)"],
+];
+// A branch saved before this list existed may hold another ID that keeps the
+// same clock. It is shown by that clock's name and left as stored.
+const TIME_ZONE_SAME_CLOCK = {
+  "America/Glace_Bay": "America/Halifax", "America/Moncton": "America/Halifax", "America/Goose_Bay": "America/Halifax",
+  "America/New_York": "America/Toronto", "America/Detroit": "America/Toronto", "America/Montreal": "America/Toronto",
+  "America/Chicago": "America/Winnipeg", "America/Swift_Current": "America/Regina",
+  "America/Denver": "America/Edmonton", "America/Boise": "America/Edmonton",
+  "America/Los_Angeles": "America/Vancouver", "America/Juneau": "America/Anchorage",
+};
+// The name a branch time zone is shown by. An ID outside the list is shown
+// as it is stored, so nothing on file is hidden.
+function timeZoneName(id) {
+  const hit = BRANCH_TIME_ZONES.find(([z]) => z === (TIME_ZONE_SAME_CLOCK[id] || id));
+  return hit ? hit[1] : String(id || "").replace(/_/g, " ");
+}
 
 function BranchTimeZoneCell({ branch, timeZone, busy, onSave }) {
   const [value, setValue] = React.useState(timeZone || "");
   React.useEffect(() => { setValue(timeZone || ""); }, [timeZone]);
-  const options = timeZone && !BRANCH_TIME_ZONES.includes(timeZone) ? [timeZone, ...BRANCH_TIME_ZONES] : BRANCH_TIME_ZONES;
+  const ids = BRANCH_TIME_ZONES.map(([z]) => z);
+  const options = timeZone && !ids.includes(timeZone) ? [timeZone, ...ids] : ids;
   return React.createElement("span", { style: { display: "inline-flex", gap: "6px", alignItems: "center" } },
     React.createElement("select", {
       className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, value, disabled: busy,
       "aria-label": `${branch.name} time zone`, onChange: (e) => setValue(e.target.value),
     },
       React.createElement("option", { value: "" }, "Not set"),
-      options.map((z) => React.createElement("option", { key: z, value: z }, z.replace(/_/g, " ")))),
+      options.map((z) => React.createElement("option", { key: z, value: z }, timeZoneName(z)))),
     React.createElement("button", {
       className: "loginBtn", style: { width: "auto", padding: "5px 9px" },
       disabled: busy || !value || value === timeZone,
