@@ -8053,8 +8053,9 @@ function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
     }, "Save"));
 }
 
-// The standard sources (standard_sources in the database): fleetr.ai bookings
-// and Walk-in or phone. Picked the way vehicle classes are; nothing is added
+// The standard sources (standard_sources in the database): fleetr.ai bookings,
+// which also covers walk-in and phone customers, who pay the same. Picked the
+// way vehicle classes are; nothing is added
 // unless it is ticked. Used on the Company page and in the setup checklist.
 function StandardSourcePicker({ disabled, onAdded }) {
   const { currentUser } = React.useContext(AppContext);
@@ -8100,7 +8101,7 @@ function StandardSourcePicker({ disabled, onAdded }) {
 
   if (!list) return error ? el("div", { className: "loginError" }, error) : el("p", { className: "closeRentalHint" }, "Loading the standard sources...");
   return el("div", { style: { marginTop: "12px" } },
-    el("div", { className: "gasSettingSubhead" }, "Add standard sources"),
+    el("div", { className: "gasSettingSubhead" }, list.length === 1 ? "Add the standard source" : "Add standard sources"),
     list.map((s) => {
       const added = have(s);
       return el("label", { key: s.key, style: { display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "6px", cursor: added ? "default" : "pointer", opacity: added ? 0.6 : 1 } },
@@ -10848,7 +10849,7 @@ const SETUP_ITEMS = {
   pickup_locations:      { title: "Pickup locations", path: "/company",
                            text: "At least one for every open branch." },
   vehicle_classes:       { title: "Vehicle classes", path: "/company", text: "Tick the ones you rent from the standard list. At least one." },
-  sources:               { title: "Sources", path: "/company", text: "Who the work comes from. Pick the standard ones you use, and add your own on the Company page. At least one." },
+  sources:               { title: "Sources", path: "/company", text: "Who the work comes from. Pick fleetr.ai bookings, the rate for fleetr.ai, walk-in and phone customers, and add your own on the Company page. At least one." },
   daily_rates:           { title: "Daily rates", path: "/company",
                            text: "A rate for every vehicle class, under at least one source." },
   acknowledgements:      { title: "Contract acknowledgements", path: "/company",
