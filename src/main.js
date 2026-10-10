@@ -7160,6 +7160,20 @@ async function geocodeBranchAddress(parts) {
     || ask(`q=${encodeURIComponent(BRANCH_ADDRESS_PARTS.map(([k]) => parts[k]).join(", "))}`);
 }
 
+// The address's city alone, for a pin to start from when the full address
+// cannot be found. Null when that cannot be found either.
+async function geocodeBranchCity(parts) {
+  try {
+    const q = encodeURIComponent([parts.city, parts.province, parts.country].filter(Boolean).join(", "));
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${q}`,
+      { headers: { "Accept-Language": "en-CA" } });
+    const out = await res.json();
+    return Array.isArray(out) && out[0] ? [Number(out[0].lat), Number(out[0].lon)] : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 const listingPhotoUrl = (path) =>
   path ? supabase.storage.from(LISTING_BUCKET).getPublicUrl(path).data.publicUrl : null;
 
@@ -7199,27 +7213,80 @@ function listingMissing(listing, timeZone) {
   return missing.length ? listingNeedsSentence(missing) : "";
 }
 
-// Leaflet, loaded the first time a map is opened.
-let leafletPromise = null;
-function loadLeaflet() {
-  if (!leafletPromise) {
-    if (!document.querySelector("link[data-leaflet]")) {
-      const link = document.createElement("link");
+// The map, loaded the first time one is shown: Leaflet with OpenFreeMap's
+// Positron style drawn by MapLibre GL inside it (the maplibre-gl-leaflet
+// plugin), the same versions and style fleetr.ai uses. The stylesheets are
+// waited for before any map is made: a map drawn before Leaflet's CSS arrives
+// lays its tiles out as loose images, which reads as several maps.
+let mapLibsPromise = null;
+function loadMapLibs() {
+  const css = (href) => new Promise((resolve) => {
+    let link = document.querySelector(`link[href="${href}"]`);
+    if (link && link.sheet) { resolve(); return; }
+    if (!link) {
+      link = document.createElement("link");
       link.rel = "stylesheet";
-      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-      link.setAttribute("data-leaflet", "");
+      link.href = href;
       document.head.appendChild(link);
     }
-    leafletPromise = import("https://esm.sh/leaflet@1.9.4").then((m) => {
-      const L = m.default || m;
+    link.addEventListener("load", () => resolve(), { once: true });
+    link.addEventListener("error", () => resolve(), { once: true });
+  });
+  const js = (src) => new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`could not load ${src}`));
+    document.head.appendChild(s);
+  });
+  if (!mapLibsPromise) {
+    mapLibsPromise = Promise.all([
+      css("https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"),
+      css("https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"),
+      // In order: the plugin needs both globals.
+      js("https://unpkg.com/leaflet@1.9.4/dist/leaflet.js")
+        .then(() => js("https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"))
+        .then(() => js("https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js")),
+    ]).then(() => {
+      const L = window.L;
+      if (!L || !L.maplibreGL || !window.maplibregl) throw new Error("map libraries missing");
       L.Icon.Default.imagePath = "https://unpkg.com/leaflet@1.9.4/dist/images/";
       return L;
-    }).catch((e) => { leafletPromise = null; throw e; });
+    }).catch((e) => { mapLibsPromise = null; throw e; });
   }
-  return leafletPromise;
+  return mapLibsPromise;
 }
 
-// A map to place the branch's pin: click the map, or drag the pin.
+// Positron as fleetr.ai draws it: fetched once, with no administrative
+// boundaries and water in a soft cool grey-blue. If the style cannot be
+// fetched, MapLibre is given its address and draws it unchanged.
+const POSITRON_URL = "https://tiles.openfreemap.org/styles/positron";
+const MAP_WATER = "#DDE3E8";
+const MAP_CREDITS = '<a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> '
+  + '<a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">&copy; OpenMapTiles</a> Data from '
+  + '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>';
+let positronPromise = null;
+function positronStyle() {
+  if (!positronPromise) {
+    positronPromise = fetch(POSITRON_URL)
+      .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
+      .then((style) => {
+        for (const layer of style.layers || []) {
+          if (layer.id.includes("boundary")) layer.layout = { ...(layer.layout || {}), visibility: "none" };
+          else if (layer.id === "water" && layer.type === "fill") layer.paint = { ...(layer.paint || {}), "fill-color": MAP_WATER };
+          else if (layer.id === "waterway" && layer.type === "line") layer.paint = { ...(layer.paint || {}), "line-color": MAP_WATER };
+        }
+        return style;
+      })
+      .catch(() => { positronPromise = null; return POSITRON_URL; });
+  }
+  return positronPromise;
+}
+
+// A small preview of the branch's pin, placed from its address. Dragging the
+// pin is there only for when it looks wrong. One world, never repeated, and
+// resized whenever its box changes size, so it draws properly once visible.
 function ListingMapPin({ lat, lng, disabled, onPlace }) {
   const boxRef    = React.useRef(null);
   const mapRef    = React.useRef(null);
@@ -7227,58 +7294,65 @@ function ListingMapPin({ lat, lng, disabled, onPlace }) {
   const placeRef  = React.useRef(onPlace);
   placeRef.current = onPlace;
   const [failed, setFailed] = React.useState(false);
-  const has = Number.isFinite(lat) && Number.isFinite(lng);
 
   React.useEffect(() => {
     let cancelled = false;
-    loadLeaflet().then((L) => {
-      if (cancelled || !boxRef.current) return;
-      // With no pin yet the map opens on the whole world, not on a place
-      // chosen for the branch.
-      const map = L.map(boxRef.current);
-      if (has) map.setView([lat, lng], 15); else map.fitWorld();
-      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19, attribution: "&copy; OpenStreetMap contributors",
-      }).addTo(map);
-      map.on("click", (e) => placeRef.current(e.latlng.lat, e.latlng.lng));
+    let observer = null;
+    loadMapLibs().then(async (L) => {
+      const box = boxRef.current;
+      // Never a second map in the same box.
+      if (cancelled || !box || mapRef.current) return;
+      const map = L.map(box, {
+        center: [lat, lng], zoom: 15, minZoom: 2,
+        worldCopyJump: false, maxBounds: [[-85, -180], [85, 180]], maxBoundsViscosity: 1,
+        attributionControl: true,
+      });
+      map.attributionControl.setPrefix(false);
       mapRef.current = map;
-      setTimeout(() => map.invalidateSize(), 0);
+      const style = await positronStyle();
+      if (cancelled || mapRef.current !== map) return;
+      L.maplibreGL({ style, renderWorldCopies: false, attribution: MAP_CREDITS }).addTo(map);
+      markerRef.current = L.marker([lat, lng], { draggable: !disabled, keyboard: false }).addTo(map);
+      markerRef.current.on("dragend", (ev) => {
+        const p = ev.target.getLatLng();
+        placeRef.current(p.lat, p.lng);
+      });
+      if ("ResizeObserver" in window) {
+        let wasHidden = box.clientWidth === 0;
+        observer = new ResizeObserver(() => {
+          if (!mapRef.current || box.clientWidth === 0) { wasHidden = true; return; }
+          mapRef.current.invalidateSize();
+          if (wasHidden && markerRef.current) mapRef.current.setView(markerRef.current.getLatLng(), mapRef.current.getZoom());
+          wasHidden = false;
+        });
+        observer.observe(box);
+      } else {
+        setTimeout(() => map.invalidateSize(), 0);
+      }
     }).catch(() => { if (!cancelled) setFailed(true); });
     return () => {
       cancelled = true;
+      if (observer) observer.disconnect();
       if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; markerRef.current = null; }
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // A new pin from a new address moves the marker and the view to it.
   React.useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !leafletPromise) return;
-    leafletPromise.then((L) => {
-      if (!mapRef.current) return;
-      if (!has) {
-        if (markerRef.current) { markerRef.current.remove(); markerRef.current = null; }
-        return;
-      }
-      if (!markerRef.current) {
-        markerRef.current = L.marker([lat, lng], { draggable: !disabled }).addTo(map);
-        markerRef.current.on("dragend", (e) => {
-          const p = e.target.getLatLng();
-          placeRef.current(p.lat, p.lng);
-        });
-        if (!map.getBounds().contains([lat, lng])) map.setView([lat, lng], 15);
-      } else {
-        markerRef.current.setLatLng([lat, lng]);
-      }
-    });
+    const map = mapRef.current, marker = markerRef.current;
+    if (!map || !marker) return;
+    const at = marker.getLatLng();
+    if (at.lat !== lat || at.lng !== lng) {
+      marker.setLatLng([lat, lng]);
+      map.setView([lat, lng], map.getZoom());
+    }
+    if (marker.dragging) { if (disabled) marker.dragging.disable(); else marker.dragging.enable(); }
   });
 
-  if (failed) {
-    return React.createElement("p", { className: "closeRentalHint" },
-      "The map could not be loaded. Type the latitude and longitude instead.");
-  }
+  if (failed) return React.createElement("p", { className: "closeRentalHint" }, "The map could not be shown right now.");
   return React.createElement("div", {
-    ref: boxRef, style: { height: "280px", borderRadius: "10px", margin: "8px 0" },
-    "aria-label": "Map. Click to place the branch's pin.",
+    ref: boxRef, style: { height: "200px", maxWidth: "480px", borderRadius: "10px", margin: "8px 0", overflow: "hidden" },
+    "aria-label": "Map showing the branch's pin",
   });
 }
 
@@ -7321,13 +7395,16 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       ...Object.fromEntries(BRANCH_ADDRESS_PARTS.map(([k]) => [k, (l && l[k]) || ""])),
       latitude:    num(l && l.latitude),
       longitude:   num(l && l.longitude),
+      // Every day starts blank. A day left blank is closed.
       hours: Object.fromEntries(LISTING_DAYS.map(([k]) => {
         const d = hours[k];
         return [k, d && d.open && d.close
-          ? { on: true,  open: String(d.open).slice(0, 5), close: String(d.close).slice(0, 5) }
-          : { on: false, open: "", close: "" }];
+          ? { open: String(d.open).slice(0, 5), close: String(d.close).slice(0, 5) }
+          : { open: "", close: "" }];
       })),
-      citiesServed:      ((l && l.citiesServed) || []).join(", "),
+      sameOpen: "", sameClose: "",
+      // Starts with the address's city; the Exec can add more.
+      citiesServed:      ((l && l.citiesServed) || []).join(", ") || ((l && l.city) || ""),
       airportCodes:      ((l && l.airportCodes) || []).join(", "),
       airportPickup:     !!(l && l.airportPickup),
       delivery:          !!(l && l.delivery),
@@ -7346,9 +7423,23 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
   const [busy,    setBusy]    = React.useState("");
   const [error,   setError]   = React.useState("");
   const [notice,  setNotice]  = React.useState("");
-  const set = (field, value) => setDraft((p) => ({ ...p, [field]: value }));
+  const set = (field, value) => setDraft((p) => {
+    const next = { ...p, [field]: value };
+    // While cities served is empty or still just the address's city, it
+    // follows the city as it is typed.
+    if (field === "city" && (p.citiesServed.trim() === "" || p.citiesServed.trim() === p.city.trim())) {
+      next.citiesServed = value;
+    }
+    return next;
+  });
   const setDay = (k, field, value) =>
     setDraft((p) => ({ ...p, hours: { ...p.hours, [k]: { ...p.hours[k], [field]: value } } }));
+  // "Same hours every day": the two times typed once, put on every day.
+  const fillEveryDay = () => {
+    if (!draft.sameOpen || !draft.sameClose) { setError("Enter an opening and a closing time to fill every day."); setNotice(""); return; }
+    setError("");
+    setDraft((p) => ({ ...p, hours: Object.fromEntries(LISTING_DAYS.map(([k]) => [k, { open: p.sameOpen, close: p.sameClose }])) }));
+  };
 
   const el = React.createElement;
   const listed = !!(listing && listing.listed);
@@ -7397,8 +7488,6 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       return optional(s, min, max, label, true);
     };
     const checks = {
-      latitude:        optional(draft.latitude, -90, 90, "Latitude"),
-      longitude:       optional(draft.longitude, -180, 180, "Longitude"),
       minimumAge:      optional(draft.minimumAge, 16, 99, "Minimum age", true),
       deposit:         optional(draft.deposit, 0, 99999, "Deposit"),
       minNoticeHours:  required(draft.minNoticeHours, 0, 720, "Minimum notice"),
@@ -7407,14 +7496,11 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     };
     const bad = Object.values(checks).find((c) => !c.ok);
     if (bad) { setError(bad.text); setNotice(""); return; }
-    if ((checks.latitude.value == null) !== (checks.longitude.value == null)) {
-      setError("Give both a latitude and a longitude, or neither."); setNotice(""); return;
-    }
 
     const hours = {};
     for (const [k, name] of LISTING_DAYS) {
       const d = draft.hours[k];
-      if (!d.on) continue;
+      if (!d.open && !d.close) continue;
       if (!d.open || !d.close) {
         setError(`${name}: enter the opening and closing times.`); setNotice(""); return;
       }
@@ -7440,7 +7526,9 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     // The pin follows the address: placed from it when the address is new or
     // changed, or when there is no pin yet. A pin moved by hand afterwards
     // stays where it was put until the address changes again.
-    let latitude = checks.latitude.value, longitude = checks.longitude.value;
+    // Never typed: the pin comes from the address, or from a drag.
+    const coord = (v) => (String(v).trim() === "" || !Number.isFinite(Number(v)) ? null : Number(v));
+    let latitude = coord(draft.latitude), longitude = coord(draft.longitude);
     let pinNote = "";
     const addressChanged = BRANCH_ADDRESS_PARTS.some(([k]) => (address[k] || "") !== ((listing && listing[k]) || ""));
     if (branchAddressComplete(address) && (addressChanged || latitude == null || longitude == null)) {
@@ -7449,9 +7537,13 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       setBusy("");
       if (hit) {
         [latitude, longitude] = hit;
-        pinNote = " The pin was placed from the address. Drag it if it is off.";
+        pinNote = " The pin was placed from the address.";
       } else {
-        pinNote = " The address could not be found on the map, so place the pin by clicking the map.";
+        // A new address that cannot be found starts the pin at its city, so
+        // there is a pin to drag; it is said either way.
+        const near = addressChanged || latitude == null ? await geocodeBranchCity(address) : null;
+        if (near) [latitude, longitude] = near;
+        pinNote = " We couldn't find that address on the map. Check it, or drag the pin to the right spot.";
       }
     }
 
@@ -7602,29 +7694,36 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     row(
       field("Postal code", input("postalCode", { maxLength: 20,  autoComplete: "postal-code", style: { width: "140px" } })),
       field("Country",     input("country",    { maxLength: 100, autoComplete: "country-name" }))),
-    row(
-      field("Latitude",  input("latitude",  { inputMode: "decimal", style: { width: "140px" } })),
-      field("Longitude", input("longitude", { inputMode: "decimal", style: { width: "140px" } }))),
-    el("p", { className: "closeRentalHint" }, "The pin is placed from the address when you save. Click the map or drag the pin to move it."),
-    el(ListingMapPin, {
-      lat, lng, disabled: !!busy,
-      onPlace: (a, b) => setDraft((p) => ({ ...p, latitude: a.toFixed(6), longitude: b.toFixed(6) })),
-    }),
+    Number.isFinite(lat) && Number.isFinite(lng)
+      ? el(React.Fragment, null,
+          el(ListingMapPin, {
+            lat, lng, disabled: !!busy,
+            onPlace: (a, b) => setDraft((p) => ({ ...p, latitude: a.toFixed(6), longitude: b.toFixed(6) })),
+          }),
+          el("p", { className: "closeRentalHint" }, "Only if the pin looks wrong: drag it to the right spot, then save."))
+      : el("p", { className: "closeRentalHint" }, "The map pin is placed from the address when you save."),
 
     el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Hours"),
+    el("div", { style: { display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", marginBottom: "10px" } },
+      el("span", { style: { width: "130px" } }, "Same hours every day"),
+      el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, value: draft.sameOpen, disabled: !!busy,
+        "aria-label": "Opening time for every day", onChange: (e) => set("sameOpen", e.target.value) }),
+      el("span", null, "to"),
+      el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, value: draft.sameClose, disabled: !!busy,
+        "aria-label": "Closing time for every day", onChange: (e) => set("sameClose", e.target.value) }),
+      el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, disabled: !!busy,
+        onClick: fillEveryDay }, "Fill every day")),
     LISTING_DAYS.map(([k, name]) => {
       const d = draft.hours[k];
       return el("div", { key: k, style: { display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", marginBottom: "6px" } },
-        el("span", { style: { width: "130px" } }, check(name, d.on, (on) => setDay(k, "on", on))),
-        d.on
-          ? el(React.Fragment, null,
-              el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, value: d.open, disabled: !!busy,
-                "aria-label": `${name} opening time`, onChange: (e) => setDay(k, "open", e.target.value) }),
-              el("span", null, "to"),
-              el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, value: d.close, disabled: !!busy,
-                "aria-label": `${name} closing time`, onChange: (e) => setDay(k, "close", e.target.value) }))
-          : el("span", { className: "closeRentalHint" }, "Closed"));
+        el("span", { style: { width: "130px" } }, name),
+        el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, value: d.open, disabled: !!busy,
+          "aria-label": `${name} opening time`, onChange: (e) => setDay(k, "open", e.target.value) }),
+        el("span", null, "to"),
+        el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, value: d.close, disabled: !!busy,
+          "aria-label": `${name} closing time`, onChange: (e) => setDay(k, "close", e.target.value) }));
     }),
+    el("p", { className: "closeRentalHint" }, "Leave a day blank if the branch is closed that day."),
 
     el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Where it serves"),
     row(
