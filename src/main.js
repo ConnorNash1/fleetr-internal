@@ -298,7 +298,7 @@ async function loadCompanyLists(user) {
     const results = await Promise.all([
       own("pickup_locations",    "id,locationId,name,active,sortOrder"),
       own("vehicle_classes",     "id,name,active,sortOrder,category,electric,luxury,seats,bags,exampleModels"),
-      own("sources",             "id,name,billingType,active,sortOrder"),
+      own("sources",             "id,name,billingType,active,sortOrder,standardKey"),
       own("source_details",      "id,sourceId,name,active"),
       own("daily_rates",         "vehicleClassId,sourceId,amount"),
       own("protection_products", "id,name,active,sortOrder,customerWording,declineWording,required"),
@@ -7121,7 +7121,7 @@ const LISTING_NEEDS = {
   minimum_notice:     "a minimum notice",
   maximum_length:     "a maximum rental length",
   turnaround:         "a turnaround buffer",
-  retail_rate:        "a retail daily rate (Daily rates, below)",
+  retail_rate:        "a fleetr.ai bookings daily rate (Daily rates, below)",
 };
 const listingNeedsSentence = (keys) => {
   const words = keys.map((k) => LISTING_NEEDS[k] || k);
@@ -7177,13 +7177,13 @@ async function geocodeBranchCity(parts) {
 const listingPhotoUrl = (path) =>
   path ? supabase.storage.from(LISTING_BUCKET).getPublicUrl(path).data.publicUrl : null;
 
-// True when the company has a retail daily rate for a class that is switched
-// on: public booking quotes and books retail rates only.
+// True when the company has a fleetr.ai bookings daily rate for a class that
+// is switched on: public booking quotes and books that rate only.
 function listingHasRetailRate() {
   if (!companyLists) return false;
   const classes = companyLists.vehicleClasses.filter((c) => c.active);
   return companyLists.sources
-    .filter((x) => x.active && x.billingType === "retail")
+    .filter((x) => x.active && x.standardKey === "fleetr_ai")
     .some((x) => classes.some((c) => companyLists.rates[x.name] && companyLists.rates[x.name][c.name] != null));
 }
 
@@ -7774,8 +7774,9 @@ const LIST_REASONS = {
   exec_only:        "Only an Exec can change these lists.",
   not_signed_in:    "You are signed out. Sign in again and retry.",
   bad_name:         "Give it a name of 1 to 60 characters.",
-  use_standard_list: "Pick vehicle classes from the list.",
-  name_fixed:       "A vehicle class keeps the name it has in the list.",
+  use_standard_list: "Pick that one from the standard list.",
+  name_fixed:       "It keeps the name it has in the standard list.",
+  whole_dollars:    "A fleetr.ai bookings daily rate is whole dollars only, for example 55.",
   nothing_picked:   "Tick at least one vehicle class.",
   not_standard:     "That vehicle class is not on the list.",
   bad_models:       "Keep the example models to 120 characters.",
@@ -8052,6 +8053,74 @@ function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
     }, "Save"));
 }
 
+// The standard sources (standard_sources in the database): fleetr.ai bookings
+// and Walk-in or phone. Picked the way vehicle classes are; nothing is added
+// unless it is ticked. Used on the Company page and in the setup checklist.
+function StandardSourcePicker({ disabled, onAdded }) {
+  const { currentUser } = React.useContext(AppContext);
+  const [list, setList]     = React.useState(null);
+  const [picked, setPicked] = React.useState({});
+  const [busy, setBusy]     = React.useState(false);
+  const [error, setError]   = React.useState("");
+  const [notice, setNotice] = React.useState("");
+  const [, setTick]         = React.useState(0);
+  const el = React.createElement;
+
+  React.useEffect(() => {
+    let live = true;
+    supabase.rpc("standard_sources").then(({ data, error: err }) => {
+      if (!live) return;
+      if (err || !Array.isArray(data)) setError("The standard sources could not be loaded. Reload the page to try again.");
+      else setList(data);
+    });
+    return () => { live = false; };
+  }, []);
+
+  const own = (companyLists && companyLists.sources) || [];
+  const have = (s) => own.some((x) => x.standardKey === s.key || String(x.name).toLowerCase() === String(s.name).toLowerCase());
+  const chosen = (list || []).filter((s) => picked[s.key] && !have(s)).map((s) => s.key);
+
+  const add = async () => {
+    if (!chosen.length) return;
+    setBusy(true); setError(""); setNotice("");
+    const { data, error: err } = await supabase.rpc("add_standard_sources", { p_keys: chosen });
+    if (err || !data || !data.ok) {
+      setBusy(false);
+      setError(err ? "Could not reach the server." : (LIST_REASONS[data && data.reason] || "That did not work."));
+      return;
+    }
+    await loadCompanyLists(currentUser);
+    setPicked({});
+    setBusy(false);
+    setTick((n) => n + 1);
+    const n = (data.added || []).length;
+    setNotice(n ? `Added ${n} source${n === 1 ? "" : "s"}.` : "Those were already added.");
+    if (onAdded) await onAdded();
+  };
+
+  if (!list) return error ? el("div", { className: "loginError" }, error) : el("p", { className: "closeRentalHint" }, "Loading the standard sources...");
+  return el("div", { style: { marginTop: "12px" } },
+    el("div", { className: "gasSettingSubhead" }, "Add standard sources"),
+    list.map((s) => {
+      const added = have(s);
+      return el("label", { key: s.key, style: { display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "6px", cursor: added ? "default" : "pointer", opacity: added ? 0.6 : 1 } },
+        el("input", {
+          type: "checkbox", checked: added || !!picked[s.key], disabled: disabled || busy || added, style: { marginTop: "3px" },
+          onChange: (e) => { const on = e.target.checked; setPicked((p) => ({ ...p, [s.key]: on })); setNotice(""); },
+        }),
+        el("span", null,
+          el("span", { style: { fontWeight: 600 } }, s.name),
+          el("span", { className: "closeRentalHint", style: { display: "block", margin: 0 } },
+            added ? `${s.description} Added.` : s.description)));
+    }),
+    error && el("div", { className: "loginError" }, error),
+    notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginTop: "8px" } }, notice),
+    el("button", {
+      type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px", marginTop: "6px" },
+      disabled: disabled || busy || chosen.length === 0, onClick: add,
+    }, busy ? "Adding..." : chosen.length ? `Add ${chosen.length} source${chosen.length === 1 ? "" : "s"}` : "Add"));
+}
+
 // The standard vehicle classes (standard_vehicle_classes in the database),
 // each with its type, seats, bags and example models. The Exec ticks the ones
 // they rent and saves; nothing is added unless it is ticked. One already
@@ -8326,9 +8395,9 @@ function CompanyListsSections({ branches }) {
       setError({ at, text: LIST_REASONS.bad_amount });
       return { ok: false };
     }
-    // A retail daily rate is what fleetr.ai quotes, in whole dollars.
+    // A fleetr.ai bookings daily rate is what fleetr.ai quotes, in whole dollars.
     if (wholeDollars && !Number.isInteger(n)) {
-      setError({ at, text: "A retail daily rate is whole dollars only, for example 55." });
+      setError({ at, text: LIST_REASONS.whole_dollars });
       return { ok: false };
     }
     return { ok: true, amount: n };
@@ -8460,7 +8529,7 @@ function CompanyListsSections({ branches }) {
                 el(ListPriceCell, {
                   value: valueFor(c, x), disabled: busy,
                   onSave: (typed) => {
-                    const parsed = parsePrice(at, typed, at === "rates" && x.billingType === "retail");
+                    const parsed = parsePrice(at, typed, at === "rates" && x.standardKey === "fleetr_ai");
                     return parsed.ok ? saveFor(c, x, parsed.amount) : Promise.resolve(false);
                   },
                 }))))))));
@@ -8527,7 +8596,7 @@ function CompanyListsSections({ branches }) {
 
     // ── Sources ──
     section("Sources",
-      "Who the work comes from. The billing type decides which billing fields a reservation asks for, so a source can be renamed freely. Open a source to see the specific sources under it.",
+      "Who the work comes from. The billing type decides which billing fields a reservation asks for, so a source of your own can be renamed freely. Open a source to see the specific sources under it.",
       "sources",
       table("640px", listHeads("Source", "Billing type"),
         sources.map((entry, i) => {
@@ -8536,7 +8605,8 @@ function CompanyListsSections({ branches }) {
           const rows = [entryRow({
             at: "sources", kind: "source", entry,
             reorder: { listKey: "sources", list: sources, index: i, saveCall: saveSource },
-            rename: (name) => ["save_source", {
+            // A standard source keeps its name and billing type.
+            rename: entry.standardKey ? null : (name) => ["save_source", {
               p_id: entry.id, p_name: name, p_billing_type: entry.billingType, p_sort: null,
             }],
             goesWith: `Its ${n} specific source${n === 1 ? "" : "s"}, its daily rates and its protection prices go with it.`,
@@ -8546,8 +8616,9 @@ function CompanyListsSections({ branches }) {
               style: { background: "none", border: "none", color: "inherit", font: "inherit", cursor: "pointer", padding: "0 8px 0 0" },
               onClick: () => setOpenSources((p) => ({ ...p, [entry.id]: !p[entry.id] })),
             }, isOpen ? "▾" : "▸"),
-            extra: el("td", null,
-              el("select", {
+            extra: el("td", null, entry.standardKey
+              ? (BILLING_TYPE_LABELS.find(([v]) => v === entry.billingType) || [null, entry.billingType])[1]
+              : el("select", {
                 className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, disabled: busy,
                 value: entry.billingType,
                 onChange: (e) => act("sources", "save_source", {
@@ -8573,7 +8644,8 @@ function CompanyListsSections({ branches }) {
           }
           return rows;
         })),
-      subHeading("Add a source"),
+      el(StandardSourcePicker, { disabled: busy, onAdded: reload }),
+      subHeading("Add a source of your own"),
       el(ListAddRow, {
         placeholder: "New source", label: "Add source", withType: true, disabled: busy,
         onAdd: (name, type) => act("sources", "save_source", {
@@ -10776,7 +10848,7 @@ const SETUP_ITEMS = {
   pickup_locations:      { title: "Pickup locations", path: "/company",
                            text: "At least one for every open branch." },
   vehicle_classes:       { title: "Vehicle classes", path: "/company", text: "Tick the ones you rent from the standard list. At least one." },
-  sources:               { title: "Sources", path: "/company", text: "Who the work comes from. At least one." },
+  sources:               { title: "Sources", path: "/company", text: "Who the work comes from. Pick the standard ones you use, and add your own on the Company page. At least one." },
   daily_rates:           { title: "Daily rates", path: "/company",
                            text: "A rate for every vehicle class, under at least one source." },
   acknowledgements:      { title: "Contract acknowledgements", path: "/company",
@@ -10885,7 +10957,9 @@ function SetupPage() {
       // Vehicle classes are picked right here, from the same list as the
       // Company page.
       i.key === "vehicle_classes" && isExec && !setup.launched
-        ? React.createElement(VehicleClassPicker, { disabled: busy, onAdded: refreshSetup }) : null))),
+        ? React.createElement(VehicleClassPicker, { disabled: busy, onAdded: refreshSetup })
+        : i.key === "sources" && isExec && !setup.launched
+          ? React.createElement(StandardSourcePicker, { disabled: busy, onAdded: refreshSetup }) : null))),
     React.createElement("h2", { className: "setupHeading" }, "Optional"),
     React.createElement("ul", { className: "setupList" }, optional.map((i) => React.createElement(SetupItemRow, { key: i.key, item: i }))),
 
