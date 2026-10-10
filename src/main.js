@@ -6462,58 +6462,59 @@ const COMPANY_REASONS = {
   has_staff:      "Move or deactivate this branch's staff before closing it.",
   last_location:  "This is the only open branch. A company needs one.",
   no_operator:    "This account is not attached to a company.",
-  bad_time_zone:  "That time zone is not recognised.",
   network:        "Could not reach the server.",
 };
 
-// The time zones a branch can be in, east to west: the ID stored (a name
-// Postgres also knows) and the name staff see. A branch has none until its
-// Exec picks one; its texts, bookings and listing all run on it.
+// The time zones a branch can be in, east to west, by the IDs Postgres also
+// knows. A branch's zone is never picked: it is looked up from the map pin its
+// address places (branchTimeZoneAt), and its texts, bookings and listing all
+// run on it.
 const BRANCH_TIME_ZONES = [
-  ["America/St_Johns",  "Newfoundland Time (NT)"],
-  ["America/Halifax",   "Atlantic Time (AT)"],
-  ["America/Toronto",   "Eastern Time (ET)"],
-  ["America/Winnipeg",  "Central Time (CT)"],
-  ["America/Regina",    "Central Time, no daylight saving (CST)"],
-  ["America/Edmonton",  "Mountain Time (MT)"],
-  ["America/Phoenix",   "Mountain Time, no daylight saving (MST)"],
-  ["America/Vancouver", "Pacific Time (PT)"],
-  ["America/Anchorage", "Alaska Time (AKT)"],
-  ["Pacific/Honolulu",  "Hawaii Time (HT)"],
+  "America/St_Johns",  "America/Halifax",  "America/Toronto",  "America/Winnipeg", "America/Regina",
+  "America/Edmonton",  "America/Phoenix",  "America/Vancouver", "America/Anchorage", "Pacific/Honolulu",
 ];
-// A branch saved before this list existed may hold another ID that keeps the
-// same clock. It is shown by that clock's name and left as stored.
+// Zones that keep the same clock as one of the ten, stored as that one so a
+// branch is always in a zone from the list.
 const TIME_ZONE_SAME_CLOCK = {
   "America/Glace_Bay": "America/Halifax", "America/Moncton": "America/Halifax", "America/Goose_Bay": "America/Halifax",
   "America/New_York": "America/Toronto", "America/Detroit": "America/Toronto", "America/Montreal": "America/Toronto",
-  "America/Chicago": "America/Winnipeg", "America/Swift_Current": "America/Regina",
-  "America/Denver": "America/Edmonton", "America/Boise": "America/Edmonton",
-  "America/Los_Angeles": "America/Vancouver", "America/Juneau": "America/Anchorage",
+  "America/Nipigon": "America/Toronto", "America/Thunder_Bay": "America/Toronto", "America/Iqaluit": "America/Toronto",
+  "America/Pangnirtung": "America/Toronto", "America/Indiana/Indianapolis": "America/Toronto",
+  "America/Indiana/Marengo": "America/Toronto", "America/Indiana/Petersburg": "America/Toronto",
+  "America/Indiana/Vevay": "America/Toronto", "America/Indiana/Vincennes": "America/Toronto",
+  "America/Indiana/Winamac": "America/Toronto", "America/Kentucky/Louisville": "America/Toronto",
+  "America/Kentucky/Monticello": "America/Toronto",
+  "America/Chicago": "America/Winnipeg", "America/Rainy_River": "America/Winnipeg", "America/Rankin_Inlet": "America/Winnipeg",
+  "America/Resolute": "America/Winnipeg", "America/Menominee": "America/Winnipeg", "America/Indiana/Knox": "America/Winnipeg",
+  "America/Indiana/Tell_City": "America/Winnipeg", "America/North_Dakota/Center": "America/Winnipeg",
+  "America/North_Dakota/New_Salem": "America/Winnipeg", "America/North_Dakota/Beulah": "America/Winnipeg",
+  "America/Swift_Current": "America/Regina",
+  "America/Denver": "America/Edmonton", "America/Boise": "America/Edmonton", "America/Yellowknife": "America/Edmonton",
+  "America/Cambridge_Bay": "America/Edmonton", "America/Inuvik": "America/Edmonton",
+  "America/Creston": "America/Phoenix", "America/Dawson_Creek": "America/Phoenix", "America/Fort_Nelson": "America/Phoenix",
+  "America/Whitehorse": "America/Phoenix", "America/Dawson": "America/Phoenix",
+  "America/Los_Angeles": "America/Vancouver",
+  "America/Juneau": "America/Anchorage", "America/Sitka": "America/Anchorage", "America/Nome": "America/Anchorage",
+  "America/Yakutat": "America/Anchorage",
 };
-// The name a branch time zone is shown by. An ID outside the list is shown
-// as it is stored, so nothing on file is hidden.
-function timeZoneName(id) {
-  const hit = BRANCH_TIME_ZONES.find(([z]) => z === (TIME_ZONE_SAME_CLOCK[id] || id));
-  return hit ? hit[1] : String(id || "").replace(/_/g, " ");
-}
 
-function BranchTimeZoneCell({ branch, timeZone, busy, onSave }) {
-  const [value, setValue] = React.useState(timeZone || "");
-  React.useEffect(() => { setValue(timeZone || ""); }, [timeZone]);
-  const ids = BRANCH_TIME_ZONES.map(([z]) => z);
-  const options = timeZone && !ids.includes(timeZone) ? [timeZone, ...ids] : ids;
-  return React.createElement("span", { style: { display: "inline-flex", gap: "6px", alignItems: "center" } },
-    React.createElement("select", {
-      className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, value, disabled: busy,
-      "aria-label": `${branch.name} time zone`, onChange: (e) => setValue(e.target.value),
-    },
-      React.createElement("option", { value: "" }, "Not set"),
-      options.map((z) => React.createElement("option", { key: z, value: z }, timeZoneName(z)))),
-    React.createElement("button", {
-      className: "loginBtn", style: { width: "auto", padding: "5px 9px" },
-      disabled: busy || !value || value === timeZone,
-      onClick: () => onSave("tz", "set_branch_time_zone", { p_location_id: branch.id, p_time_zone: value }),
-    }, "Save"));
+// The zone at a point, worked out in the browser from a map of the world's
+// zones that comes with the lookup (tz-lookup), so nothing is sent anywhere.
+// One of the ten when the clock matches, else the zone as found; null when the
+// lookup cannot load or the point has none.
+let tzLookupPromise = null;
+async function branchTimeZoneAt(lat, lng) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  try {
+    if (!tzLookupPromise) {
+      tzLookupPromise = import("https://cdn.jsdelivr.net/npm/tz-lookup@6.1.25/+esm").then((m) => m.default || m);
+    }
+    const found = (await tzLookupPromise)(lat, lng);
+    return found ? (TIME_ZONE_SAME_CLOCK[found] || found) : null;
+  } catch (e) {
+    tzLookupPromise = null;
+    return null;
+  }
 }
 
 // The company screen. An Exec acts in one branch at a time, which is what keeps
@@ -6846,7 +6847,7 @@ function CompanyPage() {
         React.createElement(
           "table", { className: "dashboardTable", style: { minWidth: "700px" } },
           React.createElement("thead", null, React.createElement("tr", null,
-            ["Branch", "Staff", "Status", "Time zone", ""].map((h) => React.createElement("th", { key: h }, h)))),
+            ["Branch", "Staff", "Status", ""].map((h) => React.createElement("th", { key: h }, h)))),
           React.createElement("tbody", null, branches.map((b) =>
             React.createElement("tr", { key: b.id, style: b.active ? null : { opacity: 0.5 } },
               React.createElement("td", null, b.name,
@@ -6855,10 +6856,6 @@ function CompanyPage() {
                 }, "default")),
               React.createElement("td", null, String(b.staff)),
               React.createElement("td", null, b.active ? "Open" : "Closed"),
-              React.createElement("td", null,
-                React.createElement(BranchTimeZoneCell, {
-                  branch: b, timeZone: branchSetup[b.id]?.timeZone || null, busy: busy === "tz", onSave: run,
-                })),
               React.createElement("td", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
                 React.createElement("button", {
                   className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
@@ -6940,7 +6937,7 @@ function CompanyPage() {
     ),
 
     // ── fleetr.ai listing ──
-    React.createElement(ListingSection, { branches, branchSetup }),
+    React.createElement(ListingSection, { branches, branchSetup, onTimeZoneSet: refresh }),
 
     // ── Lists and prices ──
     React.createElement(CompanyListsSections, { branches })
@@ -7117,7 +7114,7 @@ const LISTING_NEEDS = {
   address:            "a full address (street, city, province, postal code and country)",
   map_pin:            "a pin on the map",
   hours:              "opening hours",
-  time_zone:          "the branch's time zone (Branches, above)",
+  time_zone:          "a map pin fleetr can read the local time from",
   cities_or_airports: "the cities or airport codes it serves",
   minimum_age:        "a minimum age",
   payment_methods:    "the payment methods it takes",
@@ -7190,7 +7187,8 @@ function listingMissing(listing, timeZone) {
   if (!branchAddressComplete(l)) missing.push("address");
   if (!has(l.latitude) || !has(l.longitude)) missing.push("map_pin");
   if (!listingHasHours(l.hours)) missing.push("hours");
-  if (!timeZone) missing.push("time_zone");
+  // The time zone comes from the pin, so a missing pin is said once.
+  if (!timeZone && has(l.latitude) && has(l.longitude)) missing.push("time_zone");
   if (!(l.citiesServed || []).length && !(l.airportCodes || []).length) missing.push("cities_or_airports");
   if (!has(l.minimumAge)) missing.push("minimum_age");
   if (!(l.paymentMethods || []).length) missing.push("payment_methods");
@@ -7284,7 +7282,7 @@ function ListingMapPin({ lat, lng, disabled, onPlace }) {
   });
 }
 
-function ListingSection({ branches, branchSetup }) {
+function ListingSection({ branches, branchSetup, onTimeZoneSet }) {
   const { currentUser } = React.useContext(AppContext);
   const [listings, setListings] = React.useState(null);
   const [loadError, setLoadError] = React.useState("");
@@ -7309,12 +7307,12 @@ function ListingSection({ branches, branchSetup }) {
     listings && open.map((b) => React.createElement(ListingEditor, {
       key: b.id, branch: b, operatorId: currentUser?.operatorId,
       listing: listings.find((l) => l.locationId === b.id) || null,
-      timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: reload,
+      timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: reload, onTimeZoneSet,
     })));
 }
 
 // One branch's listing. Its own component so each branch keeps its own draft.
-function ListingEditor({ branch, operatorId, listing, timeZone, onSaved }) {
+function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZoneSet }) {
   const toDraft = (l) => {
     const hours = (l && l.hours && typeof l.hours === "object") ? l.hours : {};
     const num = (v) => (v == null ? "" : String(Number(v)));
@@ -7475,13 +7473,33 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved }) {
       maxRentalDays: checks.maxRentalDays.value,
       turnaroundHours: checks.turnaroundHours.value,
     };
+    // The branch's time zone follows the pin, so it changes whenever the
+    // address moves the pin. Looked up when the pin moved or the branch has
+    // none yet.
+    const pinMoved = latitude !== (listing && listing.latitude != null ? Number(listing.latitude) : null)
+      || longitude !== (listing && listing.longitude != null ? Number(listing.longitude) : null);
+    let zone = null;
+    if (latitude != null && longitude != null && (pinMoved || !timeZone)) {
+      setBusy("details");
+      zone = await branchTimeZoneAt(latitude, longitude);
+      setBusy("");
+    }
     if (listed) {
-      const missing = listingMissing({ ...listing, ...fields }, timeZone);
+      const missing = listingMissing({ ...listing, ...fields }, zone || timeZone);
       if (missing) {
         setError(`${missing} Or turn off Show on fleetr.ai first.`); setNotice(""); return;
       }
     }
-    if (await save("details", fields)) setNotice(`Listing saved.${pinNote}`);
+    if (!(await save("details", fields))) return;
+    if (zone && zone !== timeZone) {
+      const { data, error: err } = await supabase.rpc("set_branch_time_zone", { p_location_id: branch.id, p_time_zone: zone });
+      if (err || !data || !data.ok) {
+        setError("The listing was saved, but the branch's local time could not be set from the pin. Save again to retry.");
+        return;
+      }
+      if (onTimeZoneSet) await onTimeZoneSet();
+    }
+    setNotice(`Listing saved.${pinNote}`);
   };
 
   // Uploads a new photo or logo, points the listing at it, then removes the
@@ -10569,10 +10587,10 @@ function SetupBar() {
 const SETUP_ITEMS = {
   units:                 { title: "Fuel and distance units", path: "/company",
                            text: "How fuel and distance are read and entered everywhere." },
-  branches:              { title: "Each branch's time zone and sales tax", path: "/company",
-                           text: "Texts and bookings run on the branch's time zone. A branch with no sales tax still needs it saved as none." },
+  branches:              { title: "Each branch's sales tax", path: "/company",
+                           text: "A branch with no sales tax still needs it saved as none." },
   branch_addresses:      { title: "A full address for every branch", path: "/company",
-                           text: "Street, city, province, postal code and country, under Listing. Used on fleetr.ai, for the map pin and in the confirmation text." },
+                           text: "Street, city, province, postal code and country, under Listing, with its map pin. Used on fleetr.ai and in the confirmation text, and the pin sets the branch's local time for texts and bookings." },
   pickup_locations:      { title: "Pickup locations", path: "/company",
                            text: "At least one for every open branch." },
   vehicle_classes:       { title: "Vehicle classes", path: "/company", text: "At least one." },
