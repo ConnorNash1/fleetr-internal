@@ -7121,7 +7121,7 @@ const LISTING_NEEDS = {
   minimum_notice:     "a minimum notice",
   maximum_length:     "a maximum rental length",
   turnaround:         "a turnaround buffer",
-  retail_rate:        "a fleetr.ai bookings daily rate (Daily rates, below)",
+  retail_rate:        "a fleetr.ai daily rate (Daily rates, below)",
 };
 const listingNeedsSentence = (keys) => {
   const words = keys.map((k) => LISTING_NEEDS[k] || k);
@@ -7177,7 +7177,7 @@ async function geocodeBranchCity(parts) {
 const listingPhotoUrl = (path) =>
   path ? supabase.storage.from(LISTING_BUCKET).getPublicUrl(path).data.publicUrl : null;
 
-// True when the company has a fleetr.ai bookings daily rate for a class that
+// True when the company has a fleetr.ai daily rate for a class that
 // is switched on: public booking quotes and books that rate only.
 function listingHasRetailRate() {
   if (!companyLists) return false;
@@ -7776,7 +7776,8 @@ const LIST_REASONS = {
   bad_name:         "Give it a name of 1 to 60 characters.",
   use_standard_list: "Pick that one from the standard list.",
   name_fixed:       "It keeps the name it has in the standard list.",
-  whole_dollars:    "A fleetr.ai bookings daily rate is whole dollars only, for example 55.",
+  whole_dollars:    "A fleetr.ai daily rate is whole dollars only, for example 55.",
+  fleetr_ai_source: "The fleetr.ai source is what the website books at, so it cannot be deleted. Switch it off instead.",
   nothing_picked:   "Tick at least one vehicle class.",
   not_standard:     "That vehicle class is not on the list.",
   bad_models:       "Keep the example models to 120 characters.",
@@ -8053,7 +8054,7 @@ function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
     }, "Save"));
 }
 
-// The standard sources (standard_sources in the database): fleetr.ai bookings,
+// The standard sources (standard_sources in the database): fleetr.ai,
 // which also covers walk-in and phone customers, who pay the same. Picked the
 // way vehicle classes are; nothing is added
 // unless it is ticked. Used on the Company page and in the setup checklist.
@@ -8396,7 +8397,7 @@ function CompanyListsSections({ branches }) {
       setError({ at, text: LIST_REASONS.bad_amount });
       return { ok: false };
     }
-    // A fleetr.ai bookings daily rate is what fleetr.ai quotes, in whole dollars.
+    // A fleetr.ai daily rate is what fleetr.ai quotes, in whole dollars.
     if (wholeDollars && !Number.isInteger(n)) {
       setError({ at, text: LIST_REASONS.whole_dollars });
       return { ok: false };
@@ -8430,7 +8431,7 @@ function CompanyListsSections({ branches }) {
   //             no order of its own
   //   rename    (name) => the save to make
   //   goesWith  what a delete takes with it, as a sentence, or ""
-  const entryRow = ({ at, kind, entry, reorder, rename, goesWith, lead, extra, indent }) => {
+  const entryRow = ({ at, kind, entry, reorder, rename, goesWith, lead, extra, indent, keep }) => {
     const key = `${kind}:${entry.id}`;
     const dragging = drag && reorder && drag.listKey === reorder.listKey;
     const isFrom   = dragging && drag.from === reorder.index;
@@ -8484,7 +8485,10 @@ function CompanyListsSections({ branches }) {
                 setConfirming("");
               }),
               btn("Cancel", () => setConfirming(""))))
-        : el("td", null, btn("Delete", () => setConfirming(key))));
+        // An entry that must stay, such as the fleetr.ai source, has no Delete.
+        : keep
+          ? el("td", { style: { whiteSpace: "normal", fontSize: "0.85rem", opacity: 0.8 } }, keep)
+          : el("td", null, btn("Delete", () => setConfirming(key))));
   };
 
   if (!ready) {
@@ -8606,7 +8610,9 @@ function CompanyListsSections({ branches }) {
           const rows = [entryRow({
             at: "sources", kind: "source", entry,
             reorder: { listKey: "sources", list: sources, index: i, saveCall: saveSource },
-            // A standard source keeps its name and billing type.
+            // A standard source keeps its name and billing type, and the
+            // fleetr.ai one is never deleted: the website books at it.
+            keep: entry.standardKey === "fleetr_ai" ? "Used by fleetr.ai, so it stays." : null,
             rename: entry.standardKey ? null : (name) => ["save_source", {
               p_id: entry.id, p_name: name, p_billing_type: entry.billingType, p_sort: null,
             }],
@@ -10849,7 +10855,7 @@ const SETUP_ITEMS = {
   pickup_locations:      { title: "Pickup locations", path: "/company",
                            text: "At least one for every open branch." },
   vehicle_classes:       { title: "Vehicle classes", path: "/company", text: "Tick the ones you rent from the standard list. At least one." },
-  sources:               { title: "Sources", path: "/company", text: "Who the work comes from. Pick fleetr.ai bookings, the rate for fleetr.ai, walk-in and phone customers, and add your own on the Company page. At least one." },
+  sources:               { title: "Sources", path: "/company", text: "Who the work comes from. Pick fleetr.ai, the rate for fleetr.ai, walk-in and phone customers, and add your own on the Company page. At least one." },
   daily_rates:           { title: "Daily rates", path: "/company",
                            text: "A rate for every vehicle class, under at least one source." },
   acknowledgements:      { title: "Contract acknowledgements", path: "/company",
