@@ -8319,11 +8319,16 @@ function CompanyListsSections({ branches }) {
     window.addEventListener("pointercancel", finish);
   };
 
-  const parsePrice = (at, typed) => {
+  const parsePrice = (at, typed, wholeDollars) => {
     if (typed === "") return { ok: true, amount: null };
     const n = Number(typed);
     if (!Number.isFinite(n) || n < 0 || n > 99999) {
       setError({ at, text: LIST_REASONS.bad_amount });
+      return { ok: false };
+    }
+    // A retail daily rate is what fleetr.ai quotes, in whole dollars.
+    if (wholeDollars && !Number.isInteger(n)) {
+      setError({ at, text: "A retail daily rate is whole dollars only, for example 55." });
       return { ok: false };
     }
     return { ok: true, amount: n };
@@ -8455,7 +8460,7 @@ function CompanyListsSections({ branches }) {
                 el(ListPriceCell, {
                   value: valueFor(c, x), disabled: busy,
                   onSave: (typed) => {
-                    const parsed = parsePrice(at, typed);
+                    const parsed = parsePrice(at, typed, at === "rates" && x.billingType === "retail");
                     return parsed.ok ? saveFor(c, x, parsed.amount) : Promise.resolve(false);
                   },
                 }))))))));
