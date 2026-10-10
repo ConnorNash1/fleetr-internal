@@ -55,7 +55,7 @@ const AUTH_EMAIL_DOMAIN = "fleetr.internal";
 // rather than by anything here. That is what lets the address stay a plain
 // username@domain and the login form stay two fields.
 //
-// The tradeoff is deliberate and matches locations.code: the first company to
+// The tradeoff is deliberate: the first company to
 // take a username keeps it, and a later company with its own connor has to
 // pick something else. The alternative was namespacing the address by a
 // location code typed at sign-in, which worked but put a third field in front
@@ -296,7 +296,7 @@ async function loadCompanyLists(user) {
     // Filtered on the company explicitly, as loadCompanyFeatures is.
     const own = (table, cols) => supabase.from(table).select(cols).eq("operatorId", operatorId);
     const results = await Promise.all([
-      own("pickup_locations",    "id,locationId,name,code,active,sortOrder"),
+      own("pickup_locations",    "id,locationId,name,active,sortOrder"),
       own("vehicle_classes",     "id,name,active,sortOrder,category,seats,bags"),
       own("sources",             "id,name,billingType,active,sortOrder"),
       own("source_details",      "id,sourceId,name,active"),
@@ -6457,9 +6457,6 @@ const COMPANY_REASONS = {
   bad_tax_rate:   "A tax rate is a percentage above 0 and below 100.",
   duplicate_tax:  "The two taxes need different names.",
   bad_name:       "Give the branch a name.",
-  bad_code:       "A branch code is 2 to 8 letters or numbers.",
-  code_required:  "A branch code is required.",
-  code_taken:     "Another branch in this company already uses that code.",
   duplicate_name: "Another branch in this company already has that name.",
   is_default:     "This is where new staff start. Make another branch the default first.",
   has_staff:      "Move or deactivate this branch's staff before closing it.",
@@ -6739,7 +6736,6 @@ function CompanyPage() {
   const [notice,   setNotice]   = React.useState("");
 
   const [newName, setNewName] = React.useState("");
-  const [newCode, setNewCode] = React.useState("");
 
   const call = React.useCallback(async (fn, args) => {
     const { data, error: err } = await supabase.rpc(fn, args || {});
@@ -6824,14 +6820,13 @@ function CompanyPage() {
         React.createElement(
           "table", { className: "dashboardTable", style: { minWidth: "700px" } },
           React.createElement("thead", null, React.createElement("tr", null,
-            ["Branch", "Code", "Staff", "Status", "Time zone", ""].map((h) => React.createElement("th", { key: h }, h)))),
+            ["Branch", "Staff", "Status", "Time zone", ""].map((h) => React.createElement("th", { key: h }, h)))),
           React.createElement("tbody", null, branches.map((b) =>
             React.createElement("tr", { key: b.id, style: b.active ? null : { opacity: 0.5 } },
               React.createElement("td", null, b.name,
                 b.isDefault && React.createElement("span", {
                   style: { marginLeft: "8px", fontSize: "0.7rem", opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em" },
                 }, "default")),
-              React.createElement("td", null, b.code),
               React.createElement("td", null, String(b.staff)),
               React.createElement("td", null, b.active ? "Open" : "Closed"),
               React.createElement("td", null,
@@ -6844,9 +6839,7 @@ function CompanyPage() {
                   onClick: () => {
                     const name = window.prompt("New name for this branch", b.name);
                     if (name == null) return;
-                    const code = window.prompt("Branch code (2 to 8 letters or numbers)", b.code || "");
-                    if (code == null) return;
-                    run("rename", "rename_location", { location_id: b.id, new_name: name, new_code: code });
+                    run("rename", "rename_location", { location_id: b.id, new_name: name });
                   },
                 }, "Rename"),
                 !b.isDefault && b.active && React.createElement("button", {
@@ -6873,15 +6866,11 @@ function CompanyPage() {
           className: "resFormInput", style: { width: "auto" }, placeholder: "New branch name",
           value: newName, onChange: (e) => setNewName(e.target.value),
         }),
-        React.createElement("input", {
-          className: "resFormInput", style: { width: "110px" }, placeholder: "Code", maxLength: 8,
-          value: newCode, onChange: (e) => setNewCode(e.target.value.toUpperCase()),
-        }),
         React.createElement("button", {
           className: "loginBtn", style: { width: "auto", padding: "8px 14px" },
           onClick: async () => {
-            if (await run("create", "create_location", { location_name: newName, location_code: newCode })) {
-              setNewName(""); setNewCode(""); setNotice("Branch opened.");
+            if (await run("create", "create_location", { location_name: newName })) {
+              setNewName(""); setNotice("Branch opened.");
             }
           },
         }, "Open a branch")
@@ -7099,7 +7088,7 @@ const LISTING_REASONS = {
 // What save_branch_listing's listing_problem keys mean, in words, in the order
 // it lists them. The same list listingMissing checks before asking.
 const LISTING_NEEDS = {
-  address:            "an address",
+  address:            "a full address (street, city, province, postal code and country)",
   map_pin:            "a pin on the map",
   hours:              "opening hours",
   time_zone:          "the branch's time zone (Branches, above)",
@@ -7116,6 +7105,37 @@ const listingNeedsSentence = (keys) => {
   const list = words.length === 1 ? words[0] : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
   return `Before this branch can show on fleetr.ai, add ${list}.`;
 };
+
+// A branch's address, in the parts save_branch_listing takes. Every part is
+// needed before the company can launch (branch_address_complete).
+const BRANCH_ADDRESS_PARTS = [
+  ["street",     "Street",      200],
+  ["city",       "City",        100],
+  ["province",   "Province",    100],
+  ["postalCode", "Postal code",  20],
+  ["country",    "Country",     100],
+];
+const branchAddressComplete = (l) =>
+  BRANCH_ADDRESS_PARTS.every(([k]) => String((l && l[k]) || "").trim() !== "");
+
+// Where the address is on the map, for the fleetr.ai pin: OpenStreetMap's
+// Nominatim, the geocoder fleetr.ai itself uses. The parts are asked for as
+// parts first, then as one line. Null when neither finds it.
+async function geocodeBranchAddress(parts) {
+  const ask = async (params) => {
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&${params}`,
+        { headers: { "Accept-Language": "en-CA" } });
+      const out = await res.json();
+      return Array.isArray(out) && out[0] ? [Number(out[0].lat), Number(out[0].lon)] : null;
+    } catch (e) {
+      return null;
+    }
+  };
+  const p = (k) => encodeURIComponent(parts[k]);
+  return (await ask(`street=${p("street")}&city=${p("city")}&state=${p("province")}&postalcode=${p("postalCode")}&country=${p("country")}`))
+    || ask(`q=${encodeURIComponent(BRANCH_ADDRESS_PARTS.map(([k]) => parts[k]).join(", "))}`);
+}
 
 const listingPhotoUrl = (path) =>
   path ? supabase.storage.from(LISTING_BUCKET).getPublicUrl(path).data.publicUrl : null;
@@ -7141,7 +7161,7 @@ function listingMissing(listing, timeZone) {
   const l = listing || {};
   const has = (v) => v !== null && v !== undefined && v !== "";
   const missing = [];
-  if (!String(l.address || "").trim()) missing.push("address");
+  if (!branchAddressComplete(l)) missing.push("address");
   if (!has(l.latitude) || !has(l.longitude)) missing.push("map_pin");
   if (!listingHasHours(l.hours)) missing.push("hours");
   if (!timeZone) missing.push("time_zone");
@@ -7274,7 +7294,7 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved }) {
     const num = (v) => (v == null ? "" : String(Number(v)));
     return {
       description: (l && l.description) || "",
-      address:     (l && l.address) || "",
+      ...Object.fromEntries(BRANCH_ADDRESS_PARTS.map(([k]) => [k, (l && l[k]) || ""])),
       latitude:    num(l && l.latitude),
       longitude:   num(l && l.longitude),
       hours: Object.fromEntries(LISTING_DAYS.map(([k]) => {
@@ -7385,15 +7405,37 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved }) {
       setError("Airport codes are 3 or 4 letters, separated by commas, for example YYT."); setNotice(""); return;
     }
     const description = draft.description.trim();
-    const address = draft.address.trim();
     if (description.length > 2000) { setError("Keep the description to 2,000 characters."); setNotice(""); return; }
-    if (address.length > 300) { setError("Keep the address to 300 characters."); setNotice(""); return; }
+    const address = {};
+    for (const [k, label, max] of BRANCH_ADDRESS_PARTS) {
+      const v = draft[k].trim();
+      if (v.length > max) { setError(`Keep the ${label.toLowerCase()} to ${max} characters.`); setNotice(""); return; }
+      address[k] = v || null;
+    }
+
+    // The pin follows the address: placed from it when the address is new or
+    // changed, or when there is no pin yet. A pin moved by hand afterwards
+    // stays where it was put until the address changes again.
+    let latitude = checks.latitude.value, longitude = checks.longitude.value;
+    let pinNote = "";
+    const addressChanged = BRANCH_ADDRESS_PARTS.some(([k]) => (address[k] || "") !== ((listing && listing[k]) || ""));
+    if (branchAddressComplete(address) && (addressChanged || latitude == null || longitude == null)) {
+      setBusy("details");
+      const hit = await geocodeBranchAddress(address);
+      setBusy("");
+      if (hit) {
+        [latitude, longitude] = hit;
+        pinNote = " The pin was placed from the address. Drag it if it is off.";
+      } else {
+        pinNote = " The address could not be found on the map, so place the pin by clicking the map.";
+      }
+    }
 
     const fields = {
       description: description || null,
-      address: address || null,
-      latitude: checks.latitude.value,
-      longitude: checks.longitude.value,
+      ...address,
+      latitude,
+      longitude,
       hours,
       citiesServed: splitList(draft.citiesServed),
       airportCodes: airports,
@@ -7413,7 +7455,7 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved }) {
         setError(`${missing} Or turn off Show on fleetr.ai first.`); setNotice(""); return;
       }
     }
-    if (await save("details", fields)) setNotice("Listing saved.");
+    if (await save("details", fields)) setNotice(`Listing saved.${pinNote}`);
   };
 
   // Uploads a new photo or logo, points the listing at it, then removes the
@@ -7506,11 +7548,20 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved }) {
       })),
 
     el("div", { style: { height: "12px" } }),
-    field("Address", input("address", { maxLength: 300, placeholder: "Street, city, province" })),
+    el("div", { className: "gasSettingSubhead" }, "Address"),
+    el("p", { className: "closeRentalHint" },
+      "Every part is needed before the company can launch. It shows on fleetr.ai and in the confirmation text, and places the map pin."),
+    field("Street", input("street", { maxLength: 200, placeholder: "12 Water St", autoComplete: "street-address" })),
+    row(
+      field("City",        input("city",       { maxLength: 100, autoComplete: "address-level2" })),
+      field("Province",    input("province",   { maxLength: 100, autoComplete: "address-level1" }))),
+    row(
+      field("Postal code", input("postalCode", { maxLength: 20,  autoComplete: "postal-code", style: { width: "140px" } })),
+      field("Country",     input("country",    { maxLength: 100, autoComplete: "country-name" }))),
     row(
       field("Latitude",  input("latitude",  { inputMode: "decimal", style: { width: "140px" } })),
       field("Longitude", input("longitude", { inputMode: "decimal", style: { width: "140px" } }))),
-    el("p", { className: "closeRentalHint" }, "Click the map to place the pin, or drag it."),
+    el("p", { className: "closeRentalHint" }, "The pin is placed from the address when you save. Click the map or drag the pin to move it."),
     el(ListingMapPin, {
       lat, lng, disabled: !!busy,
       onPlace: (a, b) => setDraft((p) => ({ ...p, latitude: a.toFixed(6), longitude: b.toFixed(6) })),
@@ -7580,11 +7631,9 @@ const LIST_REASONS = {
   exec_only:        "Only an Exec can change these lists.",
   not_signed_in:    "You are signed out. Sign in again and retry.",
   bad_name:         "Give it a name of 1 to 60 characters.",
-  bad_code:         "A code is up to 8 letters or numbers, with no spaces.",
   not_found:        "That entry is not part of this company.",
   bad_branch:       "That branch is closed or is not part of this company.",
   duplicate_name:   "There is already an entry with that name.",
-  code_taken:       "Another pickup location at this branch already uses that code.",
   bad_billing_type: "Choose a billing type.",
   bad_source:       "That source is not part of this company.",
   bad_class:        "That vehicle class is not part of this company.",
@@ -7652,19 +7701,18 @@ function ListPriceCell({ value, disabled, onSave }) {
 }
 
 // An entry's name, renamed where it stands: click it, type, Enter or Save.
-// Escape or Cancel puts it back. A pickup location's code is edited with it.
-function ListInlineName({ name, code, withCode, disabled, onSave }) {
+// Escape or Cancel puts it back.
+function ListInlineName({ name, disabled, onSave }) {
   const [editing, setEditing] = React.useState(false);
   const [draft,   setDraft]   = React.useState(name);
-  const [draftCode, setDraftCode] = React.useState(code || "");
 
   const start = () => {
     if (disabled) return;
-    setDraft(name); setDraftCode(code || ""); setEditing(true);
+    setDraft(name); setEditing(true);
   };
   const save = async () => {
-    if (draft.trim() === name && (!withCode || draftCode.trim() === (code || ""))) { setEditing(false); return; }
-    if (await onSave(draft, draftCode)) setEditing(false);
+    if (draft.trim() === name) { setEditing(false); return; }
+    if (await onSave(draft)) setEditing(false);
   };
   const onKeyDown = (e) => {
     if (e.key === "Enter")  { e.preventDefault(); save(); }
@@ -7677,7 +7725,7 @@ function ListInlineName({ name, code, withCode, disabled, onSave }) {
       style: { cursor: "text" },
       onClick: start,
       onKeyDown: (e) => { if (e.key === "Enter") start(); },
-    }, withCode && code ? `${name} (${code})` : name);
+    }, name);
   }
   const small = { width: "auto", padding: "5px 9px" };
   return React.createElement(
@@ -7687,11 +7735,6 @@ function ListInlineName({ name, code, withCode, disabled, onSave }) {
       autoFocus: true, value: draft, disabled, onKeyDown,
       onChange: (e) => setDraft(e.target.value),
     }),
-    withCode && React.createElement("input", {
-      className: "resFormInput", style: { width: "90px", padding: "5px 8px" }, maxLength: 8,
-      placeholder: "Code", value: draftCode, disabled, onKeyDown,
-      onChange: (e) => setDraftCode(e.target.value.toUpperCase()),
-    }),
     React.createElement("button", { className: "loginBtn", style: small, disabled, onClick: save }, "Save"),
     React.createElement("button", { className: "loginBtn", style: small, disabled, onClick: () => setEditing(false) }, "Cancel")
   );
@@ -7699,19 +7742,14 @@ function ListInlineName({ name, code, withCode, disabled, onSave }) {
 
 // The "add one" row under a list. Its own component so each list, and each
 // branch and source within one, keeps its own draft.
-function ListAddRow({ placeholder, label, withCode, withType, disabled, onAdd }) {
+function ListAddRow({ placeholder, label, withType, disabled, onAdd }) {
   const [name, setName] = React.useState("");
-  const [code, setCode] = React.useState("");
   const [type, setType] = React.useState("");
   return React.createElement(
     "div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px", alignItems: "center" } },
     React.createElement("input", {
       className: "resFormInput", style: { width: "auto" }, placeholder, maxLength: 60,
       value: name, onChange: (e) => setName(e.target.value),
-    }),
-    withCode && React.createElement("input", {
-      className: "resFormInput", style: { width: "110px" }, placeholder: "Code (optional)", maxLength: 8,
-      value: code, onChange: (e) => setCode(e.target.value.toUpperCase()),
     }),
     withType && React.createElement("select", {
       className: "resFormInput", style: { width: "auto" },
@@ -7722,7 +7760,7 @@ function ListAddRow({ placeholder, label, withCode, withType, disabled, onAdd })
     React.createElement("button", {
       className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled,
       onClick: async () => {
-        if (await onAdd(name, code, type)) { setName(""); setCode(""); setType(""); }
+        if (await onAdd(name, type)) { setName(""); setType(""); }
       },
     }, label)
   );
@@ -8094,9 +8132,9 @@ function CompanyListsSections({ branches }) {
   // One entry in a list: drag handle, name, anything extra, on/off, Delete.
   //   reorder   { listKey, list, index, saveCall } or null when the list has
   //             no order of its own
-  //   rename    (name, code) => the save to make
+  //   rename    (name) => the save to make
   //   goesWith  what a delete takes with it, as a sentence, or ""
-  const entryRow = ({ at, kind, entry, reorder, rename, withCode, goesWith, lead, extra, indent }) => {
+  const entryRow = ({ at, kind, entry, reorder, rename, goesWith, lead, extra, indent }) => {
     const key = `${kind}:${entry.id}`;
     const dragging = drag && reorder && drag.listKey === reorder.listKey;
     const isFrom   = dragging && drag.from === reorder.index;
@@ -8125,8 +8163,8 @@ function CompanyListsSections({ branches }) {
       el("td", { style: indent ? { paddingLeft: "28px" } : null },
         lead || null,
         el(ListInlineName, {
-          name: entry.name, code: entry.code, withCode, disabled: busy,
-          onSave: (name, code) => { const [fn, args] = rename(name, code); return act(at, fn, args); },
+          name: entry.name, disabled: busy,
+          onSave: (name) => { const [fn, args] = rename(name); return act(at, fn, args); },
         })),
       extra || el("td", null),
       el("td", null,
@@ -8208,7 +8246,7 @@ function CompanyListsSections({ branches }) {
     { p_id: x.id, p_name: x.name, p_billing_type: x.billingType, p_sort: order }];
   const saveProduct = (pr, order) => ["save_protection_product", { p_id: pr.id, p_name: pr.name, p_sort: order }];
   const savePickup  = (pl, order) => ["save_pickup_location",
-    { p_id: pl.id, p_location_id: pl.locationId, p_name: pl.name, p_code: pl.code || "", p_sort: order }];
+    { p_id: pl.id, p_location_id: pl.locationId, p_name: pl.name, p_sort: order }];
 
   const listHeads = (name, middle) => ["", name, middle || "", "On", ""];
 
@@ -8216,7 +8254,7 @@ function CompanyListsSections({ branches }) {
 
     // ── Pickup locations ──
     section("Pickup locations",
-      "Where a reservation can be picked up, branch by branch. Staff see only their own branch's list. A branch with none still shows the old location codes.",
+      "Where a reservation can be picked up, branch by branch. Staff see only their own branch's list.",
       "pickup",
       pickupBranches.map((b) => {
         const mine = pickupLocations.filter((p) => p.locationId === b.id);
@@ -8224,16 +8262,16 @@ function CompanyListsSections({ branches }) {
           subHeading(b.active ? b.name : `${b.name} (closed)`, !b.active),
           mine.length > 0 && table("520px", listHeads("Pickup location"),
             mine.map((entry, i) => entryRow({
-              at: "pickup", kind: "pickup_location", entry, withCode: true,
+              at: "pickup", kind: "pickup_location", entry,
               reorder: { listKey: `pickup:${b.id}`, list: mine, index: i, saveCall: savePickup },
-              rename: (name, code) => ["save_pickup_location", {
-                p_id: entry.id, p_location_id: entry.locationId, p_name: name, p_code: code, p_sort: null,
+              rename: (name) => ["save_pickup_location", {
+                p_id: entry.id, p_location_id: entry.locationId, p_name: name, p_sort: null,
               }],
             }))),
           b.active && el(ListAddRow, {
-            placeholder: "New pickup location", label: "Add", withCode: true, disabled: busy,
-            onAdd: (name, code) => act("pickup", "save_pickup_location", {
-              p_id: null, p_location_id: b.id, p_name: name, p_code: code, p_sort: null,
+            placeholder: "New pickup location", label: "Add", disabled: busy,
+            onAdd: (name) => act("pickup", "save_pickup_location", {
+              p_id: null, p_location_id: b.id, p_name: name, p_sort: null,
             }),
           }));
       })),
@@ -8312,7 +8350,7 @@ function CompanyListsSections({ branches }) {
       subHeading("Add a source"),
       el(ListAddRow, {
         placeholder: "New source", label: "Add source", withType: true, disabled: busy,
-        onAdd: (name, code, type) => act("sources", "save_source", {
+        onAdd: (name, type) => act("sources", "save_source", {
           p_id: null, p_name: name, p_billing_type: type, p_sort: null,
         }),
       })),
@@ -8470,7 +8508,7 @@ function StaffPage() {
   // query comes back 403.
   const loadBranches = React.useCallback(async () => {
     const { data } = await supabase
-      .from("locations").select("id,name,code,active").order("name");
+      .from("locations").select("id,name,active").order("name");
     setBranches((data || []).filter((b) => b.active));
   }, []);
 
@@ -10507,6 +10545,8 @@ const SETUP_ITEMS = {
                            text: "How fuel and distance are read and entered everywhere." },
   branches:              { title: "Each branch's time zone and sales tax", path: "/company",
                            text: "Texts and bookings run on the branch's time zone. A branch with no sales tax still needs it saved as none." },
+  branch_addresses:      { title: "A full address for every branch", path: "/company",
+                           text: "Street, city, province, postal code and country, under Listing. Used on fleetr.ai, for the map pin and in the confirmation text." },
   pickup_locations:      { title: "Pickup locations", path: "/company",
                            text: "At least one for every open branch." },
   vehicle_classes:       { title: "Vehicle classes", path: "/company", text: "At least one." },
