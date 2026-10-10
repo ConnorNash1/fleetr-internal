@@ -210,6 +210,7 @@ function readStoredSession() {
 function clearSession() {
   companyFeatures = {};
   companyLists = null;
+  companyLaunched = true;
   try {
     localStorage.removeItem(PROFILE_KEY);
     // Left over from the previous scheme. Removed so a stale token cannot
@@ -261,12 +262,19 @@ function isFeatureEnabled(featureKey) {
     && companyFeatures[featureKey] === true;
 }
 
+// ─── Company setup ────────────────────────────────────────────────────────────
+// A new company is in setup mode until its Exec launches it (my_company_setup,
+// company_setup.sql). This mirrors the one fact the nav needs, whether it has
+// launched, so the Setup item can show only before launch. True until the
+// answer arrives, so the item never flashes up for a company that is live.
+let companyLaunched = true;
+
 // ─── Company lists ────────────────────────────────────────────────────────────
 // The pickup locations, vehicle classes, sources, specific sources, daily rates
 // and protection products the company's Exec manages, read from the database
-// with the rest of the data at start. null means they could not be read, and
-// every helper below then answers from the constants this file has always
-// carried, so a failed load looks exactly like the app did before.
+// with the rest of the data at start. They are the only lists: a company that
+// has not entered one yet has an empty one, and null (they could not be read)
+// offers nothing either. No built-in list stands in for the company's.
 //
 // Records keep their own text copy of what they were saved with. A value that
 // has since been renamed or switched off is still offered on the record that
@@ -281,7 +289,7 @@ const byListOrder = (a, b) =>
 async function loadCompanyLists(user) {
   // The lists already in hand stay in place until the new ones have arrived.
   // This is also called after an Exec's edit, with the app on screen, and
-  // clearing them first would flash every dropdown back to the built-in lists.
+  // clearing them first would flash every dropdown empty.
   const operatorId = user?.operatorId;
   if (!operatorId) { companyLists = null; return; }
   try {
@@ -298,17 +306,10 @@ async function loadCompanyLists(user) {
     const failed = results.find((r) => r.error);
     if (failed) {
       companyLists = null;
-      console.warn("Fleetr: company lists could not be loaded, using the built-in ones:", failed.error.message);
+      console.warn("Fleetr: company lists could not be loaded:", failed.error.message);
       return;
     }
     const [pl, vc, so, sd, dr, pp] = results.map((r) => r.data || []);
-    // A company with no classes or no sources has not been set up. The
-    // built-in lists are more use than two empty dropdowns.
-    if (!vc.length || !so.length) {
-      companyLists = null;
-      console.warn("Fleetr: this company has no lists yet, using the built-in ones.");
-      return;
-    }
 
     // The branch a new reservation belongs to: the one an Exec is acting in,
     // or the staff member's own.
@@ -343,7 +344,7 @@ async function loadCompanyLists(user) {
     };
   } catch (e) {
     companyLists = null;
-    console.warn("Fleetr: company lists could not be loaded, using the built-in ones:", e.message || String(e));
+    console.warn("Fleetr: company lists could not be loaded:", e.message || String(e));
   }
 }
 
@@ -352,39 +353,46 @@ async function loadCompanyLists(user) {
 // gallons, distance in kilometres or miles. Display only. Every figure is
 // still stored in litres and kilometres (tank sizes, fuel prices per litre,
 // odometer readings, PM intervals), so the gas charge, the PM threshold and
-// every saved record mean the same whichever unit is shown. A failed read
-// leaves litres and kilometres, which is what the app always showed.
-let companyUnits = { fuel: "L", distance: "km" };
+// every saved record mean the same whichever unit is shown. A new company
+// has no units until its Exec picks them (null here), and nothing stands in:
+// every screen that takes a fuel or distance figure asks for the units first,
+// and a figure already on file shows in the unit it is stored in.
+let companyUnits = { fuel: null, distance: null };
 
 async function loadCompanyUnits(user) {
   const operatorId = user?.operatorId;
-  if (!operatorId) { companyUnits = { fuel: "L", distance: "km" }; return; }
+  if (!operatorId) { companyUnits = { fuel: null, distance: null }; return; }
   try {
     const { data, error } = await supabase.from("operators")
       .select("fuelUnit,distanceUnit").eq("id", operatorId).maybeSingle();
     if (error || !data) {
-      if (error) console.warn("Fleetr: company units could not be loaded, using litres and kilometres:", error.message);
+      if (error) console.warn("Fleetr: company units could not be loaded:", error.message);
       return;
     }
     companyUnits = {
-      fuel:     data.fuelUnit === "gal" ? "gal" : "L",
-      distance: data.distanceUnit === "mi" ? "mi" : "km",
+      fuel:     ["L", "gal"].includes(data.fuelUnit) ? data.fuelUnit : null,
+      distance: ["km", "mi"].includes(data.distanceUnit) ? data.distanceUnit : null,
     };
   } catch (e) {
-    console.warn("Fleetr: company units could not be loaded, using litres and kilometres:", e.message || String(e));
+    console.warn("Fleetr: company units could not be loaded:", e.message || String(e));
   }
 }
 
-const fuelUnit     = () => (companyUnits.fuel === "gal" ? "gal" : "L");
-const distanceUnit = () => (companyUnits.distance === "mi" ? "mi" : "km");
+// The company's units, or null before they are set.
+const fuelUnit     = () => companyUnits.fuel;
+const distanceUnit = () => companyUnits.distance;
+const unitsSet     = () => !!(companyUnits.fuel && companyUnits.distance);
+const UNITS_NOT_SET = "Set the company's fuel and distance units in Company first.";
 const fuelUnitWord     = (plural = true) => (fuelUnit() === "gal" ? "gallon" : "litre") + (plural ? "s" : "");
 const distanceUnitWord = (plural = true) => (distanceUnit() === "mi" ? "mile" : "kilometre") + (plural ? "s" : "");
 
-// A stored kilometre figure, shown whole in the company's unit, or null.
+// A stored kilometre figure, shown whole in the company's unit, or null. With
+// no unit set yet it shows in kilometres, the unit it is stored in.
 const fmtDistance = (km) => {
   if (km === null || km === undefined || km === "" || !Number.isFinite(Number(km))) return null;
-  const n = Math.round(Number(toDisplayUnits(km, distanceUnit())));
-  return `${n.toLocaleString("en-CA")} ${distanceUnit()}`;
+  const unit = distanceUnit() || "km";
+  const n = Math.round(Number(toDisplayUnits(km, unit)));
+  return `${n.toLocaleString("en-CA")} ${unit}`;
 };
 // A whole reading typed in the company's unit, as whole kilometres to store.
 const distanceToKm = (n) => (distanceUnit() === "mi" ? Math.round(n * KM_PER_MI) : n);
@@ -409,57 +417,44 @@ const withCurrentOption = (options, current) => {
   return !cur || options.includes(cur) ? options : [...options, cur];
 };
 
-// Pickup locations for the branch the reservation is being made in. A branch
-// with none entered yet is offered the old location codes, so the dropdown is
-// never empty.
+// Pickup locations for the branch the reservation is being made in, as the
+// Exec entered them. A branch with none has none to offer.
 function pickupLocationOptions(current) {
   const mine = companyLists
     ? companyLists.pickupLocations
         .filter((p) => p.active && p.locationId === companyLists.branchId)
         .map((p) => p.name)
     : [];
-  return withCurrentOption(mine.length ? mine : LOCATION_OPTIONS, current);
+  return withCurrentOption(mine, current);
 }
 
+// A new form starts on the first entry in the Exec's own order, or blank.
 function defaultPickupLocation() {
-  const options = pickupLocationOptions("");
-  return options.includes("WI") ? "WI" : options[0];
+  return pickupLocationOptions("")[0] || "";
 }
 
-// `fallback` is the built-in list the caller used before: the reservation
-// forms and the fleet had different ones.
-function vehicleClassOptions(fallback, current) {
+function vehicleClassOptions(current) {
   const mine = companyLists
     ? companyLists.vehicleClasses.filter((c) => c.active).map((c) => c.name)
     : [];
-  return withCurrentOption(mine.length ? mine : fallback, current);
+  return withCurrentOption(mine, current);
 }
 
-function defaultVehicleClass(fallback, preferred = "Compact Car") {
-  const options = vehicleClassOptions(fallback, "");
-  return options.includes(preferred) ? preferred : options[0];
+function defaultVehicleClass() {
+  return vehicleClassOptions("")[0] || "";
 }
 
 // The rate to pre-fill for a source and a rates vehicle class, or undefined
-// when there is none. Both arrive as stored: a source with its specific
-// source after LIST_SEP, and either a class name or the old group and size.
+// when the company has set none. Both arrive as stored: a source with its
+// specific source after LIST_SEP, and either a class name or the old group
+// and size.
 function dailyRateFor(source, vehicleClass) {
+  if (!companyLists) return undefined;
   const src = String(source || "");
   const vc  = String(vehicleClass || "");
-  if (companyLists) {
-    const parts = vc.split(LIST_SEP);
-    const className = parts.length > 1 ? `${parts[1]} ${parts[0]}` : vc;
-    return companyLists.rates[src.split(LIST_SEP)[0]]?.[className];
-  }
-  const srcCat = src === "Retail" ? "Retail"
-    : src.startsWith("Bodyshop/Dealership") ? "Bodyshop/Dealership"
-    : src.startsWith("Insurance")           ? "Insurance"
-    : src.startsWith("Corporate")           ? "Corporate" : null;
-  const vcCat = vc === "Minivan" ? "Minivan"
-    : vc === "Truck"             ? "Truck"
-    : vc.startsWith("Car") || vc.endsWith(" Car") ? "Car"
-    : vc.startsWith("SUV") || vc.endsWith(" SUV") ? "SUV" : null;
-  return srcCat && vcCat ? DAILY_RATES[srcCat]?.[vcCat] : undefined;
+  const parts = vc.split(LIST_SEP);
+  const className = parts.length > 1 ? `${parts[1]} ${parts[0]}` : vc;
+  return companyLists.rates[src.split(LIST_SEP)[0]]?.[className];
 }
 
 // A reservation form with its daily rate filled for its source and vehicle
@@ -484,10 +479,7 @@ function ndiSourceOptions(current) {
       }
     });
   }
-  const options = mine.length
-    ? mine
-    : NDI_SOURCE_OPTIONS.filter((opt) => opt !== "Insurance" || offerInsuranceSource(current));
-  return withCurrentOption(options, current);
+  return withCurrentOption(mine, current);
 }
 
 // What kind of billing a source means: "insurance", "bodyshop_dealership",
@@ -498,16 +490,11 @@ function ndiSourceOptions(current) {
 //
 // Takes the source as stored, with or without a specific source after it. A
 // source the company's list does not have (an old record, or the list did not
-// load) is recognised by the four built-in names, as it always was.
+// load) has no billing type: its name is not taken as a guess at one.
 function sourceBillingType(source) {
-  const src  = String(source || "");
-  const name = src.split(LIST_SEP)[0];
+  const name = String(source || "").split(LIST_SEP)[0];
   const known = companyLists && companyLists.sources.find((x) => x.name === name);
-  if (known) return known.billingType;
-  return src === "Retail"                      ? "retail"
-    : src.startsWith("Bodyshop/Dealership")    ? "bodyshop_dealership"
-    : src.startsWith("Insurance")              ? "insurance"
-    : src.startsWith("Corporate")              ? "corporate" : null;
+  return known ? known.billingType : null;
 }
 
 const quotedList = (names) => names.map((n) => `"${n}"`).join(", ");
@@ -595,19 +582,14 @@ const TEXT_SAMPLE_APP_LINK = " App: https://app.fleetr.ai/#a=XXXXXXXXXXXXXXXXXXX
 const TEXT_SAMPLE_CODE = " Reservation code: ABC 123 456.";
 const TEXT_TEMPLATE_KINDS = [
   { kind: "confirmation", title: "Reservation confirmation", when: "Sent when a reservation is created.",
-    fallback: "Hi [first name], your reservation with [company] at [location] is confirmed for [date] at [time].",
     suffix: TEXT_SAMPLE_CODE + TEXT_SAMPLE_APP_LINK + TEXT_SAMPLE_LINK, suffixNote: "the reservation code, the app link and the cancel link" },
   { kind: "pre_rental", title: "Pre-Rental Check", when: "Sent the day before pickup.",
-    fallback: "Hi [first name], your rental pickup is tomorrow at our [location] location. Please bring your license and reply with your arrival time.",
     suffix: TEXT_SAMPLE_APP_LINK + TEXT_SAMPLE_LINK, suffixNote: "the app link and the cancel link" },
   { kind: "no_show_2hr", title: "No-show, after 2 hours", when: "Sent 2 hours after a pickup time when the customer has not arrived. [time] is the pickup time.",
-    fallback: "Hi [first name], your pickup was at [time] and we have not seen you. Reply YES if you are on your way, or RESCHEDULE for a new time.",
     suffix: "", suffixNote: "" },
   { kind: "no_show_24hr", title: "No-show, the next day", when: "Sent a day after the 2 hour no-show text, if the customer still has not arrived.",
-    fallback: "Hi [first name], we have not heard from you about yesterday's rental. Please reply or call us to let us know your plans.",
     suffix: "", suffixNote: "" },
   { kind: "return_reminder", title: "Return reminder", when: "Sent the day before an open rental is due back. [date] and [time] are when it is due back. When the fuel level at pickup is known, a note asking for it back at that level is added after the wording.",
-    fallback: "Hi [first name], your rental is due back tomorrow at [time]. Complete your return in the fleetr app.",
     suffix: " Return fuel at Full to avoid a charge." + TEXT_SAMPLE_APP_LINK, suffixNote: "the fuel note and the app link" },
 ];
 const TEXT_PLACEHOLDERS = ["[first name]", "[company]", "[location]", "[date]", "[time]"];
@@ -680,7 +662,7 @@ Rules:
 
 Fleet table fields:
 - id (primary key, do not modify), plate (e.g. "ABC-123"), make, model, year (number), colour, vin (exactly 17 characters, no I, O or Q), province (e.g. "NL")
-- vehicleClass: one of {{FLEET_VEHICLE_CLASSES}}
+- vehicleClass: {{VEHICLE_CLASSES}}
 - status: one of "Available", "Needs Cleaning", "Ready for Pickup", "PM", "Damaged", "On Rent", "Ready Returns"
 - "PM" means Preventative Maintenance (the vehicle is due for scheduled service).
 - winterTires: "Yes" or "No"
@@ -744,7 +726,7 @@ Settings (app_settings):
 
 Non-drive intake (ndi_rows) table fields:
 - id (primary key, do not modify), rescode, customer, phone, type, rate (read-only, not editable)
-- source: one of {{NDI_SOURCES}}
+- source: {{NDI_SOURCES}}
 - aiDate (ISO date), aiTime (4 digit string, e.g. "1140"), aiMeridiem ("AM" or "PM")
 - agentRequested, requestedAtMs (read-only, not editable through this AI)
 
@@ -781,11 +763,14 @@ Gas collections:
 - Use the rental agreements data passed in the user message to find records with an outstanding gasOwed balance and their ids.`;
 
 // The prompt with the company's own lists written in, so the AI offers the
-// same vehicle classes and intake sources the forms do.
+// same vehicle classes and intake sources the forms do. A list the company has
+// not filled yet is said to be empty, so the AI asks rather than invents one.
+const oneOfList = (names, what) =>
+  names.length ? `one of ${quotedList(names)}` : `none yet: the company has not added any ${what}, so do not propose one`;
 function claudeSystem() {
   return CLAUDE_SYSTEM
-    .replace("{{FLEET_VEHICLE_CLASSES}}", quotedList(fleetVehicleClasses()))
-    .replace("{{NDI_SOURCES}}", quotedList(ndiSourceOptions("")));
+    .replace("{{VEHICLE_CLASSES}}", oneOfList(fleetVehicleClasses(), "vehicle classes"))
+    .replace("{{NDI_SOURCES}}", oneOfList(ndiSourceOptions(""), "intake sources"));
 }
 
 // ─── Twilio SMS ──────────────────────────────────────────────────────────────
@@ -906,6 +891,12 @@ const ACTION_POLICY = {
   "note.add":         { tier: "confirm", label: "Add a note" },
   "ndi.edit":         { tier: "confirm", label: "Edit an intake row" },
   "tor.confirmDate":  { tier: "confirm", label: "Confirm the repair date" },
+  // The company's own state. Exec only, each a few times in the company's
+  // life, and each changes what every customer sees. launch_company,
+  // pause_company and resume_company refuse anyone else.
+  "company.launch":   { tier: "pin", role: "Exec", label: "Launch the company" },
+  "company.pause":    { tier: "pin", role: "Exec", label: "Pause the company" },
+  "company.resume":   { tier: "pin", role: "Exec", label: "Resume the company" },
 };
 
 const actionTier = (key) => ACTION_POLICY[key]?.tier || "pin"; // unknown defaults to the safer tier
@@ -1125,6 +1116,7 @@ const NAV_SECTIONS = [
   {
     header: "Branch",
     items: [
+      { label: "Setup", path: "/setup", setupOnly: true },
       { label: "Reports", path: "/reports" },
       { label: "Audit Log", path: "/audit-log" },
       { label: "Company", path: "/company" },
@@ -1140,44 +1132,17 @@ const NAV = NAV_SECTIONS.flatMap((section) => section.items);
 // this rather than NAV_SECTIONS directly, so an item whose company has the
 // feature off is not there at all, and a section left with no items loses its
 // header too instead of hanging empty. Items without a feature always show.
-const navItemVisible = (item) => !item.feature || isFeatureEnabled(item.feature);
+const navItemVisible = (item) => (!item.feature || isFeatureEnabled(item.feature))
+  && (!item.setupOnly || !companyLaunched);
 function visibleNavSections() {
   return NAV_SECTIONS
     .map((section) => ({ ...section, items: section.items.filter(navItemVisible) }))
     .filter((section) => section.items.length > 0);
 }
-const FLEET_MODELS_BY_BRAND = {
-  Chevrolet: ["Equinox", "Malibu", "Trax"],
-  Ford: ["Escape", "Fusion", "Edge"],
-  Kia: ["Forte", "Soul", "Sportage"],
-  Mazda: ["CX-5", "Mazda3", "CX-30"],
-  Nissan: ["Sentra", "Rogue", "Altima"],
-  Toyota: ["Corolla", "Camry", "RAV4"],
-};
-const FLEET_BRANDS = Object.keys(FLEET_MODELS_BY_BRAND).sort((a, b) =>
-  a.localeCompare(b)
-);
 
-const BRANCH_LOCATIONS = [
-  { label: "Mount Pearl", code: "C951" },
-  { label: "St. John's", code: "C954" },
-  { label: "Clarenville", code: "C972" },
-];
-const BRANCH_GROUPS = [
-  { label: "C9 \u2014 Atlantic Canada", locations: BRANCH_LOCATIONS },
-  { label: "C2 \u2014 British Columbia", locations: null },
-];
 
 // ─── Reservations page ──────────────────────────────────────────────────────
 
-const RES_VEHICLE_CLASSES = [
-  "Compact Car", "Regular Car", "Large Car",
-  "Compact SUV", "Regular SUV", "Large SUV", "Minivan", "Premium Sedan", "Luxury",
-];
-const RES_BILL_TO_OPTIONS = [
-  "Customer pay", "Intact Insurance", "Johnson Insurance",
-  "Aviva Insurance", "SGI Canada", "Dealership courtesy", "Corporate account",
-];
 
 function isoOffset(days) {
   const d = new Date();
@@ -1278,78 +1243,6 @@ function normalizePlate(s) {
   return String(s || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 }
 
-// ─── TOR seed data ────────────────────────────────────────────────────────────
-
-const TOR_SEED = [
-  { id: "TOR-1", resCode: "JAP 182 301", customer: "James Parsons",   shop: "Midas Auto Service",   billTo: "Intact Insurance",   winterTires: "Yes", vehicleClass: "Regular Car",      torDate: isoOffset(0) },
-  { id: "TOR-2", resCode: "RCN 185 602", customer: "Rachel Conway",   shop: "Steele Hyundai",        billTo: "Johnson Insurance",  winterTires: "No",  vehicleClass: "Compact Car",      torDate: isoOffset(0) },
-  { id: "TOR-3", resCode: "OFI 190 103", customer: "Owen Fitzgerald", shop: "Midas Auto Service",    billTo: "Aviva Insurance",    winterTires: "Yes", vehicleClass: "Regular SUV", torDate: isoOffset(2) },
-  { id: "TOR-4", resCode: "IMR 193 404", customer: "Isla Morrison",   shop: "Downtown Collision",    billTo: "Customer pay",       winterTires: "No",  vehicleClass: "Regular Car",     torDate: isoOffset(4) },
-  { id: "TOR-5", resCode: "CBT 196 705", customer: "Cole Bennett",    shop: "Steele Volkswagen",     billTo: "SGI Canada",         winterTires: "Yes", vehicleClass: "Compact SUV",  torDate: isoOffset(6) },
-];
-
-// ─── Ready Returns seed ───────────────────────────────────────────────────────
-
-const READY_RETURNS_SEED = [
-  { id: "RR-1", plate: "JLM-284", vehicle: "Toyota Corolla",  location: "AF",    fileType: "Retail",    readySince: "07:55" },
-  { id: "RR-2", plate: "NQF-173", vehicle: "Hyundai Elantra", location: "CCTOP", fileType: "Corporate", readySince: "08:40" },
-  { id: "RR-3", plate: "RZT-909", vehicle: "Ford Escape",     location: "FA",    fileType: "Insurance", readySince: "09:05" },
-];
-
-
-// ─── Vehicle extra data (year, colour, VIN, province, odometer, fuel) ────────
-
-const VEHICLE_EXTRA_DATA = {
-  "JLM-284": { year: 2023, colour: "White",  vin: "1T1BF3EK5DU734891", province: "NL", odometer: 48234, fuelLevel: "3/4"  },
-  "NQF-173": { year: 2024, colour: "Silver", vin: "5NPDH4AE4FH512873", province: "NL", odometer: 31100, fuelLevel: "Full" },
-  "BTM-663": { year: 2022, colour: "Blue",   vin: "3KPFK4A78NE453201", province: "NL", odometer: 67445, fuelLevel: "1/2"  },
-  "RZT-909": { year: 2024, colour: "Black",  vin: "1FMCU9GXXNUB12345", province: "NL", odometer: 22876, fuelLevel: "3/4"  },
-  "KPV-551": { year: 2023, colour: "Red",    vin: "JM1BPBBL8N1501234", province: "NL", odometer: 41200, fuelLevel: "Full" },
-  "WKM-112": { year: 2022, colour: "Grey",   vin: "5N1AT2MV8JC812345", province: "NL", odometer: 78900, fuelLevel: "1/4"  },
-  "TDB-451": { year: 2021, colour: "White",  vin: "1G1ZD5ST1JF234567", province: "NL", odometer: 92340, fuelLevel: "1/2"  },
-  "QPA-667": { year: 2024, colour: "Green",  vin: "KNDPM3AC1J7391234", province: "NL", odometer: 15670, fuelLevel: "Full" },
-  "LNX-830": { year: 2023, colour: "Silver", vin: "2T1BURHE1JC012345", province: "NL", odometer: 36520, fuelLevel: "3/4"  },
-  "FZR-294": { year: 2024, colour: "White",  vin: "1FMCU9GXXNUB99876", province: "NL", odometer: 19800, fuelLevel: "Full" },
-  "WKM-819": { year: 2023, colour: "Black",  vin: "3N1AB7AP0KY345678", province: "NL", odometer: 44100, fuelLevel: "1/2"  },
-  "QPA-204": { year: 2023, colour: "Blue",   vin: "KNDPM3AC1J7399999", province: "NL", odometer: 28300, fuelLevel: "3/4"  },
-};
-
-// ─── Vehicle maintenance seed ─────────────────────────────────────────────────
-
-const VEHICLE_MAINTENANCE_SEED = {
-  "JLM-284": { lastOilChange: "2026-03-15", nextServiceDue: "2026-09-15", notes: "Brake pads showing wear — inspect at next service." },
-  "NQF-173": { lastOilChange: "2025-11-20", nextServiceDue: "2026-05-20", notes: "" },
-  "BTM-663": { lastOilChange: "2025-09-10", nextServiceDue: "2026-03-10", notes: "Service overdue." },
-  "RZT-909": { lastOilChange: "2026-04-01", nextServiceDue: "2026-10-01", notes: "" },
-  "KPV-551": { lastOilChange: "2026-02-14", nextServiceDue: "2026-08-14", notes: "Tire rotation due." },
-  "WKM-112": { lastOilChange: "2025-08-22", nextServiceDue: "2026-02-22", notes: "Service overdue." },
-  "TDB-451": { lastOilChange: "2025-06-18", nextServiceDue: "2025-12-18", notes: "Service well overdue — schedule ASAP." },
-  "QPA-667": { lastOilChange: "2026-04-28", nextServiceDue: "2026-10-28", notes: "" },
-  "LNX-830": { lastOilChange: "2026-01-30", nextServiceDue: "2026-07-30", notes: "" },
-  "FZR-294": { lastOilChange: "2026-04-15", nextServiceDue: "2026-10-15", notes: "" },
-  "WKM-819": { lastOilChange: "2025-12-05", nextServiceDue: "2026-06-05", notes: "Due this month." },
-  "QPA-204": { lastOilChange: "2026-02-28", nextServiceDue: "2026-08-28", notes: "" },
-};
-
-// ─── Vehicle damage seed ───────────────────────────────────────────────────────
-
-const VEHICLE_DAMAGE_SEED = {
-  "QPA-667": [
-    { id: "VD-1", location: "Front bumper",  description: "Scuff, approx 15 cm" },
-    { id: "VD-2", location: "Driver door",   description: "Small dent, paint intact" },
-  ],
-  "BTM-663": [
-    { id: "VD-3", location: "Rear bumper",   description: "Cracked corner, passenger side" },
-  ],
-  "WKM-112": [
-    { id: "VD-4", location: "Hood",          description: "Three stone chips, minor" },
-  ],
-  "TDB-451": [
-    { id: "VD-5", location: "Front bumper",  description: "Paint transfer, approx 8 cm" },
-    { id: "VD-6", location: "Rear bumper",   description: "Reverse impact dent" },
-  ],
-};
-
 // ─── Damage claims ──────────────────────────────────────────────────────────────
 // damage_claims rows only carry plate, rentalAgreementId, and description. Vehicle
 // and customer/resCode are derived by joining rentalAgreements/reservations here so
@@ -1377,213 +1270,9 @@ function enrichDamageClaim(claim, rentalAgreements, reservations) {
   };
 }
 
-// The archived vehicles seed is gone. It held two invented retirements that
-// existed only to make the table look populated. Now that archived_vehicles is
-// a real table, seeding it would put fabricated records into the one place that
-// answers "what happened to that vehicle", which is the same reason the
-// reservations seed was emptied earlier.
-
-// ─── No Shows seed ────────────────────────────────────────────────────────────
-
-const NO_SHOWS_SEED = [
-  { id: "NS-1", resCode: "BKL 230 101", customer: "Brandon Kelly",   time: "09:30", vehicleClass: "Compact Car",  location: "WI", date: isoOffset(0), phone: "(709) 555-0411", called: false, status: "", stage: "2hour" },
-  { id: "NS-2", resCode: "SHW 231 802", customer: "Samantha Howell", time: "11:00", vehicleClass: "Compact SUV",  location: "AF", date: isoOffset(0), phone: "(709) 555-0528", called: false, status: "", stage: "2hour" },
-  { id: "NS-3", resCode: "DCH 233 503", customer: "Derek Chafe",     time: "13:15", vehicleClass: "Regular Car",  location: "PU", date: isoOffset(0), phone: "(709) 555-0673", called: false, status: "", stage: "2hour" },
-];
-
-// ─── Overdue Rentals seed ─────────────────────────────────────────────────────
-
-const OVERDUE_SEED = [
-  { id: "OD-1", resCode: "MPK 109 201", customer: "Michelle Park",   phone: "(709) 555-0312", plate: "JXR 841", province: "NL", returnDate: isoOffset(-3), callStatus: "" },
-  { id: "OD-2", resCode: "JHL 110 702", customer: "James Holloway",  phone: "(709) 555-0447", plate: "NPT 302", province: "NL", returnDate: isoOffset(-5), callStatus: "" },
-  { id: "OD-3", resCode: "RSM 112 403", customer: "Rachel Simmons",  phone: "(709) 555-0589", plate: "KMV 567", province: "NL", returnDate: isoOffset(-1), callStatus: "" },
-];
-
-// ─── Non-Drive Intake seed data (module-level so AppProvider can initialise from it) ─────
-
-const NDI_SOURCE_OPTIONS = ["Insurance", "AF", "FA", "CCS", "CSTAR", "CCTOP", "CA", "Janes", "Brian's"];
-
-const NDI_SEED = [
-  {
-    id: "LMN 882 001",
-    resCode: "LMN 882 001",
-    customer: "Lucas MacNeil",
-    phone: "(709) 555-0182",
-    source: "Insurance",
-    type: "Non-drive",
-    rate: "$54/day",
-    slaTimer: "00:26:12",
-    aiDate: new Date().toISOString().slice(0, 10),
-    aiTime: "1140",
-    aiMeridiem: "AM",
-    agentRequested: false,
-    requestedAtMs: null,
-  },
-  {
-    id: "MFY 963 002",
-    resCode: "MFY 963 002",
-    customer: "Maya Fernandez",
-    phone: "(709) 555-0247",
-    source: "Janes",
-    type: "Non-drive",
-    rate: "$57/day",
-    slaTimer: "00:16:29",
-    aiDate: new Date().toISOString().slice(0, 10),
-    aiTime: "1220",
-    aiMeridiem: "PM",
-    agentRequested: false,
-    requestedAtMs: null,
-  },
-  {
-    id: "ETW 978 003",
-    resCode: "ETW 978 003",
-    customer: "Ethan White",
-    phone: "(709) 555-0391",
-    source: "CA",
-    type: "Non-drive",
-    rate: "$63/day",
-    slaTimer: "00:07:43",
-    aiDate: new Date().toISOString().slice(0, 10),
-    aiTime: "0205",
-    aiMeridiem: "PM",
-    agentRequested: false,
-    requestedAtMs: null,
-  },
-];
-
-// ─── Dashboard reservations seed (module-level for AppProvider) ───────────────
-
-const DASHBOARD_RES_SEED = [
-  {
-    date: "2026-05-07", time: "03:00", pickupMeridiem: "PM",
-    returnDate: "2026-05-14", returnTime: "03:00", returnMeridiem: "PM",
-    location: "AF", resCode: "CNS 123 401",
-    customer: "Connor Nash", firstName: "Connor", lastName: "Nash",
-    phone: "709 123 4567", email: "connornash@fleetr.ai",
-    licenseNumber: "N123456789", licenseCountry: "Canada",
-    licenseState: "NL", licenseExpiry: "2031-04-21",
-    vehicleClass: "Regular SUV", ratesVehicleClass: "SUV \u2014 Regular",
-    winterTires: "No",
-    source: "Bodyshop/Dealership",
-    dailyRate: "45",
-    adjusterName: "", claimNumber: "", fileNumber: "", authNumber: "",
-    poNumber: "", paymentMethod: "",
-    preRentalCheck: "NOT Pre-Rental Check'd", notesLog: [], fromNonDrive: false,
-    // \u2500\u2500 Persisted extended fields (new Supabase columns) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    pickupTime:      "03:00",
-    licenseNum:      "N123456789",
-    licenseProvince: "NL",
-    sourceDetail:    "Avalon Ford",
-    vehicleSize:     "Regular",
-    vehicleYear:     "2025",
-    vehicleMake:     "Mazda",
-    vehicleModel:    "CX-30",
-    rentalAgreementStatus:    "reservation",
-  },
-  {
-    date: "2026-05-19", time: "08:00", pickupMeridiem: "AM",
-    returnDate: "2026-06-02", returnTime: "05:00", returnMeridiem: "PM",
-    location: "AF", resCode: "MFW 151 202",
-    customer: "Margaret Fewer", firstName: "Margaret", lastName: "Fewer",
-    phone: "709 555 0123", email: "",
-    licenseNumber: "F887654321", licenseCountry: "Canada",
-    licenseState: "NL", licenseExpiry: "2029-11-15",
-    vehicleClass: "Compact Car", ratesVehicleClass: "Car — Compact",
-    winterTires: "No",
-    source: "Insurance",
-    dailyRate: "52",
-    adjusterName: "Keisha Thompson", claimNumber: "CL-2026-0441", fileNumber: "", authNumber: "",
-    poNumber: "", paymentMethod: "",
-    preRentalCheck: "NOT Pre-Rental Check'd", notesLog: [], fromNonDrive: false,
-    pickupTime:      "08:00",
-    licenseNum:      "F887654321",
-    licenseProvince: "NL",
-    sourceDetail:    "Aviva Insurance",
-    vehicleSize:     "Compact",
-    vehicleYear:     "2024",
-    vehicleMake:     "Kia",
-    vehicleModel:    "Forte",
-    rentalAgreementStatus: "reservation",
-  },
-  {
-    date: "2026-05-21", time: "10:00", pickupMeridiem: "AM",
-    returnDate: "2026-06-07", returnTime: "05:00", returnMeridiem: "PM",
-    location: "AF", resCode: "TPA 156 703",
-    customer: "Troy Parsons", firstName: "Troy", lastName: "Parsons",
-    phone: "709 555 0198", email: "",
-    licenseNumber: "P334451122", licenseCountry: "Canada",
-    licenseState: "NL", licenseExpiry: "2030-03-08",
-    vehicleClass: "Regular Car", ratesVehicleClass: "Car — Regular",
-    winterTires: "No",
-    source: "Bodyshop/Dealership",
-    dailyRate: "48",
-    adjusterName: "", claimNumber: "", fileNumber: "", authNumber: "",
-    poNumber: "", paymentMethod: "",
-    preRentalCheck: "NOT Pre-Rental Check'd", notesLog: [], fromNonDrive: false,
-    pickupTime:      "10:00",
-    licenseNum:      "P334451122",
-    licenseProvince: "NL",
-    sourceDetail:    "Steele Volkswagen",
-    vehicleSize:     "Regular",
-    vehicleYear:     "2023",
-    vehicleMake:     "Nissan",
-    vehicleModel:    "Sentra",
-    rentalAgreementStatus: "reservation",
-  },
-  // ── Gas Collections demo entries ─────────────────────────────────────────────
-  {
-    date: "2026-04-28", time: "09:00", pickupMeridiem: "AM",
-    returnDate: "2026-05-10", returnTime: "02:00", returnMeridiem: "PM",
-    location: "AF", resCode: "GCP 440 501",
-    customer: "Grace Campbell", firstName: "Grace", lastName: "Campbell",
-    phone: "709 555 0621", email: "",
-    licenseNumber: "C448821001", licenseCountry: "Canada",
-    licenseState: "NL", licenseExpiry: "2030-09-12",
-    vehicleClass: "Compact Car", ratesVehicleClass: "Car — Compact",
-    winterTires: "No",
-    source: "Insurance",
-    dailyRate: "45",
-    adjusterName: "Karen Healey", claimNumber: "CL-2026-0418", fileNumber: "", authNumber: "",
-    poNumber: "", paymentMethod: "Credit Card",
-    preRentalCheck: "NOT Pre-Rental Check'd", notesLog: [], fromNonDrive: false,
-    pickupTime:      "09:00",
-    licenseNum:      "C448821001",
-    licenseProvince: "NL",
-    sourceDetail:    "Aviva Insurance",
-    vehicleSize:     "Compact",
-    vehicleYear:     "2024", vehicleMake: "Kia", vehicleModel: "Forte",
-    rentalAgreementStatus: "close_pending",
-    rentalPlate:     "BTM-663",
-    gasOwed:         "48.50",
-    gasPaymentStatus: "Unpaid",
-  },
-  {
-    date: "2026-04-15", time: "11:00", pickupMeridiem: "AM",
-    returnDate: "2026-05-02", returnTime: "10:00", returnMeridiem: "AM",
-    location: "AF", resCode: "BWR 330 102",
-    customer: "Barry Wright", firstName: "Barry", lastName: "Wright",
-    phone: "709 555 0883", email: "",
-    licenseNumber: "W229934567", licenseCountry: "Canada",
-    licenseState: "NL", licenseExpiry: "2028-06-30",
-    vehicleClass: "Regular SUV", ratesVehicleClass: "SUV — Regular",
-    winterTires: "No",
-    source: "Bodyshop/Dealership",
-    dailyRate: "45",
-    adjusterName: "", claimNumber: "", fileNumber: "", authNumber: "",
-    poNumber: "", paymentMethod: "Credit Card",
-    preRentalCheck: "NOT Pre-Rental Check'd", notesLog: [], fromNonDrive: false,
-    pickupTime:      "11:00",
-    licenseNum:      "W229934567",
-    licenseProvince: "NL",
-    sourceDetail:    "Steele Volkswagen",
-    vehicleSize:     "Regular",
-    vehicleYear:     "2024", vehicleMake: "Mazda", vehicleModel: "CX-5",
-    rentalAgreementStatus: "closed",
-    rentalPlate:     "KPV-551",
-    gasOwed:         "22.00",
-    gasPaymentStatus: "Partial",
-  },
-];
+// Nothing in this file is seeded into a screen. Every list, record and
+// vehicle detail shown comes from the company's own data, so a company that
+// has not entered something yet sees it empty rather than invented.
 
 // ─── App Context ──────────────────────────────────────────────────────────────
 
@@ -1840,6 +1529,22 @@ function AppProvider({ children, currentUser, signOut }) {
   const [openRentalAgreementId, setOpenRentalAgreementId] = React.useState(null);
   const [openCustomer, setOpenCustomer] = React.useState(null);
   const [openVehiclePlate, setOpenVehiclePlate] = React.useState(null);
+
+  // ── Company setup ─────────────────────────────────────────────────────────
+  // The checklist and the company's state: launched, paused, suspended. Read
+  // at sign-in and again after anything that changes it. null until known.
+  const [setup, setSetup] = React.useState(null);
+  const refreshSetup = React.useCallback(async () => {
+    const { data, error } = await supabase.rpc("my_company_setup");
+    if (error || !data || !data.ok) {
+      if (error) console.warn("my_company_setup failed:", error);
+      return null;
+    }
+    companyLaunched = !!data.launched;
+    setSetup(data);
+    return data;
+  }, []);
+  React.useEffect(() => { if (currentUser) refreshSetup(); }, [currentUser, refreshSetup]);
 
   // ── PIN confirmation modal ────────────────────────────────────────────────
   const [pinModalOpen, setPinModalOpen] = React.useState(false);
@@ -2294,10 +1999,10 @@ function AppProvider({ children, currentUser, signOut }) {
     load().catch((err) => {
       console.error("Supabase load failed:", err);
       setReservationsState([]);
-      setNdiRowsState(NDI_SEED);
-      setTorRowsState(TOR_SEED);
+      setNdiRowsState([]);
+      setTorRowsState([]);
       setFleetState([]);
-      setNoShowsState(NO_SHOWS_SEED);
+      setNoShowsState([]);
       raRef.current = [];
       setRentalAgreementsState([]);
       setDamageClaimsState([]);
@@ -2354,7 +2059,7 @@ function AppProvider({ children, currentUser, signOut }) {
 
   return React.createElement(
     AppContext.Provider,
-    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, archivedVehicles, setArchivedVehicles, readyReturns, setReadyReturns, appSettings, saveSetting, guardAction, logAudit, currentUser, signOut } },
+    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, archivedVehicles, setArchivedVehicles, readyReturns, setReadyReturns, appSettings, saveSetting, guardAction, logAudit, currentUser, signOut, setup, refreshSetup } },
     children,
     pinModalOpen && React.createElement(PinConfirmModal, { onConfirm: confirmPin, onCancel: dismissPinModal })
   );
@@ -2364,7 +2069,7 @@ function AppProvider({ children, currentUser, signOut }) {
 
 function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote }) {
   const notesLog = parseNotesLog(notesLogRaw);
-  const { openNotesId, setOpenNotesId } = React.useContext(AppContext);
+  const { openNotesId, setOpenNotesId, currentUser } = React.useContext(AppContext);
   const [viewOpen, setViewOpen] = React.useState(false);
   const [viewAnchor, setViewAnchor] = React.useState({ x: 0, y: 0 });
   const [searchInput, setSearchInput] = React.useState("");
@@ -2449,7 +2154,7 @@ function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote })
     e.preventDefault();
     if (!addText.trim()) return;
     const text = addText.trim();
-    onAddNote && onAddNote({ author: "Connor Nash", text });
+    onAddNote && onAddNote({ author: actorName(currentUser), text });
     setAddText("");
     setAddOpen(false);
   };
@@ -2563,28 +2268,12 @@ function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote })
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-const RESERVATIONS_SEED = [
-  {
-    id: "rv-1", resCode: "RVS 001 101",
-    firstName: "Connor", lastName: "Nash",
-    phone: "709 123 4567", email: "connornash@fleetr.ai",
-    pickupDate: "2026-05-07", pickupTime: "3:00 PM",
-    returnDate: "2026-05-14", returnTime: "3:00 PM",
-    licenseNum: "N123456789", licenseCountry: "Canada",
-    licenseProvince: "NL", licenseExpiry: "2031-04-21",
-    source: "Bodyshop/Dealership", sourceDetail: "Avalon Ford",
-    vehicleClass: "SUV", vehicleSize: "Regular",
-    winterTires: "No", dailyRate: 45,
-    pickupStatus: "Pending arrival", fromNonDrive: false,
-  },
-];
 
-const LOCATION_OPTIONS = ["AF", "FA", "CCS", "CS", "CCTOP", "WI", "PU"];
 
 const EMPTY_RES_FORM = {
   date: new Date().toISOString().slice(0, 10),
-  time: "", location: "WI",
-  vehicleClass: "Compact Car", winterTires: "No",
+  time: "", location: "",
+  vehicleClass: "", winterTires: "No",
   noteText: "",
   firstName: "", lastName: "", phone: "", email: "", licenseNumber: "",
   returnDate: "", returnTime: "",
@@ -2598,7 +2287,7 @@ const EMPTY_RES_FORM = {
 const emptyResForm = () => ({
   ...EMPTY_RES_FORM,
   location: defaultPickupLocation(),
-  vehicleClass: defaultVehicleClass(RES_VEHICLE_CLASSES),
+  vehicleClass: defaultVehicleClass(),
 });
 
 // ─── Status label helper ──────────────────────────────────────────────────────
@@ -2694,6 +2383,7 @@ function CustomerLink({ name, resCode, label, hideBadge }) {
   const res = reservations.find((r) => r.resCode === resCode);
   const raStatus = res?.rentalAgreementStatus;
   const showBadge = !hideBadge && label === undefined && raStatus && raStatus !== "reservation";
+  const isTest = !!res?.isTest;
   const badgeClass = raBadgeClass(raStatus);
   const displayText = label !== undefined ? label
     : resCode ? `${name} — ${resCode}` : name;
@@ -2706,8 +2396,18 @@ function CustomerLink({ name, resCode, label, hideBadge }) {
       onClick: () => { setOpenCustomer({ name, resCode }); navigate("/customer"); },
     }, displayText),
     showBadge &&
-      React.createElement("span", { className: badgeClass }, statusLabel(raStatus))
+      React.createElement("span", { className: badgeClass }, statusLabel(raStatus)),
+    isTest && React.createElement(TestTag)
   );
+}
+
+// A record made while the company was in setup mode. It is removed when the
+// company launches (launch_company), so it never becomes a real record.
+function TestTag() {
+  return React.createElement("span", {
+    className: "rentalAgreementBadge rentalAgreementBadge--neutral", style: { marginLeft: "6px" },
+    title: "Made in setup mode. Removed when the company launches.",
+  }, "Test");
 }
 
 // A reservation the customer booked themselves on fleetr.ai.
@@ -2774,7 +2474,7 @@ async function generateUniqueResCode() {
 // ─── ReservationsPage ─────────────────────────────────────────────────────────
 
 function ReservationsPage() {
-  const { reservations, setReservations, noShows, setNoShows } = React.useContext(AppContext);
+  const { reservations, setReservations, noShows, setNoShows, currentUser } = React.useContext(AppContext);
   const navigate = useNavigate();
   const todayIso = new Date().toISOString().slice(0, 10);
   const [showModal, setShowModal] = React.useState(false);
@@ -2905,7 +2605,7 @@ function ReservationsPage() {
       fileNumber: form.fileNumber, authNumber: form.authNumber,
       poNumber: form.poNumber, paymentMethod: form.paymentMethod,
       preRentalCheck: "NOT Pre-Rental Check'd",
-      notesLog: form.noteText.trim() ? [{ author: "ADJ", text: form.noteText.trim() }] : [],
+      notesLog: form.noteText.trim() ? [{ author: actorName(currentUser), text: form.noteText.trim() }] : [],
       rentalAgreementStatus: "reservation",
     };
     // Write directly to Supabase before updating state so the row exists immediately.
@@ -3135,7 +2835,7 @@ function ReservationsPage() {
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Vehicle Class"),
                 React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => setForm((p) => withDailyRate({ ...p, vehicleClass: e.target.value })) },
-                  vehicleClassOptions(RES_VEHICLE_CLASSES, form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
+                  vehicleClassOptions(form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
                 )
               ),
               React.createElement("label", { className: "resFormGroup" },
@@ -3209,7 +2909,7 @@ function ReservationsPage() {
 // ─── NonDriveIntakeSection component ────────────────────────────────────────────────────
 
 function NonDriveIntakeSection({ standalone }) {
-  const { ndiRows, setNdiRows, setReservations, setOpenRentalAgreementId, guardAction } = React.useContext(AppContext);
+  const { ndiRows, setNdiRows, setReservations, setOpenRentalAgreementId, guardAction, currentUser } = React.useContext(AppContext);
   const navigate = useNavigate();
   const [now, setNow] = React.useState(Date.now());
   const [openDatePickerId, setOpenDatePickerId] = React.useState(null);
@@ -3299,13 +2999,13 @@ function NonDriveIntakeSection({ standalone }) {
     const newRes = {
       date: target.aiDate,
       time: pickupTime,
-      location: pickupLocationOptions("").includes("CCS") ? "CCS" : pickupLocationOptions("")[0],
+      location: defaultPickupLocation(),
       resCode: target.rescode,
       customer: target.customer,
-      vehicleClass: defaultVehicleClass(RES_VEHICLE_CLASSES, "Regular SUV"),
+      vehicleClass: defaultVehicleClass(),
       winterTires: "Yes",
       preRentalCheck: "NOT Pre-Rental Check'd",
-      notesLog: [{ author: "ADJ", text: `From red car intake (${target.aiDate})` }],
+      notesLog: [{ author: actorName(currentUser), text: `From red car intake (${target.aiDate})` }],
     };
     const check = validateReservation(newRes);
     if (!check.ok) { window.alert(`This intake row cannot be booked yet. ${check.error}`); return; }
@@ -3566,7 +3266,7 @@ function NonDriveIntakeSection({ standalone }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function DashboardPage() {
-  const { reservations, setReservations, fleet, setFleet, setOpenRentalAgreementId, rentalAgreements, guardAction } = React.useContext(AppContext);
+  const { reservations, setReservations, fleet, setFleet, setOpenRentalAgreementId, rentalAgreements, guardAction, currentUser } = React.useContext(AppContext);
   const isMobile = useMobile();
   // Props that make a whole header bar a toggle, for mobile, where the small
   // plus button alone is too easy to miss.
@@ -3674,7 +3374,7 @@ function DashboardPage() {
       fileNumber: form.fileNumber, authNumber: form.authNumber,
       poNumber: form.poNumber, paymentMethod: form.paymentMethod,
       preRentalCheck: "NOT Pre-Rental Check'd",
-      notesLog: form.noteText.trim() ? [{ author: "ADJ", text: form.noteText.trim() }] : [],
+      notesLog: form.noteText.trim() ? [{ author: actorName(currentUser), text: form.noteText.trim() }] : [],
       rentalAgreementStatus: "reservation",
     };
     // Write directly to Supabase before updating state so the row exists immediately.
@@ -4107,7 +3807,7 @@ function DashboardPage() {
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Vehicle Class"),
                 React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => setForm((p) => withDailyRate({ ...p, vehicleClass: e.target.value })) },
-                  vehicleClassOptions(RES_VEHICLE_CLASSES, form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
+                  vehicleClassOptions(form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
                 )
               ),
               React.createElement("label", { className: "resFormGroup" },
@@ -4600,7 +4300,6 @@ function VehicleDetailPage() {
 
   const plate   = openVehiclePlate || "";
   const vehicle = fleet.find((v) => v.plate === plate) || {};
-  const extra   = VEHICLE_EXTRA_DATA[plate] || {};
 
   // Active RA for this plate (open rental) \u2014 used for currentRenter, resCode, returnDate
   const activeRa = plate
@@ -4620,8 +4319,10 @@ function VehicleDetailPage() {
   // reliably). Both are stored canonically (litres / kilometres) and only
   // converted for display, so the unit toggle can never affect the gas charge
   // maths or the PM threshold comparison.
-  const [tankUnit, setTankUnit] = React.useState(fuelUnit);
-  const [pmUnit,   setPmUnit]   = React.useState(distanceUnit);
+  // The figures on file are in litres and kilometres. A company with no units
+  // yet sees them in those, the units they are stored in.
+  const [tankUnit, setTankUnit] = React.useState(() => fuelUnit() || "L");
+  const [pmUnit,   setPmUnit]   = React.useState(() => distanceUnit() || "km");
   const [tankInput, setTankInput] = React.useState("");
   const [pmInput,   setPmInput]   = React.useState("");
 
@@ -4760,14 +4461,14 @@ function VehicleDetailPage() {
     mkSection("info", "Vehicle Information",
       React.createElement(React.Fragment, null,
         detailRow("Plate", plate.replace(/-/g, "")),
-        detailRow("Province / State", vehicle.province || extra.province),
-        detailRow("Year / Make / Model", [vehicle.year || extra.year, vehicle.make, vehicle.model].filter(Boolean).join(" ") || "\u2014"),
-        detailRow("Colour", vehicle.colour || extra.colour),
-        detailRow("VIN", vehicle.vin || extra.vin),
+        detailRow("Province / State", vehicle.province),
+        detailRow("Year / Make / Model", [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(" ") || "\u2014"),
+        detailRow("Colour", vehicle.colour),
+        detailRow("VIN", vehicle.vin),
         detailRow("Odometer", latestRa?.mileage != null
           ? fmtDistance(latestRa.mileage)
-          : extra.odometer != null ? fmtDistance(extra.odometer) : "\u2014"),
-        detailRow("Fuel Level", latestRa?.fuelAtPickup || extra.fuelLevel),
+          : vehicle.currentOdometer != null ? fmtDistance(vehicle.currentOdometer) : "\u2014"),
+        detailRow("Fuel Level", latestRa?.fuelAtPickup || vehicle.currentFuelLevel),
         React.createElement(
           "div", { className: "vehicleDetailRow" },
           React.createElement("span", { className: "vehicleDetailLabel" }, "Tank Size"),
@@ -4920,17 +4621,6 @@ function VehicleDetailPage() {
         detailRow("Last Inspection Date", "\u2014")
       )
     ),
-
-    // \u2500\u2500 Section 4: Maintenance \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    mkSection("maintenance", "Maintenance", (() => {
-      const maint = VEHICLE_MAINTENANCE_SEED[plate] || {};
-      const fmtD = (iso) => iso ? new Date(`${iso}T00:00:00`).toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" }) : "\u2014";
-      return React.createElement(React.Fragment, null,
-        detailRow("Last Oil Change",    fmtD(maint.lastOilChange)),
-        detailRow("Next Service Due",   fmtD(maint.nextServiceDue)),
-        detailRow("Maintenance Notes",  maint.notes || "\u2014")
-      );
-    })()),
 
     // \u2500\u2500 Section 5: Ongoing Damage Claims \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     mkSection("damageClaims", "Ongoing Damage Claims", (() => {
@@ -5447,20 +5137,13 @@ const VEHICLE_REQUIRED_FIELDS = [
 
 // The classes offered on the Add Vehicle form. Shared so the form, the AI and
 // the validator cannot drift into offering different sets.
-const FLEET_VEHICLE_CLASSES = [
-  "Compact Car", "Regular Car", "Large Car",
-  "Compact SUV", "Regular SUV", "Large SUV",
-  "Minivan", "Truck",
-];
-
-// The classes a vehicle may be given: the company's own list once it has
-// loaded, the built-in one otherwise. Kept in this block, and reading
-// companyLists defensively, because the policy test runs these rules on their
-// own, where that variable does not exist.
+// The classes a vehicle may be given: the company's own active ones, and none
+// before it has any. Kept in this block, and reading companyLists defensively,
+// because the policy test runs these rules on their own, where that variable
+// does not exist.
 function fleetVehicleClasses() {
   const lists = typeof companyLists !== "undefined" ? companyLists : null;
-  const mine = lists ? lists.vehicleClasses.filter((c) => c.active).map((c) => c.name) : [];
-  return mine.length ? mine : FLEET_VEHICLE_CLASSES;
+  return lists ? lists.vehicleClasses.filter((c) => c.active).map((c) => c.name) : [];
 }
 
 // A VIN is 17 characters by international standard (ISO 3779), and the letters
@@ -5851,9 +5534,8 @@ function useFleetFilter(fleet) {
 
   const filtered = React.useMemo(() =>
     fleet.filter((v) => {
-      const extra = VEHICLE_EXTRA_DATA[v.plate] || {};
       if (plateFilt && !normalizePlate(v.plate).includes(normalizePlate(plateFilt))) return false;
-      if (provinceFilt !== "All" && extra.province !== provinceFilt) return false;
+      if (provinceFilt !== "All" && v.province !== provinceFilt) return false;
       if (statusFilt !== "All" && v.status !== statusFilt) return false;
       if (makeFilt !== "All" && v.make !== makeFilt) return false;
       if (modelFilt !== "All" && v.model !== modelFilt) return false;
@@ -6153,7 +5835,7 @@ function FleetAdditionsPage() {
 
   // tankSize / pmInterval are held in the CURRENTLY SELECTED display unit while
   // typing, and converted to canonical litres/km only at submit.
-  const BLANK_ADD    = { plate: "", province: "NL", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: defaultVehicleClass(FLEET_VEHICLE_CLASSES), tankSize: "", pmInterval: "", odometer: "", fuelLevel: "" };
+  const BLANK_ADD    = { plate: "", province: "", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: defaultVehicleClass(), tankSize: "", pmInterval: "", odometer: "", fuelLevel: "" };
   const [tankUnit, setTankUnit] = React.useState(fuelUnit);
   const [pmUnit,   setPmUnit]   = React.useState(distanceUnit);
   // Canonical litres / kilometres, kept alongside the displayed string so that
@@ -6173,6 +5855,7 @@ function FleetAdditionsPage() {
 
   const handleAddSubmit = (e) => {
     e.preventDefault();
+    if (!unitsSet()) { setAddError(UNITS_NOT_SET); return; }
     const plate = normalizePlate(addForm.plate);
 
     // Canonical values tracked alongside the inputs, so a unit toggle can't
@@ -6216,7 +5899,7 @@ function FleetAdditionsPage() {
     guardAction("vehicle.add", () => {
       const newVehicle = {
         plate, make: addForm.make, model: addForm.model,
-        vehicleClass: addForm.vehicleClass || defaultVehicleClass(FLEET_VEHICLE_CLASSES),
+        vehicleClass: addForm.vehicleClass || defaultVehicleClass(),
         year: addForm.year || null,
         colour: addForm.colour || null,
         vin: candidate.vin,
@@ -6246,19 +5929,16 @@ function FleetAdditionsPage() {
     if (!retireForm.disposalDate) { setRetireError("A disposal date is required."); return; }
     const v = fleet.find((x) => x.id === retireForm.plateId);
     if (!v) { setRetireError("Vehicle not found."); return; }
-    const extra  = VEHICLE_EXTRA_DATA[v.plate] || {};
     const reason = retireForm.reason.trim();
-    // Everything the fleet row held, copied out before it is deleted. Prefer the
-    // live row and fall back to the static extras, so a vehicle edited after it
-    // was seeded archives what it actually became.
+    // Everything the fleet row held, copied out before it is deleted.
     const record = {
       plate:        v.plate,
       make:         v.make  || null,
       model:        v.model || null,
-      year:         String(v.year ?? extra.year ?? "") || null,
-      colour:       v.colour       || extra.colour   || null,
-      province:     v.province     || extra.province || null,
-      vin:          v.vin          || extra.vin      || null,
+      year:         String(v.year ?? "") || null,
+      colour:       v.colour       || null,
+      province:     v.province     || null,
+      vin:          v.vin          || null,
       vehicleClass: v.vehicleClass || null,
       disposalDate: retireForm.disposalDate,
       reason:       reason || null,
@@ -6340,7 +6020,8 @@ function FleetAdditionsPage() {
       )
     ),
 
-    activeTab === "add" && React.createElement(
+    activeTab === "add" && !unitsSet() && React.createElement("div", { className: "resvEmpty", style: { textAlign: "left" } }, UNITS_NOT_SET),
+    activeTab === "add" && unitsSet() && React.createElement(
       "section", { className: "dashboardSection" },
       React.createElement("div", { className: "dashboardSection__header" },
         React.createElement("div", { className: "dashboardSection__headerRow" }, React.createElement("span", null, "Add Vehicle to Fleet"))
@@ -6359,6 +6040,7 @@ function FleetAdditionsPage() {
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Province / State"),
               React.createElement("select", { className: "addVehicleInput", value: addForm.province, onChange: (e) => onAdd("province", e.target.value) },
+                React.createElement("option", { value: "" }, "Select"),
                 PROV_STATE_LIST.filter((p) => p.value !== "All").map((p) => React.createElement("option", { key: p.value, value: p.value }, p.value))
               )
             ),
@@ -6385,7 +6067,7 @@ function FleetAdditionsPage() {
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Vehicle Class"),
               React.createElement("select", { className: "addVehicleInput", value: addForm.vehicleClass, onChange: (e) => onAdd("vehicleClass", e.target.value) },
-                vehicleClassOptions(FLEET_VEHICLE_CLASSES, addForm.vehicleClass).map((vc) =>
+                vehicleClassOptions(addForm.vehicleClass).map((vc) =>
                   React.createElement("option", { key: vc, value: vc }, vc)
                 )
               )
@@ -6783,16 +6465,42 @@ const COMPANY_REASONS = {
   has_staff:      "Move or deactivate this branch's staff before closing it.",
   last_location:  "This is the only open branch. A company needs one.",
   no_operator:    "This account is not attached to a company.",
+  bad_time_zone:  "That time zone is not recognised.",
   network:        "Could not reach the server.",
 };
+
+// The time zones a branch can be in, by the names Postgres also knows. A
+// branch has none until its Exec picks one; its texts, bookings and listing
+// all run on it.
+const BRANCH_TIME_ZONES = (typeof Intl !== "undefined" && Intl.supportedValuesOf
+  ? Intl.supportedValuesOf("timeZone") : []).filter((z) => z.startsWith("America/"));
+
+function BranchTimeZoneCell({ branch, timeZone, busy, onSave }) {
+  const [value, setValue] = React.useState(timeZone || "");
+  React.useEffect(() => { setValue(timeZone || ""); }, [timeZone]);
+  const options = timeZone && !BRANCH_TIME_ZONES.includes(timeZone) ? [timeZone, ...BRANCH_TIME_ZONES] : BRANCH_TIME_ZONES;
+  return React.createElement("span", { style: { display: "inline-flex", gap: "6px", alignItems: "center" } },
+    React.createElement("select", {
+      className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, value, disabled: busy,
+      "aria-label": `${branch.name} time zone`, onChange: (e) => setValue(e.target.value),
+    },
+      React.createElement("option", { value: "" }, "Not set"),
+      options.map((z) => React.createElement("option", { key: z, value: z }, z.replace(/_/g, " ")))),
+    React.createElement("button", {
+      className: "loginBtn", style: { width: "auto", padding: "5px 9px" },
+      disabled: busy || !value || value === timeZone,
+      onClick: () => onSave("tz", "set_branch_time_zone", { p_location_id: branch.id, p_time_zone: value }),
+    }, "Save"));
+}
 
 // The company screen. An Exec acts in one branch at a time, which is what keeps
 // every tenant policy working unchanged; this is where the things that are
 // genuinely about the company live instead.
 //
-// Everything here goes through operator-scoped RPCs. Nothing on this page reads
-// or writes a table directly, because the table policies are correctly scoped
-// to the acting branch and should stay that way.
+// Everything here goes through operator-scoped RPCs, because the table policies
+// are correctly scoped to the acting branch and should stay that way. The one
+// exception is a read of each branch's time zone and sales tax mark from
+// locations, whose read policy is already the whole company.
 // The address the current session was issued for. Needed to re-authenticate
 // before a password change, and read from the session rather than rebuilt from
 // the username so the two can never disagree.
@@ -7023,6 +6731,8 @@ function CompanyPage() {
   const [branches, setBranches] = React.useState([]);
   const [gas,      setGas]      = React.useState([]);
   const [taxes,    setTaxes]    = React.useState([]);
+  // Per branch: its time zone, and whether its sales tax has been saved.
+  const [branchSetup, setBranchSetup] = React.useState({});
   const [acting,   setActing]   = React.useState(null);
   const [busy,     setBusy]     = React.useState("");
   const [error,    setError]    = React.useState("");
@@ -7038,10 +6748,12 @@ function CompanyPage() {
   }, []);
 
   const refresh = React.useCallback(async () => {
-    const [ov, gs, act, tx] = await Promise.all([
+    const [ov, gs, act, tx, bs] = await Promise.all([
       call("company_overview"), call("company_gas_settings"), call("my_acting_location"),
       call("company_sales_taxes"),
+      supabase.from("locations").select("id,timeZone,salesTaxesSetAt"),
     ]);
+    if (!bs.error) setBranchSetup(Object.fromEntries((bs.data || []).map((b) => [b.id, b])));
     if (ov.ok)  setBranches(ov.branches || []);
     if (gs.ok)  setGas(gs.branches || []);
     if (tx.ok)  setTaxes(tx.branches || []);
@@ -7077,6 +6789,9 @@ function CompanyPage() {
     error  && React.createElement("div", { className: "loginError" }, error),
     notice && React.createElement("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
 
+    // ── Live, paused or in setup ──
+    React.createElement(CompanyStatusSection),
+
     // ── Acting branch ──
     React.createElement(
       "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
@@ -7109,7 +6824,7 @@ function CompanyPage() {
         React.createElement(
           "table", { className: "dashboardTable", style: { minWidth: "700px" } },
           React.createElement("thead", null, React.createElement("tr", null,
-            ["Branch", "Code", "Staff", "Status", ""].map((h) => React.createElement("th", { key: h }, h)))),
+            ["Branch", "Code", "Staff", "Status", "Time zone", ""].map((h) => React.createElement("th", { key: h }, h)))),
           React.createElement("tbody", null, branches.map((b) =>
             React.createElement("tr", { key: b.id, style: b.active ? null : { opacity: 0.5 } },
               React.createElement("td", null, b.name,
@@ -7119,6 +6834,10 @@ function CompanyPage() {
               React.createElement("td", null, b.code),
               React.createElement("td", null, String(b.staff)),
               React.createElement("td", null, b.active ? "Open" : "Closed"),
+              React.createElement("td", null,
+                React.createElement(BranchTimeZoneCell, {
+                  branch: b, timeZone: branchSetup[b.id]?.timeZone || null, busy: busy === "tz", onSave: run,
+                })),
               React.createElement("td", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
                 React.createElement("button", {
                   className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
@@ -7192,7 +6911,7 @@ function CompanyPage() {
     React.createElement(
       CompanySection, { title: "Sales tax" },
       React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-        "Up to two taxes per branch, each with a name and a rate, for example HST 15%, or GST 5% and PST 7%. They are added to every charge, and locked onto a rental agreement when the customer picks up, so a later change here does not reach rentals already out."),
+        "Up to two taxes per branch, each with a name and a rate, for example HST 15%, or GST 5% and PST 7%. They are added to every charge, and locked onto a rental agreement when the customer picks up, so a later change here does not reach rentals already out. A branch with no sales tax still needs Save pressed with both left blank, so it is set on purpose."),
       React.createElement(
         "div", { style: { overflowX: "auto" } },
         React.createElement(
@@ -7200,12 +6919,13 @@ function CompanyPage() {
           React.createElement("thead", null, React.createElement("tr", null,
             ["Branch", "First tax", "Second tax", ""].map((h) => React.createElement("th", { key: h }, h)))),
           React.createElement("tbody", null, taxes.filter((t) => t.active).map((t) =>
-            React.createElement(SalesTaxRow, { key: t.locationId, row: t, busy, onSave: run }))))
+            React.createElement(SalesTaxRow, { key: t.locationId, row: t, busy, onSave: run,
+              isSet: !!branchSetup[t.locationId]?.salesTaxesSetAt }))))
       )
     ),
 
     // ── fleetr.ai listing ──
-    React.createElement(ListingSection, { branches }),
+    React.createElement(ListingSection, { branches, branchSetup }),
 
     // ── Lists and prices ──
     React.createElement(CompanyListsSections, { branches })
@@ -7231,7 +6951,7 @@ function GasRow({ row, busy, onSave }) {
       })),
     React.createElement("td", { style: { fontSize: "0.85rem", opacity: 0.85 } },
       Object.keys(prices).length
-        ? Object.entries(prices).map(([k, v]) => `${k} ${fuelPriceForDisplay(v) ?? v} / ${fuelUnit()}`).join("  ")
+        ? Object.entries(prices).map(([k, v]) => `${k} ${fuelPriceForDisplay(v) ?? v} / ${fuelUnit() || "L"}`).join("  ")
         : "—"),
     React.createElement("td", null,
       React.createElement("button", {
@@ -7251,7 +6971,7 @@ function GasRow({ row, busy, onSave }) {
 // One branch's sales taxes. Its own component, for the reason GasRow is: each
 // branch keeps its own draft. A tax with a blank name and rate is left out;
 // both blank clears the branch's taxes. The database checks the rest.
-function SalesTaxRow({ row, busy, onSave }) {
+function SalesTaxRow({ row, busy, onSave, isSet }) {
   const saved = Array.isArray(row.salesTaxes) ? row.salesTaxes : [];
   const toDraft = (t) => ({ name: t ? String(t.name ?? "") : "", rate: t && t.rate != null ? String(t.rate) : "" });
   const [drafts, setDrafts] = React.useState(() => [toDraft(saved[0]), toDraft(saved[1])]);
@@ -7276,7 +6996,8 @@ function SalesTaxRow({ row, busy, onSave }) {
 
   return React.createElement(
     "tr", null,
-    React.createElement("td", null, row.name),
+    React.createElement("td", null, row.name,
+      !isSet && React.createElement("div", { className: "closeRentalHint", style: { margin: 0 } }, "Not set yet")),
     taxCell(0),
     taxCell(1),
     React.createElement("td", null,
@@ -7307,11 +7028,11 @@ const UNITS_REASONS = {
 };
 
 function CompanyUnitsSection({ onSaved }) {
-  const [fuel,     setFuel]     = React.useState(fuelUnit);
-  const [distance, setDistance] = React.useState(distanceUnit);
+  const [fuel,     setFuel]     = React.useState(() => fuelUnit() || "");
+  const [distance, setDistance] = React.useState(() => distanceUnit() || "");
   const [busy,     setBusy]     = React.useState(false);
   const [error,    setError]    = React.useState("");
-  const changed = fuel !== fuelUnit() || distance !== distanceUnit();
+  const changed = !!fuel && !!distance && (fuel !== fuelUnit() || distance !== distanceUnit());
 
   const save = async () => {
     setBusy(true); setError("");
@@ -7331,7 +7052,10 @@ function CompanyUnitsSection({ onSaved }) {
       React.createElement("select", {
         className: "resFormInput", style: { width: "auto" },
         value, disabled: busy, onChange: (e) => setValue(e.target.value),
-      }, options.map((o) => React.createElement("option", { key: o.value, value: o.value }, o.label))));
+      },
+        // Nothing is picked for a company until its Exec picks it.
+        value === "" && React.createElement("option", { value: "" }, "Choose"),
+        options.map((o) => React.createElement("option", { key: o.value, value: o.value }, o.label))));
 
   return React.createElement(
     CompanySection, { title: "Units" },
@@ -7362,7 +7086,6 @@ const LISTING_DAYS = [
   ["fri", "Friday"], ["sat", "Saturday"], ["sun", "Sunday"],
 ];
 const LISTING_PAYMENT_METHODS = ["Visa", "Mastercard", "American Express", "Debit", "Cash"];
-const LISTING_DEFAULT_CENTRE = [47.5615, -52.7126];
 const LISTING_REASONS = {
   exec_only:     "Only an Exec can change the listing.",
   not_signed_in: "You are signed out. Sign in again and retry.",
@@ -7371,6 +7094,27 @@ const LISTING_REASONS = {
   bad_time_zone: "That time zone is not recognised.",
   bad_value:     "One of the values is out of range. Check the numbers and try again.",
   network:       "Could not reach the server.",
+};
+
+// What save_branch_listing's listing_problem keys mean, in words, in the order
+// it lists them. The same list listingMissing checks before asking.
+const LISTING_NEEDS = {
+  address:            "an address",
+  map_pin:            "a pin on the map",
+  hours:              "opening hours",
+  time_zone:          "the branch's time zone (Branches, above)",
+  cities_or_airports: "the cities or airport codes it serves",
+  minimum_age:        "a minimum age",
+  payment_methods:    "the payment methods it takes",
+  minimum_notice:     "a minimum notice",
+  maximum_length:     "a maximum rental length",
+  turnaround:         "a turnaround buffer",
+  retail_rate:        "a retail daily rate (Daily rates, below)",
+};
+const listingNeedsSentence = (keys) => {
+  const words = keys.map((k) => LISTING_NEEDS[k] || k);
+  const list = words.length === 1 ? words[0] : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+  return `Before this branch can show on fleetr.ai, add ${list}.`;
 };
 
 const listingPhotoUrl = (path) =>
@@ -7391,15 +7135,24 @@ const listingHasHours = (hours) =>
 
 // What a listing still needs before it can show on fleetr.ai, as a sentence,
 // or "" when nothing is missing.
-function listingMissing(listing) {
+// The same checks as listing_problem in the database, so the Exec is told
+// before asking rather than refused after. timeZone is the branch's own.
+function listingMissing(listing, timeZone) {
+  const l = listing || {};
+  const has = (v) => v !== null && v !== undefined && v !== "";
   const missing = [];
-  if (!listing || !String(listing.address || "").trim()) missing.push("an address");
-  if (!listing || !listingHasHours(listing.hours)) missing.push("opening hours");
-  if (!listingHasRetailRate()) missing.push("a retail daily rate (Daily rates, below)");
-  if (!missing.length) return "";
-  const list = missing.length === 1 ? missing[0]
-    : `${missing.slice(0, -1).join(", ")} and ${missing[missing.length - 1]}`;
-  return `Before this branch can show on fleetr.ai, add ${list}.`;
+  if (!String(l.address || "").trim()) missing.push("address");
+  if (!has(l.latitude) || !has(l.longitude)) missing.push("map_pin");
+  if (!listingHasHours(l.hours)) missing.push("hours");
+  if (!timeZone) missing.push("time_zone");
+  if (!(l.citiesServed || []).length && !(l.airportCodes || []).length) missing.push("cities_or_airports");
+  if (!has(l.minimumAge)) missing.push("minimum_age");
+  if (!(l.paymentMethods || []).length) missing.push("payment_methods");
+  if (!has(l.minNoticeHours)) missing.push("minimum_notice");
+  if (!has(l.maxRentalDays)) missing.push("maximum_length");
+  if (!has(l.turnaroundHours)) missing.push("turnaround");
+  if (!listingHasRetailRate()) missing.push("retail_rate");
+  return missing.length ? listingNeedsSentence(missing) : "";
 }
 
 // Leaflet, loaded the first time a map is opened.
@@ -7436,7 +7189,10 @@ function ListingMapPin({ lat, lng, disabled, onPlace }) {
     let cancelled = false;
     loadLeaflet().then((L) => {
       if (cancelled || !boxRef.current) return;
-      const map = L.map(boxRef.current).setView(has ? [lat, lng] : LISTING_DEFAULT_CENTRE, has ? 15 : 11);
+      // With no pin yet the map opens on the whole world, not on a place
+      // chosen for the branch.
+      const map = L.map(boxRef.current);
+      if (has) map.setView([lat, lng], 15); else map.fitWorld();
       L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19, attribution: "&copy; OpenStreetMap contributors",
       }).addTo(map);
@@ -7482,7 +7238,7 @@ function ListingMapPin({ lat, lng, disabled, onPlace }) {
   });
 }
 
-function ListingSection({ branches }) {
+function ListingSection({ branches, branchSetup }) {
   const { currentUser } = React.useContext(AppContext);
   const [listings, setListings] = React.useState(null);
   const [loadError, setLoadError] = React.useState("");
@@ -7506,12 +7262,13 @@ function ListingSection({ branches }) {
     !listings && !loadError && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Loading…"),
     listings && open.map((b) => React.createElement(ListingEditor, {
       key: b.id, branch: b, operatorId: currentUser?.operatorId,
-      listing: listings.find((l) => l.locationId === b.id) || null, onSaved: reload,
+      listing: listings.find((l) => l.locationId === b.id) || null,
+      timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: reload,
     })));
 }
 
 // One branch's listing. Its own component so each branch keeps its own draft.
-function ListingEditor({ branch, operatorId, listing, onSaved }) {
+function ListingEditor({ branch, operatorId, listing, timeZone, onSaved }) {
   const toDraft = (l) => {
     const hours = (l && l.hours && typeof l.hours === "object") ? l.hours : {};
     const num = (v) => (v == null ? "" : String(Number(v)));
@@ -7524,7 +7281,7 @@ function ListingEditor({ branch, operatorId, listing, onSaved }) {
         const d = hours[k];
         return [k, d && d.open && d.close
           ? { on: true,  open: String(d.open).slice(0, 5), close: String(d.close).slice(0, 5) }
-          : { on: false, open: "09:00", close: "17:00" }];
+          : { on: false, open: "", close: "" }];
       })),
       citiesServed:      ((l && l.citiesServed) || []).join(", "),
       airportCodes:      ((l && l.airportCodes) || []).join(", "),
@@ -7534,9 +7291,9 @@ function ListingEditor({ branch, operatorId, listing, onSaved }) {
       minimumAge:        num(l && l.minimumAge),
       deposit:           num(l && l.deposit),
       paymentMethods:    (l && l.paymentMethods) || [],
-      minNoticeHours:    l ? String(l.minNoticeHours) : "2",
-      maxRentalDays:     l ? String(l.maxRentalDays) : "30",
-      turnaroundHours:   l ? String(l.turnaroundHours) : "1",
+      minNoticeHours:    num(l && l.minNoticeHours),
+      maxRentalDays:     num(l && l.maxRentalDays),
+      turnaroundHours:   num(l && l.turnaroundHours),
     };
   };
   const [draft, setDraft] = React.useState(() => toDraft(listing));
@@ -7559,7 +7316,9 @@ function ListingEditor({ branch, operatorId, listing, onSaved }) {
     });
     setBusy("");
     if (err || !data || !data.ok) {
-      setError(err ? LISTING_REASONS.network : (LISTING_REASONS[data && data.reason] || "That did not work."));
+      setError(err ? LISTING_REASONS.network
+        : data && data.reason === "listing_incomplete" ? listingNeedsSentence(data.missing || [])
+        : (LISTING_REASONS[data && data.reason] || "That did not work."));
       return false;
     }
     await onSaved();
@@ -7568,7 +7327,7 @@ function ListingEditor({ branch, operatorId, listing, onSaved }) {
 
   const toggleListed = async (on) => {
     if (on) {
-      const missing = listingMissing(listing);
+      const missing = listingMissing(listing, timeZone);
       if (missing) { setError(missing); setNotice(""); return; }
     }
     if (await save("listed", { listed: on })) {
@@ -7612,7 +7371,10 @@ function ListingEditor({ branch, operatorId, listing, onSaved }) {
     for (const [k, name] of LISTING_DAYS) {
       const d = draft.hours[k];
       if (!d.on) continue;
-      if (!d.open || !d.close || d.close <= d.open) {
+      if (!d.open || !d.close) {
+        setError(`${name}: enter the opening and closing times.`); setNotice(""); return;
+      }
+      if (d.close <= d.open) {
         setError(`${name}: the closing time has to be after the opening time.`); setNotice(""); return;
       }
       hours[k] = { open: d.open, close: d.close };
@@ -7646,7 +7408,7 @@ function ListingEditor({ branch, operatorId, listing, onSaved }) {
       turnaroundHours: checks.turnaroundHours.value,
     };
     if (listed) {
-      const missing = listingMissing({ ...listing, ...fields });
+      const missing = listingMissing({ ...listing, ...fields }, timeZone);
       if (missing) {
         setError(`${missing} Or turn off Show on fleetr.ai first.`); setNotice(""); return;
       }
@@ -7835,6 +7597,7 @@ const LIST_REASONS = {
   decline_too_long: "The decline wording is too long. Keep it to 300 characters.",
   no_links:         "Links are not allowed in the wording.",
   bad_required:     "That did not work. Try again.",
+  decline_wording_required: "Write what the customer ticks to decline it first. An optional product needs it.",
   empty_body:       "The acknowledgements cannot be empty.",
   body_too_long:    "The acknowledgements are too long. Keep them to 4,000 characters.",
 };
@@ -7971,11 +7734,10 @@ function ListAddRow({ placeholder, label, withCode, withType, disabled, onAdd })
 // switch beside it and saves on its own, keeping the wording as it is.
 const PROTECTION_WORDING_MAX = 600;
 const PROTECTION_DECLINE_MAX = 300;
-const PROTECTION_DECLINE_DEFAULT = "I decline this protection and accept responsibility for the costs it would have covered.";
 
 function ProtectionDetailsCard({ product, busy, onSave }) {
   const savedWording = product.customerWording || "";
-  const savedDecline = product.declineWording || PROTECTION_DECLINE_DEFAULT;
+  const savedDecline = product.declineWording || "";
   const [editing, setEditing] = React.useState(false);
   const [wording, setWording] = React.useState(savedWording);
   const [decline, setDecline] = React.useState(savedDecline);
@@ -7984,7 +7746,9 @@ function ProtectionDetailsCard({ product, busy, onSave }) {
   const d = decline.trim();
   const wordingOver = w.length > PROTECTION_WORDING_MAX;
   const declineOver = d.length > PROTECTION_DECLINE_MAX;
-  const unchanged = w === savedWording && (d || PROTECTION_DECLINE_DEFAULT) === savedDecline;
+  const unchanged = w === savedWording && d === savedDecline;
+  // An optional product has to say what the customer ticks to decline it.
+  const declineMissing = !product.required && !d;
 
   const open = () => { setWording(savedWording); setDecline(savedDecline); setEditing(true); };
   const save = async () => {
@@ -8007,7 +7771,8 @@ function ProtectionDetailsCard({ product, busy, onSave }) {
         savedWording || "No wording yet. The customer sees the name and price per day only."),
       !product.required && el(React.Fragment, null,
         el("p", { className: "closeRentalHint" }, "What the customer ticks to decline:"),
-        el("div", { className: "closeRentalSummary" }, savedDecline)),
+        el("div", { className: "closeRentalSummary" },
+          savedDecline || "Not written yet. Until it is, this product is not offered at pickup.")),
       el("div", { className: "closeRentalActions" },
         el("button", { type: "button", className: "resModalSubmit", disabled: busy, onClick: open }, "Edit"))),
 
@@ -8022,7 +7787,7 @@ function ProtectionDetailsCard({ product, busy, onSave }) {
       wordingOver && el("div", { className: "closeRentalWarning" },
         `The wording is ${w.length - PROTECTION_WORDING_MAX} characters over the ${PROTECTION_WORDING_MAX} allowed and cannot be saved.`),
 
-      el("p", { className: "closeRentalHint" }, "What the customer ticks to decline. Leave it blank for the default."),
+      el("p", { className: "closeRentalHint" }, "What the customer ticks to decline. Needed unless the product is required: without it, the product is not offered at pickup."),
       el("textarea", {
         className: "resFormInput resFormTextarea", rows: 2, value: decline,
         "aria-label": `${product.name} decline wording`,
@@ -8034,43 +7799,34 @@ function ProtectionDetailsCard({ product, busy, onSave }) {
 
       el("div", { className: "gasSettingSubhead" }, "Preview"),
       el("div", { className: "closeRentalSummary" }, w || "No wording. The customer sees the name and price per day only."),
-      !product.required && el("div", { className: "closeRentalSummary" }, d || PROTECTION_DECLINE_DEFAULT),
+      !product.required && el("div", { className: "closeRentalSummary" }, d || "No decline wording."),
 
       el("div", { className: "closeRentalActions" },
         el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: () => setEditing(false) }, "Cancel"),
         el("button", {
           type: "button", className: "resModalSubmit",
-          disabled: busy || unchanged || wordingOver || declineOver,
+          disabled: busy || unchanged || wordingOver || declineOver || declineMissing,
           onClick: save,
         }, busy ? "Saving..." : "Save")))
   );
 }
 
-// The category fleetr.ai files a class under, guessed from its name until one
-// is saved.
+// The categories fleetr.ai files a class under. A class has none until the
+// Exec picks one: its name is not taken as a guess.
 const VEHICLE_CATEGORIES = ["Car", "SUV", "Truck", "Van", "Luxury", "Other"];
-function guessVehicleCategory(name) {
-  const n = String(name || "").toLowerCase();
-  if (/\bsuv\b|crossover|4x4/.test(n)) return "SUV";
-  if (/truck|pickup|pick-up/.test(n)) return "Truck";
-  if (/\b(mini)?van\b|minivan|passenger/.test(n)) return "Van";
-  if (/luxury|premium|prestige/.test(n)) return "Luxury";
-  if (/\bcar\b|sedan|economy|compact|intermediate|mid-?size|full-?size|standard|hatchback|coupe|convertible/.test(n)) return "Car";
-  return "Other";
-}
 
 // One vehicle class's category, seats and bags, for fleetr.ai. Keeps its own
 // drafts, for the reason GasRow does.
 function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
   const shown = () => ({
-    category: entry.category || guessVehicleCategory(entry.name),
+    category: entry.category || "",
     seats: entry.seats == null ? "" : String(entry.seats),
     bags:  entry.bags  == null ? "" : String(entry.bags),
   });
   const [draft, setDraft] = React.useState(shown);
   React.useEffect(() => { setDraft(shown()); }, [entry.category, entry.seats, entry.bags, entry.name]); // eslint-disable-line react-hooks/exhaustive-deps
   const saved = shown();
-  const unchanged = !!entry.category && draft.category === saved.category
+  const unchanged = draft.category === saved.category
     && draft.seats.trim() === saved.seats && draft.bags.trim() === saved.bags;
   const el = React.createElement;
   const whole = (s, min, max) => {
@@ -8090,7 +7846,9 @@ function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
       className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, disabled: busy,
       value: draft.category, "aria-label": `${entry.name} category`,
       onChange: (e) => setDraft((p) => ({ ...p, category: e.target.value })),
-    }, VEHICLE_CATEGORIES.map((c) => el("option", { key: c, value: c }, c))),
+    },
+      el("option", { value: "" }, "No category"),
+      VEHICLE_CATEGORIES.map((c) => el("option", { key: c, value: c }, c))),
     el("input", {
       className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric",
       placeholder: "Seats", value: draft.seats, disabled: busy, "aria-label": `${entry.name} seats`,
@@ -9160,7 +8918,7 @@ function CustomerTextsSettings() {
       if (tpl.error) { console.warn("message_templates load failed:", tpl.error); setLoadErr(true); }
       const own = Object.fromEntries((tpl.data || []).map((t) => [t.kind, t.body]));
       setSaved(own);
-      setDrafts(Object.fromEntries(TEXT_TEMPLATE_KINDS.map((k) => [k.kind, own[k.kind] ?? k.fallback])));
+      setDrafts(Object.fromEntries(TEXT_TEMPLATE_KINDS.map((k) => [k.kind, own[k.kind] ?? ""])));
       setNames({ company: op.data?.[0]?.name || null, location: loc.data?.[0]?.name || null });
       setLoaded(true);
     })();
@@ -9192,10 +8950,10 @@ function CustomerTextsSettings() {
     }
     const reset = !!data.reset;
     setSaved((p) => { const next = { ...p }; if (reset) delete next[k.kind]; else next[k.kind] = data.body; return next; });
-    setDrafts((p) => ({ ...p, [k.kind]: reset ? k.fallback : data.body }));
-    setNotice((p) => ({ ...p, [k.kind]: { ok: true, text: reset ? "Back to the default wording." : "Wording saved." } }));
+    setDrafts((p) => ({ ...p, [k.kind]: reset ? "" : data.body }));
+    setNotice((p) => ({ ...p, [k.kind]: { ok: true, text: reset ? "Wording removed. This text is not sent." : "Wording saved." } }));
     logAudit({ ...entry, outcome: "completed",
-      description: reset ? `${k.title} wording reset to the default.` : `${k.title} wording changed to: ${data.body}` });
+      description: reset ? `${k.title} wording removed, so it is not sent.` : `${k.title} wording changed to: ${data.body}` });
     setEditing((p) => ({ ...p, [k.kind]: false }));
     return true;
   };
@@ -9227,12 +8985,12 @@ function CustomerTextsSettings() {
       React.createElement("strong", null, TEXT_PLACEHOLDERS.join(", ")),
       ". The system adds the rest automatically, and it cannot be removed or edited: the reservation code to the confirmation; the customer's personal app link to the confirmation, Pre-Rental Check and return reminder; and a link to cancel to the confirmation and Pre-Rental Check. The links' tokens in the preview are stand-ins of the real length, so the count is the real count."),
     loadErr && React.createElement("div", { className: "closeRentalWarning" },
-      "The saved wording could not be loaded, so the default wording is shown. Saving here will replace whatever is saved."),
+      "The saved wording could not be loaded. Saving here will replace whatever is saved."),
 
     TEXT_TEMPLATE_KINDS.map((k) => {
       const draft    = drafts[k.kind] ?? "";
       const trimmed  = draft.trim();
-      const current  = saved[k.kind] ?? k.fallback;
+      const current  = saved[k.kind] ?? "";
       const isCustom = saved[k.kind] != null;
       const preview  = fillTextTemplate(trimmed, sample) + k.suffix;
       const m        = measureText(preview);
@@ -9263,17 +9021,18 @@ function CustomerTextsSettings() {
       return React.createElement("div", { key: k.kind, style: { marginBottom: "22px" } },
         React.createElement("div", { className: "gasSettingSubhead" }, k.title),
         React.createElement("p", { className: "closeRentalHint" },
-          `${k.when} ${isCustom ? "Using your company's own wording." : "Using the default wording."}`),
+          `${k.when} ${isCustom ? "Using your company's own wording." : "Not written yet, so this text is not sent."}` +
+          (k.kind === "confirmation" ? " Needed before the company can launch." : "")),
 
         !isEditing && React.createElement(React.Fragment, null,
-          React.createElement("div", { className: "closeRentalSummary" }, savedPreview),
+          isCustom && React.createElement("div", { className: "closeRentalSummary" }, savedPreview),
           note && React.createElement("div", { className: note.ok ? "addVehicleSuccess" : "closeRentalWarning" }, note.text),
           React.createElement("div", { className: "closeRentalActions" },
             React.createElement("button", {
               type: "button", className: "resModalCancel",
               disabled: busy === k.kind || !isCustom,
               onClick: () => save(k, ""),
-            }, "Use default wording"),
+            }, "Stop sending"),
             React.createElement("button", {
               type: "button", className: "resModalSubmit",
               disabled: busy === k.kind,
@@ -9282,7 +9041,7 @@ function CustomerTextsSettings() {
                 setNotice((p) => ({ ...p, [k.kind]: null }));
                 setEditing((p) => ({ ...p, [k.kind]: true }));
               },
-            }, "Edit"))),
+            }, isCustom ? "Edit" : "Write"))),
 
         isEditing && React.createElement(React.Fragment, null,
           React.createElement("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "8px" } },
@@ -9410,7 +9169,7 @@ function SettingsPage() {
 
   const missingTank = fleet.filter((v) => v.tankSizeLiters == null).length;
 
-  const gasBody = React.createElement(React.Fragment, null,
+  const gasBody = !unitsSet() ? React.createElement("p", { className: "aiTabDesc" }, UNITS_NOT_SET) : React.createElement(React.Fragment, null,
     React.createElement("p", { className: "aiTabDesc" },
       "On return, if the vehicle comes back with less fuel than it left with, the charge is calculated as ",
       React.createElement("em", null, `${fuelUnitWord()} short × price per ${fuelUnitWord(false)} × (1 + markup)`),
@@ -9816,6 +9575,9 @@ function Topbar() {
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
 function Sidebar() {
+  // Read so the nav redraws when the company's setup state arrives: the Setup
+  // item depends on it.
+  React.useContext(AppContext);
   return React.createElement(
     "aside",
     { className: "sidebar" },
@@ -10693,6 +10455,7 @@ function Layout() {
       "div",
       { className: showCommandBar ? "app app--mobile" : "app app--mobile app--noCommandBar" },
       React.createElement(MobileNav),
+      React.createElement(SetupBar),
       React.createElement("main", { className: "content" }, React.createElement(AppRoutes)),
       showCommandBar && React.createElement(MobileCommandBar)
     );
@@ -10705,9 +10468,214 @@ function Layout() {
       "div",
       { className: "main" },
       React.createElement(Topbar),
+      React.createElement(SetupBar),
       React.createElement("main", { className: "content" }, React.createElement(AppRoutes))
     )
   );
+}
+
+// ─── Setup mode ───────────────────────────────────────────────────────────────
+// The strip under the top bar while the company is not live: in setup, paused
+// by its Exec, or suspended by fleetr. Everyone sees it; only an Exec is
+// pointed at what to do about it.
+function SetupBar() {
+  const { setup, currentUser } = React.useContext(AppContext);
+  if (!setup) return null;
+  const isExec = roleAtLeast(currentUser?.role, "Exec");
+  const link = (href, text) => React.createElement("a", { href, className: "setupBar__link" }, text);
+  let text, action = null;
+  if (!setup.launched) {
+    text = "Setup mode: not live yet. fleetr.ai does not show your branches and no texts go to customers. Anything entered now is a test record, removed when the company launches.";
+    if (isExec) action = link("#/setup", "Open the setup checklist");
+  } else if (setup.suspended) {
+    text = "Suspended by fleetr. Your branches are hidden from fleetr.ai and take no online bookings. Texts for existing reservations and rentals still go. Contact fleetr to lift it.";
+  } else if (setup.paused) {
+    text = "Paused. Your branches are hidden from fleetr.ai and take no online bookings. Texts for existing reservations and rentals still go.";
+    if (isExec) action = link("#/company", "Resume on the Company page");
+  } else {
+    return null;
+  }
+  return React.createElement("div", { className: "setupBar", role: "status" },
+    React.createElement("span", null, text), action);
+}
+
+// What each checklist item is called, what it means, and where it is done, in
+// the order company_setup_status lists them. detail is what the database
+// returns with the item: the branches, classes or codes still missing it.
+const SETUP_ITEMS = {
+  units:                 { title: "Fuel and distance units", path: "/company",
+                           text: "How fuel and distance are read and entered everywhere." },
+  branches:              { title: "Each branch's time zone and sales tax", path: "/company",
+                           text: "Texts and bookings run on the branch's time zone. A branch with no sales tax still needs it saved as none." },
+  pickup_locations:      { title: "Pickup locations", path: "/company",
+                           text: "At least one for every open branch." },
+  vehicle_classes:       { title: "Vehicle classes", path: "/company", text: "At least one." },
+  sources:               { title: "Sources", path: "/company", text: "Who the work comes from. At least one." },
+  daily_rates:           { title: "Daily rates", path: "/company",
+                           text: "A rate for every vehicle class, under at least one source." },
+  acknowledgements:      { title: "Contract acknowledgements", path: "/company",
+                           text: "What the customer agrees to at pickup." },
+  vehicles:              { title: "A vehicle at the default branch", path: "/fleet/additions",
+                           text: "With one of your vehicle classes." },
+  confirmation_text:     { title: "Reservation confirmation text", path: "/settings",
+                           text: "The text a customer gets when a reservation is made." },
+  listing:               { title: "fleetr.ai listing", path: "/company",
+                           text: "Needed only for a branch switched to show on fleetr.ai: that listing has to be complete." },
+  test_rentals_finished: { title: "Test rentals finished", path: "/rental-agreements",
+                           text: "No test rental can still be open, returned or close pending when the company launches." },
+  other_texts:           { title: "Other customer texts", path: "/settings",
+                           text: "Pre-Rental Check, the two no-show texts and the return reminder. One not written is not sent." },
+  protection_products:   { title: "Protection products", path: "/company",
+                           text: "Damage waiver and the like, with prices. An optional one also needs its decline wording." },
+  other_driver_price:    { title: "Other driver price", path: "/company",
+                           text: "Without one, no other driver can be added at pickup." },
+  deductibles:           { title: "Deductibles", path: "/company", text: "Shown on the contract." },
+  gas:                   { title: "Fuel pricing for every branch", path: "/company",
+                           text: "Without a markup and prices, gas is charged by hand on return." },
+  staff:                 { title: "Staff", path: "/staff", text: "Hand out the join code and approve who joins." },
+  test_rental:           { title: "A test rental, start to finish", path: "/reservations",
+                           text: "Make a reservation, pick it up, return it and close it, to see the whole flow work." },
+};
+const SETUP_TEXT_KIND_NAMES = {
+  pre_rental: "Pre-Rental Check", no_show_2hr: "No-show after 2 hours",
+  no_show_24hr: "No-show the next day", return_reminder: "Return reminder",
+};
+
+const LAUNCH_REASONS = {
+  exec_only:        "Only an Exec can launch the company.",
+  not_signed_in:    "You are signed out. Sign in again and retry.",
+  already_launched: "The company has already launched.",
+  suspended:        "The company is suspended by fleetr. Contact fleetr to lift it.",
+  not_ready:        "Some required items are not done yet. They are marked below.",
+  not_launched:     "The company has not launched yet.",
+  already_paused:   "The company is already paused.",
+  not_paused:       "The company is not paused.",
+  network:          "Could not reach the server.",
+};
+
+function SetupItemRow({ item }) {
+  const meta = SETUP_ITEMS[item.key] || { title: item.key, path: null, text: "" };
+  const detail = Array.isArray(item.detail) && item.detail.length > 0 && !item.done
+    ? (item.key === "other_texts" ? item.detail.map((k) => SETUP_TEXT_KIND_NAMES[k] || k) : item.detail).join(", ")
+    : "";
+  return React.createElement("li", { className: `setupItem${item.done ? " setupItem--done" : ""}` },
+    React.createElement("span", { className: "setupItem__mark", "aria-hidden": "true" }, item.done ? "\u2713" : ""),
+    React.createElement("div", null,
+      React.createElement("div", { className: "setupItem__title" },
+        meta.path ? React.createElement("a", { href: `#${meta.path}` }, meta.title) : meta.title,
+        React.createElement("span", { className: "setupItem__state" },
+          item.done ? "Done" : item.required ? "Left to do" : "Optional")),
+      meta.text && React.createElement("div", { className: "closeRentalHint", style: { margin: 0 } }, meta.text),
+      detail && React.createElement("div", { className: "closeRentalHint", style: { margin: 0 } },
+        item.key === "test_rentals_finished" ? `Still open: ${detail}` : `Still missing: ${detail}`)));
+}
+
+// The checklist. An Exec is brought here on every sign-in until the company
+// launches; afterwards it is a read-only record of the same items.
+function SetupPage() {
+  const { setup, refreshSetup, currentUser, guardAction } = React.useContext(AppContext);
+  const isExec = roleAtLeast(currentUser?.role, "Exec");
+  const [busy, setBusy]   = React.useState(false);
+  const [error, setError] = React.useState("");
+
+  React.useEffect(() => { refreshSetup(); }, [refreshSetup]);
+
+  if (!setup) return React.createElement("div", { className: "page" }, React.createElement("div", { className: "resvEmpty" }, "Loading the checklist..."));
+
+  const required = setup.items.filter((i) => i.required);
+  const optional = setup.items.filter((i) => !i.required);
+  const left = required.filter((i) => !i.done).length;
+
+  const launch = () => {
+    if (!window.confirm("Launch the company?\n\nYour branches that are switched on show on fleetr.ai and take bookings, texts start going to customers, and every test record made in setup mode is deleted. This cannot be undone, though the company can be paused afterwards.")) return;
+    setError("");
+    guardAction("company.launch", async () => {
+      setBusy(true);
+      const { data, error: err } = await supabase.rpc("launch_company");
+      setBusy(false);
+      if (err || !data || !data.ok) {
+        setError(err ? LAUNCH_REASONS.network : (LAUNCH_REASONS[data && data.reason] || "That did not work."));
+        await refreshSetup();
+        throw new Error(err ? "network" : (data && data.reason) || "refused");
+      }
+      // The test records are gone from the database; reloading drops them
+      // from every screen at once.
+      window.location.hash = "/dashboard";
+      window.location.reload();
+    }, { description: "Launched the company.", tableName: "operators" });
+  };
+
+  return React.createElement("div", { className: "page" },
+    React.createElement("h1", { className: "page__title" }, setup.launched ? "Setup checklist" : "Set up your company"),
+    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement("p", { className: "aiTabDesc" }, setup.launched
+      ? "The company launched with every required item done. This is the same list, kept for reference."
+      : "Everything needed before the first real rental, in the order to do it. Until you launch, fleetr.ai shows none of your branches, no texts go to customers, and anything entered is a test record. Staff can enter and edit everything as normal."),
+    error && React.createElement("div", { className: "loginError" }, error),
+
+    React.createElement("h2", { className: "setupHeading" }, "Required before launch"),
+    React.createElement("ul", { className: "setupList" }, required.map((i) => React.createElement(SetupItemRow, { key: i.key, item: i }))),
+    React.createElement("h2", { className: "setupHeading" }, "Optional"),
+    React.createElement("ul", { className: "setupList" }, optional.map((i) => React.createElement(SetupItemRow, { key: i.key, item: i }))),
+
+    !setup.launched && isExec && React.createElement("div", { style: { marginTop: "20px" } },
+      React.createElement("p", { className: "closeRentalHint" }, setup.suspended
+        ? LAUNCH_REASONS.suspended
+        : left === 0 ? "Every required item is done." : `${left} required item${left === 1 ? "" : "s"} left.`),
+      React.createElement("button", {
+        type: "button", className: "loginBtn", style: { width: "auto", padding: "10px 18px" },
+        disabled: busy || !setup.ready || setup.suspended, onClick: launch,
+      }, busy ? "Launching..." : "Launch")),
+    !setup.launched && !isExec && React.createElement("p", { className: "closeRentalHint" }, "An Exec launches the company once every required item is done."));
+}
+
+// Pause and resume, on the Company page. A paused company is off fleetr.ai
+// and takes no online bookings; staff work and texts carry on.
+function CompanyStatusSection() {
+  const { setup, refreshSetup, guardAction } = React.useContext(AppContext);
+  const [busy, setBusy]   = React.useState(false);
+  const [error, setError] = React.useState("");
+  if (!setup) return null;
+
+  const act = (key, fn, description, question) => {
+    if (!window.confirm(question)) return;
+    setError("");
+    guardAction(key, async () => {
+      setBusy(true);
+      const { data, error: err } = await supabase.rpc(fn);
+      setBusy(false);
+      await refreshSetup();
+      if (err || !data || !data.ok) {
+        const reason = data && data.reason;
+        setError(err ? LAUNCH_REASONS.network
+          : reason === "not_ready" ? `Some required items are no longer done: ${(data.missing || []).map((k) => (SETUP_ITEMS[k] || {}).title || k).join(", ")}. See the setup checklist.`
+          : (LAUNCH_REASONS[reason] || "That did not work."));
+        throw new Error(err ? "network" : reason || "refused");
+      }
+    }, { description, tableName: "operators" });
+  };
+
+  const state = !setup.launched ? "In setup. Not live yet."
+    : setup.suspended ? "Suspended by fleetr. Only fleetr can lift it."
+    : setup.paused ? "Paused. Hidden from fleetr.ai, no online bookings; texts for existing bookings still go."
+    : "Live.";
+
+  return React.createElement(CompanySection, { title: "Company status", style: { marginBottom: "24px" } },
+    React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, state),
+    error && React.createElement("div", { className: "loginError" }, error),
+    React.createElement("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" } },
+      setup.launched && !setup.paused && React.createElement("button", {
+        type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy,
+        onClick: () => act("company.pause", "pause_company", "Paused the company.",
+          "Pause the company?\n\nYour branches leave fleetr.ai and take no online bookings until you resume. Staff keep working, and texts for existing reservations and rentals keep going."),
+      }, "Pause"),
+      setup.launched && setup.paused && React.createElement("button", {
+        type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px" },
+        disabled: busy || setup.suspended,
+        onClick: () => act("company.resume", "resume_company", "Resumed the company.",
+          "Resume the company?\n\nBranches switched on show on fleetr.ai again and take online bookings."),
+      }, "Resume"),
+      React.createElement("a", { href: "#/setup" }, setup.launched ? "Setup checklist" : "Open the setup checklist")));
 }
 
 // ─── PreRentalCheckPage ─────────────────────────────────────────────────────────────────
@@ -11316,7 +11284,7 @@ function AgreementVehicleHistory({ rentalAgreementId, resCode }) {
 }
 
 function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements }) {
-  const { rentalAgreements: allAgreements } = React.useContext(AppContext);
+  const { rentalAgreements: allAgreements, currentUser } = React.useContext(AppContext);
   const raRecord = (allAgreements || []).find((a) => String(a.id) === String(rentalAgreement.raId)) || null;
   const [sect, setSect] = React.useState({
     resInfo: true, vehicles: true, datesRates: true, billTo: true, charges: true, notes: true,
@@ -11331,7 +11299,7 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
   const handleAddNote = () => {
     const text = noteInput.trim();
     if (!text) return;
-    const newNote = { author: "Connor Nash", text, at: new Date().toISOString() };
+    const newNote = { author: actorName(currentUser), text, at: new Date().toISOString() };
     const newLog = [...raNotesLog, newNote];
     setRaNotesLog(newLog);
     setNoteInput("");
@@ -11759,7 +11727,9 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
   const mileageNum = /^\d+$/.test(trimmed) ? Number(trimmed) : null;
   const isLow      = mileageNum !== null && lastReading !== null && mileageNum < lastReading;
 
-  const mileageError = trimmed === ""
+  const mileageError = !unit
+    ? UNITS_NOT_SET
+    : trimmed === ""
     ? L.mileageMissing
     : mileageNum === null ? `Enter the mileage as a whole number of ${distanceUnitWord()}, digits only.` : null;
   const gasError = gasIndex === null ? L.gasMissing : null;
@@ -13646,24 +13616,13 @@ function withOtherDriver(items, otherDriver, days) {
 // the saved line, so a line saved before the units changed shows the unit the
 // company uses now.
 const chargeQtyUnit = (item) =>
-  item.key === "gas" ? fuelUnit() : item.key === "mileage" ? distanceUnit() : "days";
+  item.key === "gas" ? (fuelUnit() || "units not set")
+  : item.key === "mileage" ? (distanceUnit() || "units not set") : "days";
 const chargeQtyPlaceholder = (item) =>
-  item.key === "gas"     ? (fuelUnit() === "gal" ? "Gallons" : "Litres")
-  : item.key === "mileage" ? (distanceUnit() === "mi" ? "Miles" : "Kilometres")
+  item.key === "gas"     ? (!fuelUnit() ? "Set units" : fuelUnit() === "gal" ? "Gallons" : "Litres")
+  : item.key === "mileage" ? (!distanceUnit() ? "Set units" : distanceUnit() === "mi" ? "Miles" : "Kilometres")
   : item.qtyPlaceholder;
 
-const DAILY_RATES = {
-  "Bodyshop/Dealership": { Car: 35, SUV: 45, Minivan: 55, Truck: 55 },
-  "Insurance":           { Car: 35, SUV: 45, Minivan: 55, Truck: 55 },
-  "Corporate":           { Car: 45, SUV: 55, Minivan: 65, Truck: 65 },
-  "Retail":              { Car: 55, SUV: 65, Minivan: 75, Truck: 75 },
-};
-const RATES_SOURCE_CATS = {
-  "Bodyshop/Dealership": ["Avalon Ford", "Fix Auto", "CarStar", "Collision Clinic Topsail", "Capital Collision", "Janes Autobody", "Custom Automotive", "Brian's Autobody", "RDS Autobody"],
-  "Insurance":           ["TD Insurance", "Bel-Air Direct", "Intact", "CAA", "Desjardins Insurance", "The Co-operators", "Aviva Canada"],
-  "Corporate":           ["MyEHTrip", "NBA", "NHL", "Nike", "Microsoft"],
-  "Retail":              [],
-};
 
 // insurance_rentals decides whether Insurance is offered as a source for new
 // work. A record that already says Insurance keeps it as a choice, so its
@@ -13689,21 +13648,15 @@ function sourceCatsFor(current) {
     if (curCat && !cats[curCat]) cats[curCat] = [];
     return cats;
   }
-  if (offerInsuranceSource(current)) return RATES_SOURCE_CATS;
-  const { Insurance, ...rest } = RATES_SOURCE_CATS;
-  return rest;
+  // The lists could not be read: nothing to offer but what the record says.
+  const curCat = String(current || "").split(LIST_SEP)[0];
+  return curCat ? { [curCat]: [] } : {};
 }
-const RATES_VCLASS_CATS = {
-  "Car":     ["Compact", "Regular", "Large"],
-  "SUV":     ["Compact", "Regular", "Large"],
-  "Minivan": [],
-  "Truck":   [],
-};
 
 // ─── CustomerPage ─────────────────────────────────────────────────────────────
 
 function CustomerPage() {
-  const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, guardAction, logAudit, setDamageClaims } = React.useContext(AppContext);
+  const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, guardAction, logAudit, setDamageClaims, currentUser } = React.useContext(AppContext);
   const navigate = useNavigate();
   const name   = openCustomer?.name   || "Customer";
   const resCode = openCustomer?.resCode || null;
@@ -13758,7 +13711,7 @@ function CustomerPage() {
   const handleAddCustomerNote = () => {
     const text = customerNoteInput.trim();
     if (!text || !resCode) return;
-    const newNote = { author: "Connor Nash", text, at: new Date().toISOString() };
+    const newNote = { author: actorName(currentUser), text, at: new Date().toISOString() };
     const newLog = [...customerNotesLog, newNote];
     setCustomerNotesLog(newLog);
     setCustomerNoteInput("");
@@ -13833,22 +13786,21 @@ function CustomerPage() {
     .slice(0, 2);
 
   // Populate rental vehicle from rental_agreements when an RA exists for this resCode.
-  // Year and province come from the fleet record first, falling back to VEHICLE_EXTRA_DATA.
+  // Year, province, colour and VIN come from the fleet record.
   React.useEffect(() => {
     if (!resCode) return;
     const ra = rentalAgreements.find((r) => r.resCode === resCode);
     if (!ra) return;
-    const extra       = VEHICLE_EXTRA_DATA[ra.plate] || {};
     const fleetVehicle = fleet.find((v) => v.plate === ra.plate) || {};
     setRentalVehicle({
       plate:        ra.plate              || "",
       make:         ra.make               || "",
       model:        ra.model              || "",
       vehicleClass: ra.vehicleClass       || "",
-      year:         fleetVehicle.year     ? String(fleetVehicle.year) : (extra.year ? String(extra.year) : ""),
-      province:     fleetVehicle.province || extra.province || "",
-      colour:       fleetVehicle.colour   || extra.colour   || "",
-      vin:          fleetVehicle.vin      || extra.vin      || "",
+      year:         fleetVehicle.year     ? String(fleetVehicle.year) : "",
+      province:     fleetVehicle.province || "",
+      colour:       fleetVehicle.colour   || "",
+      vin:          fleetVehicle.vin      || "",
       fuelLevel:    ra.fuelAtPickup       || "",
       mileage:      ra.mileage            ? String(ra.mileage) : "",
       damage:       "",
@@ -14567,7 +14519,7 @@ function CustomerPage() {
     React.createElement("div", { className: "resFormRow" },
       twoLevelPicker("Source",        "source",       sourceCatsFor(ratesForm.source), "Select source"),
       twoLevelPicker("Vehicle Class", "vehicleClass",
-        Object.fromEntries(vehicleClassOptions(RES_VEHICLE_CLASSES, ratesForm.vehicleClass).map((c) => [c, []])),
+        Object.fromEntries(vehicleClassOptions(ratesForm.vehicleClass).map((c) => [c, []])),
         "Select class"),
       React.createElement("label", { className: "resFormGroup" },
         React.createElement("span", { className: "resFormLabel" }, "Winter Tires"),
@@ -15066,7 +15018,17 @@ function CustomerPage() {
 // The Company and Staff screens are exempt. Company is where a branch is
 // chosen, and Staff is operator-scoped for an Exec, so both work with no branch
 // selected and blocking them would leave nowhere to go.
-const BRANCHLESS_OK = ["/company", "/staff", "/account"];
+const BRANCHLESS_OK = ["/setup", "/company", "/staff", "/account"];
+
+// Where signing in lands. An Exec whose company has not launched starts on the
+// setup checklist, every time, until it has; everyone else on the Dashboard.
+function StartRedirect() {
+  const { setup, currentUser } = React.useContext(AppContext);
+  const isExec = roleAtLeast(currentUser?.role, "Exec");
+  if (isExec && !setup) return null;
+  const to = isExec && !setup.launched ? "/setup" : "/dashboard";
+  return React.createElement(Navigate, { to, replace: true });
+}
 
 function ExecNeedsBranch({ children }) {
   const { currentUser } = React.useContext(AppContext);
@@ -15104,7 +15066,13 @@ function AppRoutes() {
     null,
     React.createElement(Route, {
       path: "/",
-      element: React.createElement(Navigate, { to: "/dashboard", replace: true }),
+      element: React.createElement(StartRedirect),
+    }),
+    // Not wrapped in ExecNeedsBranch: setting up comes before choosing a branch.
+    React.createElement(Route, {
+      key:  "setup",
+      path: "/setup",
+      element: React.createElement(SetupPage),
     }),
     React.createElement(Route, {
       path: "/dashboard",
@@ -15214,7 +15182,7 @@ function AppRoutes() {
       path: "/switch-out",
       element: React.createElement(ExecNeedsBranch, null, React.createElement(SwitchOutPage)),
     }),
-    NAV.filter((item) => !["/dashboard", "/reservations", "/arms", "/pre-rental-check", "/overdue-rentals", "/time-of-repair", "/no-shows", "/fleet", "/fleet/vehicles", "/fleet/additions", "/fleet/gas-collections", "/fleet/damage-claims", "/reports", "/settings", "/audit-log", "/rental-agreements", "/customer", "/vehicle"].includes(item.path))
+    NAV.filter((item) => !["/setup", "/dashboard", "/reservations", "/arms", "/pre-rental-check", "/overdue-rentals", "/time-of-repair", "/no-shows", "/fleet", "/fleet/vehicles", "/fleet/additions", "/fleet/gas-collections", "/fleet/damage-claims", "/reports", "/settings", "/audit-log", "/rental-agreements", "/customer", "/vehicle"].includes(item.path))
       .map((item) =>
         React.createElement(Route, {
           key: item.path,
@@ -15932,6 +15900,70 @@ body, * {
 .pill--select option{
   background: #1F1E1D;
   color: #fff;
+}
+
+/* ── Setup mode, paused or suspended ───────────────────────────────────────── */
+.setupBar{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 10px 16px;
+  background: #1F1E1D;
+  color: #F9F9F7;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.setupBar__link{
+  color: #F9F9F7;
+  font-weight: 600;
+  text-decoration: underline;
+}
+.setupHeading{
+  font-size: 1rem;
+  margin: 20px 0 8px;
+}
+.setupList{
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.setupItem{
+  display: flex;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(31, 30, 29, 0.1);
+}
+.setupItem__mark{
+  flex: 0 0 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(31, 30, 29, 0.35);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.setupItem--done .setupItem__mark{
+  background: #1F1E1D;
+  border-color: #1F1E1D;
+  color: #F9F9F7;
+}
+.setupItem__title{
+  font-weight: 600;
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.setupItem__title a{
+  color: inherit;
+}
+.setupItem__state{
+  font-size: 0.75rem;
+  font-weight: 500;
+  opacity: 0.65;
 }
 
 /* ── New-version banner ────────────────────────────────────────────────────── */
