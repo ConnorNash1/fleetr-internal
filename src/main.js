@@ -9219,14 +9219,15 @@ function CustomerTextsSettings() {
       const [tpl, op, loc] = await Promise.all([
         supabase.from("message_templates").select("kind, body"),
         supabase.from("operators").select("name").limit(1),
-        supabase.from("locations").select("name").limit(1),
+        supabase.from("branch_listings").select("street").not("street", "is", null).limit(1),
       ]);
       if (!live) return;
       if (tpl.error) { console.warn("message_templates load failed:", tpl.error); setLoadErr(true); }
       const own = Object.fromEntries((tpl.data || []).map((t) => [t.kind, t.body]));
       setSaved(own);
       setDrafts(Object.fromEntries(TEXT_TEMPLATE_KINDS.map((k) => [k.kind, own[k.kind] ?? ""])));
-      setNames({ company: op.data?.[0]?.name || null, location: loc.data?.[0]?.name || null });
+      // [location] is a branch's street address in the texts themselves.
+      setNames({ company: op.data?.[0]?.name || null, location: loc.data?.[0]?.street || null });
       setLoaded(true);
     })();
     return () => { live = false; };
@@ -9237,7 +9238,7 @@ function CustomerTextsSettings() {
   const sample = {
     "[first name]": "Alex",
     "[company]":    names.company || "your company",
-    "[location]":   names.location || "Main Branch",
+    "[location]":   names.location || "12 Water St",
     "[date]":       "Oct 6",
     "[time]":       "10:00 AM",
   };
