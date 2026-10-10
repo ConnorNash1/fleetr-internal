@@ -297,7 +297,7 @@ async function loadCompanyLists(user) {
     const own = (table, cols) => supabase.from(table).select(cols).eq("operatorId", operatorId);
     const results = await Promise.all([
       own("pickup_locations",    "id,locationId,name,active,sortOrder"),
-      own("vehicle_classes",     "id,name,active,sortOrder,category,seats,bags"),
+      own("vehicle_classes",     "id,name,active,sortOrder,category,electric,luxury,seats,bags,exampleModels"),
       own("sources",             "id,name,billingType,active,sortOrder"),
       own("source_details",      "id,sourceId,name,active"),
       own("daily_rates",         "vehicleClassId,sourceId,amount"),
@@ -7774,6 +7774,11 @@ const LIST_REASONS = {
   exec_only:        "Only an Exec can change these lists.",
   not_signed_in:    "You are signed out. Sign in again and retry.",
   bad_name:         "Give it a name of 1 to 60 characters.",
+  use_standard_list: "Pick vehicle classes from the list.",
+  name_fixed:       "A vehicle class keeps the name it has in the list.",
+  nothing_picked:   "Tick at least one vehicle class.",
+  not_standard:     "That vehicle class is not on the list.",
+  bad_models:       "Keep the example models to 120 characters.",
   not_found:        "That entry is not part of this company.",
   bad_branch:       "That branch is closed or is not part of this company.",
   duplicate_name:   "There is already an entry with that name.",
@@ -7992,23 +7997,25 @@ function ProtectionDetailsCard({ product, busy, onSave }) {
   );
 }
 
-// The categories fleetr.ai files a class under. A class has none until the
-// Exec picks one: its name is not taken as a guess.
-const VEHICLE_CATEGORIES = ["Car", "SUV", "Truck", "Van", "Luxury", "Other"];
+// What a class is filed under on fleetr.ai, in words: its category, and
+// whether it is electric or luxury. Set by the standard list, not edited.
+const vehicleClassType = (c) =>
+  [c.category, c.electric && "electric", c.luxury && "luxury"].filter(Boolean).join(", ") || "No type";
 
-// One vehicle class's category, seats and bags, for fleetr.ai. Keeps its own
-// drafts, for the reason GasRow does.
+// One vehicle class's seats, bags and example models. Its name and type come
+// from the standard list and stay. Keeps its own drafts, for the reason
+// GasRow does.
 function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
   const shown = () => ({
-    category: entry.category || "",
-    seats: entry.seats == null ? "" : String(entry.seats),
-    bags:  entry.bags  == null ? "" : String(entry.bags),
+    seats:  entry.seats == null ? "" : String(entry.seats),
+    bags:   entry.bags  == null ? "" : String(entry.bags),
+    models: entry.exampleModels || "",
   });
   const [draft, setDraft] = React.useState(shown);
-  React.useEffect(() => { setDraft(shown()); }, [entry.category, entry.seats, entry.bags, entry.name]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => { setDraft(shown()); }, [entry.seats, entry.bags, entry.exampleModels, entry.name]); // eslint-disable-line react-hooks/exhaustive-deps
   const saved = shown();
-  const unchanged = draft.category === saved.category
-    && draft.seats.trim() === saved.seats && draft.bags.trim() === saved.bags;
+  const unchanged = draft.seats.trim() === saved.seats && draft.bags.trim() === saved.bags
+    && draft.models.trim() === saved.models;
   const el = React.createElement;
   const whole = (s, min, max) => {
     const t = s.trim();
@@ -8020,16 +8027,10 @@ function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
     const seats = whole(draft.seats, 1, 20), bags = whole(draft.bags, 0, 20);
     if (!seats.ok) { onError("Seats has to be a whole number from 1 to 20."); return; }
     if (!bags.ok)  { onError("Bags has to be a whole number from 0 to 20."); return; }
-    onSave(draft.category, seats.value, bags.value);
+    onSave(seats.value, bags.value, draft.models.trim() || null);
   };
   return el("span", { style: { display: "inline-flex", gap: "6px", alignItems: "center", flexWrap: "wrap" } },
-    el("select", {
-      className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, disabled: busy,
-      value: draft.category, "aria-label": `${entry.name} category`,
-      onChange: (e) => setDraft((p) => ({ ...p, category: e.target.value })),
-    },
-      el("option", { value: "" }, "No category"),
-      VEHICLE_CATEGORIES.map((c) => el("option", { key: c, value: c }, c))),
+    el("span", { className: "closeRentalHint", style: { margin: 0, minWidth: "90px" } }, vehicleClassType(entry)),
     el("input", {
       className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric",
       placeholder: "Seats", value: draft.seats, disabled: busy, "aria-label": `${entry.name} seats`,
@@ -8040,10 +8041,87 @@ function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
       placeholder: "Bags", value: draft.bags, disabled: busy, "aria-label": `${entry.name} bags`,
       onChange: (e) => setDraft((p) => ({ ...p, bags: e.target.value })),
     }),
+    el("input", {
+      className: "resFormInput", style: { width: "180px", padding: "5px 8px" }, maxLength: 120,
+      placeholder: "Example models", value: draft.models, disabled: busy, "aria-label": `${entry.name} example models`,
+      onChange: (e) => setDraft((p) => ({ ...p, models: e.target.value })),
+    }),
     el("button", {
       className: "loginBtn", style: { width: "auto", padding: "5px 9px" },
       disabled: busy || unchanged, onClick: save,
     }, "Save"));
+}
+
+// The standard vehicle classes (standard_vehicle_classes in the database),
+// each with its type, seats, bags and example models. The Exec ticks the ones
+// they rent and saves; nothing is added unless it is ticked. One already
+// added shows as added. Used on the Company page and in the setup checklist.
+function VehicleClassPicker({ disabled, onAdded }) {
+  const { currentUser } = React.useContext(AppContext);
+  const [list, setList]       = React.useState(null);
+  const [picked, setPicked]   = React.useState({});
+  const [busy, setBusy]       = React.useState(false);
+  const [error, setError]     = React.useState("");
+  const [notice, setNotice]   = React.useState("");
+  const [, setTick]           = React.useState(0);
+  const el = React.createElement;
+
+  React.useEffect(() => {
+    let live = true;
+    supabase.rpc("standard_vehicle_classes").then(({ data, error: err }) => {
+      if (!live) return;
+      if (err || !Array.isArray(data)) setError("The vehicle class list could not be loaded. Reload the page to try again.");
+      else setList(data);
+    });
+    return () => { live = false; };
+  }, []);
+
+  const have = new Set(((companyLists && companyLists.vehicleClasses) || []).map((c) => String(c.name).toLowerCase()));
+  const chosen = Object.keys(picked).filter((k) => picked[k] && !have.has(k.toLowerCase()));
+
+  const add = async () => {
+    if (!chosen.length) return;
+    setBusy(true); setError(""); setNotice("");
+    const { data, error: err } = await supabase.rpc("add_standard_vehicle_classes", { p_names: chosen });
+    if (err || !data || !data.ok) {
+      setBusy(false);
+      setError(err ? "Could not reach the server." : (LIST_REASONS[data && data.reason] || "That did not work."));
+      return;
+    }
+    await loadCompanyLists(currentUser);
+    setPicked({});
+    setBusy(false);
+    setTick((n) => n + 1);
+    const n = (data.added || []).length;
+    setNotice(n ? `Added ${n} vehicle class${n === 1 ? "" : "es"}. Change their seats, bags and example models above if yours differ.` : "Those were already added.");
+    if (onAdded) await onAdded();
+  };
+
+  if (!list) return error ? el("div", { className: "loginError" }, error) : el("p", { className: "closeRentalHint" }, "Loading the vehicle classes...");
+  return el("div", { style: { marginTop: "12px" } },
+    el("div", { className: "gasSettingSubhead" }, "Add vehicle classes"),
+    el("p", { className: "closeRentalHint" }, "Tick the ones you rent, then add them."),
+    el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "6px 16px" } },
+      list.map((c) => {
+        const added = have.has(String(c.name).toLowerCase());
+        const facts = [vehicleClassType(c), c.seats != null && `${c.seats} seats`, c.bags != null && `${c.bags} bags`].filter(Boolean).join(" \u00b7 ");
+        return el("label", { key: c.name, style: { display: "flex", gap: "8px", alignItems: "flex-start", cursor: added ? "default" : "pointer", opacity: added ? 0.6 : 1 } },
+          el("input", {
+            type: "checkbox", checked: added || !!picked[c.name], disabled: disabled || busy || added,
+            style: { marginTop: "3px" },
+            onChange: (e) => { const on = e.target.checked; setPicked((p) => ({ ...p, [c.name]: on })); setNotice(""); },
+          }),
+          el("span", null,
+            el("span", { style: { fontWeight: 600 } }, c.name),
+            c.exampleModels && el("span", null, ` (${c.exampleModels})`),
+            el("span", { className: "closeRentalHint", style: { display: "block", margin: 0 } }, added ? `${facts} \u00b7 added` : facts)));
+      })),
+    error && el("div", { className: "loginError" }, error),
+    notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginTop: "8px" } }, notice),
+    el("button", {
+      type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px", marginTop: "10px" },
+      disabled: disabled || busy || chosen.length === 0, onClick: add,
+    }, busy ? "Adding..." : chosen.length ? `Add ${chosen.length} vehicle class${chosen.length === 1 ? "" : "es"}` : "Add"));
 }
 
 // One row of deductibles: the company default, or one vehicle class's own.
@@ -8305,10 +8383,14 @@ function CompanyListsSections({ branches }) {
           : null),
       el("td", { style: indent ? { paddingLeft: "28px" } : null },
         lead || null,
-        el(ListInlineName, {
-          name: entry.name, disabled: busy,
-          onSave: (name) => { const [fn, args] = rename(name); return act(at, fn, args); },
-        })),
+        // An entry with no rename keeps its name, as a vehicle class from the
+        // standard list does.
+        rename
+          ? el(ListInlineName, {
+              name: entry.name, disabled: busy,
+              onSave: (name) => { const [fn, args] = rename(name); return act(at, fn, args); },
+            })
+          : entry.name),
       extra || el("td", null),
       el("td", null,
         el("label", { style: { display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer" } },
@@ -8423,24 +8505,20 @@ function CompanyListsSections({ branches }) {
     section("Vehicle classes",
       "One list for reservations, the fleet and rates, in the order shown here.",
       "classes",
-      table("760px", listHeads("Vehicle class", "Category, seats and bags"),
+      table("860px", listHeads("Vehicle class", "Type, seats, bags and example models"),
         vehicleClasses.map((entry, i) => entryRow({
           at: "classes", kind: "vehicle_class", entry,
           reorder: { listKey: "classes", list: vehicleClasses, index: i, saveCall: saveClass },
-          rename: (name) => ["save_vehicle_class", { p_id: entry.id, p_name: name, p_sort: null }],
           goesWith: "Its daily rates and protection prices go with it.",
           extra: el("td", null, el(VehicleClassDetailsCell, {
             entry, busy,
             onError: (text) => setError({ at: "classes", text }),
-            onSave: (category, seats, bags) => act("classes", "save_vehicle_class_details", {
-              p_id: entry.id, p_category: category, p_seats: seats, p_bags: bags,
+            onSave: (seats, bags, models) => act("classes", "save_vehicle_class_details", {
+              p_id: entry.id, p_seats: seats, p_bags: bags, p_example_models: models,
             }),
           })),
         }))),
-      el(ListAddRow, {
-        placeholder: "New vehicle class", label: "Add", disabled: busy,
-        onAdd: (name) => act("classes", "save_vehicle_class", { p_id: null, p_name: name, p_sort: null }),
-      })),
+      el(VehicleClassPicker, { disabled: busy, onAdded: reload })),
 
     // ── Sources ──
     section("Sources",
@@ -10692,7 +10770,7 @@ const SETUP_ITEMS = {
                            text: "Street, city, province, postal code and country, under Listing, with its map pin. Used on fleetr.ai and in the confirmation text, and the pin sets the branch's local time for texts and bookings." },
   pickup_locations:      { title: "Pickup locations", path: "/company",
                            text: "At least one for every open branch." },
-  vehicle_classes:       { title: "Vehicle classes", path: "/company", text: "At least one." },
+  vehicle_classes:       { title: "Vehicle classes", path: "/company", text: "Tick the ones you rent from the standard list. At least one." },
   sources:               { title: "Sources", path: "/company", text: "Who the work comes from. At least one." },
   daily_rates:           { title: "Daily rates", path: "/company",
                            text: "A rate for every vehicle class, under at least one source." },
@@ -10736,7 +10814,7 @@ const LAUNCH_REASONS = {
   network:          "Could not reach the server.",
 };
 
-function SetupItemRow({ item }) {
+function SetupItemRow({ item, children }) {
   const meta = SETUP_ITEMS[item.key] || { title: item.key, path: null, text: "" };
   const detail = Array.isArray(item.detail) && item.detail.length > 0 && !item.done
     ? (item.key === "other_texts" ? item.detail.map((k) => SETUP_TEXT_KIND_NAMES[k] || k) : item.detail).join(", ")
@@ -10750,7 +10828,8 @@ function SetupItemRow({ item }) {
           item.done ? "Done" : item.required ? "Left to do" : "Optional")),
       meta.text && React.createElement("div", { className: "closeRentalHint", style: { margin: 0 } }, meta.text),
       detail && React.createElement("div", { className: "closeRentalHint", style: { margin: 0 } },
-        item.key === "test_rentals_finished" ? `Still open: ${detail}` : `Still missing: ${detail}`)));
+        item.key === "test_rentals_finished" ? `Still open: ${detail}` : `Still missing: ${detail}`),
+      children || null));
 }
 
 // The checklist. An Exec is brought here on every sign-in until the company
@@ -10797,7 +10876,11 @@ function SetupPage() {
     error && React.createElement("div", { className: "loginError" }, error),
 
     React.createElement("h2", { className: "setupHeading" }, "Required before launch"),
-    React.createElement("ul", { className: "setupList" }, required.map((i) => React.createElement(SetupItemRow, { key: i.key, item: i }))),
+    React.createElement("ul", { className: "setupList" }, required.map((i) => React.createElement(SetupItemRow, { key: i.key, item: i },
+      // Vehicle classes are picked right here, from the same list as the
+      // Company page.
+      i.key === "vehicle_classes" && isExec && !setup.launched
+        ? React.createElement(VehicleClassPicker, { disabled: busy, onAdded: refreshSetup }) : null))),
     React.createElement("h2", { className: "setupHeading" }, "Optional"),
     React.createElement("ul", { className: "setupList" }, optional.map((i) => React.createElement(SetupItemRow, { key: i.key, item: i }))),
 
