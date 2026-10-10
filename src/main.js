@@ -4316,13 +4316,12 @@ function VehicleDetailPage() {
   const [sect, setSect] = React.useState({ info: false, status: false, pm: false, condition: false, maintenance: false, damageClaims: false, inspections: false });
 
   // Tank size and PM interval are entered by hand (no free API exposes either
-  // reliably). Both are stored canonically (litres / kilometres) and only
-  // converted for display, so the unit toggle can never affect the gas charge
-  // maths or the PM threshold comparison.
-  // The figures on file are in litres and kilometres. A company with no units
-  // yet sees them in those, the units they are stored in.
-  const [tankUnit, setTankUnit] = React.useState(() => fuelUnit() || "L");
-  const [pmUnit,   setPmUnit]   = React.useState(() => distanceUnit() || "km");
+  // reliably). Both are stored canonically (litres / kilometres) and shown in
+  // the company's own units, set once on the Company page; there is no switch
+  // here. A company with no units yet sees them in litres and kilometres, the
+  // units they are stored in.
+  const tankUnit = fuelUnit() || "L";
+  const pmUnit   = distanceUnit() || "km";
   const [tankInput, setTankInput] = React.useState("");
   const [pmInput,   setPmInput]   = React.useState("");
 
@@ -4473,7 +4472,6 @@ function VehicleDetailPage() {
           "div", { className: "vehicleDetailRow" },
           React.createElement("span", { className: "vehicleDetailLabel" }, "Tank Size"),
           React.createElement("span", { className: "vehicleDetailControl" },
-            React.createElement(UnitToggle, { unit: tankUnit, setUnit: setTankUnit, options: VOLUME_UNITS }),
             React.createElement("input", {
               type: "number", min: "0", step: "0.1", className: "tankSizeInput",
               placeholder: "Not set",
@@ -4497,7 +4495,6 @@ function VehicleDetailPage() {
           "div", { className: "vehicleDetailRow" },
           React.createElement("span", { className: "vehicleDetailLabel" }, "Needs PM Every"),
           React.createElement("span", { className: "vehicleDetailControl" },
-            React.createElement(UnitToggle, { unit: pmUnit, setUnit: setPmUnit, options: DISTANCE_UNITS }),
             React.createElement("input", {
               type: "number", min: "0", step: "1", className: "tankSizeInput",
               placeholder: "Not set",
@@ -5020,27 +5017,10 @@ const toCanonicalUnits = (displayValue, unit) => {
   return Math.round(canonical * 100) / 100;
 };
 
-// Two-button unit switcher. Purely presentational: the caller keeps the
-// canonical value in state and re-renders the input through toDisplayUnits.
-function UnitToggle({ unit, setUnit, options }) {
-  return React.createElement("span", { className: "unitToggle" },
-    options.map((o) =>
-      React.createElement("button", {
-        key: o.value,
-        type: "button",
-        className: `unitToggleBtn${unit === o.value ? " unitToggleBtn--active" : ""}`,
-        onClick: () => setUnit(o.value),
-      }, o.label)
-    )
-  );
-}
-
 // The codes behind the Province / State dropdown, minus its "All" filter entry.
 // Derived rather than retyped so the AI accepts exactly what the form offers.
 const PROVINCE_CODES = PROV_STATE_LIST.filter((p) => p.value !== "All").map((p) => p.value);
 
-const VOLUME_UNITS   = [{ value: "L",  label: "Litres" },   { value: "gal", label: "Gallons" }];
-const DISTANCE_UNITS = [{ value: "km", label: "Kilometers" }, { value: "mi",  label: "Miles" }];
 
 // ─── Preventative Maintenance gating ──────────────────────────────────────────
 // PM is a flag (fleet.needsPm), not a status. A vehicle can be both
@@ -5833,13 +5813,12 @@ function FleetAdditionsPage() {
   const [activeTab,  setActiveTab]  = React.useState("add");
 
 
-  // tankSize / pmInterval are held in the CURRENTLY SELECTED display unit while
-  // typing, and converted to canonical litres/km only at submit.
+  // tankSize / pmInterval are typed in the company's own units, set once on
+  // the Company page, and converted to canonical litres/km as they are typed.
   const BLANK_ADD    = { plate: "", province: "", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: defaultVehicleClass(), tankSize: "", pmInterval: "", odometer: "", fuelLevel: "" };
-  const [tankUnit, setTankUnit] = React.useState(fuelUnit);
-  const [pmUnit,   setPmUnit]   = React.useState(distanceUnit);
-  // Canonical litres / kilometres, kept alongside the displayed string so that
-  // toggling units re-renders the number without ever rewriting the value.
+  const tankUnit = fuelUnit();
+  const pmUnit   = distanceUnit();
+  // Canonical litres / kilometres, kept alongside the typed string.
   const [tankCanonical, setTankCanonical] = React.useState(null);
   const [pmCanonical,   setPmCanonical]   = React.useState(null);
   // The disposal date defaults to today, which is the answer almost every time
@@ -5974,18 +5953,14 @@ function FleetAdditionsPage() {
       })
     );
 
-  // Numeric field with a unit switcher. The typed string is what the user sees;
-  // setCanonical stores the converted value so the toggle can re-render the
-  // number from it without a lossy string round trip.
+  // Numeric field in the company's unit, named in the label. setCanonical
+  // stores the value converted to litres or kilometres.
   // No required marker: every field on this form is required, so singling any
   // one out would be misleading. Matches the Retire Vehicle form, which also
   // requires everything and simply says so on submit.
-  const unitField = (label, field, placeholder, unit, setUnit, unitOpts, setCanonical) =>
+  const unitField = (label, field, placeholder, unit, setCanonical) =>
     React.createElement("div", { className: "addVehicleField" },
-      React.createElement("div", { className: "addVehicleLabelRow" },
-        React.createElement("label", { className: "addVehicleLabel" }, label),
-        React.createElement(UnitToggle, { unit, setUnit, options: unitOpts })
-      ),
+      React.createElement("label", { className: "addVehicleLabel" }, `${label} (${unit})`),
       React.createElement("input", {
         type: "number", min: "0", step: "0.1", className: "addVehicleInput",
         placeholder, value: addForm[field],
@@ -5995,15 +5970,6 @@ function FleetAdditionsPage() {
         },
       })
     );
-
-  // Switching units must never change the stored value. Converting the typed
-  // string and writing it back drifts on every round trip (50 L -> 13.21 gal ->
-  // 50.01 L), so the canonical number is kept separately and the displayed
-  // string is re-derived from it instead.
-  const switchUnit = (field, canonical, toUnit, setUnit) => {
-    setUnit(toUnit);
-    onAdd(field, canonical == null ? "" : toDisplayUnits(canonical, toUnit));
-  };
 
   return React.createElement(
     "div", { className: "page" },
@@ -6050,12 +6016,10 @@ function FleetAdditionsPage() {
             fi("Colour", "colour", "e.g. White"),
             unitField("Tank Size", "tankSize",
               tankUnit === "L" ? "e.g. 50, needed for gas charges" : "e.g. 13, needed for gas charges",
-              tankUnit, (u) => switchUnit("tankSize", tankCanonical, u, setTankUnit),
-              VOLUME_UNITS, setTankCanonical),
+              tankUnit, setTankCanonical),
             unitField("Needs PM Every", "pmInterval",
               pmUnit === "km" ? "e.g. 8000" : "e.g. 5000",
-              pmUnit, (u) => switchUnit("pmInterval", pmCanonical, u, setPmUnit),
-              DISTANCE_UNITS, setPmCanonical),
+              pmUnit, setPmCanonical),
             fi(`Current Odometer (${distanceUnit()})`, "odometer", distanceUnit() === "mi" ? "e.g. 26000" : "e.g. 42000"),
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Current Fuel Level"),
