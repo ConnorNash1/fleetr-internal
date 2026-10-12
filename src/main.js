@@ -1169,6 +1169,16 @@ function parseTimeToMinutes(time) {
   return h * 60 + m;
 }
 
+// Times picked by hand use quarter hours only: :00, :15, :30 or :45. A typed
+// minute is rounded down, so the hour never changes. Works on "14:07",
+// "1407", "2:07 PM" and the like; anything without minutes is left alone.
+function quarterTime(value) {
+  const s = String(value ?? "");
+  const m = /^(\s*\d{1,2}:?)(\d{2})(?!\d)([\s\S]*)$/.exec(s);
+  if (!m) return s;
+  return m[1] + String(Math.floor(Number(m[2]) / 15) * 15).padStart(2, "0") + m[3];
+}
+
 function toDisplayTime(digits) {
   const value = String(digits || "").replace(/\D/g, "").slice(0, 4);
   if (!value) return "";
@@ -2478,6 +2488,10 @@ function ReservationsPage() {
   const navigate = useNavigate();
   const todayIso = new Date().toISOString().slice(0, 10);
   const [showModal, setShowModal] = React.useState(false);
+  // Set by a save with a required field empty; each empty one then shows its
+  // message underneath until it is filled.
+  const [showResErrors, setShowResErrors] = React.useState(false);
+  React.useEffect(() => { if (!showModal) setShowResErrors(false); }, [showModal]);
   const [form, setForm] = React.useState(emptyResForm);
   const [srchFirst, setSrchFirst] = React.useState("");
   const [srchLast,  setSrchLast]  = React.useState("");
@@ -2588,16 +2602,16 @@ function ReservationsPage() {
       location:     form.location,
       vehicleClass: form.vehicleClass,
     });
-    if (!resCheck.ok) { window.alert(resCheck.error); return; }
+    if (!resCheck.ok) { setShowResErrors(true); return; }
 
     const resCode = await generateUniqueResCode();
     const customer = customerName;
     const newRow = {
-      date: form.date, time: form.time, location: form.location,
+      date: form.date, time: quarterTime(form.time), location: form.location,
       resCode, customer,
       firstName: form.firstName, lastName: form.lastName,
       phone: form.phone, email: form.email, licenseNumber: form.licenseNumber,
-      returnDate: form.returnDate, returnTime: form.returnTime,
+      returnDate: form.returnDate, returnTime: quarterTime(form.returnTime),
       vehicleClass: form.vehicleClass, winterTires: form.winterTires,
       source: form.source, sourceDetail: form.sourceDetail,
       dailyRate: form.dailyRate,
@@ -2640,9 +2654,12 @@ function ReservationsPage() {
     setShowModal(false);
   };
 
+  const resErrors = showResErrors ? resFormErrors(form) : {};
+  const fieldErr = (key) => resErrors[key] && React.createElement("span", { className: "resFormError" }, resErrors[key]);
   const tf = (label, key, ph) => React.createElement("label", { className: "resFormGroup" },
     React.createElement("span", { className: "resFormLabel" }, label),
-    React.createElement("input", { className: "resFormInput", type: "text", placeholder: ph, value: form[key], onChange: (e) => updateForm(key, e.target.value) })
+    React.createElement("input", { className: "resFormInput", type: "text", placeholder: ph, value: form[key], onChange: (e) => updateForm(key, e.target.value) }),
+    fieldErr(key)
   );
 
   const cols = ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Winter tires", "Notes"];
@@ -2786,7 +2803,7 @@ function ReservationsPage() {
           React.createElement("h2", { className: "resModalTitle" }, "New Reservation"),
           React.createElement("button", { type: "button", className: "resModalClose", onClick: () => setShowModal(false) }, "✕")
         ),
-        React.createElement("form", { className: "resModalForm", onSubmit: handleSubmit },
+        React.createElement("form", { className: "resModalForm", onSubmit: handleSubmit, noValidate: true },
           React.createElement("div", { className: "resModalBody" },
             React.createElement("div", { className: "cdetailSubGroup" }, "Customer Information"),
             React.createElement("div", { className: "resFormRow" },
@@ -2794,26 +2811,28 @@ function ReservationsPage() {
                 React.createElement("span", { className: "resFormLabel" }, "Res Code"),
                 React.createElement("input", { className: "resFormInput", type: "text", readOnly: true, value: "Assigned on save", style: { background: "#f7f7f7", color: "#aaa", cursor: "default" } })
               ),
-              tf("First Name ✱", "firstName", "First name"),
+              tf("First Name", "firstName", "First name"),
               tf("Last Name", "lastName", "Last name")
             ),
             React.createElement("div", { className: "resFormRow" },
               tf("Phone", "phone", "(xxx) xxx-xxxx"),
               tf("Email", "email", "email@example.com"),
               React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Driver's License ✱"),
-                React.createElement("input", { className: "resFormInput", type: "text", placeholder: "License number", value: form.licenseNumber, onChange: (e) => updateForm("licenseNumber", e.target.value), required: true })
+                React.createElement("span", { className: "resFormLabel" }, "Driver's licence"),
+                React.createElement("input", { className: "resFormInput", type: "text", placeholder: "Licence number", value: form.licenseNumber, onChange: (e) => updateForm("licenseNumber", e.target.value) })
               )
             ),
             React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & Return"),
             React.createElement("div", { className: "resFormRow" },
               React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Pickup Date ✱"),
-                React.createElement("input", { className: "resFormInput", type: "date", value: form.date, onChange: (e) => updateForm("date", e.target.value), required: true })
+                React.createElement("span", { className: "resFormLabel" }, "Pickup Date"),
+                React.createElement("input", { className: "resFormInput", type: "date", value: form.date, onChange: (e) => updateForm("date", e.target.value) }),
+                fieldErr("date")
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Pickup Time"),
-                React.createElement("input", { className: "resFormInput", type: "time", value: form.time, onChange: (e) => updateForm("time", e.target.value) })
+                React.createElement("input", { className: "resFormInput", type: "time", step: 900, value: form.time, onChange: (e) => updateForm("time", e.target.value), onBlur: (e) => updateForm("time", quarterTime(e.target.value)) }),
+                fieldErr("time")
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Date"),
@@ -2821,7 +2840,7 @@ function ReservationsPage() {
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Time"),
-                React.createElement("input", { className: "resFormInput", type: "time", value: form.returnTime, onChange: (e) => updateForm("returnTime", e.target.value) })
+                React.createElement("input", { className: "resFormInput", type: "time", step: 900, value: form.returnTime, onChange: (e) => updateForm("returnTime", e.target.value), onBlur: (e) => updateForm("returnTime", quarterTime(e.target.value)) })
               )
             ),
             React.createElement("div", { className: "cdetailSubGroup" }, "Reservation Details"),
@@ -2830,13 +2849,15 @@ function ReservationsPage() {
                 React.createElement("span", { className: "resFormLabel" }, "Location"),
                 React.createElement("select", { className: "resFormInput", value: form.location, onChange: (e) => updateForm("location", e.target.value) },
                   pickupLocationOptions(form.location).map((l) => React.createElement("option", { key: l, value: l }, l))
-                )
+                ),
+                fieldErr("location")
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Vehicle Class"),
                 React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => setForm((p) => withDailyRate({ ...p, vehicleClass: e.target.value })) },
                   vehicleClassOptions(form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
-                )
+                ),
+                fieldErr("vehicleClass")
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Winter Tires"),
@@ -3207,6 +3228,7 @@ function NonDriveIntakeSection({ standalone }) {
                           value: toDisplayTime(row.aiTime),
                           onChange: (event) =>
                             handleAiFieldUpdate(row.id, "aiTime", event.target.value.replace(/\D/g, "").slice(0, 4)),
+                          onBlur: () => handleAiFieldUpdate(row.id, "aiTime", quarterTime(row.aiTime)),
                           placeholder: "HH:MM",
                           maxLength: 5,
                         }),
@@ -3297,6 +3319,10 @@ function DashboardPage() {
   const [datePickerAnchor,  setDatePickerAnchor]  = React.useState({ x: 0, y: 0 });
   const [filterPickerMonth, setFilterPickerMonth] = React.useState(null);
   const [showModal, setShowModal] = React.useState(false);
+  // Set by a save with a required field empty; each empty one then shows its
+  // message underneath until it is filled.
+  const [showResErrors, setShowResErrors] = React.useState(false);
+  React.useEffect(() => { if (!showModal) setShowResErrors(false); }, [showModal]);
   const [form, setForm] = React.useState(emptyResForm);
   const updateForm = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
 
@@ -3357,16 +3383,16 @@ function DashboardPage() {
       location:     form.location,
       vehicleClass: form.vehicleClass,
     });
-    if (!resCheck.ok) { window.alert(resCheck.error); return; }
+    if (!resCheck.ok) { setShowResErrors(true); return; }
 
     const resCode = await generateUniqueResCode();
     const customer = customerName;
     const newRow = {
-      date: form.date, time: form.time, location: form.location,
+      date: form.date, time: quarterTime(form.time), location: form.location,
       resCode, customer,
       firstName: form.firstName, lastName: form.lastName,
       phone: form.phone, email: form.email, licenseNumber: form.licenseNumber,
-      returnDate: form.returnDate, returnTime: form.returnTime,
+      returnDate: form.returnDate, returnTime: quarterTime(form.returnTime),
       vehicleClass: form.vehicleClass, winterTires: form.winterTires,
       source: form.source, sourceDetail: form.sourceDetail,
       dailyRate: form.dailyRate,
@@ -3409,9 +3435,12 @@ function DashboardPage() {
     setShowModal(false);
   };
 
+  const resErrors = showResErrors ? resFormErrors(form) : {};
+  const fieldErr = (key) => resErrors[key] && React.createElement("span", { className: "resFormError" }, resErrors[key]);
   const tf = (label, key, ph) => React.createElement("label", { className: "resFormGroup" },
     React.createElement("span", { className: "resFormLabel" }, label),
-    React.createElement("input", { className: "resFormInput", type: "text", placeholder: ph, value: form[key], onChange: (e) => updateForm(key, e.target.value) })
+    React.createElement("input", { className: "resFormInput", type: "text", placeholder: ph, value: form[key], onChange: (e) => updateForm(key, e.target.value) }),
+    fieldErr(key)
   );
 
 
@@ -3758,7 +3787,7 @@ function DashboardPage() {
           React.createElement("h2", { className: "resModalTitle" }, "New Reservation"),
           React.createElement("button", { type: "button", className: "resModalClose", onClick: () => setShowModal(false) }, "✕")
         ),
-        React.createElement("form", { className: "resModalForm", onSubmit: handleSubmit },
+        React.createElement("form", { className: "resModalForm", onSubmit: handleSubmit, noValidate: true },
           React.createElement("div", { className: "resModalBody" },
             React.createElement("div", { className: "cdetailSubGroup" }, "Customer Information"),
             React.createElement("div", { className: "resFormRow" },
@@ -3766,26 +3795,28 @@ function DashboardPage() {
                 React.createElement("span", { className: "resFormLabel" }, "Res Code"),
                 React.createElement("input", { className: "resFormInput", type: "text", readOnly: true, value: "Assigned on save", style: { background: "#f7f7f7", color: "#aaa", cursor: "default" } })
               ),
-              tf("First Name ✱", "firstName", "First name"),
+              tf("First Name", "firstName", "First name"),
               tf("Last Name", "lastName", "Last name")
             ),
             React.createElement("div", { className: "resFormRow" },
               tf("Phone", "phone", "(xxx) xxx-xxxx"),
               tf("Email", "email", "email@example.com"),
               React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Driver's License ✱"),
-                React.createElement("input", { className: "resFormInput", type: "text", placeholder: "License number", value: form.licenseNumber, onChange: (e) => updateForm("licenseNumber", e.target.value), required: true })
+                React.createElement("span", { className: "resFormLabel" }, "Driver's licence"),
+                React.createElement("input", { className: "resFormInput", type: "text", placeholder: "Licence number", value: form.licenseNumber, onChange: (e) => updateForm("licenseNumber", e.target.value) })
               )
             ),
             React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & Return"),
             React.createElement("div", { className: "resFormRow" },
               React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Pickup Date ✱"),
-                React.createElement("input", { className: "resFormInput", type: "date", value: form.date, onChange: (e) => updateForm("date", e.target.value), required: true })
+                React.createElement("span", { className: "resFormLabel" }, "Pickup Date"),
+                React.createElement("input", { className: "resFormInput", type: "date", value: form.date, onChange: (e) => updateForm("date", e.target.value) }),
+                fieldErr("date")
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Pickup Time"),
-                React.createElement("input", { className: "resFormInput", type: "time", value: form.time, onChange: (e) => updateForm("time", e.target.value) })
+                React.createElement("input", { className: "resFormInput", type: "time", step: 900, value: form.time, onChange: (e) => updateForm("time", e.target.value), onBlur: (e) => updateForm("time", quarterTime(e.target.value)) }),
+                fieldErr("time")
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Date"),
@@ -3793,7 +3824,7 @@ function DashboardPage() {
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Time"),
-                React.createElement("input", { className: "resFormInput", type: "time", value: form.returnTime, onChange: (e) => updateForm("returnTime", e.target.value) })
+                React.createElement("input", { className: "resFormInput", type: "time", step: 900, value: form.returnTime, onChange: (e) => updateForm("returnTime", e.target.value), onBlur: (e) => updateForm("returnTime", quarterTime(e.target.value)) })
               )
             ),
             React.createElement("div", { className: "cdetailSubGroup" }, "Reservation Details"),
@@ -3802,13 +3833,15 @@ function DashboardPage() {
                 React.createElement("span", { className: "resFormLabel" }, "Location"),
                 React.createElement("select", { className: "resFormInput", value: form.location, onChange: (e) => updateForm("location", e.target.value) },
                   pickupLocationOptions(form.location).map((l) => React.createElement("option", { key: l, value: l }, l))
-                )
+                ),
+                fieldErr("location")
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Vehicle Class"),
                 React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => setForm((p) => withDailyRate({ ...p, vehicleClass: e.target.value })) },
                   vehicleClassOptions(form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
-                )
+                ),
+                fieldErr("vehicleClass")
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Winter Tires"),
@@ -5333,6 +5366,30 @@ const RESERVATION_REQUIRED_FIELDS = [
   ["Location",      "location"],
   ["Vehicle Class", "vehicleClass"],
 ];
+
+// What the New Reservation form shows under each required field left empty.
+// The name is one check, made under First Name.
+const RES_FORM_FIELD_ERRORS = {
+  customer:     ["firstName",    "Enter the customer's name."],
+  date:         ["date",         "Choose a pickup date."],
+  time:         ["time",         "Choose a pickup time."],
+  location:     ["location",     "Choose a location."],
+  vehicleClass: ["vehicleClass", "Choose a vehicle class."],
+};
+
+function resFormErrors(form) {
+  const r = {
+    customer: [form.firstName, form.lastName].filter(Boolean).join(" "),
+    date: form.date, time: form.time, location: form.location, vehicleClass: form.vehicleClass,
+  };
+  const out = {};
+  for (const [, key] of RESERVATION_REQUIRED_FIELDS) {
+    if (String(r[key] ?? "").trim() !== "") continue;
+    const [field, msg] = RES_FORM_FIELD_ERRORS[key];
+    out[field] = msg;
+  }
+  return out;
+}
 
 function validateReservation(r) {
   const missing = RESERVATION_REQUIRED_FIELDS
@@ -7670,22 +7727,26 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Hours"),
     el("div", { style: { display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", marginBottom: "10px" } },
       el("span", { style: { width: "130px" } }, "Same hours every day"),
-      el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, value: draft.sameOpen, disabled: !!busy,
-        "aria-label": "Opening time for every day", onChange: (e) => set("sameOpen", e.target.value) }),
+      el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, step: 900, value: draft.sameOpen, disabled: !!busy,
+        "aria-label": "Opening time for every day", onChange: (e) => set("sameOpen", e.target.value),
+        onBlur: (e) => set("sameOpen", quarterTime(e.target.value)) }),
       el("span", null, "to"),
-      el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, value: draft.sameClose, disabled: !!busy,
-        "aria-label": "Closing time for every day", onChange: (e) => set("sameClose", e.target.value) }),
+      el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, step: 900, value: draft.sameClose, disabled: !!busy,
+        "aria-label": "Closing time for every day", onChange: (e) => set("sameClose", e.target.value),
+        onBlur: (e) => set("sameClose", quarterTime(e.target.value)) }),
       el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, disabled: !!busy,
         onClick: fillEveryDay }, "Fill every day")),
     LISTING_DAYS.map(([k, name]) => {
       const d = draft.hours[k];
       return el("div", { key: k, style: { display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", marginBottom: "6px" } },
         el("span", { style: { width: "130px" } }, name),
-        el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, value: d.open, disabled: !!busy,
-          "aria-label": `${name} opening time`, onChange: (e) => setDay(k, "open", e.target.value) }),
+        el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, step: 900, value: d.open, disabled: !!busy,
+          "aria-label": `${name} opening time`, onChange: (e) => setDay(k, "open", e.target.value),
+          onBlur: (e) => setDay(k, "open", quarterTime(e.target.value)) }),
         el("span", null, "to"),
-        el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, value: d.close, disabled: !!busy,
-          "aria-label": `${name} closing time`, onChange: (e) => setDay(k, "close", e.target.value) }));
+        el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, step: 900, value: d.close, disabled: !!busy,
+          "aria-label": `${name} closing time`, onChange: (e) => setDay(k, "close", e.target.value),
+          onBlur: (e) => setDay(k, "close", quarterTime(e.target.value)) }));
     }),
     el("p", { className: "closeRentalHint" }, "Leave a day blank if the branch is closed that day."),
 
@@ -10679,6 +10740,7 @@ function FleetrCommandBar() {
                                   style: { maxWidth: "72px" },
                                   value: timeDisplayFor(key),
                                   onChange: (e) => setEditableData((prev) => ({ ...prev, [key]: e.target.value.slice(0, 4) })),
+                                  onBlur: () => setEditableData((prev) => ({ ...prev, [key]: quarterTime(prev[key]) })),
                                 }),
                                 React.createElement(
                                   "select",
@@ -14558,6 +14620,7 @@ function CustomerPage() {
           maxLength: 5,
           value: toDisplayTime(resInfoForm[timeKey]),
           onChange: (e) => updateRI(timeKey, e.target.value.slice(0, 4)),
+          onBlur: () => updateRI(timeKey, quarterTime(resInfoForm[timeKey])),
         }),
         React.createElement("select", {
           className: "aiControl aiControl--meridiem",
@@ -17582,6 +17645,11 @@ body, * {
 .resFormInput:focus{
   outline: 2px solid #42a4ff;
   outline-offset: -1px;
+}
+.resFormError{
+  font-size: 12px;
+  color: #c0392b;
+  font-weight: 500;
 }
 .resFormTextarea{
   resize: vertical;
