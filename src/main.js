@@ -8254,7 +8254,6 @@ function CompanyListsSections({ branches }) {
   // { at, text }: a refusal is shown in the section it happened in.
   const [error,  setError]  = React.useState(null);
   const [prices, setPrices] = React.useState([]);
-  const [driverPrices, setDriverPrices] = React.useState([]);
   const [deductibles,  setDeductibles]  = React.useState(null);
   const [overrides,    setOverrides]    = React.useState([]);
   const [ackVersions,  setAckVersions]  = React.useState([]);
@@ -8272,16 +8271,14 @@ function CompanyListsSections({ branches }) {
   const reload = React.useCallback(async () => {
     await loadCompanyLists(currentUser);
     const op = currentUser?.operatorId ?? null;
-    const [pp, odp, cd, dov, ack] = await Promise.all([
+    const [pp, cd, dov, ack] = await Promise.all([
       supabase.from("protection_prices").select("productId,vehicleClassId,sourceId,amount").eq("operatorId", op),
-      supabase.from("other_driver_prices").select("vehicleClassId,sourceId,amount").eq("operatorId", op),
       supabase.from("company_deductibles").select("collision,comprehensive").eq("operatorId", op).maybeSingle(),
       supabase.from("deductible_overrides").select("vehicleClassId,collision,comprehensive").eq("operatorId", op),
       supabase.from("contract_acknowledgements").select("id,version,body,createdAt").eq("operatorId", op)
         .order("version", { ascending: false }),
     ]);
     if (!pp.error)  setPrices(pp.data || []);
-    if (!odp.error) setDriverPrices(odp.data || []);
     if (!cd.error)  setDeductibles(cd.data || null);
     if (!dov.error) setOverrides(dov.data || []);
     if (!ack.error) setAckVersions(ack.data || []);
@@ -8674,19 +8671,6 @@ function CompanyListsSections({ branches }) {
                 }))))
         : el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
             "Switch a product on to set its prices.")),
-
-    // ── Other driver price ──
-    section("Other driver price",
-      "The price per day for each additional driver, for every vehicle class and source. A cell saves when you leave it. Blank means no charge.",
-      "otherDriver",
-      priceGrid("otherDriver",
-        (c, x) => {
-          const row = driverPrices.find((r) => r.vehicleClassId === c.id && r.sourceId === x.id);
-          return row ? Number(row.amount) : null;
-        },
-        (c, x, amount) => act("otherDriver", "set_other_driver_price", {
-          p_class_id: c.id, p_source_id: x.id, p_amount: amount,
-        }))),
 
     // ── Deductibles ──
     section("Deductibles",
@@ -10837,8 +10821,6 @@ const SETUP_ITEMS = {
                            text: "Pre-Rental Check, the two no-show texts and the return reminder. One not written is not sent." },
   protection_products:   { title: "Protection products", path: "/company",
                            text: "Damage waiver and the like, with prices. An optional one also needs its decline wording." },
-  other_driver_price:    { title: "Other driver price", path: "/company",
-                           text: "Without one, no other driver can be added at pickup." },
   deductibles:           { title: "Deductibles", path: "/company", text: "Shown on the contract." },
   gas:                   { title: "Fuel pricing for every branch", path: "/company",
                            text: "Without a markup and prices, gas is charged by hand on return." },
@@ -13894,10 +13876,7 @@ const DEFAULT_LINE_ITEMS = [
 // before this kept three fixed lines under these keys; those still load from
 // lineItems as they were saved and behave as they always did.
 const LEGACY_PROTECTION_KEYS = ["waiver", "roadside", "injury"];
-// The other driver's daily charge is treated the same way: an additional
-// charge the customer pays unless it is marked covered by the bill-to, priced
-// per day and refilled with the rental days.
-const isProtectionLine = (item) => !!item.protection || !!item.otherDriver || LEGACY_PROTECTION_KEYS.includes(item.key);
+const isProtectionLine = (item) => !!item.protection || LEGACY_PROTECTION_KEYS.includes(item.key);
 
 // Adds a line for each accepted product the charges do not have yet. A line
 // already there is left as staff last saved it.
@@ -13912,20 +13891,6 @@ function withAcceptedProtection(items, choices, days) {
       qty: days ? String(days) : "", qtyPlaceholder: "Days", coveredByBillTo: false,
     }));
   return added.length ? [...items, ...added] : items;
-}
-
-// Adds the other driver's line, at the daily charge complete_pickup recorded,
-// when the agreement has an other driver and the charges do not have the line
-// yet. A line already there is left as staff last saved it.
-function withOtherDriver(items, otherDriver, days) {
-  if (!otherDriver || typeof otherDriver !== "object") return items;
-  if (items.some((it) => it.key === "otherDriver")) return items;
-  const charge = otherDriver.dailyCharge;
-  return [...items, {
-    key: "otherDriver", label: otherDriver.name ? `Other driver: ${otherDriver.name}` : "Other driver",
-    otherDriver: true, applies: true, amount: charge != null ? String(charge) : "",
-    qty: days ? String(days) : "", qtyPlaceholder: "Days", coveredByBillTo: false,
-  }];
 }
 
 // What a charge line's quantity counts. Gas and mileage follow the company's
@@ -14202,8 +14167,8 @@ function CustomerPage() {
       const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
       return diff > 0 ? diff : 0;
     })();
-    setLineItems((prev) => withOtherDriver(
-      withAcceptedProtection(saved || prev, ra.protectionChoices, startDays), ra.otherDriver, startDays));
+    // An other driver is never charged for, so adds no line.
+    setLineItems((prev) => withAcceptedProtection(saved || prev, ra.protectionChoices, startDays));
     if (Array.isArray(ra.payments)) {
       setPayments(ra.payments);
     }
