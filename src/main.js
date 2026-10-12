@@ -1189,11 +1189,11 @@ function QuarterTimePicker({ hour, minute, meridiem, onChange, disabled, label, 
   const m = QUARTER_MINUTES.includes(minute) ? minute : "00";
   const mer = meridiem === "PM" ? "PM" : "AM";
   const sel = (aria, value, opts, change, off) => React.createElement("select", {
-    className, style: { width: "auto", ...(style || {}) }, value, disabled: !!disabled || !!off,
+    className, style: { width: "auto", flex: "0 0 auto", ...(style || {}) }, value, disabled: !!disabled || !!off,
     "aria-label": label ? `${label} ${aria}` : aria,
     onChange: (e) => change(e.target.value),
   }, opts.map(([v, text]) => React.createElement("option", { key: v, value: v }, text)));
-  return React.createElement("div", { style: { display: "flex", gap: "6px", alignItems: "center" } },
+  return React.createElement("div", { style: { display: "flex", flexWrap: "nowrap", gap: "6px", alignItems: "center" } },
     sel("hour", h, [["", "Hour"], ...Array.from({ length: 12 }, (_, i) => [String(i + 1), String(i + 1)])],
       (v) => onChange(v, m, mer)),
     sel("minutes", m, QUARTER_MINUTES.map((x) => [x, x]), (v) => onChange(h, v, mer), !h),
@@ -2866,23 +2866,25 @@ function ReservationsPage() {
               tf("Email", "email", "email@example.com")
             ),
             React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & Return"),
-            React.createElement("div", { className: "resFormRow" },
+            React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Pickup Date"),
                 React.createElement("input", { className: "resFormInput", type: "date", value: form.date, onChange: (e) => updateForm("date", e.target.value) }),
                 fieldErr("date")
               ),
-              React.createElement("label", { className: "resFormGroup" },
+              React.createElement("label", { className: "resFormGroup resFormGroup--time" },
                 React.createElement("span", { className: "resFormLabel" }, "Pickup Time"),
                 React.createElement(QuarterTimePicker, { ...time24Parts(form.time), className: "resFormInput", label: "Pickup time",
                   onChange: (h, m, mer) => updateForm("time", partsTime24(h, m, mer)) }),
                 fieldErr("time")
-              ),
+              )
+            ),
+            React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Date"),
                 React.createElement("input", { className: "resFormInput", type: "date", value: form.returnDate, onChange: (e) => updateForm("returnDate", e.target.value) })
               ),
-              React.createElement("label", { className: "resFormGroup" },
+              React.createElement("label", { className: "resFormGroup resFormGroup--time" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Time"),
                 React.createElement(QuarterTimePicker, { ...time24Parts(form.returnTime), className: "resFormInput", label: "Return time",
                   onChange: (h, m, mer) => updateForm("returnTime", partsTime24(h, m, mer)) })
@@ -3821,23 +3823,25 @@ function DashboardPage() {
               tf("Email", "email", "email@example.com")
             ),
             React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & Return"),
-            React.createElement("div", { className: "resFormRow" },
+            React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Pickup Date"),
                 React.createElement("input", { className: "resFormInput", type: "date", value: form.date, onChange: (e) => updateForm("date", e.target.value) }),
                 fieldErr("date")
               ),
-              React.createElement("label", { className: "resFormGroup" },
+              React.createElement("label", { className: "resFormGroup resFormGroup--time" },
                 React.createElement("span", { className: "resFormLabel" }, "Pickup Time"),
                 React.createElement(QuarterTimePicker, { ...time24Parts(form.time), className: "resFormInput", label: "Pickup time",
                   onChange: (h, m, mer) => updateForm("time", partsTime24(h, m, mer)) }),
                 fieldErr("time")
-              ),
+              )
+            ),
+            React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Date"),
                 React.createElement("input", { className: "resFormInput", type: "date", value: form.returnDate, onChange: (e) => updateForm("returnDate", e.target.value) })
               ),
-              React.createElement("label", { className: "resFormGroup" },
+              React.createElement("label", { className: "resFormGroup resFormGroup--time" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Time"),
                 React.createElement(QuarterTimePicker, { ...time24Parts(form.returnTime), className: "resFormInput", label: "Return time",
                   onChange: (h, m, mer) => updateForm("returnTime", partsTime24(h, m, mer)) })
@@ -14576,7 +14580,7 @@ function CustomerPage() {
   };
 
   const timePickerField = (label, timeKey, meridiemKey) =>
-    React.createElement("div", { className: "resFormGroup" },
+    React.createElement("div", { className: "resFormGroup resFormGroup--time" },
       React.createElement("span", { className: "resFormLabel" }, label),
       React.createElement(QuarterTimePicker, {
         ...digits12Parts(resInfoForm[timeKey], resInfoForm[meridiemKey]), className: "aiControl", label,
@@ -15163,7 +15167,7 @@ function CustomerPage() {
       emailField("Email",       "email")
     ),
     React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & Return"),
-    React.createElement("div", { className: "resFormRow" },
+    React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
       ra?.inspectedAt
         ? React.createElement("label", { className: "resFormGroup" },
             React.createElement("span", { className: "resFormLabel" }, "Pickup Date"),
@@ -15185,7 +15189,7 @@ function CustomerPage() {
           )
         : timePickerField("Pickup Time", "pickupTime", "pickupMeridiem")
     ),
-    React.createElement("div", { className: "resFormRow" },
+    React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
       datePickerField("Return Date", "returnDate"),
       timePickerField("Return Time", "returnTime", "returnMeridiem")
     ),
@@ -17547,6 +17551,15 @@ body, * {
 }
 .resFormGroup--full{
   flex: 1 1 100%;
+}
+/* A time picker's three dropdowns: as wide as they need, never narrower. */
+.resFormGroup--time{
+  flex: 0 0 auto;
+  min-width: max-content;
+}
+/* A date and its time sit side by side, and stack on a phone. */
+@media (max-width: 767px){
+  .resFormRow--dateTime{ flex-direction: column; }
 }
 .resFormLabel{
   font-size: 11px;
