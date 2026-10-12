@@ -665,7 +665,6 @@ Fleet table fields:
 - vehicleClass: {{VEHICLE_CLASSES}}
 - status: one of "Available", "Needs Cleaning", "Ready for Pickup", "PM", "Damaged", "On Rent", "Ready Returns"
 - "PM" means Preventative Maintenance (the vehicle is due for scheduled service).
-- winterTires: "Yes" or "No"
 - currentRenter (customer name or null), dueBack (ISO date or null), fileType (string or null)
 
 Fleet operation rules:
@@ -2662,7 +2661,7 @@ function ReservationsPage() {
     fieldErr(key)
   );
 
-  const cols = ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Winter tires", "Notes"];
+  const cols = ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Notes"];
 
   return React.createElement(
     "div",
@@ -2772,7 +2771,6 @@ function ReservationsPage() {
                       row.bookingChannel === "fleetr.ai" && React.createElement(BookedOnFleetrTag)
                     ),
                     React.createElement("td", { key: `${row.resCode}-vc` }, row.vehicleClass),
-                    React.createElement("td", { key: `${row.resCode}-wt` }, row.winterTires),
                     React.createElement("td", { key: `${row.resCode}-notes` },
                       React.createElement(NotesCell, {
                         noteId: row.resCode,
@@ -2816,11 +2814,7 @@ function ReservationsPage() {
             ),
             React.createElement("div", { className: "resFormRow" },
               tf("Phone", "phone", "(xxx) xxx-xxxx"),
-              tf("Email", "email", "email@example.com"),
-              React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Driver's licence"),
-                React.createElement("input", { className: "resFormInput", type: "text", placeholder: "Licence number", value: form.licenseNumber, onChange: (e) => updateForm("licenseNumber", e.target.value) })
-              )
+              tf("Email", "email", "email@example.com")
             ),
             React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & Return"),
             React.createElement("div", { className: "resFormRow" },
@@ -2858,13 +2852,6 @@ function ReservationsPage() {
                   vehicleClassOptions(form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
                 ),
                 fieldErr("vehicleClass")
-              ),
-              React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Winter Tires"),
-                React.createElement("select", { className: "resFormInput", value: form.winterTires, onChange: (e) => updateForm("winterTires", e.target.value) },
-                  React.createElement("option", { value: "Yes" }, "Yes"),
-                  React.createElement("option", { value: "No" }, "No")
-                )
               )
             ),
             React.createElement("div", { className: "cdetailSubGroup" }, "Rates & Billing"),
@@ -3024,7 +3011,6 @@ function NonDriveIntakeSection({ standalone }) {
       resCode: target.rescode,
       customer: target.customer,
       vehicleClass: defaultVehicleClass(),
-      winterTires: "Yes",
       preRentalCheck: "NOT Pre-Rental Check'd",
       notesLog: [{ author: actorName(currentUser), text: `From red car intake (${target.aiDate})` }],
     };
@@ -3544,15 +3530,14 @@ function DashboardPage() {
                         React.createElement("span", { className: "dashCard__chip" }, row.location)
                       ),
                       React.createElement("div", { className: "dashCard__meta" },
-                        React.createElement("span", { className: "dashCard__chip" }, row.vehicleClass),
-                        row.winterTires === "Yes" && React.createElement("span", { className: "dashCard__chip dashCard__chip--winter" }, "Winter tires")
+                        React.createElement("span", { className: "dashCard__chip" }, row.vehicleClass)
                       )
                     )
                   )
                 : React.createElement("table", { className: "dashboardTable" },
                   React.createElement("thead", null,
                     React.createElement("tr", null,
-                      ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Winter tires", "Notes"].map((col) =>
+                      ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Notes"].map((col) =>
                         React.createElement("th", { key: col }, col)
                       )
                     )
@@ -3566,7 +3551,6 @@ function DashboardPage() {
                         React.createElement("td", { key: `${row.resCode}-res`   }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
                         React.createElement("td", { key: `${row.resCode}-cust`  }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })),
                         React.createElement("td", { key: `${row.resCode}-vc`    }, row.vehicleClass),
-                        React.createElement("td", { key: `${row.resCode}-wt`    }, row.winterTires),
                         React.createElement("td", { key: `${row.resCode}-notes` },
                           React.createElement(NotesCell, {
                             noteId: row.resCode,
@@ -3651,8 +3635,7 @@ function DashboardPage() {
                     ),
                     React.createElement("div", { className: "dashCard__meta" },
                       v.vehicleClass && React.createElement("span", { className: "dashCard__chip" }, v.vehicleClass),
-                      showStatus && React.createElement("span", { className: `dashCard__chip ${fleetStatusClass(v.status)}` }, v.status),
-                      v.winterTires === "Yes" && React.createElement("span", { className: "dashCard__chip dashCard__chip--winter" }, "Winter tires")
+                      showStatus && React.createElement("span", { className: `dashCard__chip ${fleetStatusClass(v.status)}` }, v.status)
                     )
                   )
                 );
@@ -3662,22 +3645,21 @@ function DashboardPage() {
                   { className: "dashboardTable" },
                   React.createElement("thead", null,
                     React.createElement("tr", null,
-                      ["Plate", "Vehicle", "Class", ...(showStatus ? ["Status"] : []), "Winter Tires"].map((col) =>
+                      ["Plate", "Vehicle", "Class", ...(showStatus ? ["Status"] : [])].map((col) =>
                         React.createElement("th", { key: col }, col)
                       )
                     )
                   ),
                   React.createElement("tbody", null,
                     rows.length === 0
-                      ? React.createElement("tr", null, React.createElement("td", { colSpan: showStatus ? 5 : 4, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
+                      ? React.createElement("tr", null, React.createElement("td", { colSpan: showStatus ? 4 : 3, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
                       : rows.map((v) => {
                           const statusClass = fleetStatusClass(v.status);
                           return React.createElement("tr", { key: v.id },
                             React.createElement("td", null, React.createElement(PlateLink, { plate: v.plate })),
                             React.createElement("td", null, `${v.make} ${v.model}`),
                             React.createElement("td", null, v.vehicleClass),
-                            ...(showStatus ? [React.createElement("td", null, React.createElement("span", { className: statusClass }, v.status))] : []),
-                            React.createElement("td", null, v.winterTires || "")
+                            ...(showStatus ? [React.createElement("td", null, React.createElement("span", { className: statusClass }, v.status))] : [])
                           );
                         })
                   )
@@ -3800,11 +3782,7 @@ function DashboardPage() {
             ),
             React.createElement("div", { className: "resFormRow" },
               tf("Phone", "phone", "(xxx) xxx-xxxx"),
-              tf("Email", "email", "email@example.com"),
-              React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Driver's licence"),
-                React.createElement("input", { className: "resFormInput", type: "text", placeholder: "Licence number", value: form.licenseNumber, onChange: (e) => updateForm("licenseNumber", e.target.value) })
-              )
+              tf("Email", "email", "email@example.com")
             ),
             React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & Return"),
             React.createElement("div", { className: "resFormRow" },
@@ -3842,13 +3820,6 @@ function DashboardPage() {
                   vehicleClassOptions(form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
                 ),
                 fieldErr("vehicleClass")
-              ),
-              React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Winter Tires"),
-                React.createElement("select", { className: "resFormInput", value: form.winterTires, onChange: (e) => updateForm("winterTires", e.target.value) },
-                  React.createElement("option", { value: "Yes" }, "Yes"),
-                  React.createElement("option", { value: "No" }, "No")
-                )
               )
             ),
             React.createElement("div", { className: "cdetailSubGroup" }, "Rates & Billing"),
@@ -4747,14 +4718,14 @@ function FleetPage() {
                 { className: "dashboardTable" },
                 React.createElement("thead", null,
                   React.createElement("tr", null,
-                    ["Plate", "Vehicle", "Class", ...(showStatus ? ["Status"] : []), "Winter Tires"].map((col) =>
+                    ["Plate", "Vehicle", "Class", ...(showStatus ? ["Status"] : [])].map((col) =>
                       React.createElement("th", { key: col }, col)
                     )
                   )
                 ),
                 React.createElement("tbody", null,
                   rows.length === 0
-                    ? React.createElement("tr", null, React.createElement("td", { colSpan: showStatus ? 5 : 4, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
+                    ? React.createElement("tr", null, React.createElement("td", { colSpan: showStatus ? 4 : 3, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
                     : rows.map((v) => {
                         const statusClass =
                           v.status === "Available" ? "fleetStatus--available"
@@ -4767,8 +4738,7 @@ function FleetPage() {
                           React.createElement("td", null, React.createElement(PlateLink, { plate: v.plate })),
                           React.createElement("td", null, `${v.make} ${v.model}`),
                           React.createElement("td", null, v.vehicleClass),
-                          ...(showStatus ? [React.createElement("td", null, React.createElement("span", { className: statusClass }, v.status))] : []),
-                          React.createElement("td", null, v.winterTires || "")
+                          ...(showStatus ? [React.createElement("td", null, React.createElement("span", { className: statusClass }, v.status))] : [])
                         );
                       })
                 )
@@ -5666,10 +5636,6 @@ function FleetVehiclesPage() {
   const toggleFleetGroup = (key) =>
     setFleetGroupCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
 
-  // Winter Tires column: visible Nov 1 – Apr 30, hidden May 1 – Oct 31
-  const _month = new Date().getMonth(); // 0=Jan … 11=Dec
-  const showWinterTires = _month < 4 || _month >= 10;
-
   return React.createElement(
     "div", { className: "page" },
     React.createElement("h1", { className: "page__title" }, "Vehicles"),
@@ -5748,7 +5714,7 @@ function FleetVehiclesPage() {
           "div",
           { className: "dashboardSection__body" },
           (() => {
-            const colSpan = 4 + (showWinterTires ? 1 : 0); // Plate + Vehicle + Class + Status + optional Winter Tires
+            const colSpan = 4; // Plate + Vehicle + Class + Status
 
             const fleetTable = (rows) =>
               React.createElement(
@@ -5756,7 +5722,7 @@ function FleetVehiclesPage() {
                 { className: "dashboardTable" },
                 React.createElement("thead", null,
                   React.createElement("tr", null,
-                    ["Plate", "Vehicle", "Class", "Status", ...(showWinterTires ? ["Winter Tires"] : [])].map((col) =>
+                    ["Plate", "Vehicle", "Class", "Status"].map((col) =>
                       React.createElement("th", { key: col }, col)
                     )
                   )
@@ -5779,8 +5745,7 @@ function FleetVehiclesPage() {
                                 React.createElement("option", { key: s.value, value: s.value }, s.label)
                               )
                             )
-                          ),
-                          ...(showWinterTires ? [React.createElement("td", null, v.winterTires || "")] : [])
+                          )
                         )
                       )
                 )
@@ -11137,7 +11102,7 @@ function PreRentalCheckPage() {
                 React.createElement(
                   "tr",
                   null,
-                  ["Time", "Location", "Res Code", "Customer", "Vehicle Class", "Winter Tires", "Text Status"].map((col) =>
+                  ["Time", "Location", "Res Code", "Customer", "Vehicle Class", "Text Status"].map((col) =>
                     React.createElement("th", { key: col }, col)
                   )
                 )
@@ -11154,7 +11119,6 @@ function PreRentalCheckPage() {
                     React.createElement("td", { key: `${row.resCode}-2` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
                     React.createElement("td", { key: `${row.resCode}-3` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })),
                     React.createElement("td", { key: `${row.resCode}-4` }, row.vehicleClass),
-                    React.createElement("td", { key: `${row.resCode}-5` }, row.winterTires),
                     React.createElement("td", { key: `${row.resCode}-6` }, (() => {
                       const st = preRentalTextStatus(textNotes[row.resCode]);
                       return React.createElement("span", { className: "preRentalCheckDone", title: st.title }, st.label);
@@ -11247,7 +11211,7 @@ function ContractDriversList({ rentalAgreementId }) {
   return el("div", { style: { overflowX: "auto" } },
     el("table", { className: "dashboardTable", style: { minWidth: "760px" } },
       el("thead", null, el("tr", null,
-        ["", "Name", "Address", "Date of birth", "Licence", "Province", "Issued", "Expires"].map((h, i) => el("th", { key: i }, h)))),
+        ["", "Name", "Address", "Date of birth", "License", "Province", "Issued", "Expires"].map((h, i) => el("th", { key: i }, h)))),
       el("tbody", null, drivers.map((d, i) => el("tr", { key: i },
         el("td", { style: { fontWeight: 600 } }, i === 0 ? "Main" : "Other driver"),
         el("td", null, [d.firstName, d.lastName].filter(Boolean).join(" ") || "-"),
@@ -11325,7 +11289,7 @@ function NameMismatchWarning({ rentalAgreementId }) {
 
   if (flag.reviewedAt) {
     return el("p", { className: "closeRentalHint" },
-      `Licence name ${flag.licenceLastName} differs from the reservation's ${flag.reservationLastName}. ` +
+      `License name ${flag.licenceLastName} differs from the reservation's ${flag.reservationLastName}. ` +
       `Reviewed by ${flag.reviewedByName || "staff"}${flag.reviewedAt ? `, ${when(flag.reviewedAt)}` : ""}.`);
   }
 
@@ -11341,8 +11305,8 @@ function NameMismatchWarning({ rentalAgreementId }) {
   };
 
   return el("div", { className: "closeRentalWarning", role: "alert", style: { marginBottom: "16px" } },
-    el("div", { style: { fontWeight: 700, marginBottom: "4px" } }, "The driver's licence name does not match the reservation"),
-    el("div", null, `Licence last name: ${flag.licenceLastName}`),
+    el("div", { style: { fontWeight: 700, marginBottom: "4px" } }, "The driver's license name does not match the reservation"),
+    el("div", null, `License last name: ${flag.licenceLastName}`),
     el("div", null, `Reservation last name: ${flag.reservationLastName}`),
     el("div", { style: { margin: "6px 0 8px" } },
       "Check the customer's identity before the rental goes further, then mark it reviewed."),
@@ -13928,7 +13892,6 @@ function SwitchOutPage() {
 
 const DEFAULT_LINE_ITEMS = [
   { key: "vehicle", label: "Vehicle Cost",     applies: true,  amount: "", qty: "", qtyPlaceholder: "Days"   },
-  { key: "winter",  label: "Winter Tires",     applies: false, amount: "", qty: "", qtyPlaceholder: "Days", customerPay: false },
   { key: "gas",     label: "Gas",              applies: false, amount: "", qty: "", qtyPlaceholder: "Litres" },
   { key: "mileage", label: "Mileage",          applies: false, amount: "", qty: "", qtyPlaceholder: "Miles"  },
 ];
@@ -14073,7 +14036,7 @@ function CustomerPage() {
   const [payments,    setPayments]    = React.useState([]);
 
   const [ratesForm, setRatesForm] = React.useState({
-    source: "", vehicleClass: "", winterTires: "No",
+    source: "", vehicleClass: "",
   });
   // Picking a source or a vehicle class refills the daily rate from the
   // company's rates, blank when there is none for the pair. Only a change
@@ -14194,7 +14157,7 @@ function CustomerPage() {
       ? `${localRecord.source} — ${localRecord.sourceDetail}`
       : (localRecord.source || "");
     // One vehicle class for the whole reservation: the one it was booked with.
-    setRatesForm({ source: srcStr, vehicleClass: localRecord.vehicleClass || "", winterTires: localRecord.winterTires || "No" });
+    setRatesForm({ source: srcStr, vehicleClass: localRecord.vehicleClass || "" });
     setBillToForm({
       adjusterName:  localRecord.adjusterName  || "",
       fileNumber:    localRecord.fileNumber    || "",
@@ -14229,8 +14192,9 @@ function CustomerPage() {
       const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
       return diff > 0 ? diff : 0;
     })();
-    // An other driver is never charged for, so adds no line.
-    setLineItems((prev) => withAcceptedProtection(saved || prev, ra.protectionChoices, startDays));
+    // An other driver is never charged for, so adds no line. Winter tires are
+    // not charged for either: a line saved for them before is left off.
+    setLineItems((prev) => withAcceptedProtection((saved || prev).filter((it) => it.key !== "winter"), ra.protectionChoices, startDays));
     if (Array.isArray(ra.payments)) {
       setPayments(ra.payments);
     }
@@ -14243,18 +14207,11 @@ function CustomerPage() {
     const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
     const days = diff > 0 ? diff : 0;
     setLineItems((prev) => prev.map((item) =>
-      ["vehicle", "winter"].includes(item.key) || isProtectionLine(item)
+      item.key === "vehicle" || isProtectionLine(item)
         ? { ...item, qty: String(days) }
         : item
     ));
   }, [resInfoForm.pickupDate, billEndDate]);
-
-  React.useEffect(() => {
-    const checked = ratesForm.winterTires === "Yes";
-    setLineItems((prev) => prev.map((item) =>
-      item.key === "winter" ? { ...item, applies: checked } : item
-    ));
-  }, [ratesForm.winterTires]);
 
   React.useEffect(() => {
     setLineItems((prev) => prev.map((item) =>
@@ -14291,7 +14248,6 @@ function CustomerPage() {
         sourceDetail:    srcParts[1] || "",
         vehicleClass:    ratesForm.vehicleClass,
         dailyRate:       billToForm.dailyRate,
-        winterTires:     ratesForm.winterTires,
         vehicleYear:     customerVehicleForm.year,
         vehicleMake:     customerVehicleForm.make,
         vehicleModel:    customerVehicleForm.model,
@@ -14865,18 +14821,7 @@ function CustomerPage() {
       twoLevelPicker("Source",        "source",       sourceCatsFor(ratesForm.source), "Select source"),
       twoLevelPicker("Vehicle Class", "vehicleClass",
         Object.fromEntries(vehicleClassOptions(ratesForm.vehicleClass).map((c) => [c, []])),
-        "Select class"),
-      React.createElement("label", { className: "resFormGroup" },
-        React.createElement("span", { className: "resFormLabel" }, "Winter Tires"),
-        React.createElement("select", {
-          className: "resFormInput",
-          value: ratesForm.winterTires,
-          onChange: (e) => updateRates("winterTires", e.target.value),
-        },
-          React.createElement("option", { value: "No" },  "No"),
-          React.createElement("option", { value: "Yes" }, "Yes")
-        )
-      )
+        "Select class")
     ),
     React.createElement("div", { className: "resFormRow" },
       btDollar("Daily Rate", "dailyRate")
@@ -14913,14 +14858,8 @@ function CustomerPage() {
       ? (item.coveredByBillTo ? billedToName : name)
       : billedToName;
 
-  const billToItems   = lineItems.filter((it) =>
-    it.key === "winter" ? !it.customerPay
-    : !isProtectionLine(it) || it.coveredByBillTo
-  );
-  const customerItems = lineItems.filter((it) =>
-    it.key === "winter" ? it.customerPay
-    : isProtectionLine(it) && !it.coveredByBillTo
-  );
+  const billToItems   = lineItems.filter((it) => !isProtectionLine(it) || it.coveredByBillTo);
+  const customerItems = lineItems.filter((it) => isProtectionLine(it) && !it.coveredByBillTo);
   const billToTotal   = billToItems.reduce((s, it) => s + (it.applies ? lineItemAmt(it) : 0), 0);
   const customerTotal = customerItems.reduce((s, it) => s + (it.applies ? lineItemAmt(it) : 0), 0);
   // Each tax on a subtotal, to the cent. When someone else pays, each side is
@@ -14970,31 +14909,19 @@ function CustomerPage() {
         })
       ),
       React.createElement("td", { className: "chargesTd chargesTd--label" },
-        item.key === "winter" && showCoverToggle
+        isProtectionLine(item) && showCoverToggle
           ? React.createElement("div", { className: "chargesItemWrap" },
               React.createElement("span", null, item.label),
               React.createElement("label", { className: "chargesCoverLabel" },
                 React.createElement("input", {
                   type: "checkbox", className: "chargesCoverCheck",
-                  checked: item.customerPay || false,
-                  onChange: (e) => updateLineItem(item.key, "customerPay", e.target.checked),
+                  checked: item.coveredByBillTo || false,
+                  onChange: (e) => updateLineItem(item.key, "coveredByBillTo", e.target.checked),
                 }),
-                "Customer Pay"
+                "Covered by Bill-To"
               )
             )
-          : isProtectionLine(item) && showCoverToggle
-            ? React.createElement("div", { className: "chargesItemWrap" },
-                React.createElement("span", null, item.label),
-                React.createElement("label", { className: "chargesCoverLabel" },
-                  React.createElement("input", {
-                    type: "checkbox", className: "chargesCoverCheck",
-                    checked: item.coveredByBillTo || false,
-                    onChange: (e) => updateLineItem(item.key, "coveredByBillTo", e.target.checked),
-                  }),
-                  "Covered by Bill-To"
-                )
-              )
-            : item.label
+          : item.label
       ),
       React.createElement("td", { className: "chargesTd chargesTd--qty" },
         React.createElement("div", { className: "chargesQtyWrap" },
@@ -17899,10 +17826,6 @@ body, * {
     padding: 2px 8px;
     font-size: 12px;
     font-weight: 500;
-  }
-  .dashCard__chip--winter{
-    background: #e0f2fe;
-    color: #0369a1;
   }
   /* Full width on a phone, where they are the first thing under the title. */
   .dashboardCtaRow{ flex-direction: column; }
