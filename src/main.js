@@ -1178,6 +1178,55 @@ function quarterTime(value) {
   return m[1] + String(Math.floor(Number(m[2]) / 15) * 15).padStart(2, "0") + m[3];
 }
 
+// The time picker used wherever a time is picked by hand: hour 1 to 12, minutes
+// 00, 15, 30 or 45, and AM or PM, each its own dropdown. A blank hour means no
+// time; the minutes and AM/PM wait for an hour. A saved time on other minutes
+// shows rounded down to the quarter hour.
+const QUARTER_MINUTES = ["00", "15", "30", "45"];
+
+function QuarterTimePicker({ hour, minute, meridiem, onChange, disabled, label, className, style }) {
+  const h = String(hour || "");
+  const m = QUARTER_MINUTES.includes(minute) ? minute : "00";
+  const mer = meridiem === "PM" ? "PM" : "AM";
+  const sel = (aria, value, opts, change, off) => React.createElement("select", {
+    className, style: { width: "auto", ...(style || {}) }, value, disabled: !!disabled || !!off,
+    "aria-label": label ? `${label} ${aria}` : aria,
+    onChange: (e) => change(e.target.value),
+  }, opts.map(([v, text]) => React.createElement("option", { key: v, value: v }, text)));
+  return React.createElement("div", { style: { display: "flex", gap: "6px", alignItems: "center" } },
+    sel("hour", h, [["", "Hour"], ...Array.from({ length: 12 }, (_, i) => [String(i + 1), String(i + 1)])],
+      (v) => onChange(v, m, mer)),
+    sel("minutes", m, QUARTER_MINUTES.map((x) => [x, x]), (v) => onChange(h, v, mer), !h),
+    sel("AM or PM", mer, [["AM", "AM"], ["PM", "PM"]], (v) => onChange(h, m, v), !h));
+}
+
+// "14:07" (24-hour, as a time field stores it) to and from the picker's parts.
+function time24Parts(value) {
+  const t = /^(\d{1,2}):(\d{2})/.exec(String(value || ""));
+  if (!t) return { hour: "", minute: "00", meridiem: "AM" };
+  const h24 = Number(t[1]);
+  return { hour: String(h24 % 12 || 12), minute: QUARTER_MINUTES[Math.min(3, Math.floor(Number(t[2]) / 15))],
+           meridiem: h24 >= 12 ? "PM" : "AM" };
+}
+function partsTime24(hour, minute, meridiem) {
+  if (!hour) return "";
+  const h24 = (Number(hour) % 12) + (meridiem === "PM" ? 12 : 0);
+  return `${String(h24).padStart(2, "0")}:${minute}`;
+}
+
+// A 12-hour time kept as digits ("0930") with its AM/PM beside it, to and
+// from the picker's parts.
+function digits12Parts(value, meridiem) {
+  const n = normalizeTo12h(value, meridiem || "AM");
+  const d = n.digits;
+  if (!d) return { hour: "", minute: "00", meridiem: n.meridiem };
+  // "9" or "09" is an hour alone; "930" and "0930" end in their minutes.
+  const h = Number(d.length <= 2 ? d : d.slice(0, -2));
+  const mm = d.length <= 2 ? 0 : Number(d.slice(-2));
+  return { hour: String(h % 12 || 12), minute: QUARTER_MINUTES[Math.min(3, Math.floor(mm / 15))], meridiem: n.meridiem };
+}
+const partsDigits12 = (hour, minute) => (hour ? `${String(hour).padStart(2, "0")}${minute}` : "");
+
 function toDisplayTime(digits) {
   const value = String(digits || "").replace(/\D/g, "").slice(0, 4);
   if (!value) return "";
@@ -2825,7 +2874,8 @@ function ReservationsPage() {
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Pickup Time"),
-                React.createElement("input", { className: "resFormInput", type: "time", step: 900, value: form.time, onChange: (e) => updateForm("time", e.target.value), onBlur: (e) => updateForm("time", quarterTime(e.target.value)) }),
+                React.createElement(QuarterTimePicker, { ...time24Parts(form.time), className: "resFormInput", label: "Pickup time",
+                  onChange: (h, m, mer) => updateForm("time", partsTime24(h, m, mer)) }),
                 fieldErr("time")
               ),
               React.createElement("label", { className: "resFormGroup" },
@@ -2834,7 +2884,8 @@ function ReservationsPage() {
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Time"),
-                React.createElement("input", { className: "resFormInput", type: "time", step: 900, value: form.returnTime, onChange: (e) => updateForm("returnTime", e.target.value), onBlur: (e) => updateForm("returnTime", quarterTime(e.target.value)) })
+                React.createElement(QuarterTimePicker, { ...time24Parts(form.returnTime), className: "resFormInput", label: "Return time",
+                  onChange: (h, m, mer) => updateForm("returnTime", partsTime24(h, m, mer)) })
               )
             ),
             React.createElement("div", { className: "cdetailSubGroup" }, "Reservation Details"),
@@ -3207,29 +3258,14 @@ function NonDriveIntakeSection({ standalone }) {
                               );
                             })()
                         ),
-                        React.createElement("input", {
-                          className: "aiControl aiControl--time",
-                          type: "text",
-                          inputMode: "numeric",
-                          value: toDisplayTime(row.aiTime),
-                          onChange: (event) =>
-                            handleAiFieldUpdate(row.id, "aiTime", event.target.value.replace(/\D/g, "").slice(0, 4)),
-                          onBlur: () => handleAiFieldUpdate(row.id, "aiTime", quarterTime(row.aiTime)),
-                          placeholder: "HH:MM",
-                          maxLength: 5,
-                        }),
-                        React.createElement(
-                          "select",
-                          {
-                            className: "aiControl aiControl--meridiem",
-                            value: row.aiMeridiem,
-                            onChange: (event) => handleAiFieldUpdate(row.id, "aiMeridiem", event.target.value),
+                        React.createElement(QuarterTimePicker, {
+                          ...digits12Parts(row.aiTime, row.aiMeridiem), className: "aiControl", label: "Time",
+                          onChange: (h, m, mer) => {
+                            const digits = partsDigits12(h, m);
+                            if (digits !== (row.aiTime || "")) handleAiFieldUpdate(row.id, "aiTime", digits);
+                            if (mer !== row.aiMeridiem) handleAiFieldUpdate(row.id, "aiMeridiem", mer);
                           },
-                          [
-                            React.createElement("option", { key: "AM", value: "AM" }, "AM"),
-                            React.createElement("option", { key: "PM", value: "PM" }, "PM"),
-                          ]
-                        ),
+                        }),
                         React.createElement(
                           "button",
                           {
@@ -3793,7 +3829,8 @@ function DashboardPage() {
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Pickup Time"),
-                React.createElement("input", { className: "resFormInput", type: "time", step: 900, value: form.time, onChange: (e) => updateForm("time", e.target.value), onBlur: (e) => updateForm("time", quarterTime(e.target.value)) }),
+                React.createElement(QuarterTimePicker, { ...time24Parts(form.time), className: "resFormInput", label: "Pickup time",
+                  onChange: (h, m, mer) => updateForm("time", partsTime24(h, m, mer)) }),
                 fieldErr("time")
               ),
               React.createElement("label", { className: "resFormGroup" },
@@ -3802,7 +3839,8 @@ function DashboardPage() {
               ),
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Time"),
-                React.createElement("input", { className: "resFormInput", type: "time", step: 900, value: form.returnTime, onChange: (e) => updateForm("returnTime", e.target.value), onBlur: (e) => updateForm("returnTime", quarterTime(e.target.value)) })
+                React.createElement(QuarterTimePicker, { ...time24Parts(form.returnTime), className: "resFormInput", label: "Return time",
+                  onChange: (h, m, mer) => updateForm("returnTime", partsTime24(h, m, mer)) })
               )
             ),
             React.createElement("div", { className: "cdetailSubGroup" }, "Reservation Details"),
@@ -7692,26 +7730,22 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Hours"),
     el("div", { style: { display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", marginBottom: "10px" } },
       el("span", { style: { width: "130px" } }, "Same hours every day"),
-      el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, step: 900, value: draft.sameOpen, disabled: !!busy,
-        "aria-label": "Opening time for every day", onChange: (e) => set("sameOpen", e.target.value),
-        onBlur: (e) => set("sameOpen", quarterTime(e.target.value)) }),
+      el(QuarterTimePicker, { ...time24Parts(draft.sameOpen), className: "resFormInput", disabled: !!busy,
+        label: "Opening time for every day", onChange: (h, m, mer) => set("sameOpen", partsTime24(h, m, mer)) }),
       el("span", null, "to"),
-      el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, step: 900, value: draft.sameClose, disabled: !!busy,
-        "aria-label": "Closing time for every day", onChange: (e) => set("sameClose", e.target.value),
-        onBlur: (e) => set("sameClose", quarterTime(e.target.value)) }),
+      el(QuarterTimePicker, { ...time24Parts(draft.sameClose), className: "resFormInput", disabled: !!busy,
+        label: "Closing time for every day", onChange: (h, m, mer) => set("sameClose", partsTime24(h, m, mer)) }),
       el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, disabled: !!busy,
         onClick: fillEveryDay }, "Fill every day")),
     LISTING_DAYS.map(([k, name]) => {
       const d = draft.hours[k];
       return el("div", { key: k, style: { display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", marginBottom: "6px" } },
         el("span", { style: { width: "130px" } }, name),
-        el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, step: 900, value: d.open, disabled: !!busy,
-          "aria-label": `${name} opening time`, onChange: (e) => setDay(k, "open", e.target.value),
-          onBlur: (e) => setDay(k, "open", quarterTime(e.target.value)) }),
+        el(QuarterTimePicker, { ...time24Parts(d.open), className: "resFormInput", disabled: !!busy,
+          label: `${name} opening time`, onChange: (h, m, mer) => setDay(k, "open", partsTime24(h, m, mer)) }),
         el("span", null, "to"),
-        el("input", { type: "time", className: "resFormInput", style: { width: "auto" }, step: 900, value: d.close, disabled: !!busy,
-          "aria-label": `${name} closing time`, onChange: (e) => setDay(k, "close", e.target.value),
-          onBlur: (e) => setDay(k, "close", quarterTime(e.target.value)) }));
+        el(QuarterTimePicker, { ...time24Parts(d.close), className: "resFormInput", disabled: !!busy,
+          label: `${name} closing time`, onChange: (h, m, mer) => setDay(k, "close", partsTime24(h, m, mer)) }));
     }),
     el("p", { className: "closeRentalHint" }, "Leave a day blank if the branch is closed that day."),
 
@@ -10664,10 +10698,6 @@ function FleetrCommandBar() {
                       if (editableData[mk]) return editableData[mk];
                       return normalizeTo12h(editableData[tk], "AM").meridiem;
                     };
-                    const timeDisplayFor = (tk) => {
-                      const { digits } = normalizeTo12h(editableData[tk], meridiemValFor(tk));
-                      return toDisplayTime(digits);
-                    };
                     // Convert camelCase / lowercase key to "Title Case With Spaces"
                     const fieldLabel = (k) => {
                       // Insert space before each uppercase letter, then title-case each word
@@ -10694,31 +10724,11 @@ function FleetrCommandBar() {
                               "label",
                               { key, className: "fleetrCommandBar__editLabel" },
                               React.createElement("span", { className: "fleetrCommandBar__editKey" }, fieldLabel(key)),
-                              React.createElement(
-                                "div",
-                                { style: { display: "flex", gap: "4px", flex: 1 } },
-                                React.createElement("input", {
-                                  type: "text",
-                                  inputMode: "numeric",
-                                  placeholder: "H:MM",
-                                  className: "fleetrCommandBar__editInput",
-                                  style: { maxWidth: "72px" },
-                                  value: timeDisplayFor(key),
-                                  onChange: (e) => setEditableData((prev) => ({ ...prev, [key]: e.target.value.slice(0, 4) })),
-                                  onBlur: () => setEditableData((prev) => ({ ...prev, [key]: quarterTime(prev[key]) })),
-                                }),
-                                React.createElement(
-                                  "select",
-                                  {
-                                    className: "fleetrCommandBar__editInput",
-                                    style: { maxWidth: "62px", paddingLeft: "6px" },
-                                    value: meridiemValFor(key),
-                                    onChange: (e) => setEditableData((prev) => ({ ...prev, [mk]: e.target.value })),
-                                  },
-                                  React.createElement("option", { value: "AM" }, "AM"),
-                                  React.createElement("option", { value: "PM" }, "PM")
-                                )
-                              )
+                              React.createElement(QuarterTimePicker, {
+                                ...digits12Parts(val, meridiemValFor(key)), className: "fleetrCommandBar__editInput",
+                                label: fieldLabel(key),
+                                onChange: (h, m, mer) => setEditableData((prev) => ({ ...prev, [key]: partsDigits12(h, m), [mk]: mer })),
+                              })
                             );
                           }
                           return React.createElement(
@@ -14568,25 +14578,10 @@ function CustomerPage() {
   const timePickerField = (label, timeKey, meridiemKey) =>
     React.createElement("div", { className: "resFormGroup" },
       React.createElement("span", { className: "resFormLabel" }, label),
-      React.createElement("div", { style: { display: "flex", gap: "6px", alignItems: "center" } },
-        React.createElement("input", {
-          className: "aiControl aiControl--time",
-          type: "text", inputMode: "numeric",
-          placeholder: "HH:MM",
-          maxLength: 5,
-          value: toDisplayTime(resInfoForm[timeKey]),
-          onChange: (e) => updateRI(timeKey, e.target.value.slice(0, 4)),
-          onBlur: () => updateRI(timeKey, quarterTime(resInfoForm[timeKey])),
-        }),
-        React.createElement("select", {
-          className: "aiControl aiControl--meridiem",
-          value: resInfoForm[meridiemKey],
-          onChange: (e) => updateRI(meridiemKey, e.target.value),
-        },
-          React.createElement("option", { value: "AM" }, "AM"),
-          React.createElement("option", { value: "PM" }, "PM")
-        )
-      )
+      React.createElement(QuarterTimePicker, {
+        ...digits12Parts(resInfoForm[timeKey], resInfoForm[meridiemKey]), className: "aiControl", label,
+        onChange: (h, m, mer) => setResInfoForm((p) => ({ ...p, [timeKey]: partsDigits12(h, m), [meridiemKey]: mer })),
+      })
     );
 
   const twoLevelPicker = (label, valueKey, cats, placeholder) => {
