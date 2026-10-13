@@ -6907,52 +6907,6 @@ const STEP_STATE_WORDS = { done: "Done", skipped: "Skipped", todo: "Not started"
 // the section. Only the outermost CompanySection reads it.
 const CompanySectionFlat = React.createContext(false);
 
-// Before launch: how far setup has got, as a bar and a count, then every
-// section as a step with its number, a check mark when done, a skipped mark
-// when skipped, and the current step ringed. Steps run across on a wide screen
-// and down on a narrow one, joined by a line that fills in as they are done.
-// Back and Next walk through the steps, opening each one.
-function CompanyStepper({ steps, stateOf, current, onPick }) {
-  const el = React.createElement;
-  const [at, setAt] = React.useState(current);
-  React.useEffect(() => { setAt(current); }, [current]);
-  const counted = steps.filter((st) => st.key !== "launch");
-  const done = counted.filter((st) => stateOf(st) === "done").length;
-  const skipped = counted.filter((st) => stateOf(st) === "skipped").length;
-  const pct = counted.length ? Math.round(((done + skipped) / counted.length) * 100) : 0;
-  const atIndex = Math.max(0, steps.findIndex((st) => st.key === at));
-  const go = (i) => { const st = steps[i]; if (!st) return; setAt(st.key); onPick(st.key); };
-  return el("nav", { className: "companyStepper", "aria-label": "Setup steps" },
-    el("div", { className: "companyStepper__top" },
-      el("div", null,
-        el("div", { className: "companyStepper__label" }, "Setup progress"),
-        el("div", { className: "companyStepper__count" },
-          `${done} of ${counted.length} done`, skipped ? `, ${skipped} skipped` : "")),
-      el("span", { className: "companyStepper__pct" }, `${pct}%`)),
-    el("div", { className: "companyStepper__bar", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": pct, "aria-label": "Setup progress" },
-      el("span", { className: "companyStepper__fill", style: { width: `${pct}%` } })),
-    el("ol", { className: "companyStepper__list", style: { "--steps": steps.length } }, steps.map((st, i) => {
-      const state = stateOf(st);
-      const isCurrent = st.key === current;
-      return el("li", { key: st.key, className: `companyStepper__item companyStepper__item--${state}${isCurrent ? " companyStepper__item--current" : ""}` },
-        el("button", {
-          type: "button", onClick: () => go(i),
-          className: `companyStepper__step companyStepper__step--${state}${isCurrent ? " companyStepper__step--current" : ""}${st.key === at ? " companyStepper__step--at" : ""}`,
-          "aria-current": isCurrent ? "step" : undefined,
-          "aria-label": `${i + 1}. ${st.title}: ${isCurrent ? "current step" : STEP_STATE_WORDS[state]}`,
-        },
-          el("span", { className: "companyStepper__mark", "aria-hidden": "true" },
-            state === "done" ? "\u2713" : state === "skipped" ? "\u2013" : String(i + 1)),
-          el("span", { className: "companyStepper__text" },
-            el("span", { className: "companyStepper__name" }, st.title),
-            el("span", { className: "companyStepper__state" }, isCurrent ? "Up next" : STEP_STATE_WORDS[state]))));
-    })),
-    el("div", { className: "companyStepper__nav" },
-      el("button", { type: "button", className: "companyStepper__navBtn", disabled: atIndex === 0, onClick: () => go(atIndex - 1) }, "Back"),
-      el("span", { className: "companyStepper__navAt" }, `Step ${atIndex + 1} of ${steps.length}`),
-      el("button", { type: "button", className: "companyStepper__navBtn companyStepper__navBtn--next", disabled: atIndex >= steps.length - 1, onClick: () => go(atIndex + 1) }, "Next")));
-}
-
 function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, busy, showState, children }) {
   const el = React.createElement;
   return el("section", { id, className: `companyStep companyStep--${stepKey}${open ? " companyStep--open" : ""}${current ? " companyStep--current" : ""}` },
@@ -7103,15 +7057,6 @@ function CompanyPage() {
   const nextKey = !setup || launched ? null
     : (COMPANY_STEPS.find((st) => st.key !== "launch" && stepState(st) === "todo") || { key: "launch" }).key;
 
-  // A step clicked in the stepper opens, and is scrolled to.
-  const pickStep = (key) => {
-    setOpenSteps((o) => ({ ...o, [key]: true }));
-    setTimeout(() => {
-      const node = document.getElementById(`company-step-${key}`);
-      if (node && node.scrollIntoView) node.scrollIntoView({ behavior: "smooth", block: "start" });
-    }, 0);
-  };
-
   const setSkip = async (step, skipped) => {
     setStepBusy(true);
     const { data, error: err } = await supabase.rpc("set_setup_skip", { p_step: step, p_skipped: skipped });
@@ -7260,7 +7205,6 @@ function CompanyPage() {
     error  && el("div", { className: "loginError" }, error),
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
     !setup && el("div", { className: "resvEmpty" }, "Loading…"),
-    setup && !launched && el(CompanyStepper, { steps: COMPANY_STEPS, stateOf: stepState, current: nextKey, onPick: pickStep }),
     setup && el(CompanyListsSections, {
       branches, onChanged: changed, openSections: false,
       layout: (parts) => el(React.Fragment, null, COMPANY_STEPS.map((st, i) => el(CompanyStep, {
@@ -16649,7 +16593,7 @@ body, * {
 .setupItem__title a{
   color: inherit;
 }
-/* ── Company page: setup stepper and section cards ── */
+/* ── Company page: section cards ── */
 /* On :root too, so a Company-style section looks the same on any page. */
 :root, .companySetup{
   --cs-paper: #F9F9F7;
@@ -16669,64 +16613,6 @@ body, * {
   letter-spacing: -0.02em;
   color: var(--cs-ink);
 }
-.companyStepper{
-  background: var(--cs-card);
-  border: 1px solid var(--cs-line);
-  border-radius: 14px;
-  padding: 14px 12px;
-  margin-bottom: 20px;
-  overflow-x: auto;
-}
-.companyStepper__list{
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  gap: 4px;
-  min-width: max-content;
-}
-.companyStepper__item{ display: flex; align-items: center; }
-.companyStepper__item + .companyStepper__item::before{
-  content: "";
-  width: 18px;
-  height: 1px;
-  background: var(--cs-line);
-  margin-right: 4px;
-}
-.companyStepper__step{
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px 6px 6px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  background: none;
-  color: var(--cs-muted);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.companyStepper__step:hover{ background: var(--cs-paper); color: var(--cs-ink); }
-.companyStepper__step:focus-visible{ outline: 2px solid var(--cs-terra); outline-offset: 2px; }
-.companyStepper__mark{
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  display: inline-grid;
-  place-items: center;
-  font-size: 12px;
-  font-weight: 700;
-  border: 1px solid var(--cs-line);
-  background: var(--cs-paper);
-  color: var(--cs-ink);
-}
-.companyStepper__step--done{ color: var(--cs-ink); }
-.companyStepper__step--done .companyStepper__mark{ background: var(--cs-ink); border-color: var(--cs-ink); color: var(--cs-paper); }
-.companyStepper__step--skipped .companyStepper__mark{ border-style: dashed; color: var(--cs-muted); }
-.companyStepper__step--current{ background: var(--cs-terra-soft); border-color: var(--cs-terra); color: var(--cs-ink); font-weight: 600; }
-.companyStepper__step--current .companyStepper__mark{ background: var(--cs-terra); border-color: var(--cs-terra); color: var(--cs-ink); }
 .companyStep{
   background: var(--cs-card);
   border: 1px solid var(--cs-line);
@@ -19827,69 +19713,6 @@ body, * {
   .statCard__listSide{ border-left: none; padding-left: 0; border-top: 1px solid rgba(31, 30, 29, 0.12); padding-top: 16px; }
 }
 
-/* ── Company setup stepper ─────────────────────────────────────────────── */
-.companyStepper{ padding: 18px 18px 14px; overflow: visible; }
-.companyStepper__top{ display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-.companyStepper__label{ font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--cs-muted); }
-.companyStepper__count{ font-size: 15px; font-weight: 600; color: var(--cs-ink); margin-top: 2px; }
-.companyStepper__pct{ font-size: 24px; font-weight: 800; letter-spacing: -0.02em; color: var(--cs-ink); font-variant-numeric: tabular-nums; }
-.companyStepper__bar{ height: 8px; border-radius: 999px; background: #F1F0EC; overflow: hidden; margin-bottom: 18px; }
-.companyStepper__fill{ display: block; height: 100%; border-radius: 999px; background: var(--cs-terra); transition: width 600ms cubic-bezier(.2,.8,.2,1); }
-.companyStepper__list{ display: grid; grid-template-columns: repeat(var(--steps, 8), minmax(0, 1fr)); gap: 0; min-width: 0; }
-.companyStepper__item{ position: relative; display: block; min-width: 0; }
-.companyStepper__item + .companyStepper__item::before{
-  content: ""; position: absolute; top: 16px; left: calc(-50% + 22px); right: calc(50% + 22px);
-  width: auto; height: 2px; margin: 0; border-radius: 2px; background: var(--cs-line);
-  transition: background 300ms ease;
-}
-.companyStepper__item--done + .companyStepper__item::before,
-.companyStepper__item--skipped + .companyStepper__item::before{ background: var(--cs-ink); }
-.companyStepper__step{
-  display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%;
-  padding: 0 4px 6px; border: none; border-radius: 10px; background: none;
-  white-space: normal; text-align: center;
-}
-.companyStepper__step:hover{ background: none; }
-.companyStepper__step:hover .companyStepper__mark{ border-color: var(--cs-terra); }
-.companyStepper__step--current{ background: none; border: none; }
-.companyStepper__mark{ width: 34px; height: 34px; font-size: 13px; transition: background 200ms ease, border-color 200ms ease, box-shadow 200ms ease; }
-.companyStepper__step--current .companyStepper__mark{ animation: stepperRing 2.2s ease-out infinite; }
-.companyStepper__step--at:not(.companyStepper__step--current) .companyStepper__mark{ box-shadow: 0 0 0 3px var(--cs-terra-soft); border-color: var(--cs-terra); }
-.companyStepper__text{ display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.companyStepper__name{ font-size: 12.5px; font-weight: 600; line-height: 1.3; color: var(--cs-ink); }
-.companyStepper__step--todo:not(.companyStepper__step--current) .companyStepper__name{ color: var(--cs-muted); font-weight: 500; }
-.companyStepper__state{ font-size: 11px; color: var(--cs-muted); }
-.companyStepper__step--current .companyStepper__state{ color: #C9603D; font-weight: 700; }
-.companyStepper__nav{
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--cs-line);
-}
-.companyStepper__navAt{ font-size: 12.5px; color: var(--cs-muted); }
-.companyStepper__navBtn{
-  font: inherit; font-size: 13px; font-weight: 600; padding: 7px 16px; border-radius: 8px; cursor: pointer;
-  background: var(--cs-card); color: var(--cs-ink); border: 1px solid var(--cs-line);
-}
-.companyStepper__navBtn:hover:not(:disabled){ border-color: var(--cs-terra); background: var(--cs-terra-soft); }
-.companyStepper__navBtn--next{ background: var(--cs-terra); border-color: var(--cs-terra); }
-.companyStepper__navBtn--next:hover:not(:disabled){ background: #EE7550; border-color: #EE7550; }
-.companyStepper__navBtn:disabled{ opacity: 0.4; cursor: default; }
-.companyStepper__navBtn:focus-visible{ outline: 2px solid var(--cs-terra); outline-offset: 2px; }
-@keyframes stepperRing{
-  0%   { box-shadow: 0 0 0 0 rgba(244, 132, 95, 0.45); }
-  70%  { box-shadow: 0 0 0 9px rgba(244, 132, 95, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(244, 132, 95, 0); }
-}
-/* Narrow: the steps run down, joined by a line on the left. */
-@media (max-width: 900px){
-  .companyStepper__list{ grid-template-columns: minmax(0, 1fr); }
-  .companyStepper__item + .companyStepper__item::before{
-    top: -10px; bottom: auto; left: 22px; right: auto; width: 2px; height: 20px;
-  }
-  .companyStepper__item + .companyStepper__item{ margin-top: 10px; }
-  .companyStepper__step{ flex-direction: row; align-items: center; gap: 12px; padding: 4px 6px; text-align: left; }
-  .companyStepper__mark{ flex: none; }
-  .companyStepper__name{ font-size: 14px; }
-}
 
 /* ── Lists: tables in cards, statuses as pills ─────────────────────────── */
 .dashboardSection{
@@ -20042,11 +19865,10 @@ body, * {
 @keyframes mobileNavSlide{ from{ transform: translateX(-100%); } to{ transform: none; } }
 
 @media (prefers-reduced-motion: reduce){
-  .companyStepper__step--current .companyStepper__mark,
   .fleetStatus--onRent::before, .rentalAgreementBadge--open::before, .rentalAgreementBadge--customerReturn::before,
   .mobileNavOverlay, .mobileNavDrawer{ animation: none; }
   .weekBars__bar, .returnsCurve__line, .returnsCurve__area, .nextPickups__item, .nav__marker,
-  .statCard--lift, .companyStepper__fill, .app, .sidebar{ transition: none; }
+  .statCard--lift, .app, .sidebar{ transition: none; }
 }
 
 /* ── Every dropdown in the Company style ───────────────────────────────── */
