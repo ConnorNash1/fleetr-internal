@@ -575,12 +575,12 @@ function requestReservationConfirmation(resCode) {
 // suffix is what the worker adds after the wording, as it will look in the
 // preview: on the confirmation the reservation code, the app link and the
 // cancel link; on the Pre-Rental Check the app link and the cancel link; on
-// the return reminder the fuel note and the app link; on the 2 hour no-show
-// text the app link; nothing on the next-day no-show text. The tokens are
-// stand-ins of the real length.
+// the return reminder the fuel note and the app link; on both no-show texts
+// the change pickup time link. The tokens are stand-ins of the real length.
 const TEXT_SAMPLE_LINK = " Cancel: https://app.fleetr.ai/#c=XXXXXXXXXXXXXXXXXXXXXX";
 const TEXT_SAMPLE_APP_LINK = " App: https://app.fleetr.ai/#a=XXXXXXXXXXXXXXXXXXXXXX";
 const TEXT_SAMPLE_CODE = " Reservation code: ABC 123 456.";
+const TEXT_SAMPLE_RESCHEDULE_LINK = " Change pickup time: https://app.fleetr.ai/#r=XXXXXXXXXXXXXXXXXXXXXX";
 const TEXT_SAMPLE_RETURN_APP_LINK = " When you return, open the app to check the vehicle in: https://app.fleetr.ai/#a=XXXXXXXXXXXXXXXXXXXXXX";
 const TEXT_TEMPLATE_KINDS = [
   { kind: "confirmation", title: "Reservation confirmation", when: "Sent when a reservation is created.",
@@ -588,22 +588,22 @@ const TEXT_TEMPLATE_KINDS = [
   { kind: "pre_rental", title: "Pre-Rental Check", when: "Sent the day before pickup.",
     suffix: TEXT_SAMPLE_APP_LINK + TEXT_SAMPLE_LINK, suffixNote: "the app link and the cancel link" },
   { kind: "no_show_2hr", title: "No-show, after 2 hours", when: "Sent 2 hours after a pickup time when the customer has not arrived. [time] is the pickup time.",
-    suffix: TEXT_SAMPLE_APP_LINK, suffixNote: "the app link" },
+    suffix: TEXT_SAMPLE_RESCHEDULE_LINK, suffixNote: "the change pickup time link" },
   { kind: "no_show_24hr", title: "No-show, the next day", when: "Sent a day after the 2 hour no-show text, if the customer still has not arrived.",
-    suffix: "", suffixNote: "" },
+    suffix: TEXT_SAMPLE_RESCHEDULE_LINK, suffixNote: "the change pickup time link" },
   { kind: "return_reminder", title: "Return reminder", when: "Sent the day before an open rental is due back. [date] and [time] are when it is due back. When the fuel level at pickup is known, a note asking for it back at that level is added after the wording.",
     suffix: " Return fuel at Full to avoid a charge." + TEXT_SAMPLE_RETURN_APP_LINK, suffixNote: "the fuel note and the app link" },
 ];
-const TEXT_PLACEHOLDERS = ["[first name]", "[company]", "[location]", "[date]", "[time]", "[branch phone]"];
+const TEXT_PLACEHOLDERS = ["[first name]", "[company]", "[location]", "[date]", "[time]"];
 const TEXT_TEMPLATE_MAX = 240;
 // The insert buttons above a text box, in the order a text usually reads.
 const TEXT_PLACEHOLDER_BUTTONS = [
   ["First name", "[first name]"], ["Company", "[company]"], ["Location", "[location]"],
-  ["Date", "[date]"], ["Time", "[time]"], ["Branch phone", "[branch phone]"],
+  ["Date", "[date]"], ["Time", "[time]"],
 ];
 
 const fillTextTemplate = (template, values) =>
-  String(template).replace(/\[(first name|company|location|date|time|branch phone)\]/gi,
+  String(template).replace(/\[(first name|company|location|date|time)\]/gi,
     (m) => String(values[m.toLowerCase()] ?? ""));
 
 // The characters a plain text message can carry. One character outside this
@@ -1986,10 +1986,13 @@ function AppProvider({ children, currentUser, signOut }) {
       // crypto.randomUUID() rather than a custom string, and the same id must be
       // reused in local state so later updates/deletes (eq("id", ...)) match the
       // real row. no_shows.rescode is also lowercase, like ndi_rows.rescode.
-      const loadTodayIso = new Date().toISOString().slice(0, 10);
+      // Moved once the day after the pickup day has ended too: until then the
+      // customer can still change the pickup time from the next-day no-show
+      // text (customer_reschedule.sql), though the vehicle is already free.
+      const loadYesterdayIso = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
       const existingNsCodes = new Set(nsData.map((ns) => ns.rescode));
       const overdueRes = resData.filter(
-        (r) => r.date < loadTodayIso &&
+        (r) => r.date < loadYesterdayIso &&
                r.pickupStatus === "Pending arrival" &&
                r.rentalAgreementStatus === "reservation"
       );
@@ -2477,6 +2480,46 @@ function BookedOnFleetrTag({ meta }) {
   }, "Booked on fleetr.ai");
 }
 
+// Shown on a reservation whose customer changed its times in the customer
+// app (customer_reschedule.sql, fleetr-infra).
+function ChangedByCustomerTag({ meta }) {
+  return React.createElement("span", {
+    className: `rentalAgreementBadge rentalAgreementBadge--neutral${meta ? " rentalAgreementBadge--meta" : ""}`,
+    style: meta ? null : { marginLeft: "6px" },
+  }, "Changed by customer");
+}
+
+// Each change the customer made, newest first, in the branch's local time.
+function CustomerChangesNote({ resCode }) {
+  const [changes, setChanges] = React.useState([]);
+  React.useEffect(() => {
+    if (!resCode) { setChanges([]); return undefined; }
+    let live = true;
+    supabase.from("reservation_changes").select("changedAt,oldPickup,oldReturn,newPickup,newReturn")
+      .eq("resCode", resCode).order("changedAt", { ascending: false })
+      .then(({ data, error }) => {
+        if (!live) return;
+        if (error) console.warn("reservation_changes could not be loaded:", error.message);
+        setChanges(!error && Array.isArray(data) ? data : []);
+      });
+    return () => { live = false; };
+  }, [resCode]);
+  if (!changes.length) return null;
+  // "2026-10-20T10:00:00" is the branch's local time: shown as written.
+  const when = (ts) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(ts || ""));
+    if (!m) return "unknown";
+    const h = Number(m[4]);
+    const day = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+      .toLocaleDateString("en-CA", { timeZone: "UTC", month: "short", day: "numeric" });
+    return `${day}, ${h % 12 || 12}:${m[5]} ${h < 12 ? "AM" : "PM"}`;
+  };
+  return React.createElement("div", { className: "closeRentalHint", style: { marginBottom: "12px" } },
+    changes.map((c, i) => React.createElement("div", { key: i },
+      `Changed by the customer on ${new Date(c.changedAt).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}: `
+      + `pickup was ${when(c.oldPickup)}, return was ${when(c.oldReturn)}.`)));
+}
+
 // ─── PlateLink ────────────────────────────────────────────────────────────────
 
 function PlateLink({ plate, label, style }) {
@@ -2818,7 +2861,8 @@ function ReservationsPage() {
                     React.createElement("td", { key: `${row.resCode}-res` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
                     React.createElement("td", { key: `${row.resCode}-cust` },
                       React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer }),
-                      row.bookingChannel === "fleetr.ai" && React.createElement(BookedOnFleetrTag)
+                      row.bookingChannel === "fleetr.ai" && React.createElement(BookedOnFleetrTag),
+                      row.customerChangedAt && React.createElement(ChangedByCustomerTag)
                     ),
                     React.createElement("td", { key: `${row.resCode}-vc` }, row.vehicleClass),
                     React.createElement("td", { key: `${row.resCode}-notes` },
@@ -7100,7 +7144,7 @@ function CompanyPage() {
     }
   };
   const STEP_INTROS = {
-    branch: "Your branch's address places its map pin, which sets its local time. Its phone number goes in the no-show texts. The units come from its country, and a sales tax is suggested from its province. Confirm the tax with Save to finish.",
+    branch: "Your branch's address places its map pin, which sets its local time. The units come from its country, and a sales tax is suggested from its province. Confirm the tax with Save to finish.",
     vehicle_classes: "Tick the vehicle classes you rent.",
     rates: "A daily rate for each class you picked.",
     vehicles: "Add at least one vehicle at your branch.",
@@ -7298,7 +7342,6 @@ const LISTING_REASONS = {
   not_found:     "That branch is not part of this company.",
   bad_listing:   "That did not work. Try again.",
   bad_time_zone: "That time zone is not recognised.",
-  bad_phone:     "Enter the branch's phone number with its area code, for example (709) 555-0123.",
   bad_value:     "One of the values is out of range. Check the numbers and try again.",
   network:       "Could not reach the server.",
 };
@@ -7574,7 +7617,7 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
   return React.createElement(
     CompanySection, { title: part === "address" ? "Address" : "Listing", style: { marginTop: "24px" }, defaultOpen },
     React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, part === "address"
-      ? "Each branch's full address and phone number. The address places the map pin, which sets the branch's local time, and shows on fleetr.ai and in customer texts."
+      ? "Each branch's full address. It places the map pin, which sets the branch's local time, and shows on fleetr.ai and in customer texts."
       : "What fleetr.ai shows for each branch, and the rules for booking it online. A branch is hidden until Show on fleetr.ai is on. Photos and logos are public. The address comes from Branch."),
     loadError && React.createElement("div", { className: "loginError" }, loadError),
     !listings && !loadError && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Loading…"),
@@ -7595,7 +7638,6 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     return {
       description: (l && l.description) || "",
       ...Object.fromEntries(BRANCH_ADDRESS_PARTS.map(([k]) => [k, (l && l[k]) || ""])),
-      phone:       (l && l.phone) || "",
       latitude:    num(l && l.latitude),
       longitude:   num(l && l.longitude),
       // Every day starts blank. A day left blank is closed.
@@ -7725,15 +7767,6 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       if (v.length > max) { setError(`Keep the ${label.toLowerCase()} to ${max} characters.`); setNotice(""); return; }
       address[k] = v || null;
     }
-    // Shown to customers in the no-show texts, so written the same way every
-    // time: (709) 555-0123.
-    let phone = null;
-    if (showAddress) {
-      const digits = draft.phone.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
-      if (draft.phone.trim() === "") { setError("The branch's phone number is needed."); setNotice(""); return; }
-      if (!/^[0-9 ()+.-]+$/.test(draft.phone.trim()) || digits.length !== 10) { setError(LISTING_REASONS.bad_phone); setNotice(""); return; }
-      phone = `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
-    }
 
     // The pin follows the address: placed from it when the address is new or
     // changed, or when there is no pin yet. A pin moved by hand afterwards
@@ -7759,7 +7792,7 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       }
     }
 
-    const addressFields = { ...address, phone, latitude, longitude };
+    const addressFields = { ...address, latitude, longitude };
     const listingFields = {
       description: description || null,
       hours,
@@ -7918,11 +7951,7 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
             onPlace: (a, b) => setDraft((p) => ({ ...p, latitude: a.toFixed(6), longitude: b.toFixed(6) })),
           }),
           el("p", { className: "closeRentalHint" }, "Only if the pin looks wrong: drag it to the right spot, then save."))
-      : el("p", { className: "closeRentalHint" }, "The map pin is placed from the address when you save."),
-    el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Phone number"),
-    el("p", { className: "closeRentalHint" },
-      "Needed before the company can launch. Customers are asked to call it in the no-show texts."),
-    field("Phone number", input("phone", { maxLength: 30, placeholder: "(709) 555-0123", inputMode: "tel", autoComplete: "tel", style: { width: "180px" } }))),
+      : el("p", { className: "closeRentalHint" }, "The map pin is placed from the address when you save.")),
 
     showListing && el(React.Fragment, null,
     el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Hours"),
@@ -9509,7 +9538,7 @@ function CustomerTextsSettings() {
   const { logAudit } = React.useContext(AppContext);
   const [saved,   setSaved]   = React.useState({});   // kind -> the company's own wording, if any
   const [drafts,  setDrafts]  = React.useState({});   // kind -> what is in the box
-  const [names,   setNames]   = React.useState({ company: null, location: null, phone: null });
+  const [names,   setNames]   = React.useState({ company: null, location: null });
   const [loaded,  setLoaded]  = React.useState(false);
   const [loadErr, setLoadErr] = React.useState(false);
   const [busy,    setBusy]    = React.useState(null);
@@ -9520,11 +9549,10 @@ function CustomerTextsSettings() {
   React.useEffect(() => {
     let live = true;
     (async () => {
-      const [tpl, op, loc, tel] = await Promise.all([
+      const [tpl, op, loc] = await Promise.all([
         supabase.from("message_templates").select("kind, body"),
         supabase.from("operators").select("name").limit(1),
         supabase.from("branch_listings").select("street").not("street", "is", null).limit(1),
-        supabase.from("branch_listings").select("phone").not("phone", "is", null).limit(1),
       ]);
       if (!live) return;
       if (tpl.error) { console.warn("message_templates load failed:", tpl.error); setLoadErr(true); }
@@ -9532,7 +9560,7 @@ function CustomerTextsSettings() {
       setSaved(own);
       setDrafts(Object.fromEntries(TEXT_TEMPLATE_KINDS.map((k) => [k.kind, own[k.kind] ?? ""])));
       // [location] is a branch's street address in the texts themselves.
-      setNames({ company: op.data?.[0]?.name || null, location: loc.data?.[0]?.street || null, phone: tel.data?.[0]?.phone || null });
+      setNames({ company: op.data?.[0]?.name || null, location: loc.data?.[0]?.street || null });
       setLoaded(true);
     })();
     return () => { live = false; };
@@ -9546,7 +9574,6 @@ function CustomerTextsSettings() {
     "[location]":   names.location || "12 Water St",
     "[date]":       "Oct 6",
     "[time]":       "10:00 AM",
-    "[branch phone]": names.phone || "(709) 555-0123",
   };
 
   const save = async (k, body) => {
@@ -9597,7 +9624,7 @@ function CustomerTextsSettings() {
       "The wording of the texts your customers receive, for every branch of the company. ",
       "Use these placeholders and each customer's own details are filled in: ",
       React.createElement("strong", null, TEXT_PLACEHOLDERS.join(", ")),
-      ". The system adds the rest automatically, and it cannot be removed or edited: the reservation code to the confirmation; the customer's personal app link to the confirmation, Pre-Rental Check, 2 hour no-show text and return reminder; and a link to cancel to the confirmation and Pre-Rental Check. The links' tokens in the preview are stand-ins of the real length, so the count is the real count."),
+      ". The system adds the rest automatically, and it cannot be removed or edited: the reservation code to the confirmation; the customer's personal app link to the confirmation, Pre-Rental Check and return reminder; a link to change the pickup time to the no-show texts; and a link to cancel to the confirmation and Pre-Rental Check. The links' tokens in the preview are stand-ins of the real length, so the count is the real count."),
     loadErr && React.createElement("div", { className: "closeRentalWarning" },
       "The saved wording could not be loaded. Saving here will replace whatever is saved."),
 
@@ -11131,7 +11158,7 @@ function SetupBar() {
 // returns with the item: the branches, classes or codes still missing it.
 const SETUP_ITEMS = {
   branch:                { title: "Branch", path: null,
-                           text: "Every open branch's full address, map pin and phone number, and its sales tax confirmed." },
+                           text: "Every open branch's full address and map pin, and its sales tax confirmed." },
   vehicle_classes:       { title: "Vehicle classes", path: null, text: "At least one, ticked from the standard list." },
   rates:                 { title: "Rates", path: null, text: "A daily rate for every vehicle class." },
   vehicles:              { title: "Vehicles", path: null, text: "At least one at the default branch, of one of your vehicle classes." },
@@ -15443,9 +15470,11 @@ function CustomerPage() {
         const cls = raBadgeClass(raStatus, { meta: true });
         return React.createElement("span", { className: cls }, statusLabel(raStatus));
       })(),
-      localRecord?.bookingChannel === "fleetr.ai" && React.createElement(BookedOnFleetrTag, { meta: true })
+      localRecord?.bookingChannel === "fleetr.ai" && React.createElement(BookedOnFleetrTag, { meta: true }),
+      localRecord?.customerChangedAt && React.createElement(ChangedByCustomerTag, { meta: true })
     ),
     React.createElement("div", { className: "page__titleUnderline" }),
+    localRecord?.customerChangedAt && React.createElement(CustomerChangesNote, { resCode }),
     ra?.id && React.createElement(NameMismatchWarning, { rentalAgreementId: ra.id }),
     makeSection("resInfo",      "Reservation Information", resInfoBody),
     makeSection("vehicles",     "Vehicles",               vehiclesBody),
