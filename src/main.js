@@ -7516,7 +7516,12 @@ function loadMapLibs() {
 // boundaries and water in a soft cool grey-blue. If the style cannot be
 // fetched, MapLibre is given its address and draws it unchanged.
 const POSITRON_URL = "https://tiles.openfreemap.org/styles/positron";
-const MAP_WATER = "#DDE3E8";
+// A warm neutral, in the Company page's palette, rather than blue.
+const MAP_WATER = "#E4DFD7";
+// The branch's pin: terracotta, with a dark outline and a light centre.
+const MAP_PIN_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="40" viewBox="0 0 30 40" aria-hidden="true">'
+  + '<path d="M15 1.5C7.5 1.5 1.5 7.4 1.5 14.8c0 9.6 11.6 22 12.1 22.5a1.9 1.9 0 0 0 2.8 0c.5-.5 12.1-12.9 12.1-22.5C28.5 7.4 22.5 1.5 15 1.5z" fill="#F4845F" stroke="#1F1E1D" stroke-width="1.5"/>'
+  + '<circle cx="15" cy="14.5" r="5" fill="#F9F9F7"/></svg>';
 const MAP_CREDITS = '<a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> '
   + '<a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">&copy; OpenMapTiles</a> Data from '
   + '<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>';
@@ -7566,7 +7571,8 @@ function ListingMapPin({ lat, lng, disabled, onPlace }) {
       const style = await positronStyle();
       if (cancelled || mapRef.current !== map) return;
       L.maplibreGL({ style, renderWorldCopies: false, attribution: MAP_CREDITS }).addTo(map);
-      markerRef.current = L.marker([lat, lng], { draggable: !disabled, keyboard: false }).addTo(map);
+      const icon = L.divIcon({ html: MAP_PIN_SVG, className: "branchMapPin", iconSize: [30, 40], iconAnchor: [15, 39] });
+      markerRef.current = L.marker([lat, lng], { icon, draggable: !disabled, keyboard: false }).addTo(map);
       markerRef.current.on("dragend", (ev) => {
         const p = ev.target.getLatLng();
         placeRef.current(p.lat, p.lng);
@@ -16746,6 +16752,13 @@ body, * {
 }
 .companyStep--business .dashboardTable tbody tr:nth-child(even){ background: transparent; }
 .companyStep--business .dashboardTable tbody tr:hover{ background: var(--cs-paper); }
+/* The map: a terracotta pin, and the map's own links and buttons in the palette. */
+.branchMapPin{ background: none; border: none; }
+.branchMapPin svg{ display: block; filter: drop-shadow(0 2px 3px rgba(31, 30, 29, 0.28)); }
+.companySetup .leaflet-container{ border: 1px solid var(--cs-line); border-radius: 10px; font-family: 'Inter', sans-serif; }
+.companySetup .leaflet-container a{ color: #C9603D; }
+.companySetup .leaflet-bar a{ color: var(--cs-ink); }
+.companySetup .leaflet-bar a:hover{ background: var(--cs-terra-soft); }
 @media (max-width: 767px){
   .companyStep--business .companyStep__body{ padding: 12px 12px 14px; }
   .companyStep--business .companyStep__body .dashboardSection{ padding: 0 14px; }
