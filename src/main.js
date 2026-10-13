@@ -16621,43 +16621,32 @@ body, * {
 .companyStep__state--skipped{ border-style: dashed; }
 .companyStep--current .companyStep__state--todo{ background: var(--cs-terra-soft); border-color: var(--cs-terra); color: var(--cs-ink); }
 .companyStep__chevron{ flex: 0 0 auto; color: var(--cs-muted); font-size: 14px; }
-.companyStep__body{ padding: 4px 20px 20px; border-top: 1px solid var(--cs-line); }
-.companyStep__body .dashboardSection{
-  border: 1px solid var(--cs-line);
-  border-radius: 10px;
-  background: var(--cs-paper);
-  padding: 0 14px 4px;
-  margin-top: 14px !important;
-  overflow: visible;
-}
-.companyStep__body .dashboardSection > h2{ font-size: 15px; font-weight: 600; margin: 0; padding: 12px 0; }
-.companySetup .loginBtn,
-.companySetup .resModalSubmit{ background: var(--cs-terra); color: var(--cs-ink); }
-.companySetup .loginBtn:hover:not(:disabled),
-.companySetup .resModalSubmit:hover:not(:disabled){ background: #EE7550; }
-.companySetup .resFormInput:focus{ border-color: var(--cs-terra); box-shadow: 0 0 0 1px var(--cs-terra); outline: none; }
-/* Business details: each part a card of its own, in the same palette. */
-.companyStep--business .companyStep__body{
+.companyStep__body{ border-top: 1px solid var(--cs-line); }
+/* Every Company section: each part a card of its own, in the same palette. */
+.companyStep__body{ background: var(--cs-paper); padding: 16px 20px 20px; }
+/* A section of dropdown parts lays them out as evenly spaced cards. */
+.companyStep__body:has(> .dashboardSection){
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
-  padding: 16px 20px 20px;
-  background: var(--cs-paper);
 }
-.companyStep--business .companyStep__body .dashboardSection{
-  margin: 0 !important;
+.companyStep__body .dashboardSection{
+  margin: 12px 0 0 !important;
   padding: 0 18px;
   background: var(--cs-card);
   border: 1px solid var(--cs-line);
   border-radius: 12px;
+  overflow: visible;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-.companyStep--business .companyStep__body .dashboardSection:has(> h2[aria-expanded="true"]){
+.companyStep__body > .dashboardSection,
+.companyStep__body .dashboardSection:first-child{ margin-top: 0 !important; }
+.companyStep__body .dashboardSection:not(:has(> h2[aria-expanded="false"])){ padding-bottom: 20px; }
+.companyStep__body .dashboardSection:has(> h2[aria-expanded="true"]){
   border-color: var(--cs-terra);
   box-shadow: inset 3px 0 0 var(--cs-terra);
-  padding-bottom: 20px;
 }
-.companyStep--business .companyStep__body .dashboardSection > h2{
+.companyStep__body .dashboardSection > h2{
   display: flex;
   align-items: center;
   margin: 0;
@@ -16667,13 +16656,13 @@ body, * {
   letter-spacing: -0.01em;
   color: var(--cs-ink);
 }
-.companyStep--business .companyStep__body .dashboardSection > h2:hover{ color: #C9603D; }
-.companyStep--business .companyStep__body .dashboardSection > h2:focus-visible{ outline: 2px solid var(--cs-terra); outline-offset: 2px; border-radius: 6px; }
-.companyStep--business .companyStep__body .dashboardSection > h2[aria-expanded="true"]{
+.companyStep__body .dashboardSection > h2[role="button"]:hover{ color: #C9603D; }
+.companyStep__body .dashboardSection > h2:focus-visible{ outline: 2px solid var(--cs-terra); outline-offset: 2px; border-radius: 6px; }
+.companyStep__body .dashboardSection > h2:not([aria-expanded="false"]){
   border-bottom: 1px solid var(--cs-line);
   margin-bottom: 16px;
 }
-.companyStep--business .dashboardSection p{
+.companyStep__body p{
   margin: 0 0 16px;
   max-width: 72ch;
   font-size: 13.5px;
@@ -16681,9 +16670,10 @@ body, * {
   color: var(--cs-muted);
   opacity: 1 !important;
 }
-.companyStep--business .gasSettingSubhead{
+.companyStep__body .gasSettingSubhead,
+.companyStep__body .fleetSubLabel{
   margin: 20px 0 10px;
-  padding-left: 9px;
+  padding: 0 0 0 9px;
   border-left: 3px solid var(--cs-terra);
   font-size: 11px;
   font-weight: 700;
@@ -16691,10 +16681,9 @@ body, * {
   text-transform: uppercase;
   color: var(--cs-ink);
 }
-.companyStep--business .gasSettingSubhead:first-child{ margin-top: 4px; }
-.companyStep--business .resFormLabel{ color: var(--cs-muted); }
-.companyStep--business label{ margin-bottom: 4px; }
-.companyStep--business .resFormInput{
+.companyStep__body .gasSettingSubhead:first-child{ margin-top: 4px; }
+.companyStep__body .resFormLabel{ color: var(--cs-muted); }
+.companyStep__body .resFormInput{
   border: 1px solid var(--cs-line);
   border-radius: 8px;
   padding: 9px 11px;
@@ -16702,38 +16691,67 @@ body, * {
   background: var(--cs-card);
   color: var(--cs-ink);
 }
-.companyStep--business .closeRentalHint{ color: var(--cs-muted); line-height: 1.5; }
-.companyStep--business .closeRentalActions{ margin-top: 20px; }
-.companyStep--business .loginError{
+.companySetup .resFormInput:focus,
+.companySetup .addVehicleInput:focus,
+.companySetup .tankSizeInput:focus{ border-color: var(--cs-terra); box-shadow: 0 0 0 1px var(--cs-terra); outline: none; }
+.companySetup input[type="checkbox"],
+.companySetup input[type="radio"]{ accent-color: var(--cs-terra); }
+.companyStep__body a{ color: #C9603D; text-underline-offset: 2px; }
+.companyStep__body .closeRentalHint{ color: var(--cs-muted); line-height: 1.5; }
+.companyStep__body .closeRentalActions{ margin-top: 20px; }
+.companyStep__body:has(> .dashboardSection) > .closeRentalActions{ margin-top: 0; }
+.companyStep__body .loginError{
   text-align: left;
   margin-bottom: 14px;
   padding: 10px 12px;
   border-radius: 8px;
   background: rgba(192, 57, 43, 0.08);
 }
-.companyStep--business .loginBtn,
-.companyStep--business .resModalSubmit{
+.companyStep__body .loginBtn,
+.companyStep__body .resModalSubmit,
+.companyStep__body .addVehicleBtn{
+  background: var(--cs-terra);
+  color: var(--cs-ink);
   border-radius: 8px;
   font-weight: 600;
   padding: 9px 16px;
 }
-.companyStep--business .loginBtn:disabled,
-.companyStep--business .resModalSubmit:disabled{ opacity: 0.45; cursor: not-allowed; }
+.companyStep__body .loginBtn:hover:not(:disabled),
+.companyStep__body .resModalSubmit:hover:not(:disabled),
+.companyStep__body .addVehicleBtn:hover:not(:disabled){ background: #EE7550; }
+.companyStep__body .loginBtn:disabled,
+.companyStep__body .resModalSubmit:disabled,
+.companyStep__body .addVehicleBtn:disabled{ opacity: 0.45; cursor: not-allowed; }
+.companyStep__body .resModalCancel{
+  background: var(--cs-card);
+  color: var(--cs-ink);
+  border: 1px solid var(--cs-line);
+  border-radius: 8px;
+  font-weight: 600;
+}
+.companyStep__body .resModalCancel:hover:not(:disabled){ border-color: var(--cs-terra); background: var(--cs-terra-soft); }
 /* Buttons inside a table row are the quieter kind. */
-.companyStep--business td .loginBtn{
+.companyStep__body td .loginBtn{
   background: var(--cs-card);
   color: var(--cs-ink);
   border: 1px solid var(--cs-line);
 }
-.companyStep--business td .loginBtn:hover:not(:disabled){ background: var(--cs-terra-soft); border-color: var(--cs-terra); }
-.companyStep--business .dashboardTable{
+.companyStep__body td .loginBtn:hover:not(:disabled){ background: var(--cs-terra-soft); border-color: var(--cs-terra); }
+/* The join code under Staff: its tint is set inline, in blue, for the Staff page. */
+.companyStep__body code{ background: var(--cs-terra-soft) !important; color: var(--cs-ink); }
+.companyStep__body .unitToggleBtn--active{ background: var(--cs-terra); color: var(--cs-ink); }
+.companyStep__body .unitToggleBtn--active:hover{ background: #EE7550; }
+.companyStep__body .aiSubTab:hover{ border-color: var(--cs-terra); color: var(--cs-ink); }
+.companyStep__body .aiSubTab--active{ border-color: var(--cs-terra); background: var(--cs-terra-soft); color: var(--cs-ink); }
+.companyStep__body .dashboardTable{
   border: 1px solid var(--cs-line);
   border-radius: 10px;
   border-collapse: separate;
   border-spacing: 0;
   overflow: hidden;
+  background: var(--cs-card);
 }
-.companyStep--business .dashboardTable th{
+.companyStep__body .dashboardTable th{
   background: var(--cs-paper);
   color: var(--cs-muted);
   font-size: 11px;
@@ -16743,15 +16761,16 @@ body, * {
   padding: 11px 14px;
   border-bottom: 1px solid var(--cs-line);
 }
-.companyStep--business .dashboardTable td{
+.companyStep__body .dashboardTable td{
   color: var(--cs-ink);
   font-size: 13.5px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--cs-line);
   vertical-align: middle;
 }
-.companyStep--business .dashboardTable tbody tr:nth-child(even){ background: transparent; }
-.companyStep--business .dashboardTable tbody tr:hover{ background: var(--cs-paper); }
+.companyStep__body .dashboardTable tbody tr:last-child td{ border-bottom: none; }
+.companyStep__body .dashboardTable tbody tr:nth-child(even){ background: transparent; }
+.companyStep__body .dashboardTable tbody tr:hover{ background: var(--cs-paper); }
 /* The map: a terracotta pin, and the map's own links and buttons in the palette. */
 .branchMapPin{ background: none; border: none; }
 .branchMapPin svg{ display: block; filter: drop-shadow(0 2px 3px rgba(31, 30, 29, 0.28)); }
@@ -16760,8 +16779,8 @@ body, * {
 .companySetup .leaflet-bar a{ color: var(--cs-ink); }
 .companySetup .leaflet-bar a:hover{ background: var(--cs-terra-soft); }
 @media (max-width: 767px){
-  .companyStep--business .companyStep__body{ padding: 12px 12px 14px; }
-  .companyStep--business .companyStep__body .dashboardSection{ padding: 0 14px; }
+  .companyStep__body{ padding: 12px 12px 14px; }
+  .companyStep__body .dashboardSection{ padding-left: 14px; padding-right: 14px; }
   .companyStep__head{ padding: 14px 14px; gap: 10px; }
   .companyStep__body{ padding: 4px 14px 16px; }
   .companyStep__title{ font-size: 15px; }
