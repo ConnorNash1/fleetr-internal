@@ -6867,9 +6867,9 @@ function CompanyStepper({ steps, stateOf, current, onPick }) {
     })));
 }
 
-function CompanyStep({ id, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, busy, showState, children }) {
+function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, busy, showState, children }) {
   const el = React.createElement;
-  return el("section", { id, className: `companyStep${open ? " companyStep--open" : ""}${current ? " companyStep--current" : ""}` },
+  return el("section", { id, className: `companyStep companyStep--${stepKey}${open ? " companyStep--open" : ""}${current ? " companyStep--current" : ""}` },
     el("button", {
       type: "button", className: "companyStep__head", "aria-expanded": open, onClick: onToggle,
     },
@@ -7178,7 +7178,7 @@ function CompanyPage() {
     setup && el(CompanyListsSections, {
       branches, onChanged: changed, openSections: false,
       layout: (parts) => el(React.Fragment, null, COMPANY_STEPS.map((st, i) => el(CompanyStep, {
-        key: st.key, id: `company-step-${st.key}`,
+        key: st.key, id: `company-step-${st.key}`, stepKey: st.key,
         n: launched ? null : i + 1,
         title: launched && st.after ? st.after : st.title,
         state: stepState(st),
@@ -16630,7 +16630,125 @@ body, * {
 .companySetup .loginBtn:hover:not(:disabled),
 .companySetup .resModalSubmit:hover:not(:disabled){ background: #EE7550; }
 .companySetup .resFormInput:focus{ border-color: var(--cs-terra); box-shadow: 0 0 0 1px var(--cs-terra); outline: none; }
+/* Business details: each part a card of its own, in the same palette. */
+.companyStep--business .companyStep__body{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px 20px 20px;
+  background: var(--cs-paper);
+}
+.companyStep--business .companyStep__body .dashboardSection{
+  margin: 0 !important;
+  padding: 0 18px;
+  background: var(--cs-card);
+  border: 1px solid var(--cs-line);
+  border-radius: 12px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.companyStep--business .companyStep__body .dashboardSection:has(> h2[aria-expanded="true"]){
+  border-color: var(--cs-terra);
+  box-shadow: inset 3px 0 0 var(--cs-terra);
+  padding-bottom: 20px;
+}
+.companyStep--business .companyStep__body .dashboardSection > h2{
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 15px 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--cs-ink);
+}
+.companyStep--business .companyStep__body .dashboardSection > h2:hover{ color: #C9603D; }
+.companyStep--business .companyStep__body .dashboardSection > h2:focus-visible{ outline: 2px solid var(--cs-terra); outline-offset: 2px; border-radius: 6px; }
+.companyStep--business .companyStep__body .dashboardSection > h2[aria-expanded="true"]{
+  border-bottom: 1px solid var(--cs-line);
+  margin-bottom: 16px;
+}
+.companyStep--business .dashboardSection p{
+  margin: 0 0 16px;
+  max-width: 72ch;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--cs-muted);
+  opacity: 1 !important;
+}
+.companyStep--business .gasSettingSubhead{
+  margin: 20px 0 10px;
+  padding-left: 9px;
+  border-left: 3px solid var(--cs-terra);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--cs-ink);
+}
+.companyStep--business .gasSettingSubhead:first-child{ margin-top: 4px; }
+.companyStep--business .resFormLabel{ color: var(--cs-muted); }
+.companyStep--business label{ margin-bottom: 4px; }
+.companyStep--business .resFormInput{
+  border: 1px solid var(--cs-line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 14px;
+  background: var(--cs-card);
+  color: var(--cs-ink);
+}
+.companyStep--business .closeRentalHint{ color: var(--cs-muted); line-height: 1.5; }
+.companyStep--business .closeRentalActions{ margin-top: 20px; }
+.companyStep--business .loginError{
+  text-align: left;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(192, 57, 43, 0.08);
+}
+.companyStep--business .loginBtn,
+.companyStep--business .resModalSubmit{
+  border-radius: 8px;
+  font-weight: 600;
+  padding: 9px 16px;
+}
+.companyStep--business .loginBtn:disabled,
+.companyStep--business .resModalSubmit:disabled{ opacity: 0.45; cursor: not-allowed; }
+/* Buttons inside a table row are the quieter kind. */
+.companyStep--business td .loginBtn{
+  background: var(--cs-card);
+  color: var(--cs-ink);
+  border: 1px solid var(--cs-line);
+}
+.companyStep--business td .loginBtn:hover:not(:disabled){ background: var(--cs-terra-soft); border-color: var(--cs-terra); }
+.companyStep--business .dashboardTable{
+  border: 1px solid var(--cs-line);
+  border-radius: 10px;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+}
+.companyStep--business .dashboardTable th{
+  background: var(--cs-paper);
+  color: var(--cs-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--cs-line);
+}
+.companyStep--business .dashboardTable td{
+  color: var(--cs-ink);
+  font-size: 13.5px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--cs-line);
+  vertical-align: middle;
+}
+.companyStep--business .dashboardTable tbody tr:nth-child(even){ background: transparent; }
+.companyStep--business .dashboardTable tbody tr:hover{ background: var(--cs-paper); }
 @media (max-width: 767px){
+  .companyStep--business .companyStep__body{ padding: 12px 12px 14px; }
+  .companyStep--business .companyStep__body .dashboardSection{ padding: 0 14px; }
   .companyStep__head{ padding: 14px 14px; gap: 10px; }
   .companyStep__body{ padding: 4px 14px 16px; }
   .companyStep__title{ font-size: 15px; }
