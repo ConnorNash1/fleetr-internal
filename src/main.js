@@ -3140,26 +3140,7 @@ function NonDriveIntakeSection({ standalone }) {
   const todayIso = new Date().toISOString().slice(0, 10);
 
   const sectionEl = React.createElement(
-    "section",
-    { className: "dashboardSection" },
-    React.createElement(
-      "div",
-      { className: "dashboardSection__header" },
-      React.createElement(
-        "div",
-        { className: "dashboardSection__headerRow" },
-        React.createElement("span", null, "Non-Drive Intake"),
-        React.createElement(
-          "button",
-          {
-            type: "button",
-            className: "sectionToggleCircle",
-            onClick: () => setCollapsed((c) => !c),
-          },
-          collapsed ? "+" : "-"
-        )
-      )
-    ),
+    CompanyStep, { title: "Non-Drive Intake", open: !collapsed, onToggle: () => setCollapsed((c) => !c) },
     !collapsed &&
       React.createElement(
         "div",
@@ -3356,16 +3337,213 @@ function NonDriveIntakeSection({ standalone }) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─── Dashboard numbers ───────────────────────────────────────────────────────
+// The row of cards at the top of the Dashboard: today's counts, the week's
+// pickups as bars, and the next two weeks of returns as a curve, with the next
+// few pickups listed under it. Everything is counted from the reservations and
+// fleet already loaded; nothing extra is fetched.
+
+function prefersReducedMotion() {
+  try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch { return false; }
+}
+
+// True once the element has been on screen, so the bars and the curve animate
+// when they are seen rather than while scrolled out of view.
+function useSeenOnce(ref) {
+  const [seen, setSeen] = React.useState(() => prefersReducedMotion() || typeof IntersectionObserver === "undefined");
+  React.useEffect(() => {
+    if (seen || !ref.current) return undefined;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) { setSeen(true); io.disconnect(); }
+    }, { threshold: 0.3 });
+    io.observe(ref.current);
+    return () => io.disconnect();
+  }, [seen]);
+  return seen;
+}
+
+// Counts up to the value, and from the old value to the new one when it changes.
+function CountUp({ value }) {
+  const still = prefersReducedMotion();
+  const [shown, setShown] = React.useState(still ? value : 0);
+  const at = React.useRef(still ? value : 0);
+  React.useEffect(() => {
+    if (prefersReducedMotion()) { at.current = value; setShown(value); return undefined; }
+    const from = at.current;
+    const start = performance.now();
+    let raf = 0;
+    const tick = (now) => {
+      const p = Math.min(1, (now - start) / 900);
+      at.current = from + (value - from) * (1 - Math.pow(1 - p, 3));
+      setShown(Math.round(at.current));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [value]);
+  return shown.toLocaleString("en-CA");
+}
+
+const STAT_ARROW_UP = "M7 17L17 7M9 7h8v8";
+const STAT_ARROW_DOWN = "M7 7l10 10M17 9v8H9";
+
+function StatTile({ title, value, change, note }) {
+  const el = React.createElement;
+  const trend = change == null ? null : change > 0 ? "up" : change < 0 ? "down" : "flat";
+  return el("div", { className: "statTile", role: "group", "aria-label": `${title}: ${value}` },
+    el("div", { className: "statTile__value" }, el(CountUp, { value })),
+    el("div", { className: "statTile__title" }, title),
+    el("div", { className: "statTile__foot" },
+      trend && el("span", { className: `statTile__chip statTile__chip--${trend}`, "aria-hidden": "true" },
+        trend === "flat" ? "=" : el("svg", { width: 12, height: 12, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.5, strokeLinecap: "round", strokeLinejoin: "round" },
+          el("path", { d: trend === "up" ? STAT_ARROW_UP : STAT_ARROW_DOWN }))),
+      el("span", { className: "statTile__note" },
+        trend && el("strong", { className: `statTile__delta statTile__delta--${trend}` },
+          trend === "flat" ? "Same" : `${change > 0 ? "+" : ""}${change}`),
+        trend ? (trend === "flat" ? " as yesterday" : " vs yesterday") : note)));
+}
+
+const dayShort = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-CA", { weekday: "short" });
+const dayMonth = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-CA", { month: "short", day: "numeric" });
+
+// One bar per day, today's in terracotta.
+function WeekBarsCard({ title, days, onOpen }) {
+  const el = React.createElement;
+  const ref = React.useRef(null);
+  const seen = useSeenOnce(ref);
+  const max = Math.max(1, ...days.map((d) => d.count));
+  const total = days.reduce((n, d) => n + d.count, 0);
+  return el("div", { className: "statCard statCard--lift", ref },
+    el("button", { type: "button", className: "statCard__head", onClick: onOpen, "aria-label": `${title}, open Reservations` },
+      el("span", { className: "statCard__title" }, title),
+      el("span", { className: "statCard__chevron", "aria-hidden": "true" }, "\u203a")),
+    el("div", { className: "statCard__big" }, el(CountUp, { value: total })),
+    el("p", { className: "statCard__desc" }, total === 1 ? "pickup booked in the next 7 days" : "pickups booked in the next 7 days"),
+    el("div", { className: "weekBars", role: "img", "aria-label": days.map((d) => `${d.label} ${d.count}`).join(", ") },
+      days.map((d, i) => el("div", { key: d.iso, className: "weekBars__col" },
+        el("span", { className: "weekBars__count" }, d.count),
+        el("div", { className: "weekBars__track" },
+          el("div", {
+            className: i === 0 ? "weekBars__bar weekBars__bar--today" : "weekBars__bar",
+            style: { height: seen ? `${Math.max(4, (d.count / max) * 100)}%` : "0%", transitionDelay: `${i * 70}ms` },
+          })),
+        el("span", { className: "weekBars__label" }, d.label)))));
+}
+
+// A smooth curve through the points (Catmull-Rom, drawn as Bezier pieces).
+function smoothPath(pts) {
+  if (pts.length < 2) return "";
+  let d = `M${pts[0][0]},${pts[0][1]}`;
+  for (let i = 0; i < pts.length - 1; i += 1) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    const c1 = [p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6];
+    const c2 = [p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6];
+    d += ` C${c1[0].toFixed(1)},${c1[1].toFixed(1)} ${c2[0].toFixed(1)},${c2[1].toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  }
+  return d;
+}
+
+function ReturnsCurveCard({ days, upcoming, onOpen }) {
+  const el = React.createElement;
+  const ref = React.useRef(null);
+  const seen = useSeenOnce(ref);
+  const W = 320, H = 110, TOP = 10;
+  const max = Math.max(1, ...days.map((d) => d.count));
+  const pts = days.map((d, i) => [(i / (days.length - 1)) * W, TOP + (1 - d.count / max) * (H - TOP)]);
+  const line = smoothPath(pts);
+  const total = days.reduce((n, d) => n + d.count, 0);
+  const peak = days.reduce((best, d) => (d.count > best.count ? d : best), days[0]);
+  return el("div", { className: `statCard statCard--wide${seen ? " statCard--seen" : ""}`, ref },
+    el("div", { className: "statCard__split" },
+      el("div", { className: "statCard__chartSide" },
+        el("button", { type: "button", className: "statCard__head", onClick: onOpen, "aria-label": "Returns due, open Rental Agreements" },
+          el("span", { className: "statCard__title" }, "Returns due, next 14 days"),
+          el("span", { className: "statCard__chevron", "aria-hidden": "true" }, "\u203a")),
+        el("div", { className: "statCard__big" }, el(CountUp, { value: total })),
+        el("p", { className: "statCard__desc" },
+          total === 0 ? "No returns due in the next two weeks"
+            : `Busiest day: ${dayShort(peak.iso)} ${dayMonth(peak.iso)}, with ${peak.count}`),
+        el("svg", { className: "returnsCurve", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img",
+          "aria-label": days.map((d) => `${dayMonth(d.iso)} ${d.count}`).join(", ") },
+          el("defs", null,
+            el("linearGradient", { id: "returnsCurveFill", x1: 0, y1: 0, x2: 0, y2: 1 },
+              el("stop", { offset: "0%", stopColor: "#F4845F", stopOpacity: 0.32 }),
+              el("stop", { offset: "100%", stopColor: "#F4845F", stopOpacity: 0 }))),
+          el("path", { className: "returnsCurve__area", d: `${line} L${W},${H} L0,${H} Z`, fill: "url(#returnsCurveFill)" }),
+          el("path", { className: "returnsCurve__line", d: line, pathLength: 1, fill: "none", vectorEffect: "non-scaling-stroke" })),
+        el("div", { className: "returnsCurve__axis" },
+          el("span", null, "Today"),
+          el("span", null, dayMonth(days[7].iso)),
+          el("span", null, dayMonth(days[days.length - 1].iso)))),
+      el("div", { className: "statCard__listSide" },
+        el("div", { className: "statCard__title" }, "Next pickups"),
+        upcoming.length === 0
+          ? el("p", { className: "statCard__desc" }, "No pickups booked.")
+          : el("ol", { className: "nextPickups" }, upcoming.map((r, i) =>
+              el("li", { key: r.resCode, className: "nextPickups__item", style: { transitionDelay: `${150 + i * 120}ms` } },
+                el("span", { className: "nextPickups__dot", "aria-hidden": "true" }),
+                el("div", { className: "nextPickups__when" }, `${r.date === isoOffset(0) ? "Today" : `${dayShort(r.date)} ${dayMonth(r.date)}`}${r.time ? `, ${fmt12h(r.time)}` : ""}`),
+                el("div", { className: "nextPickups__who" }, r.customer || r.resCode),
+                r.vehicleClass && el("div", { className: "nextPickups__what" }, r.vehicleClass)))))));
+}
+
+function DashboardStats() {
+  const { reservations, fleet } = React.useContext(AppContext);
+  const navigate = useNavigate();
+  const el = React.createElement;
+  const today = isoOffset(0);
+  const yesterday = isoOffset(-1);
+  const pickupsOn = (iso) => reservations.filter((r) => r.date === iso).length;
+  // Rentals out or booked, by the day they are due back. Ones already back
+  // (customer return, close pending, closed) are not due any more.
+  const RETURNED = ["customer_return", "close_pending", "closed"];
+  const returnsOn = (iso) => reservations.filter((r) => r.returnDate === iso && !RETURNED.includes(r.rentalAgreementStatus)).length;
+  // For today's tile: every rental due back that day, whether or not it is
+  // back yet, so today and yesterday are counted the same way.
+  const scheduledReturnsOn = (iso) => reservations.filter((r) => r.returnDate === iso && r.rentalAgreementStatus && r.rentalAgreementStatus !== "reservation").length;
+  const fleetSize = fleet.length;
+  const share = (n) => (fleetSize ? `${Math.round((n / fleetSize) * 100)}% of ${fleetSize} vehicles` : "No vehicles yet");
+  const onRent = fleet.filter((v) => v.status === "On Rent").length;
+  const available = fleet.filter((v) => v.status === "Available").length;
+  const week = Array.from({ length: 7 }, (_, i) => {
+    const iso = isoOffset(i);
+    return { iso, label: i === 0 ? "Today" : dayShort(iso), count: pickupsOn(iso) };
+  });
+  const fortnight = Array.from({ length: 14 }, (_, i) => {
+    const iso = isoOffset(i);
+    return { iso, count: returnsOn(iso) };
+  });
+  const upcoming = reservations
+    .filter((r) => r.date >= today && (r.rentalAgreementStatus || "reservation") === "reservation")
+    .slice()
+    .sort((a, b) => (a.date !== b.date ? (a.date < b.date ? -1 : 1) : parseTimeToMinutes(a.time) - parseTimeToMinutes(b.time)))
+    .slice(0, 3);
+  return el("div", { className: "dashStats" },
+    el("div", { className: "dashStats__tiles" },
+      el(StatTile, { title: "Pickups today", value: pickupsOn(today), change: pickupsOn(today) - pickupsOn(yesterday) }),
+      el(StatTile, { title: "Returns due today", value: scheduledReturnsOn(today), change: scheduledReturnsOn(today) - scheduledReturnsOn(yesterday) }),
+      el(StatTile, { title: "On rent", value: onRent, note: share(onRent) }),
+      el(StatTile, { title: "Available", value: available, note: share(available) })),
+    el("div", { className: "dashStats__cards" },
+      el(WeekBarsCard, { title: "Pickups, next 7 days", days: week, onOpen: () => navigate("/reservations") }),
+      el(ReturnsCurveCard, { days: fortnight, upcoming, onOpen: () => navigate("/rental-agreements") })));
+}
+
+// Props that make a whole bar a button that opens and closes what is under it.
+function barToggle(onToggle, open) {
+  return {
+    role: "button", tabIndex: 0, "aria-expanded": open,
+    onClick: onToggle,
+    onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } },
+  };
+}
+
 function DashboardPage() {
   const { reservations, setReservations, fleet, setFleet, setOpenRentalAgreementId, rentalAgreements, guardAction, currentUser } = React.useContext(AppContext);
   const isMobile = useMobile();
-  // Props that make a whole header bar a toggle, for mobile, where the small
-  // plus button alone is too easy to miss.
-  const tapToToggle = (onToggle) => ({
-    role: "button", tabIndex: 0, style: { cursor: "pointer" },
-    onClick: onToggle,
-    onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } },
-  });
   const readyReturns = fleet.filter((v) => v.status === "Ready Returns");
   const navigate = useNavigate();
   const [collapsedSections, setCollapsedSections] = React.useState({
@@ -3526,24 +3704,11 @@ function DashboardPage() {
         type: "button", className: "closeRentalCta", onClick: () => navigate("/switch-out"),
       }, "Switch Out")
     ),
+    React.createElement(DashboardStats),
     React.createElement("div", { className: "dashboardGrid" }, [
       // ── Section 1: Reservations ──────────────────────────────────────────
       React.createElement(
-        "section",
-        { key: "reservations", className: "dashboardSection" },
-        React.createElement(
-          "div",
-          { className: "dashboardSection__header" },
-          React.createElement(
-            "div",
-            { className: "dashboardSection__headerRow" },
-            React.createElement("span", null, "Reservations"),
-            React.createElement("button", {
-              type: "button", className: "sectionToggleCircle",
-              onClick: () => toggleSection("reservations"),
-            }, collapsedSections.reservations ? "+" : "-")
-          )
-        ),
+        CompanyStep, { key: "reservations", title: "Reservations", open: !collapsedSections.reservations, onToggle: () => toggleSection("reservations") },
         !collapsedSections.reservations &&
           React.createElement(
             "div",
@@ -3661,32 +3826,7 @@ function DashboardPage() {
         React.createElement(NonDriveIntakeSection, { key: "nonDriveIntake", standalone: false }),
       // ── Section 3: Vehicle Status ────────────────────────────────
       React.createElement(
-        "section",
-        { key: "fleetAvailability", className: "dashboardSection" },
-        React.createElement(
-          "div",
-          { className: "dashboardSection__header" },
-          React.createElement(
-            "div",
-            {
-              className: "dashboardSection__headerRow",
-              // On mobile the whole bar toggles, not just the small button;
-              // the button's own tap then reaches the bar instead of toggling
-              // twice.
-              ...(isMobile ? tapToToggle(() => toggleSection("fleetAvailability")) : {}),
-            },
-            React.createElement("span", null, "Vehicle Status"),
-            React.createElement(
-              "button",
-              {
-                type: "button",
-                className: "sectionToggleCircle",
-                onClick: isMobile ? undefined : () => toggleSection("fleetAvailability"),
-              },
-              collapsedSections.fleetAvailability ? "+" : "-"
-            )
-          )
-        ),
+        CompanyStep, { key: "fleetAvailability", title: "Vehicle Status", open: !collapsedSections.fleetAvailability, onToggle: () => toggleSection("fleetAvailability") },
         !collapsedSections.fleetAvailability &&
           React.createElement(
             "div",
@@ -3758,16 +3898,12 @@ function DashboardPage() {
                 React.createElement("div", { className: "fleetGroup" },
                   React.createElement("div", {
                     className: `fleetGroupHeader fleetGroupHeader--${cls}`,
-                    ...(isMobile ? tapToToggle(() => toggleFleetGroup(key)) : {}),
+                    ...barToggle(() => toggleFleetGroup(key), !fleetGroupCollapsed[key]),
                   },
                     React.createElement("span", null, label),
                     React.createElement("div", { className: "fleetGroupHeaderRight" },
                       React.createElement("span", { className: "fleetGroupCount" }, rows.length),
-                      React.createElement("button", {
-                        type: "button",
-                        className: "fleetGroupToggle",
-                        onClick: isMobile ? undefined : () => toggleFleetGroup(key),
-                      }, fleetGroupCollapsed[key] ? "+" : "−")
+                      React.createElement("span", { className: "fleetGroupChevron", "aria-hidden": "true" }, fleetGroupCollapsed[key] ? "\u25b8" : "\u25be")
                     )
                   ),
                   ...(fleetGroupCollapsed[key] ? [] : (children || (isMobile ? fleetCards(rows, showStatus) : [fleetTable(rows, showStatus)])))
@@ -3780,16 +3916,12 @@ function DashboardPage() {
                 React.createElement("div", { className: "fleetGroup" },
                   React.createElement("div", {
                     className: "fleetGroupHeader fleetGroupHeader--readyReturns",
-                    ...(isMobile ? tapToToggle(() => toggleFleetGroup("readyReturns")) : {}),
+                    ...barToggle(() => toggleFleetGroup("readyReturns"), !fleetGroupCollapsed.readyReturns),
                   },
                     React.createElement("span", null, "Ready Returns"),
                     React.createElement("div", { className: "fleetGroupHeaderRight" },
                       React.createElement("span", { className: "fleetGroupCount" }, readyReturns.length),
-                      React.createElement("button", {
-                        type: "button",
-                        className: "fleetGroupToggle",
-                        onClick: isMobile ? undefined : () => toggleFleetGroup("readyReturns"),
-                      }, fleetGroupCollapsed.readyReturns ? "+" : "−")
+                      React.createElement("span", { className: "fleetGroupChevron", "aria-hidden": "true" }, fleetGroupCollapsed.readyReturns ? "\u25b8" : "\u25be")
                     )
                   ),
                   ...(!fleetGroupCollapsed.readyReturns && isMobile
@@ -4512,19 +4644,7 @@ function VehicleDetailPage() {
 
   const mkSection = (key, title, body) =>
     React.createElement(
-      "section", { className: "dashboardSection", style: { marginTop: "16px" } },
-      React.createElement(
-        "div", { className: "dashboardSection__header" },
-        React.createElement(
-          "div", { className: "dashboardSection__headerRow" },
-          React.createElement("span", null, title),
-          React.createElement("button", {
-            type: "button",
-            className: "sectionToggleCircle",
-            onClick: () => toggle(key),
-          }, sect[key] ? "+" : "\u2212")
-        )
-      ),
+      CompanyStep, { title, open: !sect[key], onToggle: () => toggle(key) },
       !sect[key] && React.createElement("div", { className: "dashboardSection__body" }, body)
     );
 
@@ -4768,26 +4888,7 @@ function FleetPage() {
     React.createElement("h1", { className: "page__title" }, "Branch Fleet"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement(
-      "section",
-      { className: "dashboardSection" },
-      React.createElement(
-        "div",
-        { className: "dashboardSection__header" },
-        React.createElement(
-          "div",
-          { className: "dashboardSection__headerRow" },
-          React.createElement("span", null, "Vehicle Status"),
-          React.createElement(
-            "button",
-            {
-              type: "button",
-              className: "sectionToggleCircle",
-              onClick: () => setCollapsed((c) => !c),
-            },
-            collapsed ? "+" : "-"
-          )
-        )
-      ),
+      CompanyStep, { title: "Vehicle Status", open: !collapsed, onToggle: () => setCollapsed((c) => !c) },
       !collapsed &&
         React.createElement(
           "div",
@@ -4839,15 +4940,11 @@ function FleetPage() {
 
             const group = (label, cls, key, rows, showStatus, children) =>
               React.createElement("div", { className: "fleetGroup" },
-                React.createElement("div", { className: `fleetGroupHeader fleetGroupHeader--${cls}` },
+                React.createElement("div", { className: `fleetGroupHeader fleetGroupHeader--${cls}`, ...barToggle(() => toggleFleetGroup(key), !fleetGroupCollapsed[key]) },
                   React.createElement("span", null, label),
                   React.createElement("div", { className: "fleetGroupHeaderRight" },
                     React.createElement("span", { className: "fleetGroupCount" }, rows.length),
-                    React.createElement("button", {
-                      type: "button",
-                      className: "fleetGroupToggle",
-                      onClick: () => toggleFleetGroup(key),
-                    }, fleetGroupCollapsed[key] ? "+" : "−")
+                    React.createElement("span", { className: "fleetGroupChevron", "aria-hidden": "true" }, fleetGroupCollapsed[key] ? "\u25b8" : "\u25be")
                   )
                 ),
                 ...(fleetGroupCollapsed[key] ? [] : (children || [fleetTable(rows, showStatus)]))
@@ -4857,15 +4954,11 @@ function FleetPage() {
               group("Available", "available", "available", avail, false),
               group("Needs Cleaning", "cleaning", "needsCleaning", cleaning, false),
               React.createElement("div", { className: "fleetGroup" },
-                React.createElement("div", { className: "fleetGroupHeader fleetGroupHeader--readyReturns" },
+                React.createElement("div", { className: "fleetGroupHeader fleetGroupHeader--readyReturns", ...barToggle(() => toggleFleetGroup("readyReturns"), !fleetGroupCollapsed.readyReturns) },
                   React.createElement("span", null, "Ready Returns"),
                   React.createElement("div", { className: "fleetGroupHeaderRight" },
                     React.createElement("span", { className: "fleetGroupCount" }, readyReturns.length),
-                    React.createElement("button", {
-                      type: "button",
-                      className: "fleetGroupToggle",
-                      onClick: () => toggleFleetGroup("readyReturns"),
-                    }, fleetGroupCollapsed.readyReturns ? "+" : "−")
+                    React.createElement("span", { className: "fleetGroupChevron", "aria-hidden": "true" }, fleetGroupCollapsed.readyReturns ? "\u25b8" : "\u25be")
                   )
                 ),
                 ...(!fleetGroupCollapsed.readyReturns ? [
@@ -5777,25 +5870,7 @@ function FleetVehiclesPage() {
     })(),
 
     React.createElement(
-      "section",
-      { className: "dashboardSection" },
-      React.createElement(
-        "div",
-        { className: "dashboardSection__header" },
-        React.createElement(
-          "div",
-          {
-            className: "dashboardSection__headerRow",
-            style: { cursor: "pointer" },
-            onClick: () => setSectionCollapsed((c) => !c),
-          },
-          React.createElement("button", {
-            type: "button",
-            className: "sectionToggleCircle",
-          }, sectionCollapsed ? "+" : "-"),
-          React.createElement("span", null, "Vehicle Status")
-        )
-      ),
+      CompanyStep, { title: "Vehicle Status", open: !sectionCollapsed, onToggle: () => setSectionCollapsed((c) => !c) },
       !sectionCollapsed &&
         React.createElement(
           "div",
@@ -5849,13 +5924,9 @@ function FleetVehiclesPage() {
               React.createElement("div", { className: "fleetGroup" },
                 React.createElement("div", {
                   className: `fleetGroupHeader fleetGroupHeader--${cls}`,
-                  style: { cursor: "pointer" },
-                  onClick: () => toggleFleetGroup(key),
+                  ...barToggle(() => toggleFleetGroup(key), !fleetGroupCollapsed[key]),
                 },
-                  React.createElement("button", {
-                    type: "button",
-                    className: "fleetGroupToggle",
-                  }, fleetGroupCollapsed[key] ? "+" : "−"),
+                  React.createElement("span", { className: "fleetGroupChevron", "aria-hidden": "true" }, fleetGroupCollapsed[key] ? "\u25b8" : "\u25be"),
                   React.createElement("span", null, label),
                   React.createElement("span", { className: "fleetGroupCount" }, rows.length)
                 ),
@@ -5868,13 +5939,9 @@ function FleetVehiclesPage() {
               React.createElement("div", { className: "fleetGroup" },
                 React.createElement("div", {
                   className: "fleetGroupHeader fleetGroupHeader--readyReturns",
-                  style: { cursor: "pointer" },
-                  onClick: () => toggleFleetGroup("readyReturns"),
+                  ...barToggle(() => toggleFleetGroup("readyReturns"), !fleetGroupCollapsed.readyReturns),
                 },
-                  React.createElement("button", {
-                    type: "button",
-                    className: "fleetGroupToggle",
-                  }, fleetGroupCollapsed.readyReturns ? "+" : "−"),
+                  React.createElement("span", { className: "fleetGroupChevron", "aria-hidden": "true" }, fleetGroupCollapsed.readyReturns ? "\u25b8" : "\u25be"),
                   React.createElement("span", null, "Ready Returns"),
                   React.createElement("span", { className: "fleetGroupCount" }, filteredRR.length)
                 ),
@@ -6458,23 +6525,17 @@ function ReportsPage() {
   ];
   const [sect, setSect] = React.useState(Object.fromEntries(SECTS.map((s) => [s.key, true])));
   const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
+  // The same sections as the Company page: the whole box opens and closes.
   return React.createElement(
-    "div", { className: "page" },
+    "div", { className: "page companySetup" },
     React.createElement("h1", { className: "page__title" }, "Reports"),
     React.createElement("div", { className: "page__titleUnderline" }),
     SECTS.map(({ key, title, body }) =>
-      React.createElement(
-        "section", { key, className: "dashboardSection", style: { marginBottom: "16px" } },
-        React.createElement("div", { className: "dashboardSection__header" },
-          React.createElement("div", { className: "dashboardSection__headerRow" },
-            React.createElement("span", null, title),
-            React.createElement("button", { type: "button", className: "sectionToggleCircle", onClick: () => toggle(key) }, sect[key] ? "+" : "−")
-          )
-        ),
-        !sect[key] && React.createElement("div", { className: "dashboardSection__body" },
-          React.createElement("p", { className: "aiTabDesc", style: { marginBottom: 0 } }, body),
-          React.createElement("div", { className: "resvEmpty", style: { marginTop: "16px" } }, "Report data will appear here.")
-        )
+      React.createElement(CompanyStep, {
+        key, id: `report-${key}`, stepKey: key, title, open: !sect[key], onToggle: () => toggle(key),
+      },
+        React.createElement("p", { className: "aiTabDesc", style: { marginBottom: 0 } }, body),
+        React.createElement("div", { className: "resvEmpty", style: { marginTop: "16px" } }, "Report data will appear here.")
       )
     )
   );
@@ -6846,25 +6907,50 @@ const STEP_STATE_WORDS = { done: "Done", skipped: "Skipped", todo: "Not started"
 // the section. Only the outermost CompanySection reads it.
 const CompanySectionFlat = React.createContext(false);
 
-// Before launch: every section as a step, with its number, a check mark when
-// done, a skipped mark when skipped, and the current step highlighted.
+// Before launch: how far setup has got, as a bar and a count, then every
+// section as a step with its number, a check mark when done, a skipped mark
+// when skipped, and the current step ringed. Steps run across on a wide screen
+// and down on a narrow one, joined by a line that fills in as they are done.
+// Back and Next walk through the steps, opening each one.
 function CompanyStepper({ steps, stateOf, current, onPick }) {
   const el = React.createElement;
+  const [at, setAt] = React.useState(current);
+  React.useEffect(() => { setAt(current); }, [current]);
+  const counted = steps.filter((st) => st.key !== "launch");
+  const done = counted.filter((st) => stateOf(st) === "done").length;
+  const skipped = counted.filter((st) => stateOf(st) === "skipped").length;
+  const pct = counted.length ? Math.round(((done + skipped) / counted.length) * 100) : 0;
+  const atIndex = Math.max(0, steps.findIndex((st) => st.key === at));
+  const go = (i) => { const st = steps[i]; if (!st) return; setAt(st.key); onPick(st.key); };
   return el("nav", { className: "companyStepper", "aria-label": "Setup steps" },
-    el("ol", { className: "companyStepper__list" }, steps.map((st, i) => {
+    el("div", { className: "companyStepper__top" },
+      el("div", null,
+        el("div", { className: "companyStepper__label" }, "Setup progress"),
+        el("div", { className: "companyStepper__count" },
+          `${done} of ${counted.length} done`, skipped ? `, ${skipped} skipped` : "")),
+      el("span", { className: "companyStepper__pct" }, `${pct}%`)),
+    el("div", { className: "companyStepper__bar", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": pct, "aria-label": "Setup progress" },
+      el("span", { className: "companyStepper__fill", style: { width: `${pct}%` } })),
+    el("ol", { className: "companyStepper__list", style: { "--steps": steps.length } }, steps.map((st, i) => {
       const state = stateOf(st);
       const isCurrent = st.key === current;
-      return el("li", { key: st.key, className: "companyStepper__item" },
+      return el("li", { key: st.key, className: `companyStepper__item companyStepper__item--${state}${isCurrent ? " companyStepper__item--current" : ""}` },
         el("button", {
-          type: "button", onClick: () => onPick(st.key),
-          className: `companyStepper__step companyStepper__step--${state}${isCurrent ? " companyStepper__step--current" : ""}`,
+          type: "button", onClick: () => go(i),
+          className: `companyStepper__step companyStepper__step--${state}${isCurrent ? " companyStepper__step--current" : ""}${st.key === at ? " companyStepper__step--at" : ""}`,
           "aria-current": isCurrent ? "step" : undefined,
           "aria-label": `${i + 1}. ${st.title}: ${isCurrent ? "current step" : STEP_STATE_WORDS[state]}`,
         },
           el("span", { className: "companyStepper__mark", "aria-hidden": "true" },
             state === "done" ? "\u2713" : state === "skipped" ? "\u2013" : String(i + 1)),
-          el("span", { className: "companyStepper__name" }, st.title)));
-    })));
+          el("span", { className: "companyStepper__text" },
+            el("span", { className: "companyStepper__name" }, st.title),
+            el("span", { className: "companyStepper__state" }, isCurrent ? "Up next" : STEP_STATE_WORDS[state]))));
+    })),
+    el("div", { className: "companyStepper__nav" },
+      el("button", { type: "button", className: "companyStepper__navBtn", disabled: atIndex === 0, onClick: () => go(atIndex - 1) }, "Back"),
+      el("span", { className: "companyStepper__navAt" }, `Step ${atIndex + 1} of ${steps.length}`),
+      el("button", { type: "button", className: "companyStepper__navBtn companyStepper__navBtn--next", disabled: atIndex >= steps.length - 1, onClick: () => go(atIndex + 1) }, "Next")));
 }
 
 function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, busy, showState, children }) {
@@ -9888,46 +9974,23 @@ function SettingsPage() {
 
     savedFlash && React.createElement("div", { className: "addVehicleSuccess", style: { marginTop: "12px" } }, savedFlash)
   );
+  // The same sections as the Company page: the whole box opens and closes.
+  const section = (key, title, ...children) => React.createElement(CompanyStep, {
+    key, id: `settings-${key}`, stepKey: key, title, open: !sect[key], onToggle: () => toggle(key),
+  }, ...children);
   return React.createElement(
-    "div", { className: "page" },
+    "div", { className: "page companySetup" },
     React.createElement("h1", { className: "page__title" }, "Settings"),
     React.createElement("div", { className: "page__titleUnderline" }),
 
-    React.createElement(
-      "section", { className: "dashboardSection", style: { marginBottom: "16px" } },
-      React.createElement("div", { className: "dashboardSection__header" },
-        React.createElement("div", { className: "dashboardSection__headerRow" },
-          React.createElement("span", null, "Gas Collection"),
-          React.createElement("button", { type: "button", className: "sectionToggleCircle", onClick: () => toggle("gas") }, sect.gas ? "+" : "−")
-        )
-      ),
-      !sect.gas && React.createElement("div", { className: "dashboardSection__body" }, gasBody)
-    ),
+    section("gas", "Gas Collection", gasBody),
 
-    isExec && React.createElement(
-      "section", { className: "dashboardSection", style: { marginBottom: "16px" } },
-      React.createElement("div", { className: "dashboardSection__header" },
-        React.createElement("div", { className: "dashboardSection__headerRow" },
-          React.createElement("span", null, "Customer texts"),
-          React.createElement("button", { type: "button", className: "sectionToggleCircle", onClick: () => toggle("texts") }, sect.texts ? "+" : "−")
-        )
-      ),
-      !sect.texts && React.createElement("div", { className: "dashboardSection__body" }, React.createElement(CustomerTextsSettings))
-    ),
+    isExec && section("texts", "Customer texts", React.createElement(CustomerTextsSettings)),
 
     SECTS.map(({ key, title, body }) =>
-      React.createElement(
-        "section", { key, className: "dashboardSection", style: { marginBottom: "16px" } },
-        React.createElement("div", { className: "dashboardSection__header" },
-          React.createElement("div", { className: "dashboardSection__headerRow" },
-            React.createElement("span", null, title),
-            React.createElement("button", { type: "button", className: "sectionToggleCircle", onClick: () => toggle(key) }, sect[key] ? "+" : "−")
-          )
-        ),
-        !sect[key] && React.createElement("div", { className: "dashboardSection__body" },
-          React.createElement("p", { className: "aiTabDesc", style: { marginBottom: 0 } }, body),
-          React.createElement("div", { className: "resvEmpty", style: { marginTop: "16px" } }, "Settings UI will appear here.")
-        )
+      section(key, title,
+        React.createElement("p", { className: "aiTabDesc", style: { marginBottom: 0 } }, body),
+        React.createElement("div", { className: "resvEmpty", style: { marginTop: "16px" } }, "Settings UI will appear here.")
       )
     )
   );
@@ -9953,6 +10016,30 @@ function useMobile() {
 function MobileNav() {
   const [open, setOpen] = React.useState(false);
   const { signOut } = React.useContext(AppContext);
+  const badges = useNavBadges();
+  const drawerRef = React.useRef(null);
+  const burgerRef = React.useRef(null);
+  // While the menu is open: focus starts on its first item, Escape closes it,
+  // and Tab stays inside it. Focus goes back to the menu button on close.
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const drawer = drawerRef.current;
+    const items = () => Array.from(drawer ? drawer.querySelectorAll("a, button") : []);
+    const first = items()[0];
+    if (first) first.focus();
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); setOpen(false); return; }
+      if (e.key !== "Tab") return;
+      const list = items();
+      if (!list.length) return;
+      const at = list.indexOf(document.activeElement);
+      if (e.shiftKey && at <= 0) { e.preventDefault(); list[list.length - 1].focus(); }
+      else if (!e.shiftKey && at === list.length - 1) { e.preventDefault(); list[0].focus(); }
+    };
+    document.addEventListener("keydown", onKey);
+    const burger = burgerRef.current;
+    return () => { document.removeEventListener("keydown", onKey); if (burger) burger.focus(); };
+  }, [open]);
   return React.createElement(
     React.Fragment,
     null,
@@ -9963,8 +10050,10 @@ function MobileNav() {
         "button",
         {
           type: "button",
+          ref: burgerRef,
           className: "mobileHamburger",
           "aria-label": open ? "Close menu" : "Open menu",
+          "aria-expanded": open,
           onClick: () => setOpen((o) => !o),
         },
         React.createElement(
@@ -10001,7 +10090,7 @@ function MobileNav() {
       },
       React.createElement(
         "nav",
-        { className: "mobileNavDrawer" },
+        { className: "mobileNavDrawer", ref: drawerRef, "aria-label": "Menu" },
         visibleNavSections().map((section) =>
           React.createElement(
             "section",
@@ -10017,11 +10106,15 @@ function MobileNav() {
                     isActive ? "mobileNavItem mobileNavItem--active" : "mobileNavItem",
                   onClick: () => setOpen(false),
                 },
-                item.label
+                React.createElement(NavIcon, { path: item.path }),
+                React.createElement("span", { className: "mobileNavItem__label" }, item.label),
+                badges[item.path] > 0 && React.createElement("span", { className: "nav__badge", "aria-label": `${badges[item.path]} overdue` }, badges[item.path])
               )
             )
           )
-        )
+        ),
+        React.createElement("div", { className: "mobileNavFoot" },
+          React.createElement(NavUser, { onNavigate: () => setOpen(false) }))
       )
     )
   );
@@ -10277,41 +10370,124 @@ function Topbar() {
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
-function Sidebar() {
+// One line icon per nav item, drawn on a 24 by 24 grid with a 2px stroke.
+const NAV_ICONS = {
+  "/dashboard":            ["M3 3h7v9H3z", "M14 3h7v5h-7z", "M14 12h7v9h-7z", "M3 16h7v5H3z"],
+  "/reservations":         ["M8 2v4", "M16 2v4", "M3 10h18", "M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"],
+  "/rental-agreements":    ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M8 13h8", "M8 17h5"],
+  "/fleet/vehicles":       ["M5 17H3v-5l2-5h11l3 5h2v5h-2", "M9 17h6", "M7 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4z", "M17 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4z", "M5 12h14"],
+  "/fleet/additions":      ["M12 5v14", "M5 12h14"],
+  "/fleet/gas-collections":["M3 22V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v17", "M2 22h14", "M6 8h6", "M15 10h2a2 2 0 0 1 2 2v4a1.5 1.5 0 0 0 3 0V8l-3-3"],
+  "/fleet/damage-claims":  ["M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z", "M12 9v4", "M12 17h.01"],
+  "/arms":                 ["M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"],
+  "/pre-rental-check":     ["M9 2h6v4H9z", "M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2", "M9 14l2 2 4-4"],
+  "/overdue-rentals":      ["M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z", "M12 6v6l4 2"],
+  "/time-of-repair":       ["M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z"],
+  "/no-shows":             ["M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z", "M17 8l5 5", "M22 8l-5 5"],
+  "/reports":              ["M3 3v18h18", "M7 16v-5", "M12 16V8", "M17 16v-8"],
+  "/audit-log":            ["M8 6h13", "M8 12h13", "M8 18h13", "M3 6h.01", "M3 12h.01", "M3 18h.01"],
+  "/company":              ["M3 21h18", "M5 21V7l7-4 7 4v14", "M9 9h.01", "M15 9h.01", "M9 13h.01", "M15 13h.01", "M10 21v-4h4v4"],
+  "/staff":                ["M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2", "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z", "M23 21v-2a4 4 0 0 0-3-3.9", "M16 3.1a4 4 0 0 1 0 7.8"],
+  "/settings":             ["M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z", "M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"],
+  "/account":              ["M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z", "M12 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6z", "M6.2 19a6 6 0 0 1 11.6 0"],
+};
+const NAV_ICON_FALLBACK = ["M12 12h.01"];
+
+function NavIcon({ path }) {
+  const el = React.createElement;
+  return el("svg", { className: "nav__icon", width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+    (NAV_ICONS[path] || NAV_ICON_FALLBACK).map((d, i) => el("path", { key: i, d })));
+}
+
+// Rentals out whose return day has come, the same rule Overdue Rentals lists
+// them by, for the count beside that nav item.
+function overdueRentalCount(reservations, rentalAgreements) {
+  const now = new Date();
+  return reservations.filter((r) => {
+    if (!r.returnDate) return false;
+    const ra = rentalAgreements.find((a) => a.resCode === r.resCode);
+    if ((ra?.rentalAgreementStatus || r.rentalAgreementStatus || "") !== "open_rental_agreement") return false;
+    const returnDt = new Date(`${r.returnDate}T00:00:00`);
+    return !Number.isNaN(returnDt.getTime()) && now > returnDt;
+  }).length;
+}
+
+function useNavBadges() {
+  const { reservations, rentalAgreements } = React.useContext(AppContext);
+  const overdue = overdueRentalCount(reservations || [], rentalAgreements || []);
+  return { "/overdue-rentals": overdue };
+}
+
+const initialsOf = (name) => String(name || "").trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
+
+// The signed-in person, linking to Your Account.
+function NavUser({ onNavigate, className }) {
+  const { currentUser } = React.useContext(AppContext);
+  const el = React.createElement;
+  const name = actorName(currentUser);
+  return el(NavLink, { to: "/account", className: className || "navUser", onClick: onNavigate, title: "Your Account" },
+    el("span", { className: "navUser__avatar", "aria-hidden": "true" }, initialsOf(name)),
+    el("span", { className: "navUser__text" },
+      el("span", { className: "navUser__name" }, name),
+      currentUser?.role && el("span", { className: "navUser__role" }, currentUser.role)));
+}
+
+const SIDEBAR_COLLAPSED_KEY = "fleetr.sidebarCollapsed";
+function readSidebarCollapsed() {
+  try { return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1"; } catch { return false; }
+}
+
+// On a wide screen it can be folded down to its icons, and stays that way on
+// this device. The highlight behind the current page slides to it.
+function Sidebar({ collapsed, onToggle }) {
   // Read so the nav redraws when the company's setup state arrives: the Setup
   // item depends on it.
   React.useContext(AppContext);
-  return React.createElement(
-    "aside",
-    { className: "sidebar" },
+  const el = React.createElement;
+  const location = useLocation();
+  const badges = useNavBadges();
+  const asideRef = React.useRef(null);
+  const [marker, setMarker] = React.useState(null);
+  React.useLayoutEffect(() => {
+    const aside = asideRef.current;
+    const place = () => {
+      const active = aside && aside.querySelector(".nav__item--active");
+      if (!active) { setMarker(null); return; }
+      const a = aside.getBoundingClientRect();
+      const r = active.getBoundingClientRect();
+      setMarker({ top: r.top - a.top + aside.scrollTop, left: r.left - a.left, width: r.width, height: r.height });
+    };
+    place();
+    // The width changes while it folds, so measure again once that is over.
+    const t = setTimeout(place, 260);
+    window.addEventListener("resize", place);
+    return () => { clearTimeout(t); window.removeEventListener("resize", place); };
+  }, [location.pathname, collapsed]);
+  return el("aside", { className: collapsed ? "sidebar sidebar--collapsed" : "sidebar", ref: asideRef },
+    el("div", { className: "sidebar__top" },
+      el("span", { className: "sidebar__wordmark" }, "fleetr"),
+      el("button", {
+        type: "button", className: "sidebar__collapse", onClick: onToggle,
+        "aria-label": collapsed ? "Expand sidebar" : "Collapse sidebar", title: collapsed ? "Expand sidebar" : "Collapse sidebar",
+      }, el("svg", { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+        el("path", { d: collapsed ? "M9 18l6-6-6-6" : "M15 18l-6-6 6-6" })))),
+    marker && el("span", { className: "nav__marker", "aria-hidden": "true",
+      style: { transform: `translateY(${marker.top}px)`, left: `${marker.left}px`, width: `${marker.width}px`, height: `${marker.height}px` } }),
     visibleNavSections().map((section) =>
-      React.createElement(
-        "section",
-        { key: section.header, className: "sidebar__section" },
-        React.createElement(
-          "h2",
-          { className: "sidebar__sectionHeader" },
-          section.header
-        ),
-        React.createElement(
-          "nav",
-          { className: "nav" },
+      el("section", { key: section.header, className: "sidebar__section" },
+        el("h2", { className: "sidebar__sectionHeader" }, section.header),
+        el("nav", { className: "nav" },
           section.items.map((item) =>
-            React.createElement(
-              NavLink,
-              {
-                key: item.path,
-                to: item.path,
-                className: ({ isActive }) =>
-                  isActive ? "nav__item nav__item--active" : "nav__item",
-              },
-              React.createElement("span", { className: "nav__label" }, item.label)
-            )
-          )
-        )
-      )
-    )
-  );
+            el(NavLink, {
+              key: item.path,
+              to: item.path,
+              title: item.label,
+              className: ({ isActive }) => (isActive ? "nav__item nav__item--active" : "nav__item"),
+            },
+              el(NavIcon, { path: item.path }),
+              el("span", { className: "nav__label" }, item.label),
+              badges[item.path] > 0 && el("span", { className: "nav__badge", "aria-label": `${badges[item.path]} overdue` }, badges[item.path])))))),
+    el("div", { className: "sidebar__foot" }, el(NavUser, null)));
 }
 
 // ─── PlaceholderPage ─────────────────────────────────────────────────────────
@@ -11126,6 +11302,11 @@ function FleetrCommandBar() {
 
 function Layout() {
   const isMobile = useMobile();
+  const [collapsed, setCollapsed] = React.useState(readSidebarCollapsed);
+  const toggleCollapsed = () => setCollapsed((c) => {
+    try { window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, c ? "0" : "1"); } catch { /* kept for this visit only */ }
+    return !c;
+  });
   if (isMobile) {
     // The fixed bottom bar has room reserved for it below the content and in
     // the nav drawer. app--noCommandBar releases that room when the company
@@ -11142,8 +11323,8 @@ function Layout() {
   }
   return React.createElement(
     "div",
-    { className: "app" },
-    React.createElement(Sidebar),
+    { className: collapsed ? "app app--rail" : "app" },
+    React.createElement(Sidebar, { collapsed, onToggle: toggleCollapsed }),
     React.createElement(
       "div",
       { className: "main" },
@@ -11936,16 +12117,7 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
   const statusClass = raBadgeClass(rentalAgreement.status);
 
   const section = (key, title, content) =>
-    React.createElement("section", { className: "dashboardSection", key },
-      React.createElement("div", { className: "dashboardSection__header" },
-        React.createElement("div", { className: "dashboardSection__headerRow" },
-          React.createElement("span", null, title),
-          React.createElement("button", {
-            type: "button", className: "sectionToggleCircle",
-            onClick: () => toggle(key),
-          }, sect[key] ? "+" : "-")
-        )
-      ),
+    React.createElement(CompanyStep, { key, title, open: !sect[key], onToggle: () => toggle(key) },
       !sect[key] && React.createElement("div", { className: "dashboardSection__body" }, content)
     );
 
@@ -14760,20 +14932,7 @@ function CustomerPage() {
 
   const makeSection = (key, label, body) =>
     React.createElement(
-      "section",
-      { key, className: "dashboardSection" },
-      React.createElement(
-        "div",
-        { className: "dashboardSection__header" },
-        React.createElement(
-          "div",
-          { className: "dashboardSection__headerRow" },
-          React.createElement("span", null, label),
-          React.createElement("button", {
-            type: "button", className: "sectionToggleCircle", onClick: () => toggle(key),
-          }, sect[key] ? "+" : "-")
-        )
-      ),
+      CompanyStep, { key, title: label, open: !sect[key], onToggle: () => toggle(key) },
       !sect[key] && React.createElement("div", { className: "dashboardSection__body" }, body)
     );
 
@@ -16491,7 +16650,8 @@ body, * {
   color: inherit;
 }
 /* ── Company page: setup stepper and section cards ── */
-.companySetup{
+/* On :root too, so a Company-style section looks the same on any page. */
+:root, .companySetup{
   --cs-paper: #F9F9F7;
   --cs-card: #FFFFFF;
   --cs-ink: #1F1E1D;
@@ -19566,6 +19726,382 @@ body, * {
 .gasStatusSelect:hover {
   border-color: #F4845F;
 }
+/* ── Dashboard numbers ─────────────────────────────────────────────────── */
+.dashStats{ display: grid; gap: 14px; margin-bottom: 20px; }
+.dashStats__tiles{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.dashStats__cards{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 14px; }
+.statTile, .statCard{
+  background: #FFFFFF;
+  border: 1px solid rgba(31, 30, 29, 0.12);
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(31, 30, 29, 0.05);
+  color: #1F1E1D;
+}
+.statTile{ padding: 18px 18px 16px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.statTile__value{ font-size: 40px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.statTile__title{ font-size: 14px; color: rgba(31, 30, 29, 0.62); font-weight: 500; }
+.statTile__foot{ margin-top: 10px; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.statTile__chip{
+  flex: none; width: 22px; height: 22px; border-radius: 999px;
+  display: inline-grid; place-items: center; font-size: 12px; font-weight: 800;
+}
+.statTile__chip--up{ background: rgba(34, 139, 84, 0.14); color: #1F7A4A; }
+.statTile__chip--down{ background: rgba(192, 57, 43, 0.12); color: #B23A2E; }
+.statTile__chip--flat{ background: #F1F0EC; color: rgba(31, 30, 29, 0.62); }
+.statTile__note{ font-size: 12.5px; color: rgba(31, 30, 29, 0.62); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.statTile__delta{ font-weight: 700; }
+.statTile__delta--up{ color: #1F7A4A; }
+.statTile__delta--down{ color: #B23A2E; }
+.statTile__delta--flat{ color: #1F1E1D; }
+
+.statCard{ padding: 16px 18px 18px; min-width: 0; }
+.statCard--lift{ transition: transform 200ms cubic-bezier(.2,.8,.2,1), box-shadow 200ms ease; }
+.statCard--lift:hover{ transform: translateY(-3px); box-shadow: 0 10px 24px rgba(31, 30, 29, 0.10); }
+.statCard__head{
+  display: flex; align-items: center; justify-content: space-between; width: 100%;
+  background: none; border: none; padding: 0; margin: 0 0 8px; cursor: pointer;
+  font: inherit; color: inherit; text-align: left; border-radius: 6px;
+}
+.statCard__head:focus-visible{ outline: 2px solid #F4845F; outline-offset: 3px; }
+.statCard__title{ font-size: 13px; font-weight: 600; color: rgba(31, 30, 29, 0.62); }
+.statCard__chevron{ font-size: 22px; line-height: 1; color: rgba(31, 30, 29, 0.45); transition: transform 160ms ease, color 160ms ease; }
+.statCard__head:hover .statCard__chevron{ transform: translateX(3px); color: #C9603D; }
+.statCard__big{ font-size: 32px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.statCard__desc{ margin: 2px 0 0; font-size: 13px; color: rgba(31, 30, 29, 0.62); }
+
+.weekBars{ display: flex; align-items: flex-end; gap: 8px; height: 132px; margin-top: 14px; }
+.weekBars__col{ flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.weekBars__count{ font-size: 11px; font-weight: 700; color: rgba(31, 30, 29, 0.62); font-variant-numeric: tabular-nums; }
+.weekBars__track{ flex: 1; width: 100%; display: flex; align-items: flex-end; }
+.weekBars__bar{
+  width: 100%; border-radius: 7px 7px 3px 3px; background: rgba(244, 132, 95, 0.28);
+  transition: height 700ms cubic-bezier(.2,.9,.25,1.15);
+}
+.weekBars__bar--today{ background: #F4845F; }
+.weekBars__col:hover .weekBars__bar{ background: #EE7550; }
+.weekBars__label{ font-size: 11px; font-weight: 600; color: rgba(31, 30, 29, 0.62); white-space: nowrap; }
+
+.statCard__split{ display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 22px; }
+.statCard__listSide{ border-left: 1px solid rgba(31, 30, 29, 0.12); padding-left: 20px; min-width: 0; }
+.returnsCurve{ display: block; width: 100%; height: 110px; margin-top: 12px; overflow: visible; }
+.returnsCurve__line{
+  stroke: #F4845F; stroke-width: 2.5; stroke-linecap: round;
+  stroke-dasharray: 1; stroke-dashoffset: 1;
+  transition: stroke-dashoffset 1200ms cubic-bezier(.4,0,.2,1);
+}
+.returnsCurve__area{ opacity: 0; transition: opacity 900ms ease 400ms; }
+.statCard--seen .returnsCurve__line{ stroke-dashoffset: 0; }
+.statCard--seen .returnsCurve__area{ opacity: 1; }
+.returnsCurve__axis{ display: flex; justify-content: space-between; margin-top: 6px; font-size: 11px; font-weight: 600; color: rgba(31, 30, 29, 0.55); }
+
+.nextPickups{ list-style: none; margin: 12px 0 0; padding: 0; position: relative; }
+.nextPickups::before{
+  content: ""; position: absolute; left: 5px; top: 8px; bottom: 8px; width: 2px;
+  background: rgba(31, 30, 29, 0.10); border-radius: 2px;
+}
+.nextPickups__item{
+  position: relative; padding: 0 0 14px 22px;
+  opacity: 0; transform: translateY(8px);
+  transition: opacity 450ms ease, transform 450ms cubic-bezier(.2,.8,.2,1);
+}
+.nextPickups__item:last-child{ padding-bottom: 0; }
+.statCard--seen .nextPickups__item{ opacity: 1; transform: none; }
+.nextPickups__dot{
+  position: absolute; left: 0; top: 4px; width: 12px; height: 12px; border-radius: 999px;
+  background: #FFFFFF; border: 2px solid #F4845F;
+}
+.nextPickups__item:first-child .nextPickups__dot{ background: #F4845F; }
+.nextPickups__when{ font-size: 12px; font-weight: 700; color: #C9603D; }
+.nextPickups__who{ font-size: 14px; font-weight: 600; color: #1F1E1D; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nextPickups__what{ font-size: 12px; color: rgba(31, 30, 29, 0.62); }
+
+@media (max-width: 1100px){
+  .dashStats__cards{ grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 767px){
+  .dashStats__tiles{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .statTile{ padding: 14px; }
+  .statTile__value{ font-size: 32px; }
+  .statTile__note{ white-space: normal; }
+  .statCard__split{ grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .statCard__listSide{ border-left: none; padding-left: 0; border-top: 1px solid rgba(31, 30, 29, 0.12); padding-top: 16px; }
+}
+
+/* ── Company setup stepper ─────────────────────────────────────────────── */
+.companyStepper{ padding: 18px 18px 14px; overflow: visible; }
+.companyStepper__top{ display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.companyStepper__label{ font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--cs-muted); }
+.companyStepper__count{ font-size: 15px; font-weight: 600; color: var(--cs-ink); margin-top: 2px; }
+.companyStepper__pct{ font-size: 24px; font-weight: 800; letter-spacing: -0.02em; color: var(--cs-ink); font-variant-numeric: tabular-nums; }
+.companyStepper__bar{ height: 8px; border-radius: 999px; background: #F1F0EC; overflow: hidden; margin-bottom: 18px; }
+.companyStepper__fill{ display: block; height: 100%; border-radius: 999px; background: var(--cs-terra); transition: width 600ms cubic-bezier(.2,.8,.2,1); }
+.companyStepper__list{ display: grid; grid-template-columns: repeat(var(--steps, 8), minmax(0, 1fr)); gap: 0; min-width: 0; }
+.companyStepper__item{ position: relative; display: block; min-width: 0; }
+.companyStepper__item + .companyStepper__item::before{
+  content: ""; position: absolute; top: 16px; left: calc(-50% + 22px); right: calc(50% + 22px);
+  width: auto; height: 2px; margin: 0; border-radius: 2px; background: var(--cs-line);
+  transition: background 300ms ease;
+}
+.companyStepper__item--done + .companyStepper__item::before,
+.companyStepper__item--skipped + .companyStepper__item::before{ background: var(--cs-ink); }
+.companyStepper__step{
+  display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%;
+  padding: 0 4px 6px; border: none; border-radius: 10px; background: none;
+  white-space: normal; text-align: center;
+}
+.companyStepper__step:hover{ background: none; }
+.companyStepper__step:hover .companyStepper__mark{ border-color: var(--cs-terra); }
+.companyStepper__step--current{ background: none; border: none; }
+.companyStepper__mark{ width: 34px; height: 34px; font-size: 13px; transition: background 200ms ease, border-color 200ms ease, box-shadow 200ms ease; }
+.companyStepper__step--current .companyStepper__mark{ animation: stepperRing 2.2s ease-out infinite; }
+.companyStepper__step--at:not(.companyStepper__step--current) .companyStepper__mark{ box-shadow: 0 0 0 3px var(--cs-terra-soft); border-color: var(--cs-terra); }
+.companyStepper__text{ display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.companyStepper__name{ font-size: 12.5px; font-weight: 600; line-height: 1.3; color: var(--cs-ink); }
+.companyStepper__step--todo:not(.companyStepper__step--current) .companyStepper__name{ color: var(--cs-muted); font-weight: 500; }
+.companyStepper__state{ font-size: 11px; color: var(--cs-muted); }
+.companyStepper__step--current .companyStepper__state{ color: #C9603D; font-weight: 700; }
+.companyStepper__nav{
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--cs-line);
+}
+.companyStepper__navAt{ font-size: 12.5px; color: var(--cs-muted); }
+.companyStepper__navBtn{
+  font: inherit; font-size: 13px; font-weight: 600; padding: 7px 16px; border-radius: 8px; cursor: pointer;
+  background: var(--cs-card); color: var(--cs-ink); border: 1px solid var(--cs-line);
+}
+.companyStepper__navBtn:hover:not(:disabled){ border-color: var(--cs-terra); background: var(--cs-terra-soft); }
+.companyStepper__navBtn--next{ background: var(--cs-terra); border-color: var(--cs-terra); }
+.companyStepper__navBtn--next:hover:not(:disabled){ background: #EE7550; border-color: #EE7550; }
+.companyStepper__navBtn:disabled{ opacity: 0.4; cursor: default; }
+.companyStepper__navBtn:focus-visible{ outline: 2px solid var(--cs-terra); outline-offset: 2px; }
+@keyframes stepperRing{
+  0%   { box-shadow: 0 0 0 0 rgba(244, 132, 95, 0.45); }
+  70%  { box-shadow: 0 0 0 9px rgba(244, 132, 95, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(244, 132, 95, 0); }
+}
+/* Narrow: the steps run down, joined by a line on the left. */
+@media (max-width: 900px){
+  .companyStepper__list{ grid-template-columns: minmax(0, 1fr); }
+  .companyStepper__item + .companyStepper__item::before{
+    top: -10px; bottom: auto; left: 22px; right: auto; width: 2px; height: 20px;
+  }
+  .companyStepper__item + .companyStepper__item{ margin-top: 10px; }
+  .companyStepper__step{ flex-direction: row; align-items: center; gap: 12px; padding: 4px 6px; text-align: left; }
+  .companyStepper__mark{ flex: none; }
+  .companyStepper__name{ font-size: 14px; }
+}
+
+/* ── Lists: tables in cards, statuses as pills ─────────────────────────── */
+.dashboardSection{
+  background: #FFFFFF;
+  border: 1px solid rgba(31, 30, 29, 0.12);
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(31, 30, 29, 0.05);
+}
+.dashboardSection__header{
+  background: #FFFFFF;
+  color: #1F1E1D;
+  padding: 14px 18px;
+  font-size: 15px;
+  font-weight: 700;
+  border-bottom: 1px solid rgba(31, 30, 29, 0.10);
+}
+.dashboardTable th{
+  background: #F9F9F7;
+  color: rgba(31, 30, 29, 0.62);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 11px 14px;
+  border-bottom: 1px solid rgba(31, 30, 29, 0.12);
+}
+.dashboardTable td{
+  padding: 12px 14px;
+  font-size: 13.5px;
+  border-bottom: 1px solid rgba(31, 30, 29, 0.08);
+  vertical-align: middle;
+}
+/* Was light text for the old dark header. */
+.dashboardSection__header .autoTextNote{ color: rgba(31, 30, 29, 0.55); }
+.dashboardTable tbody tr:nth-child(even){ background: transparent; }
+.dashboardTable tbody tr{ transition: background 120ms ease; }
+.dashboardTable tbody tr:hover{ background: rgba(244, 132, 95, 0.06); }
+
+/* Same colours as before, as a pill with a dot. Rentals that are live (On
+   Rent, an open agreement, a customer return waiting to be checked) pulse. */
+.fleetStatus--available, .fleetStatus--onRent, .fleetStatus--cleaning, .fleetStatus--pm, .fleetStatus--damaged{
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 10px 2px 8px; border-radius: 999px;
+  font-size: 12px; font-weight: 700; line-height: 1.6;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+.fleetStatus--available::before, .fleetStatus--onRent::before, .fleetStatus--cleaning::before,
+.fleetStatus--pm::before, .fleetStatus--damaged::before,
+.rentalAgreementBadge::before{
+  content: ""; flex: none; width: 6px; height: 6px; border-radius: 999px; background: currentColor;
+}
+.rentalAgreementBadge{
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 10px 2px 8px; border-radius: 999px;
+}
+.rentalAgreementBadge--meta{ padding: 3px 16px 3px 12px; gap: 9px; }
+.rentalAgreementBadge--meta::before{ width: 9px; height: 9px; }
+.fleetStatus--onRent::before,
+.rentalAgreementBadge--open::before,
+.rentalAgreementBadge--customerReturn::before{ animation: statusPulse 1.8s ease-out infinite; }
+@keyframes statusPulse{
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
+  80%  { box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* ── Sidebar ───────────────────────────────────────────────────────────── */
+.app{ transition: grid-template-columns 220ms ease; }
+.sidebar{ gap: 14px; transition: width 220ms ease; }
+.sidebar__top{ display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 14px 4px 28px; min-height: 34px; }
+.sidebar__wordmark{ font-size: 22px; font-weight: 800; letter-spacing: -0.03em; color: #F9F9F7; }
+.sidebar__collapse{
+  width: 30px; height: 30px; flex: none; display: grid; place-items: center;
+  border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.14); background: transparent;
+  color: rgba(255, 255, 255, 0.7); cursor: pointer; padding: 0;
+}
+.sidebar__collapse:hover{ background: rgba(244, 132, 95, 0.16); color: #F9F9F7; }
+.sidebar__collapse:focus-visible, .nav__item:focus-visible, .navUser:focus-visible{ outline: 2px solid #F4845F; outline-offset: 2px; }
+.nav__marker{
+  position: absolute; top: 0; z-index: 0; pointer-events: none;
+  border-radius: 6px 0 0 6px; border-left: 3px solid #F4845F;
+  background: rgba(244, 132, 95, 0.22);
+  transition: transform 260ms cubic-bezier(.3,.8,.3,1), height 200ms ease, width 220ms ease;
+}
+.nav__item{ position: relative; z-index: 1; gap: 12px; }
+.nav__item--active{ background: transparent; border-left-color: transparent; }
+.nav__icon{ flex: none; opacity: 0.8; }
+.nav__item--active .nav__icon{ opacity: 1; color: #F4845F; }
+.nav__label{ flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav__badge{
+  flex: none; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
+  display: inline-grid; place-items: center;
+  background: #F4845F; color: #1F1E1D; font-size: 11px; font-weight: 800;
+}
+/* Stays at the bottom of the window when the menu is taller than it. The
+   sidebar's own 16px bottom padding is taken back so no strip shows below. */
+.sidebar__foot{
+  margin-top: auto; padding: 12px 14px 20px; border-top: 1px solid rgba(255, 255, 255, 0.08);
+  position: sticky; bottom: -16px; z-index: 2; background: #1F1E1D;
+}
+.navUser{
+  display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px;
+  color: #F9F9F7; text-decoration: none; min-width: 0;
+}
+.navUser:hover{ background: rgba(244, 132, 95, 0.14); }
+.navUser__avatar{
+  flex: none; width: 34px; height: 34px; border-radius: 999px; display: grid; place-items: center;
+  background: #F4845F; color: #1F1E1D; font-size: 13px; font-weight: 800;
+}
+.navUser__text{ display: flex; flex-direction: column; min-width: 0; }
+.navUser__name{ font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.navUser__role{ font-size: 11.5px; color: rgba(255, 255, 255, 0.55); }
+
+/* Folded to icons: by choice, or always between 768 and 900px wide. */
+@media (min-width: 768px){
+  .app--rail{ grid-template-columns: 76px 1fr; }
+  .app--rail .sidebar{ width: 76px; }
+}
+.sidebar--collapsed .sidebar__top{ flex-direction: column; padding: 2px 0 4px; }
+.sidebar--collapsed .sidebar__wordmark{ display: none; }
+.sidebar--collapsed .sidebar__section{ padding-left: 10px; }
+.sidebar--collapsed .sidebar__sectionHeader{ font-size: 0; height: 1px; margin: 4px 14px 8px 4px; background: rgba(255, 255, 255, 0.10); }
+.sidebar--collapsed .nav__label{ display: none; }
+.sidebar--collapsed .nav__item{ justify-content: center; padding: 10px 0; }
+.sidebar--collapsed .nav__badge{ position: absolute; top: 2px; right: 4px; min-width: 16px; height: 16px; font-size: 10px; padding: 0 4px; }
+.sidebar--collapsed .sidebar__foot{ padding: 12px 8px 20px; }
+.sidebar--collapsed .navUser{ justify-content: center; padding: 6px 0; }
+.sidebar--collapsed .navUser__text{ display: none; }
+@media (min-width: 768px) and (max-width: 900px){
+  .sidebar__collapse{ display: none; }
+  .sidebar__wordmark{ display: none; }
+  .sidebar__section{ padding-left: 10px; }
+  .nav__item{ justify-content: center; padding: 10px 0; }
+  .nav__badge{ position: absolute; top: 2px; right: 4px; min-width: 16px; height: 16px; font-size: 10px; padding: 0 4px; }
+  .sidebar__foot{ padding: 12px 8px 20px; }
+  .navUser{ justify-content: center; padding: 6px 0; }
+  .navUser__text{ display: none; }
+}
+
+/* ── Mobile menu: slides in as a sheet ─────────────────────────────────── */
+@media (max-width: 767px){
+  .mobileNavOverlay{ animation: mobileNavFade 200ms ease both; }
+  .mobileNavDrawer{ animation: mobileNavSlide 260ms cubic-bezier(.2,.8,.2,1) both; box-shadow: 8px 0 30px rgba(0, 0, 0, 0.25); }
+  .mobileNavItem{ gap: 12px; }
+  .mobileNavItem__label{ flex: 1; min-width: 0; }
+  .mobileNavItem--active .nav__icon{ opacity: 1; color: #F4845F; }
+  .mobileNavItem:focus-visible{ outline: 2px solid #F4845F; outline-offset: -2px; }
+  .mobileNavFoot{ padding: 12px 14px 0; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+}
+@keyframes mobileNavFade{ from{ opacity: 0; } to{ opacity: 1; } }
+@keyframes mobileNavSlide{ from{ transform: translateX(-100%); } to{ transform: none; } }
+
+@media (prefers-reduced-motion: reduce){
+  .companyStepper__step--current .companyStepper__mark,
+  .fleetStatus--onRent::before, .rentalAgreementBadge--open::before, .rentalAgreementBadge--customerReturn::before,
+  .mobileNavOverlay, .mobileNavDrawer{ animation: none; }
+  .weekBars__bar, .returnsCurve__line, .returnsCurve__area, .nextPickups__item, .nav__marker,
+  .statCard--lift, .companyStepper__fill, .app, .sidebar{ transition: none; }
+}
+
+/* ── Every dropdown in the Company style ───────────────────────────────── */
+.dashboardGrid > .companyStep{ margin-bottom: 0; }
+.companyStep__body > .dashboardSection__body{ overflow-x: auto; }
+
+/* Vehicle status groups: the same colours, as a light tint of each, in a
+   card of their own. The whole bar opens and closes the group. */
+.fleetGroup .fleetGroupHeader{
+  --fg: #6B6A66;
+  gap: 10px;
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--fg) 11%, #FFFFFF);
+  color: color-mix(in srgb, var(--fg) 72%, #1F1E1D);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  cursor: pointer;
+  user-select: none;
+  transition: background 120ms ease;
+}
+.fleetGroup .fleetGroupHeader:hover{ background: color-mix(in srgb, var(--fg) 17%, #FFFFFF); }
+.fleetGroup .fleetGroupHeader:focus-visible{ outline: 2px solid #F4845F; outline-offset: -2px; }
+.fleetGroup .fleetGroupHeader::before{
+  content: ""; flex: none; width: 8px; height: 8px; border-radius: 999px; background: var(--fg);
+}
+.fleetGroup .fleetGroupHeader > span:not(.fleetGroupCount):not(.fleetGroupChevron){ flex: 1 1 auto; }
+.fleetGroup .fleetGroupHeader > .fleetGroupCount{ order: 2; }
+.fleetGroup .fleetGroupHeader > .fleetGroupChevron{ order: 3; }
+.fleetGroup .fleetGroupHeader--available   { --fg: #22c55e; }
+.fleetGroup .fleetGroupHeader--cleaning    { --fg: #e6a800; }
+.fleetGroup .fleetGroupHeader--readyReturns{ --fg: #ea580c; }
+.fleetGroup .fleetGroupHeader--pm          { --fg: #7b5ea7; }
+.fleetGroup .fleetGroupHeader--damaged     { --fg: #c0392b; }
+.fleetGroup .fleetGroupHeader--onRent      { --fg: #4a6fa5; }
+.fleetGroup .fleetGroupCount{
+  background: color-mix(in srgb, var(--fg) 20%, #FFFFFF);
+  color: inherit;
+  border-radius: 999px;
+  padding: 1px 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.fleetGroupChevron{ flex: none; color: rgba(31, 30, 29, 0.55); font-size: 14px; line-height: 1; }
+.fleetGroup{
+  background: #FFFFFF;
+  border: 1px solid rgba(31, 30, 29, 0.12);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.fleetGroup:last-child{ margin-bottom: 0; border-bottom: 1px solid rgba(31, 30, 29, 0.12); }
+.fleetGroup:has(> .fleetGroupHeader + *) .fleetGroupHeader{ border-bottom: 1px solid rgba(31, 30, 29, 0.10); }
+.fleetGroup .dashboardTable{ border: none; border-radius: 0; }
 `;
 document.head.appendChild(style);
 
