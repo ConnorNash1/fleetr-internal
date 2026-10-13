@@ -575,33 +575,35 @@ function requestReservationConfirmation(resCode) {
 // suffix is what the worker adds after the wording, as it will look in the
 // preview: on the confirmation the reservation code, the app link and the
 // cancel link; on the Pre-Rental Check the app link and the cancel link; on
-// the return reminder the fuel note and the app link; nothing on the no-show
-// texts. The tokens are stand-ins of the real length.
+// the return reminder the fuel note and the app link; on the 2 hour no-show
+// text the app link; nothing on the next-day no-show text. The tokens are
+// stand-ins of the real length.
 const TEXT_SAMPLE_LINK = " Cancel: https://app.fleetr.ai/#c=XXXXXXXXXXXXXXXXXXXXXX";
 const TEXT_SAMPLE_APP_LINK = " App: https://app.fleetr.ai/#a=XXXXXXXXXXXXXXXXXXXXXX";
 const TEXT_SAMPLE_CODE = " Reservation code: ABC 123 456.";
+const TEXT_SAMPLE_RETURN_APP_LINK = " When you return, open the app to check the vehicle in: https://app.fleetr.ai/#a=XXXXXXXXXXXXXXXXXXXXXX";
 const TEXT_TEMPLATE_KINDS = [
   { kind: "confirmation", title: "Reservation confirmation", when: "Sent when a reservation is created.",
     suffix: TEXT_SAMPLE_CODE + TEXT_SAMPLE_APP_LINK + TEXT_SAMPLE_LINK, suffixNote: "the reservation code, the app link and the cancel link" },
   { kind: "pre_rental", title: "Pre-Rental Check", when: "Sent the day before pickup.",
     suffix: TEXT_SAMPLE_APP_LINK + TEXT_SAMPLE_LINK, suffixNote: "the app link and the cancel link" },
   { kind: "no_show_2hr", title: "No-show, after 2 hours", when: "Sent 2 hours after a pickup time when the customer has not arrived. [time] is the pickup time.",
-    suffix: "", suffixNote: "" },
+    suffix: TEXT_SAMPLE_APP_LINK, suffixNote: "the app link" },
   { kind: "no_show_24hr", title: "No-show, the next day", when: "Sent a day after the 2 hour no-show text, if the customer still has not arrived.",
     suffix: "", suffixNote: "" },
   { kind: "return_reminder", title: "Return reminder", when: "Sent the day before an open rental is due back. [date] and [time] are when it is due back. When the fuel level at pickup is known, a note asking for it back at that level is added after the wording.",
-    suffix: " Return fuel at Full to avoid a charge." + TEXT_SAMPLE_APP_LINK, suffixNote: "the fuel note and the app link" },
+    suffix: " Return fuel at Full to avoid a charge." + TEXT_SAMPLE_RETURN_APP_LINK, suffixNote: "the fuel note and the app link" },
 ];
-const TEXT_PLACEHOLDERS = ["[first name]", "[company]", "[location]", "[date]", "[time]"];
+const TEXT_PLACEHOLDERS = ["[first name]", "[company]", "[location]", "[date]", "[time]", "[branch phone]"];
 const TEXT_TEMPLATE_MAX = 240;
 // The insert buttons above a text box, in the order a text usually reads.
 const TEXT_PLACEHOLDER_BUTTONS = [
   ["First name", "[first name]"], ["Company", "[company]"], ["Location", "[location]"],
-  ["Date", "[date]"], ["Time", "[time]"],
+  ["Date", "[date]"], ["Time", "[time]"], ["Branch phone", "[branch phone]"],
 ];
 
 const fillTextTemplate = (template, values) =>
-  String(template).replace(/\[(first name|company|location|date|time)\]/gi,
+  String(template).replace(/\[(first name|company|location|date|time|branch phone)\]/gi,
     (m) => String(values[m.toLowerCase()] ?? ""));
 
 // The characters a plain text message can carry. One character outside this
@@ -1115,7 +1117,6 @@ const NAV_SECTIONS = [
   {
     header: "Branch",
     items: [
-      { label: "Setup", path: "/setup", setupOnly: true },
       { label: "Reports", path: "/reports" },
       { label: "Audit Log", path: "/audit-log" },
       { label: "Company", path: "/company" },
@@ -5871,7 +5872,9 @@ function FleetVehiclesPage() {
 
 // ─── FleetAdditionsPage ────────────────────────────────────────────────────────
 
-function FleetAdditionsPage() {
+// embedded draws only the add form, for the Vehicles step of the Company page,
+// and calls onAdded once each new vehicle is written.
+function FleetAdditionsPage({ embedded, onAdded } = {}) {
   const { fleet, setFleet, guardAction, archivedVehicles, setArchivedVehicles, currentUser } = React.useContext(AppContext);
   const { filtered, filterState } = useFleetFilter(fleet);
   const [activeTab,  setActiveTab]  = React.useState("add");
@@ -5956,7 +5959,9 @@ function FleetAdditionsPage() {
         currentRenter: null, dueBack: null, fileType: null,
       };
       setFleet((prev) => [...prev, newVehicle]);
-      runWrite(supabase.from("fleet").insert(newVehicle).then((res) => { console.log("fleet insert response:", res); if (res.error) console.warn("fleet insert error:", res.error); }), "fleet insert");
+      // The response is handed on, so runWrite has an error to read.
+      const written = runWrite(supabase.from("fleet").insert(newVehicle).then((res) => { console.log("fleet insert response:", res); if (res.error) console.warn("fleet insert error:", res.error); return res; }), "fleet insert");
+      if (onAdded) written.then(onAdded);
       setAddForm(BLANK_ADD);
       setTankCanonical(null);
       setPmCanonical(null);
@@ -6036,11 +6041,11 @@ function FleetAdditionsPage() {
     );
 
   return React.createElement(
-    "div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Additions and Deletions"),
-    React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement(FleetFilterBar, { filterState }),
-    React.createElement("div", { className: "aiSubTabs" },
+    "div", { className: embedded ? null : "page" },
+    !embedded && React.createElement("h1", { className: "page__title" }, "Additions and Deletions"),
+    !embedded && React.createElement("div", { className: "page__titleUnderline" }),
+    !embedded && React.createElement(FleetFilterBar, { filterState }),
+    !embedded && React.createElement("div", { className: "aiSubTabs" },
       [{ key: "add", label: "Add Vehicle" }, { key: "retire", label: "Retire Vehicle" }].map(({ key, label }) =>
         React.createElement("button", {
           key, type: "button",
@@ -6115,7 +6120,7 @@ function FleetAdditionsPage() {
       )
     ),
 
-    activeTab === "retire" && React.createElement(
+    !embedded && activeTab === "retire" && React.createElement(
       React.Fragment, null,
       React.createElement("section", { className: "dashboardSection" },
         React.createElement("div", { className: "dashboardSection__header" },
@@ -6776,9 +6781,114 @@ function ChangeRecoveryEmail({ account, onDone }) {
   );
 }
 
-function CompanyPage() {
-  const { currentUser } = React.useContext(AppContext);
+// ─── Company: setup, then settings ──────────────────────────────────────────
+// The steps, in order. Before launch the next unfinished one is open and
+// finishing it opens the next; afterwards the same sections hold the settings.
+const COMPANY_STEPS = [
+  { key: "branch",          title: "Branch" },
+  { key: "vehicle_classes", title: "Vehicle classes" },
+  { key: "rates",           title: "Rates" },
+  { key: "vehicles",        title: "Vehicles" },
+  { key: "protection",      title: "Protection and deductibles", skippable: true },
+  { key: "contract",        title: "Contract terms" },
+  { key: "listing",         title: "fleetr.ai listing", skippable: true },
+  { key: "staff",           title: "Staff", skippable: true },
+  { key: "launch",          title: "Launch", after: "Status" },
+];
+const STEP_STATE_WORDS = { done: "Done", skipped: "Skipped", todo: "Not started" };
+
+function CompanyStep({ id, n, title, state, open, onToggle, intro, skippable, onSkip, onUnskip, busy, showState, children }) {
+  const el = React.createElement;
+  return el("div", { id, className: "dashboardSection", style: { marginBottom: "16px", scrollMarginTop: "16px" } },
+    el("h2", {
+      role: "button", tabIndex: 0, "aria-expanded": open,
+      style: { cursor: "pointer", userSelect: "none", display: "flex", gap: "10px", alignItems: "baseline", flexWrap: "wrap" },
+      onClick: onToggle,
+      onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } },
+    },
+      el("span", null, `${open ? "\u25be" : "\u25b8"} ${n ? `${n}. ` : ""}${title}`),
+      showState && el("span", { className: "setupItem__state" }, STEP_STATE_WORDS[state])),
+    open && el(React.Fragment, null,
+      intro && el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, intro),
+      children,
+      showState && skippable && state === "todo" && el("div", { className: "closeRentalActions" },
+        el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: onSkip }, "Skip for now")),
+      showState && state === "skipped" && el("p", { className: "closeRentalHint" },
+        "Skipped for now. Finish it any time, or ",
+        el("button", { type: "button", className: "linkBtn", disabled: busy, onClick: onUnskip,
+          style: { background: "none", border: "none", padding: 0, color: "inherit", textDecoration: "underline", cursor: "pointer", font: "inherit" } },
+          "take it back into setup"), ".")));
+}
+
+// What the Vehicles step shows: how many there are, and the add form.
+function VehiclesStep({ onAdded }) {
+  const { fleet } = React.useContext(AppContext);
+  const el = React.createElement;
+  const byClass = {};
+  (fleet || []).forEach((v) => { const k = v.vehicleClass || "No class"; byClass[k] = (byClass[k] || 0) + 1; });
+  const total = (fleet || []).length;
+  return el(React.Fragment, null,
+    el("p", { className: "closeRentalHint" }, total
+      ? `${total} vehicle${total === 1 ? "" : "s"} so far: ${Object.entries(byClass).map(([k, n]) => `${n} ${k}`).join(", ")}. `
+      : "No vehicles yet. ",
+      el("a", { href: "#/fleet/vehicles" }, "See every vehicle"), "."),
+    el(FleetAdditionsPage, { embedded: true, onAdded }));
+}
+
+// The last step: what is left, and the Launch button.
+function LaunchStep() {
+  const { setup, refreshSetup, currentUser, guardAction } = React.useContext(AppContext);
   const isExec = roleAtLeast(currentUser?.role, "Exec");
+  const [busy, setBusy]   = React.useState(false);
+  const [error, setError] = React.useState("");
+  const el = React.createElement;
+  if (!setup) return null;
+  const left = setup.items.filter((i) => i.required && !i.done).length;
+
+  const launch = () => {
+    if (!window.confirm("Launch the company?\n\nYour branches that are switched on show on fleetr.ai and take bookings, texts start going to customers, and every test record made in setup mode is deleted. This cannot be undone, though the company can be paused afterwards.")) return;
+    setError("");
+    guardAction("company.launch", async () => {
+      setBusy(true);
+      const { data, error: err } = await supabase.rpc("launch_company");
+      setBusy(false);
+      if (err || !data || !data.ok) {
+        setError(err ? LAUNCH_REASONS.network : (LAUNCH_REASONS[data && data.reason] || "That did not work."));
+        await refreshSetup();
+        throw new Error(err ? "network" : (data && data.reason) || "refused");
+      }
+      // The test records are gone from the database; reloading drops them
+      // from every screen at once.
+      window.location.hash = "/dashboard";
+      window.location.reload();
+    }, { description: "Launched the company.", tableName: "operators" });
+  };
+
+  return el(React.Fragment, null,
+    el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+      "Until you launch, fleetr.ai shows none of your branches, no texts go to customers, and anything entered is a test record, removed at launch."),
+    error && el("div", { className: "loginError" }, error),
+    el("ul", { className: "setupList" }, setup.items.map((i) => el(SetupItemRow, { key: i.key, item: i }))),
+    el("p", { className: "closeRentalHint" }, setup.suspended
+      ? LAUNCH_REASONS.suspended
+      : left === 0 ? "Every required step is done." : `${left} required step${left === 1 ? "" : "s"} left.`),
+    isExec
+      ? el("button", {
+          type: "button", className: "loginBtn", style: { width: "auto", padding: "10px 18px" },
+          disabled: busy || !setup.ready || setup.suspended, onClick: launch,
+        }, busy ? "Launching..." : "Launch")
+      : el("p", { className: "closeRentalHint" }, "An Exec launches the company once every required step is done."));
+}
+
+function CompanyPage() {
+  const { currentUser, setup, refreshSetup } = React.useContext(AppContext);
+  const isExec = roleAtLeast(currentUser?.role, "Exec");
+  // Suggested sales tax, by branch, for a branch whose tax is not set yet.
+  const [taxSuggestions, setTaxSuggestions] = React.useState({});
+  // Which steps are open, and which step was next last time it was worked out.
+  const [openSteps, setOpenSteps] = React.useState({});
+  const nextRef = React.useRef(undefined);
+  const [stepBusy, setStepBusy] = React.useState(false);
 
   const [branches, setBranches] = React.useState([]);
   const [gas,      setGas]      = React.useState([]);
@@ -6805,6 +6915,11 @@ function CompanyPage() {
       supabase.from("locations").select("id,timeZone,salesTaxesSetAt"),
     ]);
     if (!bs.error) setBranchSetup(Object.fromEntries((bs.data || []).map((b) => [b.id, b])));
+    if (!bs.error) {
+      const unset = (bs.data || []).filter((b) => !b.salesTaxesSetAt);
+      const found = await Promise.all(unset.map((b) => call("suggested_sales_tax", { p_location_id: b.id })));
+      setTaxSuggestions(Object.fromEntries(unset.map((b, i) => [b.id, Array.isArray(found[i]) ? found[i] : null])));
+    }
     if (ov.ok)  setBranches(ov.branches || []);
     if (gs.ok)  setGas(gs.branches || []);
     if (tx.ok)  setTaxes(tx.branches || []);
@@ -6814,12 +6929,56 @@ function CompanyPage() {
 
   React.useEffect(() => { if (isExec) refresh(); }, [isExec, refresh]);
 
+  // Anything saved can finish a step, and an address can set the units, so
+  // both are read again.
+  const changed = React.useCallback(async () => {
+    await Promise.all([refreshSetup(), loadCompanyUnits(currentUser)]);
+  }, [refreshSetup, currentUser]);
+  const refreshAll = React.useCallback(async () => { await refresh(); await changed(); }, [refresh, changed]);
+
+  const launched = !!(setup && setup.launched);
+  const stepState = (key) => {
+    if (key === "launch") return launched ? "done" : "todo";
+    const it = setup && setup.items.find((i) => i.key === key);
+    return !it || it.done ? "done" : it.skipped ? "skipped" : "todo";
+  };
+  const nextKey = !setup || launched ? null
+    : (COMPANY_STEPS.find((st) => st.key !== "launch" && stepState(st.key) === "todo") || { key: "launch" }).key;
+
+  // The next step opens by itself: on arrival, and whenever the step that was
+  // next is finished or skipped while it is open.
+  React.useEffect(() => {
+    if (!setup) return;
+    const prev = nextRef.current;
+    nextRef.current = nextKey;
+    if (prev === nextKey || !nextKey) return;
+    if (prev === undefined) { setOpenSteps({ [nextKey]: true }); return; }
+    setOpenSteps((o) => {
+      if (!o[prev]) return o;
+      const out = { ...o, [prev]: false, [nextKey]: true };
+      setTimeout(() => {
+        const node = document.getElementById(`company-step-${nextKey}`);
+        if (node && node.scrollIntoView) node.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 0);
+      return out;
+    });
+  }, [setup, nextKey]);
+
+  const setSkip = async (step, skipped) => {
+    setStepBusy(true);
+    const { data, error: err } = await supabase.rpc("set_setup_skip", { p_step: step, p_skipped: skipped });
+    setStepBusy(false);
+    if (err || !data || !data.ok) { setError("That did not work. Try again."); return; }
+    await refreshSetup();
+  };
+
   const run = async (label, fn, args) => {
     setBusy(label); setError(""); setNotice("");
     const res = await call(fn, args);
     setBusy("");
     if (!res.ok) { setError(COMPANY_REASONS[res.reason] || res.message || "That did not work."); return false; }
     await refresh();
+    await changed();
     return true;
   };
 
@@ -6832,143 +6991,146 @@ function CompanyPage() {
     );
   }
 
-  const actingName = acting && acting.name;
-
-  return React.createElement(
-    "div", { className: "page" },
-    React.createElement("h1", null, "Company"),
-    error  && React.createElement("div", { className: "loginError" }, error),
-    notice && React.createElement("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
-
-    // ── Live, paused or in setup ──
-    React.createElement(CompanyStatusSection),
-
-    // ── Acting branch ──
-    React.createElement(
-      "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
-      React.createElement("h2", null, "Acting branch"),
-      React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-        actingName
-          ? `You are working in ${actingName}. Reservations, fleet and settings all show that branch.`
-          : "Choose a branch to work in. Until you do, the operational screens have nothing to show, because you are not standing in any branch."),
-      React.createElement(
-        "div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" } },
-        React.createElement("select", {
-          className: "resFormInput",
-          style: { width: "auto" },
-          value: (acting && acting.locationId) || "",
-          onChange: (e) => run("acting", "set_acting_location", { location_id: e.target.value || null }),
-        },
-          React.createElement("option", { value: "" }, "No branch selected"),
-          branches.filter((b) => b.active).map((b) =>
-            React.createElement("option", { key: b.id, value: b.id }, b.name))
+  const el = React.createElement;
+  // Every step's body, before launch and after. The list parts come from
+  // CompanyListsSections, drawn once so its data is shared across steps.
+  const stepBody = (key, parts) => {
+    switch (key) {
+      case "branch": return el(React.Fragment, null,
+        el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "address", onSaved: refreshAll, defaultOpen: !launched }),
+        el(CompanyUnitsSection, { key: `${fuelUnit()}-${distanceUnit()}`, onSaved: () => { setNotice("Units saved."); changed(); } }),
+        React.createElement(
+          CompanySection, { title: "Sales tax", defaultOpen: !launched },
+          React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+            "Up to two taxes per branch, each with a name and a rate, for example HST 15%, or GST 5% and PST 7%. They are added to every charge, and locked onto a rental agreement when the customer picks up, so a later change here does not reach rentals already out. A branch with no sales tax still needs Save pressed with both left blank, so it is set on purpose."),
+          React.createElement(
+            "div", { style: { overflowX: "auto" } },
+            React.createElement(
+              "table", { className: "dashboardTable", style: { minWidth: "620px" } },
+              React.createElement("thead", null, React.createElement("tr", null,
+                ["Branch", "First tax", "Second tax", ""].map((h) => React.createElement("th", { key: h }, h)))),
+              React.createElement("tbody", null, taxes.filter((t) => t.active).map((t) =>
+                React.createElement(SalesTaxRow, { key: t.locationId, row: t, busy, onSave: run,
+                  isSet: !!branchSetup[t.locationId]?.salesTaxesSetAt, suggestion: taxSuggestions[t.locationId] }))))
+          )
         ),
-        busy === "acting" && React.createElement("span", { style: { opacity: 0.6, fontSize: "0.85rem" } }, "Switching…")
-      )
-    ),
-
-    // ── Branches ──
-    React.createElement(
-      CompanySection, { title: "Branches", style: { marginBottom: "24px" } },
-      React.createElement(
-        "div", { style: { overflowX: "auto" } },
         React.createElement(
-          "table", { className: "dashboardTable", style: { minWidth: "700px" } },
-          React.createElement("thead", null, React.createElement("tr", null,
-            ["Branch", "Staff", "Status", ""].map((h) => React.createElement("th", { key: h }, h)))),
-          React.createElement("tbody", null, branches.map((b) =>
-            React.createElement("tr", { key: b.id, style: b.active ? null : { opacity: 0.5 } },
-              React.createElement("td", null, b.name,
-                b.isDefault && React.createElement("span", {
-                  style: { marginLeft: "8px", fontSize: "0.7rem", opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em" },
-                }, "default")),
-              React.createElement("td", null, String(b.staff)),
-              React.createElement("td", null, b.active ? "Open" : "Closed"),
-              React.createElement("td", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
-                React.createElement("button", {
-                  className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
-                  onClick: () => {
-                    const name = window.prompt("New name for this branch", b.name);
-                    if (name == null) return;
-                    run("rename", "rename_location", { location_id: b.id, new_name: name });
-                  },
-                }, "Rename"),
-                !b.isDefault && b.active && React.createElement("button", {
-                  className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
-                  onClick: () => run("default", "set_default_location", { location_id: b.id }),
-                }, "Make default"),
-                b.active
-                  ? React.createElement("button", {
+          CompanySection, { title: "Branches", style: { marginBottom: "24px" } },
+          React.createElement(
+            "div", { style: { overflowX: "auto" } },
+            React.createElement(
+              "table", { className: "dashboardTable", style: { minWidth: "700px" } },
+              React.createElement("thead", null, React.createElement("tr", null,
+                ["Branch", "Staff", "Status", ""].map((h) => React.createElement("th", { key: h }, h)))),
+              React.createElement("tbody", null, branches.map((b) =>
+                React.createElement("tr", { key: b.id, style: b.active ? null : { opacity: 0.5 } },
+                  React.createElement("td", null, b.name,
+                    b.isDefault && React.createElement("span", {
+                      style: { marginLeft: "8px", fontSize: "0.7rem", opacity: 0.7, textTransform: "uppercase", letterSpacing: "0.08em" },
+                    }, "default")),
+                  React.createElement("td", null, String(b.staff)),
+                  React.createElement("td", null, b.active ? "Open" : "Closed"),
+                  React.createElement("td", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
+                    React.createElement("button", {
                       className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
-                      // The refusals are the database's to make: a branch with
-                      // staff, the default, or the last one open. Hiding the
-                      // button would mean guessing all three here, and guessing
-                      // wrong reads as the feature being broken.
-                      onClick: () => run("close", "set_location_active", { location_id: b.id, is_active: false }),
-                    }, "Close")
-                  : React.createElement("button", {
+                      onClick: () => {
+                        const name = window.prompt("New name for this branch", b.name);
+                        if (name == null) return;
+                        run("rename", "rename_location", { location_id: b.id, new_name: name });
+                      },
+                    }, "Rename"),
+                    !b.isDefault && b.active && React.createElement("button", {
                       className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
-                      onClick: () => run("open", "set_location_active", { location_id: b.id, is_active: true }),
-                    }, "Reopen"))))))
-      ),
-      React.createElement(
-        "div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "16px", alignItems: "center" } },
-        React.createElement("input", {
-          className: "resFormInput", style: { width: "auto" }, placeholder: "New branch name",
-          value: newName, onChange: (e) => setNewName(e.target.value),
-        }),
-        React.createElement("button", {
-          className: "loginBtn", style: { width: "auto", padding: "8px 14px" },
-          onClick: async () => {
-            if (await run("create", "create_location", { location_name: newName })) {
-              setNewName(""); setNotice("Branch opened.");
-            }
-          },
-        }, "Open a branch")
-      )
-    ),
+                      onClick: () => run("default", "set_default_location", { location_id: b.id }),
+                    }, "Make default"),
+                    b.active
+                      ? React.createElement("button", {
+                          className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+                          // The refusals are the database's to make: a branch with
+                          // staff, the default, or the last one open. Hiding the
+                          // button would mean guessing all three here, and guessing
+                          // wrong reads as the feature being broken.
+                          onClick: () => run("close", "set_location_active", { location_id: b.id, is_active: false }),
+                        }, "Close")
+                      : React.createElement("button", {
+                          className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+                          onClick: () => run("open", "set_location_active", { location_id: b.id, is_active: true }),
+                        }, "Reopen"))))))
+          ),
+          React.createElement(
+            "div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "16px", alignItems: "center" } },
+            React.createElement("input", {
+              className: "resFormInput", style: { width: "auto" }, placeholder: "New branch name",
+              value: newName, onChange: (e) => setNewName(e.target.value),
+            }),
+            React.createElement("button", {
+              className: "loginBtn", style: { width: "auto", padding: "8px 14px" },
+              onClick: async () => {
+                if (await run("create", "create_location", { location_name: newName })) {
+                  setNewName(""); setNotice("Branch opened.");
+                }
+              },
+            }, "Open a branch")
+          )
+        ),
+        launched && parts.pickup,
+        launched && React.createElement(
+          CompanySection, { title: "Fuel pricing" },
+          React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+            "Every branch at once. These two change what future customers are charged, so each edit is recorded against the branch it applies to, not the one you are acting in."),
+          React.createElement(
+            "div", { style: { overflowX: "auto" } },
+            React.createElement(
+              "table", { className: "dashboardTable", style: { minWidth: "620px" } },
+              React.createElement("thead", null, React.createElement("tr", null,
+                ["Branch", "Markup %", "Fuel prices", ""].map((h) => React.createElement("th", { key: h }, h)))),
+              React.createElement("tbody", null, gas.filter((g) => g.active).map((g) =>
+                React.createElement(GasRow, { key: g.locationId, row: g, busy, onSave: run }))))
+          )
+        ));
+      case "vehicle_classes": return parts.classes;
+      case "rates": return launched ? el(React.Fragment, null, parts.rates, parts.sources) : parts.setupRates;
+      case "vehicles": return el(VehiclesStep, { onAdded: changed });
+      case "protection": return el(React.Fragment, null, parts.protection, parts.deductibles);
+      case "contract": return parts.acknowledgements;
+      case "listing": return el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "listing", onSaved: refreshAll, defaultOpen: !launched });
+      case "staff": return el(StaffPage, { embedded: true, onChanged: refreshSetup });
+      case "launch": return launched ? el(CompanyStatusSection, { bare: true }) : el(LaunchStep);
+      default: return null;
+    }
+  };
+  const STEP_INTROS = {
+    branch: "Your branch's address places its map pin, which sets its local time. Its phone number goes in the no-show texts. The units come from its country, and a sales tax is suggested from its province. Confirm the tax with Save to finish.",
+    vehicle_classes: "Tick the vehicle classes you rent.",
+    rates: "A daily rate for each class you picked.",
+    vehicles: "Add at least one vehicle at your branch.",
+    protection: "Damage waivers and the like that customers accept or decline at pickup, with their prices, and your deductibles. Skip it if you offer none.",
+    contract: "What every customer acknowledges when they sign.",
+    listing: "Photos, hours and booking rules for fleetr.ai. Skip it to stay off fleetr.ai for now.",
+    staff: "Share your join code, then approve the people who sign up with it.",
+  };
 
-    // ── Units ──
-    React.createElement(CompanyUnitsSection, { onSaved: () => setNotice("Units saved.") }),
-
-    // ── Pricing ──
-    React.createElement(
-      CompanySection, { title: "Fuel pricing" },
-      React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-        "Every branch at once. These two change what future customers are charged, so each edit is recorded against the branch it applies to, not the one you are acting in."),
-      React.createElement(
-        "div", { style: { overflowX: "auto" } },
-        React.createElement(
-          "table", { className: "dashboardTable", style: { minWidth: "620px" } },
-          React.createElement("thead", null, React.createElement("tr", null,
-            ["Branch", "Markup %", "Fuel prices", ""].map((h) => React.createElement("th", { key: h }, h)))),
-          React.createElement("tbody", null, gas.filter((g) => g.active).map((g) =>
-            React.createElement(GasRow, { key: g.locationId, row: g, busy, onSave: run }))))
-      )
-    ),
-
-    // ── Sales tax ──
-    React.createElement(
-      CompanySection, { title: "Sales tax" },
-      React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-        "Up to two taxes per branch, each with a name and a rate, for example HST 15%, or GST 5% and PST 7%. They are added to every charge, and locked onto a rental agreement when the customer picks up, so a later change here does not reach rentals already out. A branch with no sales tax still needs Save pressed with both left blank, so it is set on purpose."),
-      React.createElement(
-        "div", { style: { overflowX: "auto" } },
-        React.createElement(
-          "table", { className: "dashboardTable", style: { minWidth: "620px" } },
-          React.createElement("thead", null, React.createElement("tr", null,
-            ["Branch", "First tax", "Second tax", ""].map((h) => React.createElement("th", { key: h }, h)))),
-          React.createElement("tbody", null, taxes.filter((t) => t.active).map((t) =>
-            React.createElement(SalesTaxRow, { key: t.locationId, row: t, busy, onSave: run,
-              isSet: !!branchSetup[t.locationId]?.salesTaxesSetAt }))))
-      )
-    ),
-
-    // ── fleetr.ai listing ──
-    React.createElement(ListingSection, { branches, branchSetup, onTimeZoneSet: refresh }),
-
-    // ── Lists and prices ──
-    React.createElement(CompanyListsSections, { branches })
+  return el("div", { className: "page" },
+    el("h1", null, "Company"),
+    error  && el("div", { className: "loginError" }, error),
+    notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
+    !setup && el("div", { className: "resvEmpty" }, "Loading…"),
+    setup && el(CompanyListsSections, {
+      branches, onChanged: changed, openSections: !launched,
+      layout: (parts) => el(React.Fragment, null, COMPANY_STEPS.map((st, i) => el(CompanyStep, {
+        key: st.key, id: `company-step-${st.key}`,
+        n: launched ? null : i + 1,
+        title: launched && st.after ? st.after : st.title,
+        state: stepState(st.key),
+        open: !!openSteps[st.key],
+        onToggle: () => setOpenSteps((o) => ({ ...o, [st.key]: !o[st.key] })),
+        intro: launched ? null : STEP_INTROS[st.key],
+        skippable: st.skippable,
+        onSkip: () => setSkip(st.key, true),
+        onUnskip: () => setSkip(st.key, false),
+        busy: stepBusy,
+        showState: !launched && st.key !== "launch",
+      }, stepBody(st.key, parts)))) }),
   );
 }
 
@@ -7011,8 +7173,11 @@ function GasRow({ row, busy, onSave }) {
 // One branch's sales taxes. Its own component, for the reason GasRow is: each
 // branch keeps its own draft. A tax with a blank name and rate is left out;
 // both blank clears the branch's taxes. The database checks the rest.
-function SalesTaxRow({ row, busy, onSave, isSet }) {
-  const saved = Array.isArray(row.salesTaxes) ? row.salesTaxes : [];
+// suggestion, from suggested_sales_tax, fills the boxes of a branch whose tax
+// has never been set. Nothing is saved until Save, which is the confirmation.
+function SalesTaxRow({ row, busy, onSave, isSet, suggestion }) {
+  const saved = !isSet && Array.isArray(suggestion) && suggestion.length
+    ? suggestion : (Array.isArray(row.salesTaxes) ? row.salesTaxes : []);
   const toDraft = (t) => ({ name: t ? String(t.name ?? "") : "", rate: t && t.rate != null ? String(t.rate) : "" });
   const [drafts, setDrafts] = React.useState(() => [toDraft(saved[0]), toDraft(saved[1])]);
   const savedKey = JSON.stringify(saved);
@@ -7037,7 +7202,8 @@ function SalesTaxRow({ row, busy, onSave, isSet }) {
   return React.createElement(
     "tr", null,
     React.createElement("td", null, row.name,
-      !isSet && React.createElement("div", { className: "closeRentalHint", style: { margin: 0 } }, "Not set yet")),
+      !isSet && React.createElement("div", { className: "closeRentalHint", style: { margin: 0 } },
+        Array.isArray(suggestion) && suggestion.length ? "Suggested from the province. Check it, then Save." : "Not set yet")),
     taxCell(0),
     taxCell(1),
     React.createElement("td", null,
@@ -7132,6 +7298,7 @@ const LISTING_REASONS = {
   not_found:     "That branch is not part of this company.",
   bad_listing:   "That did not work. Try again.",
   bad_time_zone: "That time zone is not recognised.",
+  bad_phone:     "Enter the branch's phone number with its area code, for example (709) 555-0123.",
   bad_value:     "One of the values is out of range. Check the numbers and try again.",
   network:       "Could not reach the server.",
 };
@@ -7384,7 +7551,10 @@ function ListingMapPin({ lat, lng, disabled, onPlace }) {
   });
 }
 
-function ListingSection({ branches, branchSetup, onTimeZoneSet }) {
+// part "address" is the branch's address and map pin, under Branch; part
+// "listing" is everything else fleetr.ai shows, under fleetr.ai listing. Each
+// saves only its own fields, so neither can overwrite the other's.
+function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, defaultOpen }) {
   const { currentUser } = React.useContext(AppContext);
   const [listings, setListings] = React.useState(null);
   const [loadError, setLoadError] = React.useState("");
@@ -7396,31 +7566,36 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet }) {
     setLoadError("");
     setListings(data || []);
   }, [currentUser]);
+  const saved = React.useCallback(async () => { await reload(); if (onSaved) await onSaved(); }, [reload, onSaved]);
 
   React.useEffect(() => { reload(); }, [reload]);
 
   const open = (branches || []).filter((b) => b.active);
   return React.createElement(
-    CompanySection, { title: "Listing", style: { marginTop: "24px" } },
-    React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-      "What fleetr.ai shows for each branch, and the rules for booking it online. A branch is hidden until Show on fleetr.ai is on. Photos and logos are public."),
+    CompanySection, { title: part === "address" ? "Address" : "Listing", style: { marginTop: "24px" }, defaultOpen },
+    React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, part === "address"
+      ? "Each branch's full address and phone number. The address places the map pin, which sets the branch's local time, and shows on fleetr.ai and in customer texts."
+      : "What fleetr.ai shows for each branch, and the rules for booking it online. A branch is hidden until Show on fleetr.ai is on. Photos and logos are public. The address comes from Branch."),
     loadError && React.createElement("div", { className: "loginError" }, loadError),
     !listings && !loadError && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Loading…"),
     listings && open.map((b) => React.createElement(ListingEditor, {
       key: b.id, branch: b, operatorId: currentUser?.operatorId,
       listing: listings.find((l) => l.locationId === b.id) || null,
-      timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: reload, onTimeZoneSet,
+      timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: saved, onTimeZoneSet, part,
     })));
 }
 
 // One branch's listing. Its own component so each branch keeps its own draft.
-function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZoneSet }) {
+function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZoneSet, part }) {
+  const showAddress = part !== "listing";
+  const showListing = part !== "address";
   const toDraft = (l) => {
     const hours = (l && l.hours && typeof l.hours === "object") ? l.hours : {};
     const num = (v) => (v == null ? "" : String(Number(v)));
     return {
       description: (l && l.description) || "",
       ...Object.fromEntries(BRANCH_ADDRESS_PARTS.map(([k]) => [k, (l && l[k]) || ""])),
+      phone:       (l && l.phone) || "",
       latitude:    num(l && l.latitude),
       longitude:   num(l && l.longitude),
       // Every day starts blank. A day left blank is closed.
@@ -7522,11 +7697,11 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       maxRentalDays:   required(draft.maxRentalDays, 1, 365, "Maximum rental length"),
       turnaroundHours: required(draft.turnaroundHours, 0, 72, "Turnaround buffer"),
     };
-    const bad = Object.values(checks).find((c) => !c.ok);
+    const bad = showListing && Object.values(checks).find((c) => !c.ok);
     if (bad) { setError(bad.text); setNotice(""); return; }
 
     const hours = {};
-    for (const [k, name] of LISTING_DAYS) {
+    for (const [k, name] of showListing ? LISTING_DAYS : []) {
       const d = draft.hours[k];
       if (!d.open && !d.close) continue;
       if (!d.open || !d.close) {
@@ -7539,16 +7714,25 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     }
 
     const airports = splitList(draft.airportCodes).map((x) => x.toUpperCase());
-    if (airports.some((x) => !/^[A-Z]{3,4}$/.test(x))) {
+    if (showListing && airports.some((x) => !/^[A-Z]{3,4}$/.test(x))) {
       setError("Airport codes are 3 or 4 letters, separated by commas, for example YYT."); setNotice(""); return;
     }
     const description = draft.description.trim();
-    if (description.length > 2000) { setError("Keep the description to 2,000 characters."); setNotice(""); return; }
+    if (showListing && description.length > 2000) { setError("Keep the description to 2,000 characters."); setNotice(""); return; }
     const address = {};
     for (const [k, label, max] of BRANCH_ADDRESS_PARTS) {
       const v = draft[k].trim();
       if (v.length > max) { setError(`Keep the ${label.toLowerCase()} to ${max} characters.`); setNotice(""); return; }
       address[k] = v || null;
+    }
+    // Shown to customers in the no-show texts, so written the same way every
+    // time: (709) 555-0123.
+    let phone = null;
+    if (showAddress) {
+      const digits = draft.phone.replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+      if (draft.phone.trim() === "") { setError("The branch's phone number is needed."); setNotice(""); return; }
+      if (!/^[0-9 ()+.-]+$/.test(draft.phone.trim()) || digits.length !== 10) { setError(LISTING_REASONS.bad_phone); setNotice(""); return; }
+      phone = `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
     }
 
     // The pin follows the address: placed from it when the address is new or
@@ -7559,7 +7743,7 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     let latitude = coord(draft.latitude), longitude = coord(draft.longitude);
     let pinNote = "";
     const addressChanged = BRANCH_ADDRESS_PARTS.some(([k]) => (address[k] || "") !== ((listing && listing[k]) || ""));
-    if (branchAddressComplete(address) && (addressChanged || latitude == null || longitude == null)) {
+    if (showAddress && branchAddressComplete(address) && (addressChanged || latitude == null || longitude == null)) {
       setBusy("details");
       const hit = await geocodeBranchAddress(address);
       setBusy("");
@@ -7575,11 +7759,9 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       }
     }
 
-    const fields = {
+    const addressFields = { ...address, phone, latitude, longitude };
+    const listingFields = {
       description: description || null,
-      ...address,
-      latitude,
-      longitude,
       hours,
       citiesServed: splitList(draft.citiesServed),
       airportCodes: airports,
@@ -7593,13 +7775,14 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       maxRentalDays: checks.maxRentalDays.value,
       turnaroundHours: checks.turnaroundHours.value,
     };
+    const fields = { ...(showAddress ? addressFields : {}), ...(showListing ? listingFields : {}) };
     // The branch's time zone follows the pin, so it changes whenever the
     // address moves the pin. Looked up when the pin moved or the branch has
     // none yet.
     const pinMoved = latitude !== (listing && listing.latitude != null ? Number(listing.latitude) : null)
       || longitude !== (listing && listing.longitude != null ? Number(listing.longitude) : null);
     let zone = null;
-    if (latitude != null && longitude != null && (pinMoved || !timeZone)) {
+    if (showAddress && latitude != null && longitude != null && (pinMoved || !timeZone)) {
       setBusy("details");
       zone = await branchTimeZoneAt(latitude, longitude);
       setBusy("");
@@ -7619,7 +7802,7 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       }
       if (onTimeZoneSet) await onTimeZoneSet();
     }
-    setNotice(`Listing saved.${pinNote}`);
+    setNotice(`${part === "address" ? "Address" : "Listing"} saved.${pinNote}`);
   };
 
   // Uploads a new photo or logo, points the listing at it, then removes the
@@ -7700,18 +7883,24 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     error  && el("div", { className: "loginError" }, error),
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
 
-    el("div", { style: { marginBottom: "14px" } },
-      check(busy === "listed" ? "Saving…" : "Show on fleetr.ai", listed, toggleListed)),
+    showListing && el(React.Fragment, null,
+      el("div", { style: { marginBottom: "14px" } },
+        check(busy === "listed" ? "Saving…" : "Show on fleetr.ai", listed, toggleListed)),
 
-    row(imageBlock("logo", "Logo"), imageBlock("photo", "Location photo")),
+      row(imageBlock("logo", "Logo"), imageBlock("photo", "Location photo")),
 
-    field("Description",
-      el("textarea", {
-        className: "resFormInput resFormTextarea", rows: 4, value: draft.description, disabled: !!busy,
-        maxLength: 2000, onChange: (e) => set("description", e.target.value),
-      })),
+      field("Description",
+        el("textarea", {
+          className: "resFormInput resFormTextarea", rows: 4, value: draft.description, disabled: !!busy,
+          maxLength: 2000, onChange: (e) => set("description", e.target.value),
+        }))),
 
-    el("div", { style: { height: "12px" } }),
+    !showAddress && el("p", { className: "closeRentalHint" }, branchAddressComplete(listing || {})
+      ? `Address: ${BRANCH_ADDRESS_PARTS.map(([k]) => listing[k]).filter(Boolean).join(", ")}. Change it under Branch.`
+      : "No address yet. Add it under Branch."),
+
+    showAddress && el(React.Fragment, null,
+    showListing && el("div", { style: { height: "12px" } }),
     el("div", { className: "gasSettingSubhead" }, "Address"),
     el("p", { className: "closeRentalHint" },
       "Every part is needed before the company can launch. It shows on fleetr.ai and in the confirmation text, and places the map pin."),
@@ -7730,7 +7919,12 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
           }),
           el("p", { className: "closeRentalHint" }, "Only if the pin looks wrong: drag it to the right spot, then save."))
       : el("p", { className: "closeRentalHint" }, "The map pin is placed from the address when you save."),
+    el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Phone number"),
+    el("p", { className: "closeRentalHint" },
+      "Needed before the company can launch. Customers are asked to call it in the no-show texts."),
+    field("Phone number", input("phone", { maxLength: 30, placeholder: "(709) 555-0123", inputMode: "tel", autoComplete: "tel", style: { width: "180px" } }))),
 
+    showListing && el(React.Fragment, null,
     el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Hours"),
     el("div", { style: { display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", marginBottom: "10px" } },
       el("span", { style: { width: "130px" } }, "Same hours every day"),
@@ -7780,12 +7974,12 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     row(
       field("Minimum notice (hours)", input("minNoticeHours", { inputMode: "numeric", style: { width: "150px" } })),
       field("Maximum rental length (days)", input("maxRentalDays", { inputMode: "numeric", style: { width: "150px" } })),
-      field("Turnaround buffer (hours)", input("turnaroundHours", { inputMode: "numeric", style: { width: "150px" } }))),
+      field("Turnaround buffer (hours)", input("turnaroundHours", { inputMode: "numeric", style: { width: "150px" } })))),
 
     el("div", { className: "closeRentalActions" },
       el("button", {
         type: "button", className: "resModalSubmit", disabled: !!busy, onClick: saveDetails,
-      }, busy === "details" ? "Saving..." : "Save listing"))
+      }, busy === "details" ? "Saving..." : part === "address" ? "Save address" : "Save listing"))
   );
 }
 
@@ -7839,8 +8033,8 @@ const BILLING_TYPE_LABELS = [
 // A section of the Company page. Closed until its header is tapped, so the
 // page opens as a short list of headings rather than seven screens of tables.
 // What is inside is only drawn while it is open.
-function CompanySection({ title, style, children }) {
-  const [open, setOpen] = React.useState(false);
+function CompanySection({ title, style, children, defaultOpen }) {
+  const [open, setOpen] = React.useState(!!defaultOpen);
   const toggle = () => setOpen((o) => !o);
   return React.createElement(
     "div", { className: "dashboardSection", style },
@@ -8085,7 +8279,7 @@ function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
 // The standard sources (standard_sources in the database): fleetr.ai,
 // which also covers walk-in and phone customers, who pay the same. Picked the
 // way vehicle classes are; nothing is added
-// unless it is ticked. Used on the Company page and in the setup checklist.
+// unless it is ticked. Used on the Company page.
 function StandardSourcePicker({ disabled, onAdded }) {
   const { currentUser } = React.useContext(AppContext);
   const [list, setList]     = React.useState(null);
@@ -8154,7 +8348,7 @@ function StandardSourcePicker({ disabled, onAdded }) {
 // The standard vehicle classes (standard_vehicle_classes in the database),
 // each with its type, seats, bags and example models. The Exec ticks the ones
 // they rent and saves; nothing is added unless it is ticked. One already
-// added shows as added. Used on the Company page and in the setup checklist.
+// added shows as added. Used on the Company page.
 function VehicleClassPicker({ disabled, onAdded }) {
   const { currentUser } = React.useContext(AppContext);
   const [list, setList]       = React.useState(null);
@@ -8212,7 +8406,7 @@ function VehicleClassPicker({ disabled, onAdded }) {
           }),
           el("span", null,
             el("span", { style: { fontWeight: 600 } }, c.name),
-            c.exampleModels && el("span", null, ` (${c.exampleModels})`),
+            c.exampleModels && el("span", null, ` (${c.exampleModels} or similar)`),
             el("span", { className: "closeRentalHint", style: { display: "block", margin: 0 } }, added ? `${facts} \u00b7 added` : facts)));
       })),
     error && el("div", { className: "loginError" }, error),
@@ -8257,6 +8451,7 @@ function DeductibleRow({ label, collision, comprehensive, placeholder, busy, onS
 const CONTRACT_ACK_MAX = 4000;
 function ContractAcknowledgementsCard({ versions, busy, onSave }) {
   const current = versions[0] || null;
+  const [startError, setStartError] = React.useState("");
   const [editing, setEditing] = React.useState(false);
   const [draft,   setDraft]   = React.useState("");
   const [shownVersion, setShownVersion] = React.useState(null);
@@ -8270,19 +8465,38 @@ function ContractAcknowledgementsCard({ versions, busy, onSave }) {
   const over = d.length > CONTRACT_ACK_MAX;
 
   const open = () => { setDraft(current ? current.body : ""); setEditing(true); };
+  // A company with no terms yet starts from fleetr's, or from its own.
+  const startStandard = async () => {
+    setStartError("");
+    const { data, error } = await supabase.rpc("standard_contract_terms");
+    if (error || typeof data !== "string") { setStartError("fleetr's standard terms could not be loaded. Try again."); return; }
+    setDraft(data); setEditing(true);
+  };
+  const startOwn = () => { setDraft(""); setEditing(true); };
+  const insurerNote = el("p", { className: "closeRentalHint" },
+    "fleetr's standard terms are a starting template, not legal advice. Review them with your own insurer before you use them.");
   const save = async () => { if (await onSave(d)) setEditing(false); };
 
   return el(React.Fragment, null,
-    !editing && el(React.Fragment, null,
+    !editing && !current && el(React.Fragment, null,
+      el("p", { className: "closeRentalHint" }, "No contract terms yet. Start from fleetr's standard terms, or paste your own. Either way you review them before saving."),
+      insurerNote,
+      startError && el("div", { className: "loginError" }, startError),
+      el("div", { className: "closeRentalActions" },
+        el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: startOwn }, "Paste your own"),
+        el("button", { type: "button", className: "resModalSubmit", disabled: busy, onClick: startStandard }, "Use fleetr's standard terms"))),
+
+    !editing && current && el(React.Fragment, null,
       el("p", { className: "closeRentalHint" },
-        current ? `Version ${current.version}, saved ${when(current.createdAt)}. What the customer acknowledges:` : "No acknowledgements yet."),
-      current && body(current.body),
+        `Version ${current.version}, saved ${when(current.createdAt)}. What the customer acknowledges:`),
+      body(current.body),
       el("div", { className: "closeRentalActions" },
         el("button", { type: "button", className: "resModalSubmit", disabled: busy, onClick: open }, "Edit"))),
 
     editing && el(React.Fragment, null,
       el("p", { className: "closeRentalHint" },
         "One statement per line. Saving makes a new version; the earlier ones are kept exactly as they were."),
+      !current && insurerNote,
       el("textarea", {
         className: "resFormInput resFormTextarea", rows: 10, value: draft, autoFocus: true,
         "aria-label": "Contract acknowledgements", onChange: (e) => setDraft(e.target.value),
@@ -8311,7 +8525,10 @@ function ContractAcknowledgementsCard({ versions, busy, onSave }) {
   );
 }
 
-function CompanyListsSections({ branches }) {
+// layout receives each part (pickup, classes, sources, rates, setupRates,
+// protection, deductibles, acknowledgements) to place where it belongs.
+// onChanged runs after every change that saved. openSections opens them all.
+function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   const { currentUser } = React.useContext(AppContext);
   const [ready,  setReady]  = React.useState(false);
   const [busy,   setBusy]   = React.useState(false);
@@ -8361,6 +8578,7 @@ function CompanyListsSections({ branches }) {
     const ok = !err && !!(data && data.ok);
     if (ok) await reload(); else setError({ at, text: refusal(data, err) });
     setBusy(false);
+    if (ok && onChanged) await onChanged();
     return ok;
   };
 
@@ -8437,7 +8655,7 @@ function CompanyListsSections({ branches }) {
   }, label);
   const errorLine = (at) => error && error.at === at && el("div", { className: "loginError" }, error.text);
   const section = (title, intro, at, ...children) => el(
-    CompanySection, { title, style: { marginTop: "24px" } },
+    CompanySection, { title, style: { marginTop: "24px" }, defaultOpen: openSections },
     el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, intro),
     errorLine(at),
     ...children
@@ -8516,16 +8734,18 @@ function CompanyListsSections({ branches }) {
           : el("td", null, btn("Delete", () => setConfirming(key))));
   };
 
-  if (!ready) {
-    return el("div", { className: "dashboardSection", style: { marginTop: "24px" } },
-      el("h2", null, "Lists and prices"),
-      el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Loading…"));
-  }
-  if (!companyLists) {
-    return el("div", { className: "dashboardSection", style: { marginTop: "24px" } },
-      el("h2", null, "Lists and prices"),
-      el("div", { className: "loginError" },
-        "The company's lists could not be loaded, so they cannot be edited right now. Reload the page to try again."));
+  // While loading, or if the lists could not be read, every part is the
+  // same notice, so a layout still has something to place.
+  const notice = !ready
+    ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Loading…")
+    : !companyLists && el("div", { className: "loginError" },
+        "The company's lists could not be loaded, so they cannot be edited right now. Reload the page to try again.");
+  if (notice) {
+    if (layout) {
+      return layout(Object.fromEntries(["setupRates", "pickup", "classes", "sources", "rates", "protection", "deductibles", "acknowledgements"]
+        .map((k) => [k, el(React.Fragment, { key: k }, notice)])));
+    }
+    return el("div", { className: "dashboardSection", style: { marginTop: "24px" } }, el("h2", null, "Lists and prices"), notice);
   }
 
   const { pickupLocations, vehicleClasses, sources, protectionProducts, rates } = companyLists;
@@ -8579,10 +8799,34 @@ function CompanyListsSections({ branches }) {
 
   const listHeads = (name, middle) => ["", name, middle || "", "On", ""];
 
-  return el(React.Fragment, null,
+  // Before launch, one rate per class under the fleetr.ai source, the one
+  // source setup needs.
+  const fleetrSource = (sources || []).find((x) => x.standardKey === "fleetr_ai");
+  const setupRates = section("Daily rates",
+    "One daily rate for each vehicle class, in whole dollars. It is what fleetr.ai quotes, and what walk-in and phone customers pay. A rate saves when you leave it. Rates for other sources can be added after launch.",
+    "rates",
+    !fleetrSource
+      ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "The fleetr.ai source is missing. Reload the page, and contact fleetr if it is still missing.")
+      : !activeClasses.length
+        ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Pick your vehicle classes first.")
+        : table("420px", ["Vehicle class", "Daily rate ($)"], activeClasses.map((c) => el("tr", { key: c.id },
+            el("td", { style: { fontWeight: 600 } }, c.name),
+            el("td", null, el(ListPriceCell, {
+              value: rates[fleetrSource.name] && rates[fleetrSource.name][c.name] != null ? rates[fleetrSource.name][c.name] : null,
+              disabled: busy,
+              onSave: (typed) => {
+                const parsed = parsePrice("rates", typed, true);
+                return parsed.ok
+                  ? act("rates", "set_daily_rate", { p_class_id: c.id, p_source_id: fleetrSource.id, p_amount: parsed.amount })
+                  : Promise.resolve(false);
+              },
+            }))))));
+
+  const parts = {
+    setupRates,
 
     // ── Pickup locations ──
-    section("Pickup locations",
+    pickup: section("Pickup locations",
       "Where a reservation can be picked up, branch by branch. Staff see only their own branch's list.",
       "pickup",
       pickupBranches.map((b) => {
@@ -8606,7 +8850,7 @@ function CompanyListsSections({ branches }) {
       })),
 
     // ── Vehicle classes ──
-    section("Vehicle classes",
+    classes: section("Vehicle classes",
       "One list for reservations, the fleet and rates, in the order shown here.",
       "classes",
       table("860px", listHeads("Vehicle class", "Type, seats, bags and example models"),
@@ -8622,10 +8866,10 @@ function CompanyListsSections({ branches }) {
             }),
           })),
         }))),
-      el(VehicleClassPicker, { disabled: busy, onAdded: reload })),
+      el(VehicleClassPicker, { disabled: busy, onAdded: async () => { await reload(); if (onChanged) await onChanged(); } })),
 
     // ── Sources ──
-    section("Sources",
+    sources: section("Sources",
       "Who the work comes from. The billing type decides which billing fields a reservation asks for, so a source of your own can be renamed freely. Open a source to see the specific sources under it.",
       "sources",
       table("640px", listHeads("Source", "Billing type"),
@@ -8686,7 +8930,7 @@ function CompanyListsSections({ branches }) {
       })),
 
     // ── Daily rates ──
-    section("Daily rates",
+    rates: section("Daily rates",
       "The rate filled in when a source and a vehicle class are chosen on a customer's file. A cell saves when you leave it. Blank means no rate, and staff type one in.",
       "rates",
       priceGrid("rates",
@@ -8696,7 +8940,7 @@ function CompanyListsSections({ branches }) {
         }))),
 
     // ── Protection products ──
-    section("Protection products",
+    protection: section("Protection products",
       "Each product has a price per day for every vehicle class and source. Pick a product to see its prices. A cell saves when you leave it. Blank means no price.",
       "protection",
       protectionProducts.length > 0 && table("520px", listHeads("Protection product"),
@@ -8737,7 +8981,7 @@ function CompanyListsSections({ branches }) {
             "Switch a product on to set its prices.")),
 
     // ── Deductibles ──
-    section("Deductibles",
+    deductibles: section("Deductibles",
       "The company's collision and comprehensive deductibles, and any vehicle class that has its own. A blank amount on a class means it uses the company's.",
       "deductibles",
       table("560px", ["", "Collision", "Comprehensive", ""], [
@@ -8770,17 +9014,23 @@ function CompanyListsSections({ branches }) {
       ])),
 
     // ── Contract acknowledgements ──
-    section("Contract acknowledgements",
+    acknowledgements: section("Contract acknowledgements",
       "What the customer acknowledges on the rental contract. Every save is a new version, and earlier versions are kept unchanged.",
       "acknowledgements",
       el(ContractAcknowledgementsCard, {
         versions: ackVersions, busy,
         onSave: (text) => act("acknowledgements", "save_contract_acknowledgements", { p_body: text }),
-      }))
-  );
+      })),
+  };
+  if (layout) return layout(parts);
+  return el(React.Fragment, null, parts.pickup, parts.classes, parts.sources, parts.rates,
+    parts.protection, parts.deductibles, parts.acknowledgements);
 }
 
-function StaffPage() {
+// embedded draws only the join code and the sign-ups waiting for approval, for
+// the Staff step of the Company page, and calls onChanged when the people
+// change.
+function StaffPage({ embedded, onChanged } = {}) {
   const { currentUser, guardAction } = React.useContext(AppContext);
   const isAdmin = roleAtLeast(currentUser?.role, "Admin");
 
@@ -8944,6 +9194,8 @@ function StaffPage() {
   // else, rather than as deactivated rows in the main list.
   const pending = rows.filter((r) => r.pendingApprovalSince);
   const staff   = rows.filter((r) => !r.pendingApprovalSince);
+  const peopleKey = rows.map((r) => `${r.id}:${r.active}:${!!r.pendingApprovalSince}`).join(",");
+  React.useEffect(() => { if (onChanged) onChanged(); }, [peopleKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!isAdmin) {
     return React.createElement(
@@ -8955,8 +9207,8 @@ function StaffPage() {
   }
 
   return React.createElement(
-    "div", { className: "page" },
-    React.createElement("h1", null, "Staff"),
+    "div", { className: embedded ? null : "page" },
+    !embedded && React.createElement("h1", null, "Staff"),
 
     // ── Join code ──
     React.createElement(
@@ -9022,8 +9274,12 @@ function StaffPage() {
                   disabled: busyId === row.id, onClick: () => decline(row),
                 }, "Decline")))))))),
 
+    embedded && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+      `${staff.filter((r) => r.active).length} ${staff.filter((r) => r.active).length === 1 ? "person has" : "people have"} access. `,
+      React.createElement("a", { href: "#/staff" }, "Manage everyone on the Staff page"), "."),
+
     // ── Staff list ──
-    React.createElement(
+    !embedded && React.createElement(
       "div", { className: "dashboardSection" },
       React.createElement("h2", null,
         isExec ? "People in this company" : "People at this branch"),
@@ -9253,7 +9509,7 @@ function CustomerTextsSettings() {
   const { logAudit } = React.useContext(AppContext);
   const [saved,   setSaved]   = React.useState({});   // kind -> the company's own wording, if any
   const [drafts,  setDrafts]  = React.useState({});   // kind -> what is in the box
-  const [names,   setNames]   = React.useState({ company: null, location: null });
+  const [names,   setNames]   = React.useState({ company: null, location: null, phone: null });
   const [loaded,  setLoaded]  = React.useState(false);
   const [loadErr, setLoadErr] = React.useState(false);
   const [busy,    setBusy]    = React.useState(null);
@@ -9264,10 +9520,11 @@ function CustomerTextsSettings() {
   React.useEffect(() => {
     let live = true;
     (async () => {
-      const [tpl, op, loc] = await Promise.all([
+      const [tpl, op, loc, tel] = await Promise.all([
         supabase.from("message_templates").select("kind, body"),
         supabase.from("operators").select("name").limit(1),
         supabase.from("branch_listings").select("street").not("street", "is", null).limit(1),
+        supabase.from("branch_listings").select("phone").not("phone", "is", null).limit(1),
       ]);
       if (!live) return;
       if (tpl.error) { console.warn("message_templates load failed:", tpl.error); setLoadErr(true); }
@@ -9275,7 +9532,7 @@ function CustomerTextsSettings() {
       setSaved(own);
       setDrafts(Object.fromEntries(TEXT_TEMPLATE_KINDS.map((k) => [k.kind, own[k.kind] ?? ""])));
       // [location] is a branch's street address in the texts themselves.
-      setNames({ company: op.data?.[0]?.name || null, location: loc.data?.[0]?.street || null });
+      setNames({ company: op.data?.[0]?.name || null, location: loc.data?.[0]?.street || null, phone: tel.data?.[0]?.phone || null });
       setLoaded(true);
     })();
     return () => { live = false; };
@@ -9289,6 +9546,7 @@ function CustomerTextsSettings() {
     "[location]":   names.location || "12 Water St",
     "[date]":       "Oct 6",
     "[time]":       "10:00 AM",
+    "[branch phone]": names.phone || "(709) 555-0123",
   };
 
   const save = async (k, body) => {
@@ -9339,7 +9597,7 @@ function CustomerTextsSettings() {
       "The wording of the texts your customers receive, for every branch of the company. ",
       "Use these placeholders and each customer's own details are filled in: ",
       React.createElement("strong", null, TEXT_PLACEHOLDERS.join(", ")),
-      ". The system adds the rest automatically, and it cannot be removed or edited: the reservation code to the confirmation; the customer's personal app link to the confirmation, Pre-Rental Check and return reminder; and a link to cancel to the confirmation and Pre-Rental Check. The links' tokens in the preview are stand-ins of the real length, so the count is the real count."),
+      ". The system adds the rest automatically, and it cannot be removed or edited: the reservation code to the confirmation; the customer's personal app link to the confirmation, Pre-Rental Check, 2 hour no-show text and return reminder; and a link to cancel to the confirmation and Pre-Rental Check. The links' tokens in the preview are stand-ins of the real length, so the count is the real count."),
     loadErr && React.createElement("div", { className: "closeRentalWarning" },
       "The saved wording could not be loaded. Saving here will replace whatever is saved."),
 
@@ -9888,22 +10146,58 @@ function NotificationBell() {
               }, "Mark read"))))));
 }
 
+// The branch an Exec is working in. Only an Exec moves between branches, and
+// only when there is more than one to move between; with one, they are always
+// in it. Switching reloads the app, so every screen shows the new branch.
+function BranchSwitcher() {
+  const { currentUser } = React.useContext(AppContext);
+  const isExec = roleAtLeast(currentUser?.role, "Exec");
+  const [branches, setBranches] = React.useState(null);
+  const [here, setHere] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!isExec) return undefined;
+    let live = true;
+    Promise.all([supabase.rpc("company_overview"), supabase.rpc("my_acting_location")]).then(([ov, act]) => {
+      if (!live) return;
+      setBranches(ov.data && ov.data.ok ? (ov.data.branches || []).filter((b) => b.active) : []);
+      setHere(act.data && act.data.ok ? act.data.locationId || "" : "");
+    });
+    return () => { live = false; };
+  }, [isExec]);
+
+  // With no branch to stand in (the default closed), the menu shows even for
+  // one, so there is a way out.
+  if (!isExec || !branches || branches.length === 0 || (branches.length < 2 && here)) return null;
+
+  const pick = async (id) => {
+    if (!id || id === here) return;
+    setBusy(true);
+    const { data, error } = await supabase.rpc("set_acting_location", { location_id: id });
+    if (error || !data || !data.ok) {
+      setBusy(false);
+      window.alert("Could not switch to that branch. Try again.");
+      return;
+    }
+    window.location.reload();
+  };
+
+  return React.createElement("select", {
+    className: "pill pill--select", value: here, disabled: busy, "aria-label": "Branch",
+    onChange: (e) => pick(e.target.value),
+  },
+    !here && React.createElement("option", { value: "", disabled: true }, "Choose a branch"),
+    branches.map((b) => React.createElement("option", { key: b.id, value: b.id }, b.name)));
+}
+
 function Topbar() {
   const { signOut, currentUser } = React.useContext(AppContext);
   const showBell = roleAtLeast(currentUser?.role, "Exec") && isFeatureEnabled("fleet_notifications");
   return React.createElement(
     "header",
     { className: "topbar" },
-    React.createElement("div", { className: "topbar__pills" },
-      React.createElement("select", {
-        className: "pill pill--select",
-        defaultValue: "",
-      }, React.createElement("option", { value: "", disabled: true }, "Location")),
-      React.createElement("select", {
-        className: "pill pill--select",
-        defaultValue: "",
-      }, React.createElement("option", { value: "", disabled: true }, "Region"))
-    ),
+    React.createElement("div", { className: "topbar__pills" }, React.createElement(BranchSwitcher)),
     // Not rendered at all when the company has it off. Sign Out is pushed
     // right by its own margin-left: auto, so the topbar needs no stand-in.
     isFeatureEnabled("ai_command_bar") && React.createElement(FleetrCommandBar),
@@ -10819,7 +11113,7 @@ function SetupBar() {
   let text, action = null;
   if (!setup.launched) {
     text = "Setup mode: not live yet. fleetr.ai does not show your branches and no texts go to customers. Anything entered now is a test record, removed when the company launches.";
-    if (isExec) action = link("#/setup", "Open the setup checklist");
+    if (isExec) action = link("#/company", "Continue setup");
   } else if (setup.suspended) {
     text = "Suspended by fleetr. Your branches are hidden from fleetr.ai and take no online bookings. Texts for existing reservations and rentals still go. Contact fleetr to lift it.";
   } else if (setup.paused) {
@@ -10836,42 +11130,19 @@ function SetupBar() {
 // the order company_setup_status lists them. detail is what the database
 // returns with the item: the branches, classes or codes still missing it.
 const SETUP_ITEMS = {
-  units:                 { title: "Fuel and distance units", path: "/company",
-                           text: "How fuel and distance are read and entered everywhere." },
-  branches:              { title: "Each branch's sales tax", path: "/company",
-                           text: "A branch with no sales tax still needs it saved as none." },
-  branch_addresses:      { title: "A full address for every branch", path: "/company",
-                           text: "Street, city, province, postal code and country, under Listing, with its map pin. Used on fleetr.ai and in the confirmation text, and the pin sets the branch's local time for texts and bookings." },
-  pickup_locations:      { title: "Pickup locations", path: "/company",
-                           text: "At least one for every open branch." },
-  vehicle_classes:       { title: "Vehicle classes", path: "/company", text: "Tick the ones you rent from the standard list. At least one." },
-  sources:               { title: "Sources", path: "/company", text: "Who the work comes from. Pick fleetr.ai, the rate for fleetr.ai, walk-in and phone customers, and add your own on the Company page. At least one." },
-  daily_rates:           { title: "Daily rates", path: "/company",
-                           text: "A rate for every vehicle class, under at least one source." },
-  acknowledgements:      { title: "Contract acknowledgements", path: "/company",
-                           text: "What the customer agrees to at pickup." },
-  vehicles:              { title: "A vehicle at the default branch", path: "/fleet/additions",
-                           text: "With one of your vehicle classes." },
-  confirmation_text:     { title: "Reservation confirmation text", path: "/settings",
-                           text: "The text a customer gets when a reservation is made." },
-  listing:               { title: "fleetr.ai listing", path: "/company",
-                           text: "Needed only for a branch switched to show on fleetr.ai: that listing has to be complete." },
+  branch:                { title: "Branch", path: null,
+                           text: "Every open branch's full address, map pin and phone number, and its sales tax confirmed." },
+  vehicle_classes:       { title: "Vehicle classes", path: null, text: "At least one, ticked from the standard list." },
+  rates:                 { title: "Rates", path: null, text: "A daily rate for every vehicle class." },
+  vehicles:              { title: "Vehicles", path: null, text: "At least one at the default branch, of one of your vehicle classes." },
+  protection:            { title: "Protection and deductibles", path: null,
+                           text: "Every product priced, and an optional one with its decline wording. Can be skipped." },
+  contract:              { title: "Contract terms", path: null, text: "What the customer acknowledges at pickup." },
+  listing:               { title: "fleetr.ai listing", path: null,
+                           text: "Needed only for a branch switched to show on fleetr.ai: that listing has to be complete. Can be skipped." },
+  staff:                 { title: "Staff", path: null, text: "Someone besides you. Can be skipped." },
   test_rentals_finished: { title: "Test rentals finished", path: "/rental-agreements",
                            text: "No test rental can still be open, returned or close pending when the company launches." },
-  other_texts:           { title: "Other customer texts", path: "/settings",
-                           text: "Pre-Rental Check, the two no-show texts and the return reminder. One not written is not sent." },
-  protection_products:   { title: "Protection products", path: "/company",
-                           text: "Damage waiver and the like, with prices. An optional one also needs its decline wording." },
-  deductibles:           { title: "Deductibles", path: "/company", text: "Shown on the contract." },
-  gas:                   { title: "Fuel pricing for every branch", path: "/company",
-                           text: "Without a markup and prices, gas is charged by hand on return." },
-  staff:                 { title: "Staff", path: "/staff", text: "Hand out the join code and approve who joins." },
-  test_rental:           { title: "A test rental, start to finish", path: "/reservations",
-                           text: "Make a reservation, pick it up, return it and close it, to see the whole flow work." },
-};
-const SETUP_TEXT_KIND_NAMES = {
-  pre_rental: "Pre-Rental Check", no_show_2hr: "No-show after 2 hours",
-  no_show_24hr: "No-show the next day", return_reminder: "Return reminder",
 };
 
 const LAUNCH_REASONS = {
@@ -10888,90 +11159,23 @@ const LAUNCH_REASONS = {
 
 function SetupItemRow({ item, children }) {
   const meta = SETUP_ITEMS[item.key] || { title: item.key, path: null, text: "" };
-  const detail = Array.isArray(item.detail) && item.detail.length > 0 && !item.done
-    ? (item.key === "other_texts" ? item.detail.map((k) => SETUP_TEXT_KIND_NAMES[k] || k) : item.detail).join(", ")
-    : "";
+  const detail = Array.isArray(item.detail) && item.detail.length > 0 && !item.done ? item.detail.join(", ") : "";
   return React.createElement("li", { className: `setupItem${item.done ? " setupItem--done" : ""}` },
     React.createElement("span", { className: "setupItem__mark", "aria-hidden": "true" }, item.done ? "\u2713" : ""),
     React.createElement("div", null,
       React.createElement("div", { className: "setupItem__title" },
         meta.path ? React.createElement("a", { href: `#${meta.path}` }, meta.title) : meta.title,
         React.createElement("span", { className: "setupItem__state" },
-          item.done ? "Done" : item.required ? "Left to do" : "Optional")),
+          item.done ? "Done" : item.skipped ? "Skipped" : item.required ? "Left to do" : "Optional")),
       meta.text && React.createElement("div", { className: "closeRentalHint", style: { margin: 0 } }, meta.text),
       detail && React.createElement("div", { className: "closeRentalHint", style: { margin: 0 } },
         item.key === "test_rentals_finished" ? `Still open: ${detail}` : `Still missing: ${detail}`),
       children || null));
 }
 
-// The checklist. An Exec is brought here on every sign-in until the company
-// launches; afterwards it is a read-only record of the same items.
-function SetupPage() {
-  const { setup, refreshSetup, currentUser, guardAction } = React.useContext(AppContext);
-  const isExec = roleAtLeast(currentUser?.role, "Exec");
-  const [busy, setBusy]   = React.useState(false);
-  const [error, setError] = React.useState("");
-
-  React.useEffect(() => { refreshSetup(); }, [refreshSetup]);
-
-  if (!setup) return React.createElement("div", { className: "page" }, React.createElement("div", { className: "resvEmpty" }, "Loading the checklist..."));
-
-  const required = setup.items.filter((i) => i.required);
-  const optional = setup.items.filter((i) => !i.required);
-  const left = required.filter((i) => !i.done).length;
-
-  const launch = () => {
-    if (!window.confirm("Launch the company?\n\nYour branches that are switched on show on fleetr.ai and take bookings, texts start going to customers, and every test record made in setup mode is deleted. This cannot be undone, though the company can be paused afterwards.")) return;
-    setError("");
-    guardAction("company.launch", async () => {
-      setBusy(true);
-      const { data, error: err } = await supabase.rpc("launch_company");
-      setBusy(false);
-      if (err || !data || !data.ok) {
-        setError(err ? LAUNCH_REASONS.network : (LAUNCH_REASONS[data && data.reason] || "That did not work."));
-        await refreshSetup();
-        throw new Error(err ? "network" : (data && data.reason) || "refused");
-      }
-      // The test records are gone from the database; reloading drops them
-      // from every screen at once.
-      window.location.hash = "/dashboard";
-      window.location.reload();
-    }, { description: "Launched the company.", tableName: "operators" });
-  };
-
-  return React.createElement("div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, setup.launched ? "Setup checklist" : "Set up your company"),
-    React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement("p", { className: "aiTabDesc" }, setup.launched
-      ? "The company launched with every required item done. This is the same list, kept for reference."
-      : "Everything needed before the first real rental, in the order to do it. Until you launch, fleetr.ai shows none of your branches, no texts go to customers, and anything entered is a test record. Staff can enter and edit everything as normal."),
-    error && React.createElement("div", { className: "loginError" }, error),
-
-    React.createElement("h2", { className: "setupHeading" }, "Required before launch"),
-    React.createElement("ul", { className: "setupList" }, required.map((i) => React.createElement(SetupItemRow, { key: i.key, item: i },
-      // Vehicle classes are picked right here, from the same list as the
-      // Company page.
-      i.key === "vehicle_classes" && isExec && !setup.launched
-        ? React.createElement(VehicleClassPicker, { disabled: busy, onAdded: refreshSetup })
-        : i.key === "sources" && isExec && !setup.launched
-          ? React.createElement(StandardSourcePicker, { disabled: busy, onAdded: refreshSetup }) : null))),
-    React.createElement("h2", { className: "setupHeading" }, "Optional"),
-    React.createElement("ul", { className: "setupList" }, optional.map((i) => React.createElement(SetupItemRow, { key: i.key, item: i }))),
-
-    !setup.launched && isExec && React.createElement("div", { style: { marginTop: "20px" } },
-      React.createElement("p", { className: "closeRentalHint" }, setup.suspended
-        ? LAUNCH_REASONS.suspended
-        : left === 0 ? "Every required item is done." : `${left} required item${left === 1 ? "" : "s"} left.`),
-      React.createElement("button", {
-        type: "button", className: "loginBtn", style: { width: "auto", padding: "10px 18px" },
-        disabled: busy || !setup.ready || setup.suspended, onClick: launch,
-      }, busy ? "Launching..." : "Launch")),
-    !setup.launched && !isExec && React.createElement("p", { className: "closeRentalHint" }, "An Exec launches the company once every required item is done."));
-}
-
 // Pause and resume, on the Company page. A paused company is off fleetr.ai
 // and takes no online bookings; staff work and texts carry on.
-function CompanyStatusSection() {
+function CompanyStatusSection({ bare } = {}) {
   const { setup, refreshSetup, guardAction } = React.useContext(AppContext);
   const [busy, setBusy]   = React.useState(false);
   const [error, setError] = React.useState("");
@@ -10988,7 +11192,7 @@ function CompanyStatusSection() {
       if (err || !data || !data.ok) {
         const reason = data && data.reason;
         setError(err ? LAUNCH_REASONS.network
-          : reason === "not_ready" ? `Some required items are no longer done: ${(data.missing || []).map((k) => (SETUP_ITEMS[k] || {}).title || k).join(", ")}. See the setup checklist.`
+          : reason === "not_ready" ? `Some required steps are no longer done: ${(data.missing || []).map((k) => (SETUP_ITEMS[k] || {}).title || k).join(", ")}. Finish them above, then try again.`
           : (LAUNCH_REASONS[reason] || "That did not work."));
         throw new Error(err ? "network" : reason || "refused");
       }
@@ -11000,10 +11204,10 @@ function CompanyStatusSection() {
     : setup.paused ? "Paused. Hidden from fleetr.ai, no online bookings; texts for existing bookings still go."
     : "Live.";
 
-  return React.createElement(CompanySection, { title: "Company status", style: { marginBottom: "24px" } },
-    React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, state),
-    error && React.createElement("div", { className: "loginError" }, error),
-    React.createElement("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" } },
+  const content = [
+    React.createElement("p", { key: "state", style: { opacity: 0.8, fontSize: "0.9rem" } }, state),
+    error && React.createElement("div", { key: "error", className: "loginError" }, error),
+    React.createElement("div", { key: "actions", style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" } },
       setup.launched && !setup.paused && React.createElement("button", {
         type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy,
         onClick: () => act("company.pause", "pause_company", "Paused the company.",
@@ -11014,8 +11218,11 @@ function CompanyStatusSection() {
         disabled: busy || setup.suspended,
         onClick: () => act("company.resume", "resume_company", "Resumed the company.",
           "Resume the company?\n\nBranches switched on show on fleetr.ai again and take online bookings."),
-      }, "Resume"),
-      React.createElement("a", { href: "#/setup" }, setup.launched ? "Setup checklist" : "Open the setup checklist")));
+      }, "Resume")),
+  ];
+  return bare
+    ? React.createElement(React.Fragment, null, ...content)
+    : React.createElement(CompanySection, { title: "Company status", style: { marginBottom: "24px" } }, ...content);
 }
 
 // ─── PreRentalCheckPage ─────────────────────────────────────────────────────────────────
@@ -15292,12 +15499,13 @@ function CustomerPage() {
 const BRANCHLESS_OK = ["/setup", "/company", "/staff", "/account"];
 
 // Where signing in lands. An Exec whose company has not launched starts on the
-// setup checklist, every time, until it has; everyone else on the Dashboard.
+// Company page, which is the setup, every time, until it has; everyone else on
+// the Dashboard.
 function StartRedirect() {
   const { setup, currentUser } = React.useContext(AppContext);
   const isExec = roleAtLeast(currentUser?.role, "Exec");
   if (isExec && !setup) return null;
-  const to = isExec && !setup.launched ? "/setup" : "/dashboard";
+  const to = isExec && !setup.launched ? "/company" : "/dashboard";
   return React.createElement(Navigate, { to, replace: true });
 }
 
@@ -15322,12 +15530,8 @@ function ExecNeedsBranch({ children }) {
     "div", { className: "page" },
     React.createElement("h1", null, "Choose a branch"),
     React.createElement("div", { className: "resvEmpty" },
-      "You are not acting in any branch yet, so there is nothing here to show. " +
-      "Pick one on the Company screen and this page will fill in."),
-    React.createElement("a", {
-      href: "#/company", className: "loginBtn",
-      style: { display: "inline-block", width: "auto", padding: "8px 14px", marginTop: "12px", textDecoration: "none" },
-    }, "Go to Company")
+      "You are not working in any branch yet, so there is nothing here to show. " +
+      "Pick one from the branch menu at the top of the page and this page will fill in.")
   );
 }
 
@@ -15339,11 +15543,11 @@ function AppRoutes() {
       path: "/",
       element: React.createElement(StartRedirect),
     }),
-    // Not wrapped in ExecNeedsBranch: setting up comes before choosing a branch.
+    // Setup is the Company page now; old links land there.
     React.createElement(Route, {
       key:  "setup",
       path: "/setup",
-      element: React.createElement(SetupPage),
+      element: React.createElement(Navigate, { to: "/company", replace: true }),
     }),
     React.createElement(Route, {
       path: "/dashboard",
