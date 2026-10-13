@@ -6826,34 +6826,59 @@ function ChangeRecoveryEmail({ account, onDone }) {
 }
 
 // ─── Company: setup, then settings ──────────────────────────────────────────
-// The steps, in order. Before launch the next unfinished one is open and
-// finishing it opens the next; afterwards the same sections hold the settings.
+// The sections, in order. Before launch each is a setup step, done when every
+// company_setup_status item it holds is done; afterwards the same sections
+// hold the settings. Every section stays folded until it is clicked.
 const COMPANY_STEPS = [
-  { key: "branch",          title: "Branch" },
-  { key: "vehicle_classes", title: "Vehicle classes" },
-  { key: "rates",           title: "Rates" },
-  { key: "vehicles",        title: "Vehicles" },
-  { key: "protection",      title: "Protection and deductibles", skippable: true },
-  { key: "contract",        title: "Contract terms" },
-  { key: "listing",         title: "fleetr.ai listing", skippable: true },
-  { key: "staff",           title: "Staff", skippable: true },
-  { key: "launch",          title: "Launch", after: "Status" },
+  { key: "business",   title: "Business details",           items: ["branch"] },
+  { key: "vehicles",   title: "Vehicles",                   items: ["vehicle_classes", "vehicles"] },
+  { key: "rates",      title: "Rates",                      items: ["rates"] },
+  { key: "protection", title: "Protection and deductibles", items: ["protection"], skippable: true },
+  { key: "contract",   title: "Contract terms",             items: ["contract"] },
+  { key: "listing",    title: "fleetr.ai listing",          items: ["listing"], skippable: true },
+  { key: "staff",      title: "Staff",                      items: ["staff"], skippable: true },
+  { key: "launch",     title: "Launch", after: "Status" },
 ];
 const STEP_STATE_WORDS = { done: "Done", skipped: "Skipped", todo: "Not started" };
 
-function CompanyStep({ id, n, title, state, open, onToggle, intro, skippable, onSkip, onUnskip, busy, showState, children }) {
+// Set to true around a section that has only one part, so its one
+// CompanySection shows its content directly instead of as a dropdown inside
+// the section. Only the outermost CompanySection reads it.
+const CompanySectionFlat = React.createContext(false);
+
+// Before launch: every section as a step, with its number, a check mark when
+// done, a skipped mark when skipped, and the current step highlighted.
+function CompanyStepper({ steps, stateOf, current, onPick }) {
   const el = React.createElement;
-  return el("div", { id, className: "dashboardSection", style: { marginBottom: "16px", scrollMarginTop: "16px" } },
-    el("h2", {
-      role: "button", tabIndex: 0, "aria-expanded": open,
-      style: { cursor: "pointer", userSelect: "none", display: "flex", gap: "10px", alignItems: "baseline", flexWrap: "wrap" },
-      onClick: onToggle,
-      onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } },
+  return el("nav", { className: "companyStepper", "aria-label": "Setup steps" },
+    el("ol", { className: "companyStepper__list" }, steps.map((st, i) => {
+      const state = stateOf(st);
+      const isCurrent = st.key === current;
+      return el("li", { key: st.key, className: "companyStepper__item" },
+        el("button", {
+          type: "button", onClick: () => onPick(st.key),
+          className: `companyStepper__step companyStepper__step--${state}${isCurrent ? " companyStepper__step--current" : ""}`,
+          "aria-current": isCurrent ? "step" : undefined,
+          "aria-label": `${i + 1}. ${st.title}: ${isCurrent ? "current step" : STEP_STATE_WORDS[state]}`,
+        },
+          el("span", { className: "companyStepper__mark", "aria-hidden": "true" },
+            state === "done" ? "\u2713" : state === "skipped" ? "\u2013" : String(i + 1)),
+          el("span", { className: "companyStepper__name" }, st.title)));
+    })));
+}
+
+function CompanyStep({ id, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, busy, showState, children }) {
+  const el = React.createElement;
+  return el("section", { id, className: `companyStep${open ? " companyStep--open" : ""}${current ? " companyStep--current" : ""}` },
+    el("button", {
+      type: "button", className: "companyStep__head", "aria-expanded": open, onClick: onToggle,
     },
-      el("span", null, `${open ? "\u25be" : "\u25b8"} ${n ? `${n}. ` : ""}${title}`),
-      showState && el("span", { className: "setupItem__state" }, STEP_STATE_WORDS[state])),
-    open && el(React.Fragment, null,
-      intro && el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, intro),
+      n && el("span", { className: `companyStep__num companyStep__num--${showState ? state : "plain"}`, "aria-hidden": "true" },
+        showState && state === "done" ? "\u2713" : showState && state === "skipped" ? "\u2013" : String(n)),
+      el("span", { className: "companyStep__title" }, title),
+      showState && el("span", { className: `companyStep__state companyStep__state--${state}` }, STEP_STATE_WORDS[state]),
+      el("span", { className: "companyStep__chevron", "aria-hidden": "true" }, open ? "\u25be" : "\u25b8")),
+    open && el("div", { className: "companyStep__body" },
       children,
       showState && skippable && state === "todo" && el("div", { className: "closeRentalActions" },
         el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: onSkip }, "Skip for now")),
@@ -6929,9 +6954,8 @@ function CompanyPage() {
   const isExec = roleAtLeast(currentUser?.role, "Exec");
   // Suggested sales tax, by branch, for a branch whose tax is not set yet.
   const [taxSuggestions, setTaxSuggestions] = React.useState({});
-  // Which steps are open, and which step was next last time it was worked out.
+  // Which steps are open. None until clicked.
   const [openSteps, setOpenSteps] = React.useState({});
-  const nextRef = React.useRef(undefined);
   const [stepBusy, setStepBusy] = React.useState(false);
 
   const [branches, setBranches] = React.useState([]);
@@ -6981,32 +7005,26 @@ function CompanyPage() {
   const refreshAll = React.useCallback(async () => { await refresh(); await changed(); }, [refresh, changed]);
 
   const launched = !!(setup && setup.launched);
-  const stepState = (key) => {
-    if (key === "launch") return launched ? "done" : "todo";
-    const it = setup && setup.items.find((i) => i.key === key);
-    return !it || it.done ? "done" : it.skipped ? "skipped" : "todo";
+  // A section is done when every setup item it holds is done, skipped when
+  // one is skipped and the rest are done, and not started otherwise.
+  const stepState = (st) => {
+    if (st.key === "launch") return launched ? "done" : "todo";
+    const its = (st.items || []).map((k) => setup && setup.items.find((i) => i.key === k)).filter(Boolean);
+    if (its.every((it) => it.done)) return "done";
+    return its.every((it) => it.done || it.skipped) ? "skipped" : "todo";
   };
+  // The current step: the first not started, else Launch.
   const nextKey = !setup || launched ? null
-    : (COMPANY_STEPS.find((st) => st.key !== "launch" && stepState(st.key) === "todo") || { key: "launch" }).key;
+    : (COMPANY_STEPS.find((st) => st.key !== "launch" && stepState(st) === "todo") || { key: "launch" }).key;
 
-  // The next step opens by itself: on arrival, and whenever the step that was
-  // next is finished or skipped while it is open.
-  React.useEffect(() => {
-    if (!setup) return;
-    const prev = nextRef.current;
-    nextRef.current = nextKey;
-    if (prev === nextKey || !nextKey) return;
-    if (prev === undefined) { setOpenSteps({ [nextKey]: true }); return; }
-    setOpenSteps((o) => {
-      if (!o[prev]) return o;
-      const out = { ...o, [prev]: false, [nextKey]: true };
-      setTimeout(() => {
-        const node = document.getElementById(`company-step-${nextKey}`);
-        if (node && node.scrollIntoView) node.scrollIntoView({ behavior: "smooth", block: "start" });
-      }, 0);
-      return out;
-    });
-  }, [setup, nextKey]);
+  // A step clicked in the stepper opens, and is scrolled to.
+  const pickStep = (key) => {
+    setOpenSteps((o) => ({ ...o, [key]: true }));
+    setTimeout(() => {
+      const node = document.getElementById(`company-step-${key}`);
+      if (node && node.scrollIntoView) node.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  };
 
   const setSkip = async (step, skipped) => {
     setStepBusy(true);
@@ -7036,15 +7054,17 @@ function CompanyPage() {
   }
 
   const el = React.createElement;
+  // A section with one part shows it directly, not as a dropdown inside.
+  const only = (node) => el(CompanySectionFlat.Provider, { value: true }, node);
   // Every step's body, before launch and after. The list parts come from
   // CompanyListsSections, drawn once so its data is shared across steps.
   const stepBody = (key, parts) => {
     switch (key) {
-      case "branch": return el(React.Fragment, null,
-        el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "address", onSaved: refreshAll, defaultOpen: !launched }),
+      case "business": return el(React.Fragment, null,
+        el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "address", onSaved: refreshAll }),
         el(CompanyUnitsSection, { key: `${fuelUnit()}-${distanceUnit()}`, onSaved: () => { setNotice("Units saved."); changed(); } }),
         React.createElement(
-          CompanySection, { title: "Sales tax", defaultOpen: !launched },
+          CompanySection, { title: "Sales tax" },
           React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
             "Up to two taxes per branch, each with a name and a rate, for example HST 15%, or GST 5% and PST 7%. They are added to every charge, and locked onto a rental agreement when the customer picks up, so a later change here does not reach rentals already out. A branch with no sales tax still needs Save pressed with both left blank, so it is set on purpose."),
           React.createElement(
@@ -7132,43 +7152,39 @@ function CompanyPage() {
                 React.createElement(GasRow, { key: g.locationId, row: g, busy, onSave: run }))))
           )
         ));
-      case "vehicle_classes": return parts.classes;
-      case "rates": return launched ? el(React.Fragment, null, parts.rates, parts.sources) : parts.setupRates;
-      case "vehicles": return el(VehiclesStep, { onAdded: changed });
+      case "vehicles": return el(React.Fragment, null,
+        parts.classes,
+        el(CompanySection, { title: "Add vehicles", style: { marginTop: "24px" } }, el(VehiclesStep, { onAdded: changed })));
+      // The daily rates grid directly. After launch, Sources follows it.
+      case "rates": return launched
+        ? el(React.Fragment, null, only(parts.rates), parts.sources)
+        : only(parts.setupRates);
       case "protection": return el(React.Fragment, null, parts.protection, parts.deductibles);
-      case "contract": return parts.acknowledgements;
-      case "listing": return el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "listing", onSaved: refreshAll, defaultOpen: !launched });
+      case "contract": return only(parts.acknowledgements);
+      case "listing": return only(el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "listing", onSaved: refreshAll }));
       case "staff": return el(StaffPage, { embedded: true, onChanged: refreshSetup });
       case "launch": return launched ? el(CompanyStatusSection, { bare: true }) : el(LaunchStep);
       default: return null;
     }
   };
-  const STEP_INTROS = {
-    branch: "Your branch's address places its map pin, which sets its local time. The units come from its country, and a sales tax is suggested from its province. Confirm the tax with Save to finish.",
-    vehicle_classes: "Tick the vehicle classes you rent.",
-    rates: "A daily rate for each class you picked.",
-    vehicles: "Add at least one vehicle at your branch.",
-    protection: "Damage waivers and the like that customers accept or decline at pickup, with their prices, and your deductibles. Skip it if you offer none.",
-    contract: "What every customer acknowledges when they sign.",
-    listing: "Photos, hours and booking rules for fleetr.ai. Skip it to stay off fleetr.ai for now.",
-    staff: "Share your join code, then approve the people who sign up with it.",
-  };
 
-  return el("div", { className: "page" },
-    el("h1", null, "Company"),
+
+  return el("div", { className: "page companySetup" },
+    el("h1", { className: "companySetup__title" }, "Company"),
     error  && el("div", { className: "loginError" }, error),
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
     !setup && el("div", { className: "resvEmpty" }, "Loading…"),
+    setup && !launched && el(CompanyStepper, { steps: COMPANY_STEPS, stateOf: stepState, current: nextKey, onPick: pickStep }),
     setup && el(CompanyListsSections, {
-      branches, onChanged: changed, openSections: !launched,
+      branches, onChanged: changed, openSections: false,
       layout: (parts) => el(React.Fragment, null, COMPANY_STEPS.map((st, i) => el(CompanyStep, {
         key: st.key, id: `company-step-${st.key}`,
         n: launched ? null : i + 1,
         title: launched && st.after ? st.after : st.title,
-        state: stepState(st.key),
+        state: stepState(st),
+        current: !launched && st.key === nextKey,
         open: !!openSteps[st.key],
         onToggle: () => setOpenSteps((o) => ({ ...o, [st.key]: !o[st.key] })),
-        intro: launched ? null : STEP_INTROS[st.key],
         skippable: st.skippable,
         onSkip: () => setSkip(st.key, true),
         onUnskip: () => setSkip(st.key, false),
@@ -8063,8 +8079,12 @@ const BILLING_TYPE_LABELS = [
 // page opens as a short list of headings rather than seven screens of tables.
 // What is inside is only drawn while it is open.
 function CompanySection({ title, style, children, defaultOpen }) {
+  const flat = React.useContext(CompanySectionFlat);
   const [open, setOpen] = React.useState(!!defaultOpen);
   const toggle = () => setOpen((o) => !o);
+  // The only part of its section: its content, without a dropdown of its own.
+  // Any section inside it is a dropdown again.
+  if (flat) return React.createElement(CompanySectionFlat.Provider, { value: false }, children);
   return React.createElement(
     "div", { className: "dashboardSection", style },
     React.createElement("h2", {
@@ -16463,6 +16483,157 @@ body, * {
 }
 .setupItem__title a{
   color: inherit;
+}
+/* ── Company page: setup stepper and section cards ── */
+.companySetup{
+  --cs-paper: #F9F9F7;
+  --cs-card: #FFFFFF;
+  --cs-ink: #1F1E1D;
+  --cs-muted: rgba(31, 30, 29, 0.62);
+  --cs-line: rgba(31, 30, 29, 0.12);
+  --cs-terra: #F4845F;
+  --cs-terra-soft: rgba(244, 132, 95, 0.14);
+  font-family: 'Inter', sans-serif;
+  color: var(--cs-ink);
+}
+.companySetup__title{
+  margin: 0 0 20px;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--cs-ink);
+}
+.companyStepper{
+  background: var(--cs-card);
+  border: 1px solid var(--cs-line);
+  border-radius: 14px;
+  padding: 14px 12px;
+  margin-bottom: 20px;
+  overflow-x: auto;
+}
+.companyStepper__list{
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 4px;
+  min-width: max-content;
+}
+.companyStepper__item{ display: flex; align-items: center; }
+.companyStepper__item + .companyStepper__item::before{
+  content: "";
+  width: 18px;
+  height: 1px;
+  background: var(--cs-line);
+  margin-right: 4px;
+}
+.companyStepper__step{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 6px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--cs-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.companyStepper__step:hover{ background: var(--cs-paper); color: var(--cs-ink); }
+.companyStepper__step:focus-visible{ outline: 2px solid var(--cs-terra); outline-offset: 2px; }
+.companyStepper__mark{
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid var(--cs-line);
+  background: var(--cs-paper);
+  color: var(--cs-ink);
+}
+.companyStepper__step--done{ color: var(--cs-ink); }
+.companyStepper__step--done .companyStepper__mark{ background: var(--cs-ink); border-color: var(--cs-ink); color: var(--cs-paper); }
+.companyStepper__step--skipped .companyStepper__mark{ border-style: dashed; color: var(--cs-muted); }
+.companyStepper__step--current{ background: var(--cs-terra-soft); border-color: var(--cs-terra); color: var(--cs-ink); font-weight: 600; }
+.companyStepper__step--current .companyStepper__mark{ background: var(--cs-terra); border-color: var(--cs-terra); color: var(--cs-ink); }
+.companyStep{
+  background: var(--cs-card);
+  border: 1px solid var(--cs-line);
+  border-radius: 14px;
+  margin-bottom: 12px;
+  scroll-margin-top: 16px;
+  overflow: hidden;
+}
+.companyStep--current{ border-color: var(--cs-terra); box-shadow: 0 0 0 1px var(--cs-terra); }
+.companyStep__head{
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--cs-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.companyStep__head:hover{ background: var(--cs-paper); }
+.companyStep__head:focus-visible{ outline: 2px solid var(--cs-terra); outline-offset: -2px; }
+.companyStep__num{
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 700;
+  border: 1px solid var(--cs-line);
+  background: var(--cs-paper);
+}
+.companyStep__num--done{ background: var(--cs-ink); border-color: var(--cs-ink); color: var(--cs-paper); }
+.companyStep__num--skipped{ border-style: dashed; color: var(--cs-muted); }
+.companyStep--current .companyStep__num{ background: var(--cs-terra); border-color: var(--cs-terra); color: var(--cs-ink); }
+.companyStep__title{ flex: 1 1 auto; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+.companyStep__state{
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--cs-paper);
+  border: 1px solid var(--cs-line);
+  color: var(--cs-muted);
+}
+.companyStep__state--done{ background: var(--cs-ink); border-color: var(--cs-ink); color: var(--cs-paper); }
+.companyStep__state--skipped{ border-style: dashed; }
+.companyStep--current .companyStep__state--todo{ background: var(--cs-terra-soft); border-color: var(--cs-terra); color: var(--cs-ink); }
+.companyStep__chevron{ flex: 0 0 auto; color: var(--cs-muted); font-size: 14px; }
+.companyStep__body{ padding: 4px 20px 20px; border-top: 1px solid var(--cs-line); }
+.companyStep__body .dashboardSection{
+  border: 1px solid var(--cs-line);
+  border-radius: 10px;
+  background: var(--cs-paper);
+  padding: 0 14px 4px;
+  margin-top: 14px !important;
+  overflow: visible;
+}
+.companyStep__body .dashboardSection > h2{ font-size: 15px; font-weight: 600; margin: 0; padding: 12px 0; }
+.companySetup .loginBtn,
+.companySetup .resModalSubmit{ background: var(--cs-terra); color: var(--cs-ink); }
+.companySetup .loginBtn:hover:not(:disabled),
+.companySetup .resModalSubmit:hover:not(:disabled){ background: #EE7550; }
+.companySetup .resFormInput:focus{ border-color: var(--cs-terra); box-shadow: 0 0 0 1px var(--cs-terra); outline: none; }
+@media (max-width: 767px){
+  .companyStep__head{ padding: 14px 14px; gap: 10px; }
+  .companyStep__body{ padding: 4px 14px 16px; }
+  .companyStep__title{ font-size: 15px; }
 }
 .setupItem__state{
   font-size: 0.75rem;
