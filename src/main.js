@@ -2109,7 +2109,7 @@ function AppProvider({ children, currentUser, signOut }) {
           justifyContent: "center",
           height: "100vh",
           background: "#1F1E1D",
-          color: "#42a4ff",
+          color: "#C9603D",
           fontFamily: "'Inter', sans-serif",
           fontSize: "1.4rem",
           letterSpacing: "0.05em",
@@ -9276,7 +9276,7 @@ function StaffPage({ embedded, onChanged } = {}) {
       React.createElement(
         "div", { style: { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" } },
         React.createElement("code", {
-          style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px", background: "rgba(66,164,255,0.12)" },
+          style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px", background: "rgba(244, 132, 95,0.12)" },
         }, codeShown && code ? fmtJoinCode(code) : "•••••-•••••"),
         React.createElement("button", {
           className: "loginBtn",
@@ -11770,7 +11770,7 @@ function RentalPhotosAndSignatures({ rentalAgreementId }) {
   const isImage = (v) => /^data:image\/(png|jpeg);base64,/.test(String(v || ""));
   const signature = (label, value) => el("div", { key: label, style: { display: "flex", flexDirection: "column", gap: "4px" } },
     el("div", { style: { fontSize: "12px", fontWeight: 600 } }, label),
-    el("img", { src: value, alt: `${label} signature`, style: { maxWidth: "280px", width: "100%", border: "1px solid #d9dee8", borderRadius: "8px", background: "#ffffff" } }));
+    el("img", { src: value, alt: `${label} signature`, style: { maxWidth: "280px", width: "100%", border: "1px solid #E3E2DE", borderRadius: "8px", background: "#ffffff" } }));
 
   if (!ra) return note("Shown once the customer picks up on the fleetr app.");
 
@@ -11960,16 +11960,16 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
 
   const notesContent = React.createElement("div", { style: { padding: "14px" } },
     raNotesLog.length === 0
-      ? React.createElement("p", { style: { color: "#7b8fa8", fontStyle: "italic", margin: "0 0 12px" } }, "No notes yet.")
+      ? React.createElement("p", { style: { color: "#6B6A66", fontStyle: "italic", margin: "0 0 12px" } }, "No notes yet.")
       : React.createElement("div", { style: { marginBottom: "12px" } },
           raNotesLog.map((n, i) =>
             React.createElement("div", { key: i, style: { marginBottom: "8px", padding: "8px 10px", background: "#131f1e", borderRadius: "6px" } },
-              React.createElement("div", { style: { fontSize: "0.72rem", color: "#7b8fa8", marginBottom: "3px" } },
+              React.createElement("div", { style: { fontSize: "0.72rem", color: "#6B6A66", marginBottom: "3px" } },
                 (n.author || "ADJ") + (n.at
                   ? " — " + new Date(n.at).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", hour12: true })
                   : "")
               ),
-              React.createElement("div", { style: { fontSize: "0.9rem", color: "#e0e8f0" } }, n.text)
+              React.createElement("div", { style: { fontSize: "0.9rem", color: "#E7E5E0" } }, n.text)
             )
           )
         ),
@@ -14924,7 +14924,7 @@ function CustomerPage() {
       React.createElement("input", {
         className: "resFormInput", type: "text", readOnly: true,
         value: value || "—",
-        style: { color: "#7b8fa8", background: "#f0f3f7" },
+        style: { color: "#6B6A66", background: "#F1F0EC" },
       })
     );
 
@@ -14998,7 +14998,7 @@ function CustomerPage() {
       React.createElement("span", { className: "resFormLabel" }, label),
       React.createElement("input", {
         className: "resFormInput", type: "text", readOnly: true, value,
-        style: { color: "#7b8fa8", background: "#f0f3f7" },
+        style: { color: "#6B6A66", background: "#F1F0EC" },
       })
     );
 
@@ -15413,7 +15413,7 @@ function CustomerPage() {
         React.createElement("input", {
           className: "resFormInput", type: "text", readOnly: true,
           value: resCode || "—",
-          style: { color: "#7b8fa8", background: "#f0f3f7" },
+          style: { color: "#6B6A66", background: "#F1F0EC" },
         })
       )
     ),
@@ -15434,7 +15434,7 @@ function CustomerPage() {
             React.createElement("input", {
               className: "resFormInput", type: "text", readOnly: true,
               value: new Date(ra.inspectedAt).toLocaleDateString("en-CA", { month: "long", day: "numeric", year: "numeric" }),
-              style: { color: "#7b8fa8", background: "#f0f3f7" },
+              style: { color: "#6B6A66", background: "#F1F0EC" },
             })
           )
         : datePickerField("Pickup Date", "pickupDate"),
@@ -15444,7 +15444,7 @@ function CustomerPage() {
             React.createElement("input", {
               className: "resFormInput", type: "text", readOnly: true,
               value: new Date(ra.inspectedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }),
-              style: { color: "#7b8fa8", background: "#f0f3f7" },
+              style: { color: "#6B6A66", background: "#F1F0EC" },
             })
           )
         : timePickerField("Pickup Time", "pickupTime", "pickupMeridiem")
@@ -15465,7 +15465,7 @@ function CustomerPage() {
   if (recordLoading && !localRecord) {
     return React.createElement("div", { className: "page" },
       React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate(-1), style: { marginBottom: "24px" } }, "\u2190 Back"),
-      React.createElement("p", { style: { color: "#7b8fa8", fontStyle: "italic" } }, "Loading\u2026")
+      React.createElement("p", { style: { color: "#6B6A66", fontStyle: "italic" } }, "Loading\u2026")
     );
   }
 
@@ -15509,16 +15509,16 @@ function CustomerPage() {
     makeSection("notes", "Notes",
       React.createElement("div", { style: { padding: "14px" } },
         customerNotesLog.length === 0
-          ? React.createElement("p", { style: { color: "#7b8fa8", fontStyle: "italic", margin: "0 0 12px" } }, "No notes yet.")
+          ? React.createElement("p", { style: { color: "#6B6A66", fontStyle: "italic", margin: "0 0 12px" } }, "No notes yet.")
           : React.createElement("div", { style: { marginBottom: "12px" } },
               customerNotesLog.map((n, i) =>
                 React.createElement("div", { key: i, style: { marginBottom: "8px", padding: "8px 10px", background: "#131f1e", borderRadius: "6px" } },
-                  React.createElement("div", { style: { fontSize: "0.72rem", color: "#7b8fa8", marginBottom: "3px" } },
+                  React.createElement("div", { style: { fontSize: "0.72rem", color: "#6B6A66", marginBottom: "3px" } },
                     (n.author || "ADJ") + (n.at
                       ? " — " + new Date(n.at).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", hour12: true })
                       : "")
                   ),
-                  React.createElement("div", { style: { fontSize: "0.9rem", color: "#e0e8f0" } }, n.text)
+                  React.createElement("div", { style: { fontSize: "0.9rem", color: "#E7E5E0" } }, n.text)
                 )
               )
             ),
@@ -15827,7 +15827,7 @@ function ForgotScreen({ onCancel }) {
     "div", { className: "loginWrap" },
     React.createElement(
       "div", { className: "loginCard" },
-      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#42a4ff", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
+      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#C9603D", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
       React.createElement("div", { className: "loginSubtitle" },
         sent ? "Check your email." : "Reset your password."),
       sent
@@ -15841,7 +15841,7 @@ function ForgotScreen({ onCancel }) {
               "Nothing has changed yet. Your password stays as it is until you use the link."),
             React.createElement("button", {
               type: "button", onClick: onCancel,
-              style: { background: "none", border: "none", color: "#42a4ff", cursor: "pointer", fontSize: "0.85rem" },
+              style: { background: "none", border: "none", color: "#C9603D", cursor: "pointer", fontSize: "0.85rem" },
             }, "Back to sign in"))
         : React.createElement(
             "form", { className: "loginForm", onSubmit: submit },
@@ -15858,7 +15858,7 @@ function ForgotScreen({ onCancel }) {
               "The link goes to the email on your account, not to your fleetr username."),
             React.createElement("button", {
               type: "button", onClick: onCancel,
-              style: { background: "none", border: "none", color: "#42a4ff", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
+              style: { background: "none", border: "none", color: "#C9603D", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
             }, "Back to sign in"))
     )
   );
@@ -15943,7 +15943,7 @@ function SignupScreen({ onDone, onCancel }) {
     "div", { className: "loginWrap" },
     React.createElement(
       "div", { className: "loginCard" },
-      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#42a4ff", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
+      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#C9603D", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
       React.createElement("div", { className: "loginSubtitle" }, "Create your account."),
       React.createElement(
         "form", { className: "loginForm", onSubmit: submit },
@@ -15970,7 +15970,7 @@ function SignupScreen({ onDone, onCancel }) {
         message && React.createElement("div", { className: "loginError" }, message),
         React.createElement("button", {
           type: "button", className: "loginLink", onClick: onCancel,
-          style: { background: "none", border: "none", color: "#42a4ff", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
+          style: { background: "none", border: "none", color: "#C9603D", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
         }, "I already have an account")
       )
     )
@@ -16021,7 +16021,7 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
     React.createElement(
       "div",
       { className: "loginCard" },
-      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#42a4ff", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
+      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#C9603D", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
       React.createElement("div", { className: "loginSubtitle" }, "Enter details below."),
       React.createElement(
         "form",
@@ -16055,11 +16055,11 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
         notice && React.createElement("div", { className: "loginNotice", style: { color: "#3fbf7f", fontSize: "0.85rem", marginTop: "8px", textAlign: "center" } }, notice),
         React.createElement("button", {
           type: "button", onClick: onSignup,
-          style: { background: "none", border: "none", color: "#42a4ff", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
+          style: { background: "none", border: "none", color: "#C9603D", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
         }, "I have a join code"),
         React.createElement("button", {
           type: "button", onClick: onForgot,
-          style: { background: "none", border: "none", color: "#42a4ff", cursor: "pointer", marginTop: "4px", fontSize: "0.85rem" },
+          style: { background: "none", border: "none", color: "#C9603D", cursor: "pointer", marginTop: "4px", fontSize: "0.85rem" },
         }, "Forgot your password?")
       )
     )
@@ -16191,7 +16191,7 @@ body, * {
 }
 .loginSubtitle{
   font-size: 14px;
-  color: #7b8fa8;
+  color: #6B6A66;
   margin-bottom: 28px;
   text-align: center;
 }
@@ -16201,7 +16201,7 @@ body, * {
   gap: 12px;
 }
 .loginInput{
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   border-radius: 8px;
   padding: 10px 14px;
   font-size: 14px;
@@ -16211,7 +16211,7 @@ body, * {
   outline: none;
 }
 .loginInput:focus{
-  border-color: #42a4ff;
+  border-color: #F4845F;
   box-shadow: 0 0 0 3px rgba(5,150,105,0.12);
 }
 
@@ -16225,14 +16225,14 @@ body, * {
   align-items: center;
   justify-content: center;
   height: 52px;
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   border-radius: 8px;
   background: #fff;
   cursor: text;
 }
 .pinField:focus-within{
-  border-color: #42a4ff;
-  box-shadow: 0 0 0 3px rgba(66,164,255,0.15);
+  border-color: #F4845F;
+  box-shadow: 0 0 0 3px rgba(244, 132, 95,0.15);
 }
 .pinField--error{ border-color: #e53e3e; }
 .pinField--error.pinField:focus-within{ box-shadow: 0 0 0 3px rgba(229,62,62,0.15); }
@@ -16275,14 +16275,14 @@ body, * {
   border-radius: 50%;
   background: #1F1E1D;
 }
-.pinDot--empty{ background: #d3dbe8; }
+.pinDot--empty{ background: #E3E2DE; }
 .pinCaret{
   position: absolute;
   top: 1px;
   width: 2px;
   height: 22px;
   border-radius: 1px;
-  background: #42a4ff;
+  background: #F4845F;
   animation: pinCaretBlink 1.06s steps(1, end) infinite;
 }
 .pinCaret--before{ left: -10px; }
@@ -16294,8 +16294,8 @@ body, * {
 .loginBtn{
   width: 100%;
   padding: 11px;
-  background: #42a4ff;
-  color: #F9F9F7;
+  background: #F4845F;
+  color: #1F1E1D;
   font-size: 14px;
   font-weight: 700;
   border: none;
@@ -16303,7 +16303,7 @@ body, * {
   cursor: pointer;
   margin-top: 4px;
 }
-.loginBtn:hover{ background: #0063bf; }
+.loginBtn:hover{ background: #E06D47; }
 .loginError{
   font-size: 13px;
   color: #c0392b;
@@ -16371,11 +16371,11 @@ body, * {
   transition: background 120ms ease, border-color 120ms ease;
 }
 .nav__item:hover{
-  background: #0063bf;
+  background: rgba(244, 132, 95, 0.14);
 }
 .nav__item--active{
-  background: #0063bf;
-  border-left-color: #42a4ff;
+  background: rgba(244, 132, 95, 0.22);
+  border-left-color: #F4845F;
   color: #F9F9F7;
 }
 .nav__label{
@@ -16425,7 +16425,7 @@ body, * {
 }
 .pill--select:focus{
   outline: none;
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 .pill--select option{
   background: #1F1E1D;
@@ -16869,8 +16869,8 @@ body, * {
 .updateBanner__refresh{
   font: inherit;
   font-weight: 600;
-  color: #fff;
-  background: #42a4ff;
+  color: #1F1E1D;
+  background: #F4845F;
   border: 0;
   border-radius: 999px;
   padding: 6px 14px;
@@ -16898,13 +16898,13 @@ body, * {
   background: #F9F9F7;
   border-radius: 999px;
   padding: 4px 6px 4px 10px;
-  border: 1.5px solid rgba(66,164,255,0.35);
+  border: 1.5px solid rgba(244, 132, 95,0.35);
 }
 .fleetrCommandBar__iconBtn{
   background: none;
   border: none;
   cursor: pointer;
-  color: #42a4ff;
+  color: #C9603D;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -16939,11 +16939,11 @@ body, * {
   color: rgba(6,13,12,0.4);
 }
 .fleetrCommandBar__sendBtn{
-  background: #42a4ff;
+  background: #F4845F;
   border: none;
   border-radius: 999px;
   cursor: pointer;
-  color: #fff;
+  color: #1F1E1D;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -16954,7 +16954,7 @@ body, * {
   transition: background 0.15s;
 }
 .fleetrCommandBar__sendBtn:hover{
-  background: #2b8fe0;
+  background: #EE7550;
 }
 .fleetrCommandBar__popover{
   position: absolute;
@@ -16962,7 +16962,7 @@ body, * {
   left: 0;
   right: 0;
   background: #fff;
-  border: 1.5px solid rgba(66,164,255,0.3);
+  border: 1.5px solid rgba(244, 132, 95,0.3);
   border-radius: 14px;
   box-shadow: 0 8px 32px rgba(0,0,0,0.13);
   z-index: 9999;
@@ -16973,17 +16973,17 @@ body, * {
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px 8px;
-  border-bottom: 1px solid rgba(66,164,255,0.15);
+  border-bottom: 1px solid rgba(244, 132, 95,0.15);
   font-size: 12px;
   font-weight: 600;
-  color: #42a4ff;
+  color: #C9603D;
   letter-spacing: 0.04em;
 }
 .fleetrCommandBar__popoverClose{
   background: none;
   border: none;
   cursor: pointer;
-  color: #7b8fa8;
+  color: #6B6A66;
   font-size: 13px;
   line-height: 1;
   padding: 0 2px;
@@ -17015,7 +17015,7 @@ body, * {
 .fleetrCommandBar__editKey{
   font-size: 11px;
   font-weight: 600;
-  color: #7b8fa8;
+  color: #6B6A66;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   min-width: 110px;
@@ -17023,8 +17023,8 @@ body, * {
 }
 .fleetrCommandBar__editInput{
   flex: 1;
-  background: #f0f5ff;
-  border: 1px solid rgba(66,164,255,0.3);
+  background: #FDF1EC;
+  border: 1px solid rgba(244, 132, 95,0.3);
   border-radius: 6px;
   padding: 4px 8px;
   font-size: 13px;
@@ -17034,7 +17034,7 @@ body, * {
   min-width: 0;
 }
 .fleetrCommandBar__editInput:focus{
-  border-color: #42a4ff;
+  border-color: #F4845F;
   background: #fff;
 }
 .fleetrCommandBar__actionRow{
@@ -17042,8 +17042,8 @@ body, * {
   gap: 8px;
 }
 .fleetrCommandBar__confirmBtn{
-  background: #42a4ff;
-  color: #fff;
+  background: #F4845F;
+  color: #1F1E1D;
   border: none;
   border-radius: 999px;
   padding: 6px 18px;
@@ -17053,7 +17053,7 @@ body, * {
   transition: background 0.15s;
 }
 .fleetrCommandBar__confirmBtn:hover:not(:disabled){
-  background: #2b8fe0;
+  background: #EE7550;
 }
 .fleetrCommandBar__confirmBtn:disabled{
   opacity: 0.6;
@@ -17081,7 +17081,7 @@ body, * {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #42a4ff;
+  background: #F4845F;
   animation: fleetrDotPulse 1.2s ease-in-out infinite;
 }
 .fleetrCommandBar__dot:nth-child(2){ animation-delay: 0.2s; }
@@ -17112,11 +17112,11 @@ body, * {
   height: 4px;
   border-radius: 3px;
   margin: 10px 0 20px;
-  background: #42a4ff;
+  background: #F4845F;
 }
 .page__body{
   margin: 0;
-  color: #1d304b;
+  color: #1F1E1D;
   line-height: 1.55;
 }
 
@@ -17125,7 +17125,7 @@ body, * {
   gap: 18px;
 }
 .dashboardSection{
-  border: 1px solid #d9dee8;
+  border: 1px solid #E3E2DE;
   border-radius: 10px;
   overflow: hidden;
   background: #F9F9F7;
@@ -17148,7 +17148,7 @@ body, * {
   height: 18px;
   border-radius: 999px;
   border: none;
-  background: #42a4ff;
+  background: #F4845F;
   color: #1F1E1D;
   font-size: 13px;
   font-weight: 800;
@@ -17171,11 +17171,11 @@ body, * {
   align-items: center;
   gap: 0;
   padding: 8px 12px;
-  border-bottom: 1px solid #dfe5ef;
+  border-bottom: 1px solid #E3E2DE;
   background: #F9F9F7;
 }
 .resDayNavArrow{
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   background: #F9F9F7;
   color: #1F1E1D;
   font-size: 18px;
@@ -17190,7 +17190,7 @@ body, * {
   padding: 0;
 }
 .resDayNavArrow:hover{
-  background: #f0f4fa;
+  background: #F1F0EC;
 }
 .resDayNavPickerWrap{
   position: relative;
@@ -17208,14 +17208,14 @@ body, * {
   font-size: 12px;
   font-weight: 700;
   padding: 10px 12px;
-  border-bottom: 1px solid #dfe5ef;
+  border-bottom: 1px solid #E3E2DE;
   white-space: nowrap;
 }
 .dashboardTable td{
-  color: #1c2f49;
+  color: #1F1E1D;
   font-size: 13px;
   padding: 10px 12px;
-  border-bottom: 1px solid #edf1f7;
+  border-bottom: 1px solid #EEEDE9;
   white-space: nowrap;
 }
 .dashboardTable tbody tr:last-child td{
@@ -17239,7 +17239,7 @@ body, * {
   font-weight: 700;
 }
 .slaTimer--under{
-  color: #42a4ff;
+  color: #C9603D;
   font-weight: 500;
 }
 .aiCallWrap{
@@ -17249,7 +17249,7 @@ body, * {
   position: relative;
 }
 .aiControl{
-  border: 1px solid #ccd5e3;
+  border: 1px solid #DAD8D2;
   background: #F9F9F7;
   color: #1F1E1D;
   border-radius: 6px;
@@ -17274,20 +17274,20 @@ body, * {
 .ndiSourceSelect{
   font-size: 12px;
   padding: 3px 5px;
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   border-radius: 5px;
   background: #F9F9F7;
-  color: #1a2233;
+  color: #1F1E1D;
   cursor: pointer;
 }
 .calendarPopover{
   position: fixed;
   z-index: 10000;
   width: 210px;
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   border-radius: 8px;
   background: #F9F9F7;
-  box-shadow: 0 10px 25px rgba(10, 31, 60, 0.16);
+  box-shadow: 0 10px 25px rgba(31, 30, 29, 0.16);
   padding: 8px;
 }
 .calendarHeader{
@@ -17297,7 +17297,7 @@ body, * {
   margin-bottom: 6px;
 }
 .calendarArrow{
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   background: #F9F9F7;
   color: #1F1E1D;
   width: 26px;
@@ -17320,7 +17320,7 @@ body, * {
 .calendarWeekday{
   text-align: center;
   font-size: 10px;
-  color: #55657b;
+  color: #5C5B57;
   padding: 3px 0;
 }
 .calendarDay{
@@ -17336,11 +17336,11 @@ body, * {
   background: #F9F9F7;
 }
 .calendarDay--today{
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 .calendarDay--selected{
   background: #e6f5ed;
-  border-color: #42a4ff;
+  border-color: #F4845F;
   font-weight: 700;
 }
 .calendarDay--empty{
@@ -17350,15 +17350,15 @@ body, * {
 .aiCallButton{
   border: none;
   border-radius: 6px;
-  background: #42a4ff;
-  color: #F9F9F7;
+  background: #F4845F;
+  color: #1F1E1D;
   font-size: 12px;
   font-weight: 700;
   padding: 7px 10px;
   cursor: pointer;
 }
 .aiCallButton:hover{
-  background: #0063bf;
+  background: #E06D47;
 }
 .aiCallAgentWrap{
   display: flex;
@@ -17375,7 +17375,7 @@ body, * {
   font-size: 13px;
 }
 .preRentalCheckDone {
-  color: #42a4ff;
+  color: #C9603D;
   font-weight: 700;
   font-size: 13px;
 }
@@ -17393,7 +17393,7 @@ body, * {
   border: 1.5px solid var(--border, rgba(6,13,12,0.09));
   border-radius: 8px;
   background: transparent;
-  color: #55657b;
+  color: #5C5B57;
   font-size: 13px;
   font-weight: 600;
   padding: 6px 16px;
@@ -17401,17 +17401,17 @@ body, * {
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 .aiSubTab:hover {
-  border-color: #42a4ff;
-  color: #42a4ff;
+  border-color: #F4845F;
+  color: #C9603D;
 }
 .aiSubTab--active {
-  border-color: #42a4ff;
-  background: rgba(66,164,255,0.08);
-  color: #42a4ff;
+  border-color: #F4845F;
+  background: rgba(244, 132, 95,0.08);
+  color: #C9603D;
 }
 .aiTabDesc {
   font-size: 13px;
-  color: #55657b;
+  color: #5C5B57;
   margin: 0 0 18px 0;
   line-height: 1.5;
 }
@@ -17431,8 +17431,8 @@ body, * {
   height: 18px;
   border-radius: 999px;
   border: none;
-  background: #42a4ff;
-  color: #F9F9F7;
+  background: #F4845F;
+  color: #1F1E1D;
   font-size: 14px;
   font-weight: 700;
   line-height: 1;
@@ -17443,10 +17443,10 @@ body, * {
   flex-shrink: 0;
 }
 .notesAddBtn:hover {
-  background: #0063bf;
+  background: #E06D47;
 }
 .notesDash {
-  color: #7b8fa8;
+  color: #6B6A66;
 }
 .notesCellBtn {
   font-size: 11px;
@@ -17460,9 +17460,9 @@ body, * {
   position: fixed;
   z-index: 10000;
   background: #F9F9F7;
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   border-radius: 8px;
-  box-shadow: 0 10px 25px rgba(10, 31, 60, 0.18);
+  box-shadow: 0 10px 25px rgba(31, 30, 29, 0.18);
   width: 380px;
   display: flex;
   flex-direction: column;
@@ -17470,7 +17470,7 @@ body, * {
 }
 .notesSearch {
   border: none;
-  border-bottom: 1px solid #dfe5ef;
+  border-bottom: 1px solid #E3E2DE;
   padding: 8px 12px;
   font-size: 13px;
   font-family: inherit;
@@ -17489,7 +17489,7 @@ body, * {
   align-items: flex-start;
   gap: 10px;
   padding: 8px 12px;
-  border-bottom: 1px solid #f0f3f8;
+  border-bottom: 1px solid #F1F0EC;
   font-size: 13px;
 }
 .notesRow:last-child {
@@ -17504,24 +17504,24 @@ body, * {
 }
 .notesText {
   flex: 1;
-  color: #1c2f49;
+  color: #1F1E1D;
   line-height: 1.4;
 }
 .notesEmpty {
   padding: 14px 12px;
   font-size: 13px;
-  color: #7b8fa8;
+  color: #6B6A66;
   text-align: center;
 }
 .notesPager {
   display: flex;
   gap: 4px;
   padding: 8px 12px;
-  border-top: 1px solid #dfe5ef;
+  border-top: 1px solid #E3E2DE;
   justify-content: center;
 }
 .notesPagerBtn {
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   background: #F9F9F7;
   color: #1F1E1D;
   font-size: 12px;
@@ -17534,12 +17534,12 @@ body, * {
   place-items: center;
 }
 .notesPagerBtn--active {
-  background: #42a4ff;
-  color: #F9F9F7;
-  border-color: #42a4ff;
+  background: #F4845F;
+  color: #1F1E1D;
+  border-color: #F4845F;
 }
 .aiCallAgentPhone{
-  color: #1c2f49;
+  color: #1F1E1D;
   font-size: 12px;
   font-weight: 500;
 }
@@ -17567,9 +17567,9 @@ body, * {
   position: relative;
   min-width: 150px;
   background: #F9F9F7;
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   border-radius: 8px;
-  box-shadow: 0 10px 25px rgba(10, 31, 60, 0.16);
+  box-shadow: 0 10px 25px rgba(31, 30, 29, 0.16);
   z-index: 9999;
   padding: 4px;
   display: flex;
@@ -17635,7 +17635,7 @@ body, * {
 }
 .resvSearchInput{
   padding: 7px 10px;
-  border: 1px solid #dfe5ef;
+  border: 1px solid #E3E2DE;
   border-radius: 6px;
   font-size: 13px;
   background: #fff;
@@ -17644,24 +17644,24 @@ body, * {
 }
 .resvSearchInput:focus{
   outline: none;
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 .resvDateBtn{
   cursor: pointer;
   text-align: left;
   white-space: nowrap;
   width: 148px;
-  color: #7b8fa8;
+  color: #6B6A66;
 }
 .resvDateBtn--active{
   color: #1F1E1D;
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 .resvDateClear{
   background: none;
   border: none;
   cursor: pointer;
-  color: #7b8fa8;
+  color: #6B6A66;
   font-size: 16px;
   line-height: 1;
   padding: 0 2px;
@@ -17671,12 +17671,12 @@ body, * {
   display: flex;
   gap: 0;
   margin-bottom: 14px;
-  border-bottom: 1px solid #dfe5ef;
+  border-bottom: 1px solid #E3E2DE;
 }
 .resvPageTab{
   border: none;
   background: transparent;
-  color: #7b8fa8;
+  color: #6B6A66;
   font-size: 13px;
   font-weight: 600;
   padding: 7px 18px 8px;
@@ -17691,7 +17691,7 @@ body, * {
 }
 .resvPageTab--active{
   color: #1F1E1D;
-  border-bottom-color: #42a4ff;
+  border-bottom-color: #F4845F;
 }
 /* New Reservation button inside the panel header */
 .autoTextNote{
@@ -17705,8 +17705,8 @@ body, * {
 .resvInlineBtn{
   border: none;
   border-radius: 5px;
-  background: #42a4ff;
-  color: #F9F9F7;
+  background: #F4845F;
+  color: #1F1E1D;
   font-size: 11px;
   font-weight: 700;
   padding: 4px 10px;
@@ -17714,12 +17714,12 @@ body, * {
   white-space: nowrap;
 }
 .resvInlineBtn:hover{
-  background: #0063bf;
+  background: #E06D47;
 }
 .resvEmpty{
   padding: 28px;
   text-align: center;
-  color: #7b8fa8;
+  color: #6B6A66;
   font-size: 14px;
 }
 /* Close Rental: the Dashboard's entry button and its search screen */
@@ -17733,8 +17733,8 @@ body, * {
   display: block;
   border: none;
   border-radius: 10px;
-  background: #42a4ff;
-  color: #F9F9F7;
+  background: #F4845F;
+  color: #1F1E1D;
   font-family: inherit;
   font-size: 15px;
   font-weight: 800;
@@ -17743,14 +17743,14 @@ body, * {
   box-shadow: 0 1px 4px rgba(0,0,0,0.07);
 }
 .closeRentalCta:hover{
-  background: #0063bf;
+  background: #E06D47;
 }
 .closeRentalRow{
   cursor: pointer;
 }
 .closeRentalRow:hover td,
 .closeRentalRow:focus td{
-  background: #eef6ff;
+  background: #FDEDE6;
 }
 .closeRentalRow:focus{
   outline: none;
@@ -17763,7 +17763,7 @@ body, * {
   cursor: pointer;
 }
 .closeRentalSummary{
-  border: 1px solid #d9dee8;
+  border: 1px solid #E3E2DE;
   border-radius: 10px;
   background: #fff;
   padding: 12px 14px;
@@ -17777,7 +17777,7 @@ body, * {
 }
 .closeRentalSummary__meta{
   font-size: 13px;
-  color: #55657b;
+  color: #5C5B57;
   margin-top: 2px;
 }
 .closeRentalStepTitle{
@@ -17794,7 +17794,7 @@ body, * {
 }
 .closeRentalHint{
   font-size: 12px;
-  color: #7b8fa8;
+  color: #6B6A66;
 }
 .closeRentalError{
   margin-top: -8px;
@@ -17824,11 +17824,11 @@ body, * {
 .closeRentalFuel__value{
   font-size: 15px;
   font-weight: 700;
-  color: #42a4ff;
+  color: #C9603D;
 }
 .closeRentalFuel{
   width: 100%;
-  accent-color: #42a4ff;
+  accent-color: #F4845F;
   cursor: pointer;
   margin: 2px 0 0;
   /* A drag on the slider is never a scroll; see the touch handlers on it. */
@@ -17841,7 +17841,7 @@ body, * {
   display: flex;
   justify-content: space-between;
   font-size: 12px;
-  color: #7b8fa8;
+  color: #6B6A66;
 }
 .closeRentalActions{
   display: flex;
@@ -17861,11 +17861,11 @@ body, * {
 }
 .closeRentalDamageEmpty{
   font-size: 13px;
-  color: #55657b;
+  color: #5C5B57;
   padding: 10px 0;
 }
 .closeRentalDamageItem{
-  border: 1px solid #d9dee8;
+  border: 1px solid #E3E2DE;
   border-radius: 10px;
   background: #fff;
   padding: 12px 14px;
@@ -17880,7 +17880,7 @@ body, * {
 }
 .closeRentalDamageItem__meta{
   font-size: 12px;
-  color: #7b8fa8;
+  color: #6B6A66;
 }
 .damagePhotoRow{
   display: flex;
@@ -17890,11 +17890,11 @@ body, * {
 .damagePhotoThumb{
   width: 96px;
   height: 72px;
-  border: 1px solid #d9dee8;
+  border: 1px solid #E3E2DE;
   border-radius: 8px;
   padding: 0;
   overflow: hidden;
-  background: #f0f4fa;
+  background: #F1F0EC;
   cursor: zoom-in;
 }
 .damagePhotoThumb img{
@@ -17907,7 +17907,7 @@ body, * {
   display: grid;
   place-items: center;
   font-size: 11px;
-  color: #7b8fa8;
+  color: #6B6A66;
   text-align: center;
   cursor: default;
 }
@@ -17915,7 +17915,7 @@ body, * {
   position: fixed;
   inset: 0;
   z-index: 10000;
-  background: rgba(10,31,60,0.85);
+  background: rgba(31, 30, 29,0.85);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -17952,7 +17952,7 @@ body, * {
 }
 .closeRentalChoice{
   flex: 1;
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   border-radius: 8px;
   background: #fff;
   color: #1F1E1D;
@@ -17963,25 +17963,25 @@ body, * {
   cursor: pointer;
 }
 .closeRentalChoice:hover{
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 .closeRentalChoice--active{
-  background: #42a4ff;
-  border-color: #42a4ff;
-  color: #F9F9F7;
+  background: #F4845F;
+  border-color: #F4845F;
+  color: #1F1E1D;
 }
 .closeRentalActions .resModalSubmit:disabled{
   opacity: 0.45;
   cursor: not-allowed;
 }
 .closeRentalActions .resModalSubmit:disabled:hover{
-  background: #42a4ff;
+  background: #F4845F;
 }
 .closeRentalPhotoNote{
   margin: -6px 0 14px;
   max-width: 640px;
   font-size: 13px;
-  color: #1c2f49;
+  color: #1F1E1D;
   line-height: 1.45;
 }
 /* Letterboxed rather than cropped, so the preview shows exactly the frame a
@@ -18031,19 +18031,19 @@ body, * {
 .closeRentalShutter{
   border: none;
   border-radius: 10px;
-  background: #42a4ff;
-  color: #F9F9F7;
+  background: #F4845F;
+  color: #1F1E1D;
   font-family: inherit;
   font-weight: 800;
   cursor: pointer;
 }
 .closeRentalShutter:hover{
-  background: #0063bf;
+  background: #E06D47;
 }
 .closeRentalShutter:disabled{
   opacity: 0.45;
   cursor: not-allowed;
-  background: #42a4ff;
+  background: #F4845F;
 }
 .closeRentalPhotoListTitle{
   font-size: 13px;
@@ -18076,7 +18076,7 @@ body, * {
 .resModalBackdrop{
   position: fixed;
   inset: 0;
-  background: rgba(10,31,60,0.45);
+  background: rgba(31, 30, 29,0.45);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -18088,7 +18088,7 @@ body, * {
   border-radius: 14px;
   width: 100%;
   max-width: 740px;
-  box-shadow: 0 20px 60px rgba(10,31,60,0.25);
+  box-shadow: 0 20px 60px rgba(31, 30, 29,0.25);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -18165,10 +18165,10 @@ body, * {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #55657b;
+  color: #5C5B57;
 }
 .resFormInput{
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   border-radius: 7px;
   padding: 8px 10px;
   font-size: 13px;
@@ -18177,7 +18177,7 @@ body, * {
   background: #F9F9F7;
 }
 .resFormInput:focus{
-  outline: 2px solid #42a4ff;
+  outline: 2px solid #F4845F;
   outline-offset: -1px;
 }
 .resFormError{
@@ -18193,33 +18193,34 @@ body, * {
   justify-content: flex-end;
   gap: 10px;
   padding: 14px 20px 18px;
-  border-top: 1px solid #edf1f7;
+  border-top: 1px solid #EEEDE9;
 }
 .resModalCancel{
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   border-radius: 7px;
   background: #F9F9F7;
-  color: #55657b;
+  color: #5C5B57;
   font-size: 13px;
   font-weight: 600;
   padding: 9px 18px;
   cursor: pointer;
 }
 .resModalCancel:hover{
-  background: #0063bf;
+  background: rgba(244, 132, 95, 0.14);
+  border-color: #F4845F;
 }
 .resModalSubmit{
   border: none;
   border-radius: 7px;
-  background: #42a4ff;
-  color: #F9F9F7;
+  background: #F4845F;
+  color: #1F1E1D;
   font-size: 13px;
   font-weight: 700;
   padding: 9px 20px;
   cursor: pointer;
 }
 .resModalSubmit:hover{
-  background: #0063bf;
+  background: #E06D47;
 }
 
 @media (max-width: 900px){
@@ -18347,10 +18348,10 @@ body, * {
     background: transparent;
     text-decoration: none;
   }
-  .mobileNavItem:hover{ background: #0063bf; }
+  .mobileNavItem:hover{ background: rgba(244, 132, 95, 0.14); }
   .mobileNavItem--active{
-    background: #0063bf;
-    border-left-color: #42a4ff;
+    background: rgba(244, 132, 95, 0.22);
+    border-left-color: #F4845F;
     color: #F9F9F7;
   }
 
@@ -18416,7 +18417,7 @@ body, * {
   }
   .dashCard__resCode{
     font-size: 12px;
-    color: #7b8fa8;
+    color: #6B6A66;
     font-weight: 500;
     white-space: nowrap;
   }
@@ -18427,7 +18428,7 @@ body, * {
     align-items: center;
   }
   .dashCard__chip{
-    background: #f0f5ff;
+    background: #FDF1EC;
     color: #1F1E1D;
     border-radius: 6px;
     padding: 2px 8px;
@@ -18441,7 +18442,7 @@ body, * {
   .closeRentalMileage, .closeRentalNote{ font-size: 16px; }
   .closeRentalActions button{ flex: 1; padding-block: 12px; }
   .dashCard__chip--loc{
-    background: #f0f5ff;
+    background: #FDF1EC;
     font-size: 11px;
     max-width: 100%;
     white-space: nowrap;
@@ -18465,14 +18466,14 @@ body, * {
   }
 }
 
-.fleetStatus--available { color: #42a4ff; font-weight: 700; }
+.fleetStatus--available { color: #C9603D; font-weight: 700; }
 .fleetStatus--onRent    { color: #4a6fa5; font-weight: 700; }
 .fleetStatus--cleaning  { color: #c0392b; font-weight: 700; }
 .fleetStatus--pm      { color: #7b5ea7; font-weight: 700; }
 .fleetStatus--damaged   { color: #c0392b; font-weight: 700; }
 
 .fleetGroup {
-  border-bottom: 1px solid #dfe5ef;
+  border-bottom: 1px solid #E3E2DE;
 }
 .fleetGroup:last-child {
   border-bottom: none;
@@ -18529,7 +18530,7 @@ body, * {
   padding: 5px 14px 3px;
   font-size: 11px;
   font-weight: 700;
-  color: #42a4ff;
+  color: #C9603D;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   background: #f4fcf7;
@@ -18548,14 +18549,14 @@ body, * {
 .fleetMarkCleanBtn {
   border: none;
   border-radius: 5px;
-  background: #42a4ff;
-  color: #fff;
+  background: #F4845F;
+  color: #1F1E1D;
   font-size: 11px;
   font-weight: 700;
   padding: 4px 8px;
   cursor: pointer;
 }
-.fleetMarkCleanBtn:hover { background: #0063bf; }
+.fleetMarkCleanBtn:hover { background: #E06D47; }
 
 /* ── Rental Agreements ────────────────────────────────────────────────────────────────── */
 .customerLinkWrap {
@@ -18577,8 +18578,8 @@ body, * {
   text-decoration-color: #ccc;
 }
 .customerLink:hover {
-  color: #42a4ff;
-  text-decoration-color: #42a4ff;
+  color: #C9603D;
+  text-decoration-color: #C9603D;
 }
 .plateLink {
   background: none;
@@ -18595,8 +18596,8 @@ body, * {
   letter-spacing: 0.02em;
 }
 .plateLink:hover {
-  color: #42a4ff;
-  text-decoration-color: #42a4ff;
+  color: #C9603D;
+  text-decoration-color: #C9603D;
 }
 .vehicleDetailRow {
   display: flex;
@@ -18610,7 +18611,7 @@ body, * {
   min-width: 170px;
   font-size: 13px;
   font-weight: 600;
-  color: #55657b;
+  color: #5C5B57;
   flex-shrink: 0;
 }
 .vehicleDetailValue {
@@ -18620,7 +18621,7 @@ body, * {
 .vehicleDetailSubHeader {
   font-size: 12px;
   font-weight: 700;
-  color: #55657b;
+  color: #5C5B57;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   margin: 18px 0 8px;
@@ -18637,7 +18638,7 @@ body, * {
   padding: 4px 10px;
   cursor: pointer;
 }
-.vehicleStatusSelect:focus { outline: none; border-color: #42a4ff; }
+.vehicleStatusSelect:focus { outline: none; border-color: #F4845F; }
 
 .tankSizeInput {
   width: 110px;
@@ -18651,7 +18652,7 @@ body, * {
   padding: 4px 10px;
   text-align: right;
 }
-.tankSizeInput:focus { outline: none; border-color: #42a4ff; }
+.tankSizeInput:focus { outline: none; border-color: #F4845F; }
 .tankSizeInput::-webkit-inner-spin-button,
 .tankSizeInput::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 
@@ -18694,7 +18695,7 @@ body, * {
 .unitToggleBtn {
   border: none;
   background: #F9F9F7;
-  color: #6b7280;
+  color: #6B6A66;
   font-family: inherit;
   font-size: 11px;
   font-weight: 700;
@@ -18705,9 +18706,9 @@ body, * {
   white-space: nowrap;
 }
 .unitToggleBtn + .unitToggleBtn { border-left: 1px solid rgba(6,13,12,0.12); }
-.unitToggleBtn:hover { background: #eef1f5; }
-.unitToggleBtn--active { background: #42a4ff; color: #fff; }
-.unitToggleBtn--active:hover { background: #2f93ef; }
+.unitToggleBtn:hover { background: #F1F0EC; }
+.unitToggleBtn--active { background: #F4845F; color: #1F1E1D; }
+.unitToggleBtn--active:hover { background: #EE7550; }
 
 /* Header of a field that carries a unit toggle. Height is pinned to match the
    plain-label fields (see .addVehicleField > .addVehicleLabel) so that every
@@ -18729,14 +18730,14 @@ body, * {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
-.unitSuffix { font-size: 12px; color: #6b7280; font-weight: 600; }
+.unitSuffix { font-size: 12px; color: #6B6A66; font-weight: 600; }
 
 .pmDueBadge {
   display: inline-block;
   padding: 2px 10px;
   border-radius: 999px;
-  background: #e5e7eb;
-  color: #374151;
+  background: #E3E2DE;
+  color: #3A3936;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -18758,7 +18759,7 @@ body, * {
   cursor: pointer;
 }
 .pmCompleteBtn:hover:not(:disabled) { background: #6b4e97; }
-.pmCompleteBtn:disabled { background: #d1d5db; border-color: #d1d5db; color: #6b7280; cursor: not-allowed; }
+.pmCompleteBtn:disabled { background: #DAD8D2; border-color: #DAD8D2; color: #6B6A66; cursor: not-allowed; }
 
 .pmBanner {
   margin-bottom: 16px;
@@ -18796,7 +18797,7 @@ body, * {
   font-family: inherit;
   font-size: 13px;
   padding: 6px 10px;
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   border-radius: 8px;
   background: #fff;
   color: #1F1E1D;
@@ -18804,20 +18805,20 @@ body, * {
 }
 .auditFilterInput:focus {
   outline: none;
-  border-color: #42a4ff;
-  box-shadow: 0 0 0 3px rgba(66,164,255,0.15);
+  border-color: #F4845F;
+  box-shadow: 0 0 0 3px rgba(244, 132, 95,0.15);
 }
 .auditClearBtn {
   font-family: inherit;
   font-size: 13px;
   padding: 7px 14px;
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   border-radius: 8px;
   background: #fff;
   color: #1F1E1D;
   cursor: pointer;
 }
-.auditClearBtn:hover { background: #f2f5fa; }
+.auditClearBtn:hover { background: #F1F0EC; }
 /* The policy key under the human label. Present so an entry traces back to
    ACTION_POLICY without guessing, quiet enough not to compete with the label. */
 .auditActionKey {
@@ -18873,12 +18874,12 @@ body, * {
   padding: 5px 10px;
   text-align: right;
 }
-.gasSettingInput:focus { outline: none; border-color: #42a4ff; }
+.gasSettingInput:focus { outline: none; border-color: #F4845F; }
 .gasSettingInput::-webkit-inner-spin-button,
 .gasSettingInput::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .gasSettingUnit {
   font-size: 13px;
-  color: #6b7280;
+  color: #6B6A66;
   font-weight: 500;
 }
 .gasSettingSubhead {
@@ -18887,11 +18888,11 @@ body, * {
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: #42a4ff;
+  color: #C9603D;
 }
 .customerPlaceholder {
   padding: 16px 18px;
-  color: #7b8fa8;
+  color: #6B6A66;
   font-size: 13px;
 }
 .cdetailForm {
@@ -18905,9 +18906,9 @@ body, * {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #42a4ff;
+  color: #C9603D;
   padding-top: 6px;
-  border-top: 1px solid #eef1f5;
+  border-top: 1px solid #F1F0EC;
 }
 .cdetailSubGroup:first-child {
   border-top: none;
@@ -18919,7 +18920,7 @@ body, * {
 }
 .chargesTabBar{
   padding: 0 20px;
-  border-bottom: 1px solid #dfe5ef;
+  border-bottom: 1px solid #E3E2DE;
   margin-bottom: 0;
 }
 .chargesInfoRow{
@@ -18927,7 +18928,7 @@ body, * {
   gap: 32px;
   flex-wrap: wrap;
   padding: 4px 0 8px;
-  border-bottom: 1px solid #eef1f5;
+  border-bottom: 1px solid #F1F0EC;
   margin-bottom: 4px;
 }
 .chargesInfoItem{
@@ -18940,7 +18941,7 @@ body, * {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #7b8fa8;
+  color: #6B6A66;
 }
 .chargesInfoValue{
   font-size: 14px;
@@ -18959,30 +18960,30 @@ body, * {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: #7b8fa8;
-  border-bottom: 1px solid #eef1f5;
+  color: #6B6A66;
+  border-bottom: 1px solid #F1F0EC;
 }
 .chargesTh--check{ width: 32px; }
 .chargesTh--qty{ width: 120px; }
 .chargesTh--amt{ width: 140px; text-align: right; }
 .chargesTh--total{ width: 120px; text-align: right; }
-.chargesRow:hover{ background: #f7f9fc; }
+.chargesRow:hover{ background: #F7F7F5; }
 .chargesTd{
   padding: 7px 8px;
-  border-bottom: 1px solid #f0f3f7;
+  border-bottom: 1px solid #F1F0EC;
   vertical-align: middle;
 }
 .chargesTd--check{ text-align: center; }
 .chargesTd--label{ color: #1F1E1D; font-weight: 500; }
 .chargesItemWrap{ display: flex; flex-direction: column; gap: 3px; }
 .chargesItemMeta{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.chargesItemBilledTo{ font-size: 11px; color: #7b8fa8; font-weight: 400; }
+.chargesItemBilledTo{ font-size: 11px; color: #6B6A66; font-weight: 400; }
 .chargesCoverLabel{
   display: flex; align-items: center; gap: 4px;
-  font-size: 11px; color: #55657b; font-weight: 400;
+  font-size: 11px; color: #5C5B57; font-weight: 400;
   cursor: pointer; white-space: nowrap;
 }
-.chargesCoverCheck{ width: 12px; height: 12px; cursor: pointer; accent-color: #42a4ff; }
+.chargesCoverCheck{ width: 12px; height: 12px; cursor: pointer; accent-color: #F4845F; }
 .chargesTd--qty{}
 .chargesQtyWrap{ display: flex; align-items: center; gap: 6px; }
 .chargesTd--amt{ text-align: right; }
@@ -18991,7 +18992,7 @@ body, * {
   width: 15px;
   height: 15px;
   cursor: pointer;
-  accent-color: #42a4ff;
+  accent-color: #F4845F;
 }
 .chargesAutoAmt{
   font-weight: 600;
@@ -19010,11 +19011,11 @@ body, * {
   justify-content: space-between;
   align-items: center;
   padding: 10px 8px 2px;
-  border-top: 2px solid #eef1f5;
+  border-top: 2px solid #F1F0EC;
   margin-top: 4px;
 }
 .chargesTotalRow--balance{ border-top: none; padding-top: 4px; }
-.chargesTotalRow--section{ border-top-color: #d9e2ee; margin-top: 0; }
+.chargesTotalRow--section{ border-top-color: #E3E2DE; margin-top: 0; }
 .chargesTotalRow--grand{
   border-top: 2px solid #1F1E1D;
   margin-top: 8px;
@@ -19028,15 +19029,15 @@ body, * {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: #55657b;
+  color: #5C5B57;
   padding: 10px 8px 4px;
-  border-bottom: 2px solid #d0dae8;
+  border-bottom: 2px solid #DAD8D2;
   margin-bottom: 0;
 }
 .chargesTotalLabel{
   font-size: 13px;
   font-weight: 700;
-  color: #55657b;
+  color: #5C5B57;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -19046,7 +19047,7 @@ body, * {
   color: #1F1E1D;
 }
 .chargesTotalValue--owing{ color: #c0392b; }
-.chargesTotalValue--credit{ color: #42a4ff; }
+.chargesTotalValue--credit{ color: #C9603D; }
 .paymentsList{
   display: flex;
   flex-direction: column;
@@ -19058,9 +19059,9 @@ body, * {
   flex-direction: column;
   gap: 6px;
   padding: 10px 12px;
-  background: #f7f9fc;
+  background: #F7F7F5;
   border-radius: 8px;
-  border: 1px solid #eef1f5;
+  border: 1px solid #F1F0EC;
 }
 .paymentDisplay{
   font-size: 13px;
@@ -19093,8 +19094,8 @@ body, * {
   align-items: center;
   gap: 6px;
   padding: 7px 14px;
-  background: #42a4ff;
-  color: #fff;
+  background: #F4845F;
+  color: #1F1E1D;
   border: none;
   border-radius: 7px;
   font-size: 13px;
@@ -19102,12 +19103,12 @@ body, * {
   cursor: pointer;
   margin-bottom: 12px;
 }
-.addPaymentBtn:hover{ background: #0063bf; }
+.addPaymentBtn:hover{ background: #E06D47; }
 .paymentsTotals{ margin-top: 4px; }
 .btDollarWrap {
   display: flex;
   align-items: center;
-  border: 1px solid #d3dbe8;
+  border: 1px solid #E3E2DE;
   border-radius: 7px;
   background: #F9F9F7;
   overflow: hidden;
@@ -19115,10 +19116,10 @@ body, * {
 .btDollarPrefix {
   padding: 0 8px;
   font-size: 13px;
-  color: #7b8fa8;
+  color: #6B6A66;
   font-weight: 600;
-  border-right: 1px solid #d3dbe8;
-  background: #f0f3f7;
+  border-right: 1px solid #E3E2DE;
+  background: #F1F0EC;
   line-height: 36px;
   white-space: nowrap;
 }
@@ -19129,7 +19130,7 @@ body, * {
   min-width: 0;
 }
 .btDollarInput:focus {
-  outline: 2px solid #42a4ff;
+  outline: 2px solid #F4845F;
   outline-offset: -2px;
 }
 .customerRentalAgreementOptions {
@@ -19183,14 +19184,14 @@ body, * {
 }
 .customerRentalAgreementClosed {
   font-size: 13px;
-  color: #7b8fa8;
+  color: #6B6A66;
   font-style: italic;
 }
 .rentalAgreementLink {
   background: none;
   border: none;
   padding: 0;
-  color: #42a4ff;
+  color: #C9603D;
   font-weight: 600;
   font-size: inherit;
   cursor: pointer;
@@ -19198,13 +19199,13 @@ body, * {
   text-underline-offset: 2px;
 }
 .rentalAgreementLink:hover {
-  color: #0063bf;
+  color: #B4532F;
 }
 .rentalAgreementLink--dark {
   color: #1F1E1D;
 }
 .rentalAgreementLink--dark:hover {
-  color: #42a4ff;
+  color: #C9603D;
 }
 .rentalAgreementBadge {
   display: inline-block;
@@ -19232,8 +19233,8 @@ body, * {
   color: #991b1b;
 }
 .rentalAgreementBadge--neutral {
-  background: #e5e7eb;
-  color: #374151;
+  background: #E3E2DE;
+  color: #3A3936;
 }
 .rentalAgreementBadge--meta {
   font-size: 18px;
@@ -19249,7 +19250,7 @@ body, * {
 .customerPageMetaCode {
   font-size: 18px;
   font-weight: 600;
-  color: #374151;
+  color: #3A3936;
   letter-spacing: 0.04em;
 }
 .rentalAgreementDetailHeader {
@@ -19261,7 +19262,7 @@ body, * {
 .rentalAgreementBackBtn {
   background: none;
   border: none;
-  color: #42a4ff;
+  color: #C9603D;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -19269,7 +19270,7 @@ body, * {
   align-self: flex-start;
 }
 .rentalAgreementBackBtn:hover {
-  color: #0063bf;
+  color: #B4532F;
 }
 .customerPageTopBar {
   display: flex;
@@ -19278,8 +19279,8 @@ body, * {
   margin-bottom: 2px;
 }
 .customerPageSaveBtn {
-  background: #42a4ff;
-  color: #fff;
+  background: #F4845F;
+  color: #1F1E1D;
   border: none;
   border-radius: 7px;
   font-size: 13px;
@@ -19289,7 +19290,7 @@ body, * {
   transition: background 0.15s;
 }
 .customerPageSaveBtn:hover:not(:disabled) {
-  background: #2287e8;
+  background: #EE7550;
 }
 .customerPageSaveBtn:disabled {
   opacity: 0.6;
@@ -19316,7 +19317,7 @@ body, * {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: #7b8fa8;
+  color: #6B6A66;
 }
 .rentalAgreementFieldValue {
   font-size: 13px;
@@ -19333,7 +19334,7 @@ body, * {
 }
 .fleetFilterInput {
   padding: 7px 11px;
-  border: 1.5px solid #d3dbe8;
+  border: 1.5px solid #E3E2DE;
   border-radius: 7px;
   font-size: 13px;
   font-family: inherit;
@@ -19344,12 +19345,12 @@ body, * {
 }
 .fleetFilterInput:focus {
   outline: none;
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
-.fleetFilterInput::placeholder { color: #aab4c2; }
+.fleetFilterInput::placeholder { color: #A8A6A0; }
 .fleetFilterSelect {
   padding: 7px 28px 7px 11px;
-  border: 1.5px solid #d3dbe8;
+  border: 1.5px solid #E3E2DE;
   border-radius: 7px;
   font-size: 13px;
   font-family: inherit;
@@ -19362,7 +19363,7 @@ body, * {
 }
 .fleetFilterSelect:focus {
   outline: none;
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 
 /* ── Claim status badges ────────────────────────────────────────────────── */
@@ -19385,8 +19386,8 @@ body, * {
   color: #92400e;
 }
 .claimStatus--settled {
-  background: #f3f4f6;
-  color: #6b7280;
+  background: #F1F0EC;
+  color: #6B6A66;
 }
 
 /* ── Add / Retire Vehicle form ──────────────────────────────────────────── */
@@ -19417,7 +19418,7 @@ body, * {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.07em;
-  color: #55657b;
+  color: #5C5B57;
 }
 /* A plain label is 13px tall but a label sitting beside a unit toggle is 26px,
    which left the inputs in a row starting at three different heights. Giving
@@ -19430,7 +19431,7 @@ body, * {
 }
 .addVehicleInput {
   padding: 7px 10px;
-  border: 1.5px solid #d3dbe8;
+  border: 1.5px solid #E3E2DE;
   border-radius: 7px;
   font-size: 13px;
   font-family: inherit;
@@ -19440,15 +19441,15 @@ body, * {
 }
 .addVehicleInput:focus {
   outline: none;
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 .addVehicleBtn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 8px 20px;
-  background: #42a4ff;
-  color: #fff;
+  background: #F4845F;
+  color: #1F1E1D;
   border: none;
   border-radius: 7px;
   font-size: 13px;
@@ -19456,7 +19457,7 @@ body, * {
   cursor: pointer;
   align-self: flex-start;
 }
-.addVehicleBtn:hover { background: #0063bf; }
+.addVehicleBtn:hover { background: #E06D47; }
 .addVehicleBtn--retire {
   background: #c0392b;
 }
@@ -19474,7 +19475,7 @@ body, * {
 
 .torDateInput {
   padding: 5px 8px;
-  border: 1.5px solid #d3dbe8;
+  border: 1.5px solid #E3E2DE;
   border-radius: 6px;
   font-size: 13px;
   font-family: inherit;
@@ -19485,17 +19486,17 @@ body, * {
 }
 .torDateInput:focus {
   outline: none;
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 .torDateInput:hover {
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 
 /* ─── Damage Claims ────────────────────────────────────────────────────────── */
 
 .resolveClaimBtn {
   background: none;
-  border: 1.5px solid #d3dbe8;
+  border: 1.5px solid #E3E2DE;
   border-radius: 6px;
   padding: 4px 10px;
   font-size: 12px;
@@ -19506,8 +19507,8 @@ body, * {
   white-space: nowrap;
 }
 .resolveClaimBtn:hover {
-  border-color: #42a4ff;
-  color: #42a4ff;
+  border-color: #F4845F;
+  color: #C9603D;
 }
 
 /* ─── Gas Collections ──────────────────────────────────────────────────────── */
@@ -19526,7 +19527,7 @@ body, * {
 .gasOwedInput {
   width: 72px;
   padding: 4px 6px;
-  border: 1.5px solid #d3dbe8;
+  border: 1.5px solid #E3E2DE;
   border-radius: 6px;
   font-size: 13px;
   font-family: inherit;
@@ -19542,14 +19543,14 @@ body, * {
 }
 .gasOwedInput:focus {
   outline: none;
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 .gasOwedInput:hover {
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 .gasStatusSelect {
   padding: 4px 6px;
-  border: 1.5px solid #d3dbe8;
+  border: 1.5px solid #E3E2DE;
   border-radius: 6px;
   font-size: 13px;
   font-family: inherit;
@@ -19560,10 +19561,10 @@ body, * {
 }
 .gasStatusSelect:focus {
   outline: none;
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 .gasStatusSelect:hover {
-  border-color: #42a4ff;
+  border-color: #F4845F;
 }
 `;
 document.head.appendChild(style);
