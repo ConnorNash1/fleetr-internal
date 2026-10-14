@@ -6140,11 +6140,12 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
   };
 
+  // On the Company page the fields start empty, with no examples in them.
   const fi = (label, field, placeholder, type) =>
     React.createElement("div", { className: "addVehicleField" },
       React.createElement("label", { className: "addVehicleLabel" }, label),
       React.createElement("input", {
-        type: type || "text", className: "addVehicleInput", placeholder, value: addForm[field],
+        type: type || "text", className: "addVehicleInput", placeholder: embedded ? undefined : placeholder, value: addForm[field],
         onChange: (e) => onAdd(field, e.target.value),
       })
     );
@@ -6159,7 +6160,7 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
       React.createElement("label", { className: "addVehicleLabel" }, `${label} (${unit})`),
       React.createElement("input", {
         type: "number", min: "0", step: "0.1", className: "addVehicleInput",
-        placeholder, value: addForm[field],
+        placeholder: embedded ? undefined : placeholder, value: addForm[field],
         onChange: (e) => {
           onAdd(field, e.target.value);
           setCanonical(toCanonicalUnits(e.target.value, unit));
@@ -6194,7 +6195,7 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Plate Number"),
               React.createElement("input", {
-                type: "text", className: "addVehicleInput", placeholder: "e.g. ABC123",
+                type: "text", className: "addVehicleInput", placeholder: embedded ? undefined : "e.g. ABC123",
                 value: addForm.plate,
                 onChange: (e) => onAdd("plate", normalizePlate(e.target.value)),
               })
@@ -6235,7 +6236,7 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
             React.createElement("div", { className: "addVehicleField addVehicleField--full" },
               React.createElement("label", { className: "addVehicleLabel" }, "VIN"),
               React.createElement("input", {
-                type: "text", className: "addVehicleInput", placeholder: "17-character VIN",
+                type: "text", className: "addVehicleInput", placeholder: embedded ? undefined : "17-character VIN",
                 value: addForm.vin, onChange: (e) => onAdd("vin", e.target.value),
               })
             )
@@ -8012,8 +8013,10 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
 
     showAddress && el(React.Fragment, null,
     showListing && el("div", { style: { height: "12px" } }),
-    el("div", { className: "gasSettingSubhead" }, "Address"),
-    el("p", { className: "closeRentalHint" },
+    // Inside a branch's own dropdown under Address, the heading and its
+    // description would only repeat the section's.
+    !asDropdown && el("div", { className: "gasSettingSubhead" }, "Address"),
+    !asDropdown && el("p", { className: "closeRentalHint" },
       "Every part is needed before the company can launch. It shows on fleetr.ai and in the confirmation text, and places the map pin."),
     // Street across the top, then City and Province, then Postal code and
     // Country, side by side; one column on a phone.
