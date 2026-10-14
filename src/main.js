@@ -8334,20 +8334,20 @@ function ProtectionDetailsCard({ product, busy, onSave }) {
 const vehicleClassType = (c) =>
   [c.category, c.electric && "electric", c.luxury && "luxury"].filter(Boolean).join(", ") || "No type";
 
-// One vehicle class's seats, bags and example models. Its name and type come
-// from the standard list and stay. Keeps its own drafts, for the reason
-// GasRow does.
+// One vehicle class's type, seats, bags and example models, a cell each so
+// they line up under their headings. Its name, type and example models come
+// from the standard list and stay: the example models are matched up on
+// fleetr.ai. Seats and bags can be changed. Keeps its own drafts, for the
+// reason GasRow does.
 function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
   const shown = () => ({
     seats:  entry.seats == null ? "" : String(entry.seats),
     bags:   entry.bags  == null ? "" : String(entry.bags),
-    models: entry.exampleModels || "",
   });
   const [draft, setDraft] = React.useState(shown);
-  React.useEffect(() => { setDraft(shown()); }, [entry.seats, entry.bags, entry.exampleModels, entry.name]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => { setDraft(shown()); }, [entry.seats, entry.bags, entry.name]); // eslint-disable-line react-hooks/exhaustive-deps
   const saved = shown();
-  const unchanged = draft.seats.trim() === saved.seats && draft.bags.trim() === saved.bags
-    && draft.models.trim() === saved.models;
+  const unchanged = draft.seats.trim() === saved.seats && draft.bags.trim() === saved.bags;
   const el = React.createElement;
   const whole = (s, min, max) => {
     const t = s.trim();
@@ -8359,29 +8359,22 @@ function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
     const seats = whole(draft.seats, 1, 20), bags = whole(draft.bags, 0, 20);
     if (!seats.ok) { onError("Seats has to be a whole number from 1 to 20."); return; }
     if (!bags.ok)  { onError("Bags has to be a whole number from 0 to 20."); return; }
-    onSave(seats.value, bags.value, draft.models.trim() || null);
+    onSave(seats.value, bags.value, entry.exampleModels || null);
   };
-  return el("span", { style: { display: "inline-flex", gap: "6px", alignItems: "center", flexWrap: "wrap" } },
-    el("span", { className: "closeRentalHint", style: { margin: 0, minWidth: "90px" } }, vehicleClassType(entry)),
-    el("input", {
-      className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric",
-      placeholder: "Seats", value: draft.seats, disabled: busy, "aria-label": `${entry.name} seats`,
-      onChange: (e) => setDraft((p) => ({ ...p, seats: e.target.value })),
-    }),
-    el("input", {
-      className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric",
-      placeholder: "Bags", value: draft.bags, disabled: busy, "aria-label": `${entry.name} bags`,
-      onChange: (e) => setDraft((p) => ({ ...p, bags: e.target.value })),
-    }),
-    el("input", {
-      className: "resFormInput", style: { width: "180px", padding: "5px 8px" }, maxLength: 120,
-      placeholder: "Example models", value: draft.models, disabled: busy, "aria-label": `${entry.name} example models`,
-      onChange: (e) => setDraft((p) => ({ ...p, models: e.target.value })),
-    }),
-    el("button", {
+  const num = (key, label) => el("td", null, el("input", {
+    className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric",
+    value: draft[key], disabled: busy, "aria-label": `${entry.name} ${label}`,
+    onChange: (e) => setDraft((p) => ({ ...p, [key]: e.target.value })),
+  }));
+  return el(React.Fragment, null,
+    el("td", null, el("span", { className: "closeRentalHint", style: { margin: 0 } }, vehicleClassType(entry))),
+    num("seats", "seats"),
+    num("bags", "bags"),
+    el("td", null, entry.exampleModels || el("span", { className: "closeRentalHint", style: { margin: 0 } }, "None")),
+    el("td", null, el("button", {
       className: "loginBtn", style: { width: "auto", padding: "5px 9px" },
       disabled: busy || unchanged, onClick: save,
-    }, "Save"));
+    }, "Save")));
 }
 
 // The standard sources (standard_sources in the database): fleetr.ai,
@@ -8961,18 +8954,18 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
     classes: section("Vehicle classes",
       "One list for reservations, the fleet and rates, in the order shown here.",
       "classes",
-      table("860px", listHeads("Vehicle class", "Type, seats, bags and example models"),
+      table("860px", ["", "Vehicle class", "Type", "Seats", "Bags", "Example models", "", "On", ""],
         vehicleClasses.map((entry, i) => entryRow({
           at: "classes", kind: "vehicle_class", entry,
           reorder: { listKey: "classes", list: vehicleClasses, index: i, saveCall: saveClass },
           goesWith: "Its daily rates and protection prices go with it.",
-          extra: el("td", null, el(VehicleClassDetailsCell, {
+          extra: el(VehicleClassDetailsCell, {
             entry, busy,
             onError: (text) => setError({ at: "classes", text }),
             onSave: (seats, bags, models) => act("classes", "save_vehicle_class_details", {
               p_id: entry.id, p_seats: seats, p_bags: bags, p_example_models: models,
             }),
-          })),
+          }),
         }))),
       el(VehicleClassPicker, { disabled: busy, onAdded: async () => { await reload(); if (onChanged) await onChanged(); } })),
 
