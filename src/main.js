@@ -7196,10 +7196,8 @@ function CompanyPage() {
       case "vehicles": return el(React.Fragment, null,
         parts.classes,
         el(CompanySection, { title: "Add vehicles", style: { marginTop: "24px" } }, el(VehiclesStep, { onAdded: changed })));
-      // The daily rates grid directly. After launch, Sources follows it.
-      case "rates": return launched
-        ? el(React.Fragment, null, only(parts.rates), parts.sources)
-        : only(parts.setupRates);
+      // Sources, then the daily rates for each of them, before launch and after.
+      case "rates": return el(React.Fragment, null, parts.sources, parts.rates);
       case "protection": return el(React.Fragment, null, parts.protection, parts.deductibles);
       case "contract": return only(parts.acknowledgements);
       case "listing": return only(el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "listing", onSaved: refreshAll }));
@@ -8378,10 +8376,10 @@ function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
     }, "Save")));
 }
 
-// The standard sources (standard_sources in the database): fleetr.ai,
-// which also covers walk-in and phone customers, who pay the same. Picked the
-// way vehicle classes are; nothing is added
-// unless it is ticked. Used on the Company page.
+// The standard sources (standard_sources in the database) besides fleetr.ai,
+// which every company has already: Walk-in or phone, Insurance replacement,
+// Body shop, Dealership service loaner and Corporate. Picked the way vehicle
+// classes are; nothing is added unless it is ticked. Used on the Company page.
 function StandardSourcePicker({ disabled, onAdded }) {
   const { currentUser } = React.useContext(AppContext);
   const [list, setList]     = React.useState(null);
@@ -8397,7 +8395,7 @@ function StandardSourcePicker({ disabled, onAdded }) {
     supabase.rpc("standard_sources").then(({ data, error: err }) => {
       if (!live) return;
       if (err || !Array.isArray(data)) setError("The standard sources could not be loaded. Reload the page to try again.");
-      else setList(data);
+      else setList(data.filter((s) => s.key !== "fleetr_ai"));
     });
     return () => { live = false; };
   }, []);
@@ -8627,8 +8625,8 @@ function ContractAcknowledgementsCard({ versions, busy, onSave }) {
   );
 }
 
-// layout receives each part (pickup, classes, sources, rates, setupRates,
-// protection, deductibles, acknowledgements) to place where it belongs.
+// layout receives each part (pickup, classes, sources, rates, protection,
+// deductibles, acknowledgements) to place where it belongs.
 // onChanged runs after every change that saved. openSections opens them all.
 function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   const { currentUser } = React.useContext(AppContext);
@@ -8844,7 +8842,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         "The company's lists could not be loaded, so they cannot be edited right now. Reload the page to try again.");
   if (notice) {
     if (layout) {
-      return layout(Object.fromEntries(["setupRates", "pickup", "classes", "sources", "rates", "protection", "deductibles", "acknowledgements"]
+      return layout(Object.fromEntries(["pickup", "classes", "sources", "rates", "protection", "deductibles", "acknowledgements"]
         .map((k) => [k, el(React.Fragment, { key: k }, notice)])));
     }
     return el("div", { className: "dashboardSection", style: { marginTop: "24px" } }, el("h2", null, "Lists and prices"), notice);
@@ -8901,31 +8899,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
 
   const listHeads = (name, middle) => ["", name, middle || "", "On", ""];
 
-  // Before launch, one rate per class under the fleetr.ai source, the one
-  // source setup needs.
-  const fleetrSource = (sources || []).find((x) => x.standardKey === "fleetr_ai");
-  const setupRates = section("Daily rates",
-    "One daily rate for each vehicle class, in whole dollars. It is what fleetr.ai quotes, and what walk-in and phone customers pay. A rate saves when you leave it. Rates for other sources can be added after launch.",
-    "rates",
-    !fleetrSource
-      ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "The fleetr.ai source is missing. Reload the page, and contact fleetr if it is still missing.")
-      : !activeClasses.length
-        ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Pick your vehicle classes first.")
-        : table("420px", ["Vehicle class", "Daily rate ($)"], activeClasses.map((c) => el("tr", { key: c.id },
-            el("td", { style: { fontWeight: 600 } }, c.name),
-            el("td", null, el(ListPriceCell, {
-              value: rates[fleetrSource.name] && rates[fleetrSource.name][c.name] != null ? rates[fleetrSource.name][c.name] : null,
-              disabled: busy,
-              onSave: (typed) => {
-                const parsed = parsePrice("rates", typed, true);
-                return parsed.ok
-                  ? act("rates", "set_daily_rate", { p_class_id: c.id, p_source_id: fleetrSource.id, p_amount: parsed.amount })
-                  : Promise.resolve(false);
-              },
-            }))))));
-
   const parts = {
-    setupRates,
 
     // ── Pickup locations ──
     pickup: section("Pickup locations",
@@ -8972,7 +8946,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
 
     // ── Sources ──
     sources: section("Sources",
-      "Who the work comes from. The billing type decides which billing fields a reservation asks for, so a source of your own can be renamed freely. Open a source to see the specific sources under it.",
+      "Who the work comes from. fleetr.ai is always here and stays. Add any of the standard sources below, or one of your own; nothing is added unless you pick it. The billing type decides which billing fields a reservation asks for, so a source of your own can be renamed freely. Open a source to see the specific sources under it.",
       "sources",
       table("640px", listHeads("Source", "Billing type"),
         sources.map((entry, i) => {
@@ -9033,7 +9007,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
 
     // ── Daily rates ──
     rates: section("Daily rates",
-      "The rate filled in when a source and a vehicle class are chosen on a customer's file. A cell saves when you leave it. Blank means no rate, and staff type one in.",
+      "One column per source, one row per vehicle class. Only the fleetr.ai rates are needed for setup, in whole dollars; every other source takes cents. The rate is filled in when a source and a vehicle class are chosen on a customer's file. A cell saves when you leave it. Blank means no rate, and staff type one in.",
       "rates",
       priceGrid("rates",
         (c, x) => (rates[x.name] && rates[x.name][c.name] != null ? rates[x.name][c.name] : null),
