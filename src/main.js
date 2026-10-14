@@ -7963,8 +7963,11 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
   const lat = draft.latitude.trim() === "" ? NaN : Number(draft.latitude);
   const lng = draft.longitude.trim() === "" ? NaN : Number(draft.longitude);
 
-  return el("div", { style: { marginBottom: "28px" } },
-    el("div", { className: "gasSettingSubhead" }, branch.name),
+  // Under Address each branch is a dropdown of its own. The draft is kept
+  // here, above it, so closing a branch does not lose what was typed.
+  const asDropdown = part === "address";
+  return el(asDropdown ? CompanySection : "div", asDropdown ? { title: branch.name } : { style: { marginBottom: "28px" } },
+    !asDropdown && el("div", { className: "gasSettingSubhead" }, branch.name),
     error  && el("div", { className: "loginError" }, error),
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
 
