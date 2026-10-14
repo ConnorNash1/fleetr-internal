@@ -7413,13 +7413,13 @@ const LISTING_NEEDS = {
   minimum_notice:     "a minimum notice",
   maximum_length:     "a maximum rental length",
   turnaround:         "a turnaround buffer",
-  retail_rate:        "a fleetr.ai daily rate (Daily rates, below)",
+  retail_rate:        "a fleetr.ai daily rate (in the Rates section)",
 };
-const listingNeedsSentence = (keys) => {
+const listingNeedsList = (keys) => {
   const words = keys.map((k) => LISTING_NEEDS[k] || k);
-  const list = words.length === 1 ? words[0] : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
-  return `Before this branch can show on fleetr.ai, add ${list}.`;
+  return words.length === 1 ? words[0] : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
 };
+const listingNeedsSentence = (keys) => `Before this branch can show on fleetr.ai, add ${listingNeedsList(keys)}.`;
 
 // A branch's address, in the parts save_branch_listing takes. Every part is
 // needed before the company can launch (branch_address_complete).
@@ -7487,6 +7487,12 @@ const listingHasHours = (hours) =>
 // The same checks as listing_problem in the database, so the Exec is told
 // before asking rather than refused after. timeZone is the branch's own.
 function listingMissing(listing, timeZone) {
+  const missing = listingMissingKeys(listing, timeZone);
+  return missing.length ? listingNeedsSentence(missing) : "";
+}
+
+// The listing_problem keys a listing still has, in the database's order.
+function listingMissingKeys(listing, timeZone) {
   const l = listing || {};
   const has = (v) => v !== null && v !== undefined && v !== "";
   const missing = [];
@@ -7502,7 +7508,7 @@ function listingMissing(listing, timeZone) {
   if (!has(l.maxRentalDays)) missing.push("maximum_length");
   if (!has(l.turnaroundHours)) missing.push("turnaround");
   if (!listingHasRetailRate()) missing.push("retail_rate");
-  return missing.length ? listingNeedsSentence(missing) : "";
+  return missing;
 }
 
 // The map, loaded the first time one is shown: Leaflet with OpenFreeMap's
@@ -7712,6 +7718,8 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
       key: b.id, branch: b, operatorId: currentUser?.operatorId,
       listing: listings.find((l) => l.locationId === b.id) || null,
       timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: saved, onTimeZoneSet, part, fleetrOn,
+      // Each branch has its own switch only when there is more than one.
+      multi: open.length > 1,
     })));
 }
 
@@ -7721,7 +7729,7 @@ function isFleetrAiListed() {
 }
 
 // One branch's listing. Its own component so each branch keeps its own draft.
-function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZoneSet, part, fleetrOn }) {
+function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZoneSet, part, fleetrOn, multi }) {
   const showAddress = part !== "listing";
   const showListing = part !== "address";
   const toDraft = (l) => {
@@ -7780,6 +7788,8 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
 
   const el = React.createElement;
   const listed = !!(listing && listing.listed);
+  const shown = !listing || listing.shown !== false;
+  const missingKeys = showListing ? listingMissingKeys(listing, timeZone) : [];
 
   const save = async (label, fields) => {
     setBusy(label); setError(""); setNotice("");
@@ -7795,6 +7805,17 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     }
     await onSaved();
     return true;
+  };
+
+  const toggleShown = async (on) => {
+    setBusy("shown"); setError(""); setNotice("");
+    const { data, error: err } = await supabase.rpc("set_branch_shown", { p_location_id: branch.id, p_shown: on });
+    setBusy("");
+    if (err || !data || !data.ok) {
+      setError(err ? LISTING_REASONS.network : (LISTING_REASONS[data && data.reason] || "That did not work."));
+      return;
+    }
+    await onSaved();
   };
 
   // Every field but the photo and the logo, checked here so a
@@ -8003,12 +8024,18 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
 
     showListing && el(React.Fragment, null,
-      // Whether it shows, which the database works out: List on fleetr.ai on,
-      // and nothing missing from the listing.
+      // Show this branch on fleetr.ai, when there is more than one branch,
+      // and whether it shows, which the database works out: List on
+      // fleetr.ai on, this branch's switch on, and nothing missing. What is
+      // missing is said beside it.
+      multi && el("div", { style: { marginBottom: "6px" } },
+        check(busy === "shown" ? "Saving…" : "Show this branch on fleetr.ai", shown, toggleShown)),
       el("p", { className: "closeRentalHint", style: { marginTop: 0, marginBottom: "14px" } },
-        !fleetrOn ? "Not on fleetr.ai: List on fleetr.ai is off."
+        [!fleetrOn ? "Not on fleetr.ai: List on fleetr.ai is off."
+          : multi && !shown ? "Not on fleetr.ai: Show this branch on fleetr.ai is off."
           : listed ? "Shows on fleetr.ai."
-          : `Shows on fleetr.ai once the listing is complete. ${listingMissing(listing, timeZone)}`.trim()),
+          : "Not on fleetr.ai yet.",
+         missingKeys.length ? `Missing: ${listingNeedsList(missingKeys)}.` : ""].filter(Boolean).join(" ")),
 
       row(imageBlock("logo", "Logo"), imageBlock("photo", "Location photo")),
 
