@@ -20117,6 +20117,76 @@ body, * {
 `;
 document.head.appendChild(style);
 
+// ─── Enter moves to the next field ───────────────────────────────────────────
+// In every form, Enter in a field goes to the next field, and on the last
+// field it submits the form. A multi-line box keeps Enter for a new line. A
+// field with its own Enter key (a search box, the note box, renaming in place)
+// keeps doing what it does. On a phone the return key reads Next, or Done on
+// the last field.
+//
+// A form is a <form>, or else the nearest box holding the button that saves
+// it: one of the save button styles, not a Cancel, Back, Close, Delete or Edit.
+const ENTER_FIELD_SKIP = ["hidden", "checkbox", "radio", "button", "submit", "reset", "file", "range", "color", "image"];
+const ENTER_SAVE_BUTTONS = 'button[type="submit"], .resModalSubmit, .resModalSave, .addVehicleBtn, .addPaymentBtn, .loginBtn';
+const ENTER_FORM_EDGE = ".dashboardSection, .resModal, .page, [role=\"dialog\"]";
+const ENTER_NOT_SAVE = /^(cancel|back|close|delete|remove|edit)\b/i;
+const enterShown = (n) => n.getClientRects().length > 0;
+const enterIsField = (n) => n instanceof HTMLElement && !n.disabled && !n.readOnly && enterShown(n)
+  && (n.tagName === "SELECT" || n.tagName === "TEXTAREA"
+    || (n.tagName === "INPUT" && !ENTER_FIELD_SKIP.includes((n.getAttribute("type") || "text").toLowerCase())));
+const enterSaveButtons = (box) => Array.from(box.querySelectorAll(ENTER_SAVE_BUTTONS))
+  .filter((b) => enterShown(b) && !ENTER_NOT_SAVE.test(b.textContent.trim()));
+const enterFormOf = (field) => {
+  const form = field.closest("form");
+  if (form) return form;
+  // It looks no further than the section or window the field is in.
+  for (let box = field.parentElement; box && box !== document.body; box = box.parentElement) {
+    if (enterSaveButtons(box).length || box.matches(ENTER_FORM_EDGE)) return box;
+  }
+  return null;
+};
+const enterFieldsOf = (box) => Array.from(box.querySelectorAll("input, select, textarea")).filter(enterIsField);
+const enterOwnKeys = (field) => {
+  const key = Object.keys(field).find((k) => k.startsWith("__reactProps$"));
+  return !!(key && field[key] && field[key].onKeyDown);
+};
+
+document.addEventListener("focusin", (e) => {
+  const field = e.target;
+  if (!enterIsField(field) || field.tagName === "TEXTAREA") return;
+  const box = enterFormOf(field);
+  if (!box) return;
+  const fields = enterFieldsOf(box);
+  field.setAttribute("enterkeyhint", fields[fields.length - 1] === field ? "done" : "next");
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.isComposing || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+  const field = e.target;
+  if (!enterIsField(field) || field.tagName === "TEXTAREA" || enterOwnKeys(field)) return;
+  const box = enterFormOf(field);
+  if (!box) return;
+  const fields = enterFieldsOf(box);
+  const at = fields.indexOf(field);
+  if (at < 0) return;
+  const next = fields[at + 1];
+  if (next) {
+    e.preventDefault();
+    e.stopPropagation();
+    next.focus();
+    return;
+  }
+  // The last field. A <form> submits itself; anything else presses its save
+  // button, the first one after the field.
+  if (box.tagName === "FORM") {
+    if (field.tagName === "SELECT") { e.preventDefault(); box.requestSubmit(); }
+    return;
+  }
+  const save = enterSaveButtons(box).find((b) => field.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+  e.preventDefault();
+  if (save && !save.disabled) save.click();
+}, true);
+
 ReactDOM.createRoot(document.getElementById("root")).render(
   React.createElement(React.StrictMode, null, React.createElement(App))
 );
