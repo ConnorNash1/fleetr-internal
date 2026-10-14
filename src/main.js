@@ -566,80 +566,6 @@ function requestReservationConfirmation(resCode) {
     .catch((e) => console.warn("reservation confirmation request failed:", e));
 }
 
-// ─── Customer text wording ────────────────────────────────────────────────────
-// What the Settings editor shows before a company has changed anything, and
-// how it previews and measures a text. These mirror worker.js (fleetr-infra),
-// which is what actually sends: DEFAULT_TEMPLATES, fillTemplate, codeSuffix,
-// appSuffix, cancelSuffix, isGsm7 and gsm7Length. If the worker's copy
-// changes, change this one.
-//
-// suffix is what the worker adds after the wording, as it will look in the
-// preview: on the confirmation the reservation code, the app link and the
-// cancel link; on the Pre-Rental Check the app link and the cancel link; on
-// the return reminder the fuel note and the app link; on both no-show texts
-// the change pickup time link. The tokens are stand-ins of the real length.
-const TEXT_SAMPLE_LINK = " Cancel: https://app.fleetr.ai/#c=XXXXXXXXXXXXXXXXXXXXXX";
-const TEXT_SAMPLE_APP_LINK = " App: https://app.fleetr.ai/#a=XXXXXXXXXXXXXXXXXXXXXX";
-const TEXT_SAMPLE_CODE = " Reservation code: ABC 123 456.";
-const TEXT_SAMPLE_RESCHEDULE_LINK = " Change pickup time: https://app.fleetr.ai/#r=XXXXXXXXXXXXXXXXXXXXXX";
-const TEXT_SAMPLE_RETURN_APP_LINK = " When you return, open the app to check the vehicle in: https://app.fleetr.ai/#a=XXXXXXXXXXXXXXXXXXXXXX";
-const TEXT_TEMPLATE_KINDS = [
-  { kind: "confirmation", title: "Reservation confirmation", when: "Sent when a reservation is created.",
-    suffix: TEXT_SAMPLE_CODE + TEXT_SAMPLE_APP_LINK + TEXT_SAMPLE_LINK, suffixNote: "the reservation code, the app link and the cancel link" },
-  { kind: "pre_rental", title: "Pre-Rental Check", when: "Sent the day before pickup.",
-    suffix: TEXT_SAMPLE_APP_LINK + TEXT_SAMPLE_LINK, suffixNote: "the app link and the cancel link" },
-  { kind: "no_show_2hr", title: "No-show, after 2 hours", when: "Sent 2 hours after a pickup time when the customer has not arrived. [time] is the pickup time.",
-    suffix: TEXT_SAMPLE_RESCHEDULE_LINK, suffixNote: "the change pickup time link" },
-  { kind: "no_show_24hr", title: "No-show, the next day", when: "Sent a day after the 2 hour no-show text, if the customer still has not arrived.",
-    suffix: TEXT_SAMPLE_RESCHEDULE_LINK, suffixNote: "the change pickup time link" },
-  { kind: "return_reminder", title: "Return reminder", when: "Sent the day before an open rental is due back. [date] and [time] are when it is due back. When the fuel level at pickup is known, a note asking for it back at that level is added after the wording.",
-    suffix: " Return fuel at Full to avoid a charge." + TEXT_SAMPLE_RETURN_APP_LINK, suffixNote: "the fuel note and the app link" },
-];
-const TEXT_PLACEHOLDERS = ["[first name]", "[company]", "[location]", "[date]", "[time]"];
-const TEXT_TEMPLATE_MAX = 240;
-// The insert buttons above a text box, in the order a text usually reads.
-const TEXT_PLACEHOLDER_BUTTONS = [
-  ["First name", "[first name]"], ["Company", "[company]"], ["Location", "[location]"],
-  ["Date", "[date]"], ["Time", "[time]"],
-];
-
-const fillTextTemplate = (template, values) =>
-  String(template).replace(/\[(first name|company|location|date|time)\]/gi,
-    (m) => String(values[m.toLowerCase()] ?? ""));
-
-// The characters a plain text message can carry. One character outside this
-// set and the whole message is sent in a wider encoding, 70 characters to a
-// segment instead of 160.
-const TEXT_GSM7 = new Set(
-  "@\u00a3$\u00a5\u00e8\u00e9\u00f9\u00ec\u00f2\u00c7\n\u00d8\u00f8\r\u00c5\u00e5\u0394_\u03a6\u0393\u039b\u03a9\u03a0\u03a8\u03a3\u0398\u039e\u00c6\u00e6\u00df\u00c9 !\"#\u00a4%&'()*+,-./0123456789:;<=>?"
-  + "\u00a1ABCDEFGHIJKLMNOPQRSTUVWXYZ\u00c4\u00d6\u00d1\u00dc\u00a7\u00bfabcdefghijklmnopqrstuvwxyz\u00e4\u00f6\u00f1\u00fc\u00e0"
-  + "\f^{}\\[~]|\u20ac");
-const TEXT_GSM7_DOUBLE = new Set("^{}\\[~]|\u20ac");
-
-// How a finished text will be sent: its length as the carrier counts it, how
-// many segments that is, and which characters, if any, forced the wider
-// encoding. Each segment is billed as one text.
-function measureText(text) {
-  const chars = [...String(text)];
-  const costly = [...new Set(chars.filter((ch) => !TEXT_GSM7.has(ch)))];
-  if (costly.length === 0) {
-    const length = chars.reduce((n, ch) => n + (TEXT_GSM7_DOUBLE.has(ch) ? 2 : 1), 0);
-    return { length, segments: length <= 160 ? 1 : Math.ceil(length / 153), perSegment: 160, costly };
-  }
-  const length = String(text).length;
-  return { length, segments: length <= 70 ? 1 : Math.ceil(length / 67), perSegment: 70, costly };
-}
-
-// Why set_message_template refused, in words.
-const textTemplateRefusal = (out) => ({
-  exec_only:       "Only an Exec can change the wording of customer texts.",
-  not_signed_in:   "Your session has expired. Sign in again and retry.",
-  too_long:        `The wording is too long. Keep it to ${out?.max || TEXT_TEMPLATE_MAX} characters.`,
-  no_links:        "Links are not allowed in the wording. The cancel link is added for you.",
-  bad_placeholder: out?.placeholder
-    ? `${out.placeholder} is not a placeholder. Use only ${TEXT_PLACEHOLDERS.join(", ")}.`
-    : `There is a stray square bracket. Use them only for ${TEXT_PLACEHOLDERS.join(", ")}.`,
-}[out?.reason] || "The wording could not be saved. Try again.");
 const CLAUDE_SYSTEM    = `You are fleetr ai, an assistant built into a vehicle fleet rental management system. You have access to the current reservations, rental agreements, fleet, non-drive intake, no-shows, and damage claims data passed in the user message.
 
 Always respond with a valid JSON object — no markdown, no code fences, no text outside the JSON. Use this exact structure:
@@ -886,9 +812,6 @@ const ACTION_POLICY = {
   // Sets status to resolved and stamps a time. No amount is written here.
   "damage.resolve":   { tier: "confirm", label: "Resolve a damage claim" },
   "reservation.add":  { tier: "confirm", label: "Add reservation" },
-  // The wording every customer of the company is texted. Exec only, and the
-  // database is what holds that: set_message_template refuses anyone else.
-  "texts.template":   { tier: "confirm", role: "Exec", label: "Change customer text wording" },
   "reservation.edit": { tier: "confirm", label: "Save reservation changes" },
   "note.add":         { tier: "confirm", label: "Add a note" },
   "ndi.edit":         { tier: "confirm", label: "Edit an intake row" },
@@ -8292,9 +8215,9 @@ function ListAddRow({ placeholder, label, withType, disabled, onAdd, wide }) {
   );
 }
 
-// What the customer reads about one protection product at pickup, edited the
-// way Settings > Customer texts are: the preview until Edit is pressed, then
-// the boxes with their character counts, Save and Cancel. Required is a
+// What the customer reads about one protection product at pickup, edited as
+// a preview until Edit is pressed, then the boxes with their character
+// counts, Save and Cancel. Required is a
 // switch beside it and saves on its own, keeping the wording as it is.
 const PROTECTION_WORDING_MAX = 600;
 const PROTECTION_DECLINE_MAX = 300;
@@ -9554,205 +9477,6 @@ function AuditLogPage() {
   );
 }
 
-// Settings > Customer texts. Exec only: the section is not rendered for anyone
-// else, and set_message_template refuses them regardless.
-//
-// The cancel link is not in the text box and cannot be typed into it. The
-// worker adds it when it sends, which is why the preview shows it after the
-// wording rather than inside it.
-function CustomerTextsSettings() {
-  const { logAudit } = React.useContext(AppContext);
-  const [saved,   setSaved]   = React.useState({});   // kind -> the company's own wording, if any
-  const [drafts,  setDrafts]  = React.useState({});   // kind -> what is in the box
-  const [names,   setNames]   = React.useState({ company: null, location: null });
-  const [loaded,  setLoaded]  = React.useState(false);
-  const [loadErr, setLoadErr] = React.useState(false);
-  const [busy,    setBusy]    = React.useState(null);
-  const [notice,  setNotice]  = React.useState({});   // kind -> { ok, text }
-  const [editing, setEditing] = React.useState({});   // kind -> true while its text box is open
-  const boxes = React.useRef({});                      // kind -> its text box, for inserting at the cursor
-
-  React.useEffect(() => {
-    let live = true;
-    (async () => {
-      const [tpl, op, loc] = await Promise.all([
-        supabase.from("message_templates").select("kind, body"),
-        supabase.from("operators").select("name").limit(1),
-        supabase.from("branch_listings").select("street").not("street", "is", null).limit(1),
-      ]);
-      if (!live) return;
-      if (tpl.error) { console.warn("message_templates load failed:", tpl.error); setLoadErr(true); }
-      const own = Object.fromEntries((tpl.data || []).map((t) => [t.kind, t.body]));
-      setSaved(own);
-      setDrafts(Object.fromEntries(TEXT_TEMPLATE_KINDS.map((k) => [k.kind, own[k.kind] ?? ""])));
-      // [location] is a branch's street address in the texts themselves.
-      setNames({ company: op.data?.[0]?.name || null, location: loc.data?.[0]?.street || null });
-      setLoaded(true);
-    })();
-    return () => { live = false; };
-  }, []);
-
-  // A made-up customer, with this company's real name where it is known, so
-  // the preview reads like the text a customer would get.
-  const sample = {
-    "[first name]": "Alex",
-    "[company]":    names.company || "your company",
-    "[location]":   names.location || "12 Water St",
-    "[date]":       "Oct 6",
-    "[time]":       "10:00 AM",
-  };
-
-  const save = async (k, body) => {
-    setBusy(k.kind);
-    setNotice((p) => ({ ...p, [k.kind]: null }));
-    const { data, error } = await supabase.rpc("set_message_template", { p_kind: k.kind, p_body: body });
-    setBusy(null);
-    const entry = { actionType: "texts.template", tableName: "message_templates", recordId: k.kind };
-    if (error || !data?.ok) {
-      if (error) console.warn("set_message_template failed:", error);
-      const text = error ? "The wording could not be saved. Check your connection and try again." : textTemplateRefusal(data);
-      setNotice((p) => ({ ...p, [k.kind]: { ok: false, text } }));
-      logAudit({ ...entry, outcome: "refused", description: `${k.title} wording not changed (${error ? "request failed" : data?.reason}).` });
-      return false;
-    }
-    const reset = !!data.reset;
-    setSaved((p) => { const next = { ...p }; if (reset) delete next[k.kind]; else next[k.kind] = data.body; return next; });
-    setDrafts((p) => ({ ...p, [k.kind]: reset ? "" : data.body }));
-    setNotice((p) => ({ ...p, [k.kind]: { ok: true, text: reset ? "Wording removed. This text is not sent." : "Wording saved." } }));
-    logAudit({ ...entry, outcome: "completed",
-      description: reset ? `${k.title} wording removed, so it is not sent.` : `${k.title} wording changed to: ${data.body}` });
-    setEditing((p) => ({ ...p, [k.kind]: false }));
-    return true;
-  };
-
-  // Puts a placeholder where the cursor is in that text's box, replacing any
-  // selected text, and leaves the cursor just after it.
-  const insertPlaceholder = (kind, placeholder) => {
-    const box = boxes.current[kind];
-    const value = drafts[kind] ?? "";
-    const start = box ? box.selectionStart : value.length;
-    const end   = box ? box.selectionEnd   : value.length;
-    setDrafts((p) => ({ ...p, [kind]: value.slice(0, start) + placeholder + value.slice(end) }));
-    setNotice((p) => ({ ...p, [kind]: null }));
-    // After React has put the new value in, which moves the cursor to the end.
-    setTimeout(() => {
-      const b = boxes.current[kind];
-      if (!b) return;
-      b.focus();
-      b.setSelectionRange(start + placeholder.length, start + placeholder.length);
-    }, 0);
-  };
-
-  if (!loaded) return React.createElement("div", { className: "resvEmpty" }, "Loading the current wording...");
-
-  return React.createElement(React.Fragment, null,
-    React.createElement("p", { className: "aiTabDesc" },
-      "The wording of the texts your customers receive, for every branch of the company. ",
-      "Use these placeholders and each customer's own details are filled in: ",
-      React.createElement("strong", null, TEXT_PLACEHOLDERS.join(", ")),
-      ". The system adds the rest automatically, and it cannot be removed or edited: the reservation code to the confirmation; the customer's personal app link to the confirmation, Pre-Rental Check and return reminder; a link to change the pickup time to the no-show texts; and a link to cancel to the confirmation and Pre-Rental Check. The links' tokens in the preview are stand-ins of the real length, so the count is the real count."),
-    loadErr && React.createElement("div", { className: "closeRentalWarning" },
-      "The saved wording could not be loaded. Saving here will replace whatever is saved."),
-
-    TEXT_TEMPLATE_KINDS.map((k) => {
-      const draft    = drafts[k.kind] ?? "";
-      const trimmed  = draft.trim();
-      const current  = saved[k.kind] ?? "";
-      const isCustom = saved[k.kind] != null;
-      const preview  = fillTextTemplate(trimmed, sample) + k.suffix;
-      const m        = measureText(preview);
-      const tooLong  = trimmed.length > TEXT_TEMPLATE_MAX;
-      const unknown  = (trimmed.match(/\[[^\][]*\]/g) || []).filter((ph) => !TEXT_PLACEHOLDERS.includes(ph.toLowerCase()));
-      const note     = notice[k.kind];
-
-      const isEditing = !!editing[k.kind];
-      // What the customer gets today, shown when the box is closed.
-      const savedPreview = fillTextTemplate(current, sample) + k.suffix;
-
-      const measures = [
-        React.createElement("p", { key: "len", className: "closeRentalHint" },
-          `${m.length} characters${k.suffixNote ? ` with ${k.suffixNote}` : ""}, sent as ${m.segments} text${m.segments === 1 ? "" : "s"} ` +
-          `(${m.perSegment} characters fit in one). A longer name, company or branch adds to this.`),
-        m.segments > 1 && React.createElement("div", { key: "seg", className: "closeRentalWarning" },
-          `This is over one text segment, so each customer is sent ${m.segments} texts' worth and it costs ${m.segments} times as much. ` +
-          "Shorten the wording to bring it back to one."),
-        m.costly.length > 0 && React.createElement("div", { key: "cost", className: "closeRentalWarning" },
-          `These characters raise the cost: ${m.costly.map((ch) => (ch === "\n" ? "line break" : ch)).join("  ")}. ` +
-          "A text containing any of them holds 70 characters per segment instead of 160. Curly quotes and apostrophes are the usual cause: retype them as straight ones."),
-        tooLong && React.createElement("div", { key: "long", className: "closeRentalWarning" },
-          `The wording is ${trimmed.length - TEXT_TEMPLATE_MAX} characters over the ${TEXT_TEMPLATE_MAX} allowed and cannot be saved.`),
-        unknown.length > 0 && React.createElement("div", { key: "ph", className: "closeRentalWarning" },
-          `${unknown.join(", ")} ${unknown.length === 1 ? "is not a placeholder" : "are not placeholders"} and cannot be saved. Use only ${TEXT_PLACEHOLDERS.join(", ")}.`),
-      ];
-
-      return React.createElement("div", { key: k.kind, style: { marginBottom: "22px" } },
-        React.createElement("div", { className: "gasSettingSubhead" }, k.title),
-        React.createElement("p", { className: "closeRentalHint" },
-          `${k.when} ${isCustom ? "Using your company's own wording." : "Not written yet, so this text is not sent."}` +
-          (k.kind === "confirmation" ? " Needed before the company can launch." : "")),
-
-        !isEditing && React.createElement(React.Fragment, null,
-          isCustom && React.createElement("div", { className: "closeRentalSummary" }, savedPreview),
-          note && React.createElement("div", { className: note.ok ? "addVehicleSuccess" : "closeRentalWarning" }, note.text),
-          React.createElement("div", { className: "closeRentalActions" },
-            React.createElement("button", {
-              type: "button", className: "resModalCancel",
-              disabled: busy === k.kind || !isCustom,
-              onClick: () => save(k, ""),
-            }, "Stop sending"),
-            React.createElement("button", {
-              type: "button", className: "resModalSubmit",
-              disabled: busy === k.kind,
-              onClick: () => {
-                setDrafts((p) => ({ ...p, [k.kind]: current }));
-                setNotice((p) => ({ ...p, [k.kind]: null }));
-                setEditing((p) => ({ ...p, [k.kind]: true }));
-              },
-            }, isCustom ? "Edit" : "Write"))),
-
-        isEditing && React.createElement(React.Fragment, null,
-          React.createElement("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "8px" } },
-            TEXT_PLACEHOLDER_BUTTONS.map(([label, placeholder]) =>
-              React.createElement("button", {
-                key: placeholder, type: "button", className: "resModalCancel",
-                // Keeps the cursor in the box, so the insert lands where it was.
-                onMouseDown: (e) => e.preventDefault(),
-                onClick: () => insertPlaceholder(k.kind, placeholder),
-              }, label))),
-          React.createElement("textarea", {
-            className: "resFormInput resFormTextarea", rows: 4, value: draft,
-            "aria-label": `${k.title} wording`, autoFocus: true,
-            ref: (node) => { boxes.current[k.kind] = node; },
-            onChange: (e) => { setDrafts((p) => ({ ...p, [k.kind]: e.target.value })); setNotice((p) => ({ ...p, [k.kind]: null })); },
-          }),
-          React.createElement("p", { className: "closeRentalHint" },
-            `${trimmed.length} of ${TEXT_TEMPLATE_MAX} characters of wording.`),
-
-          React.createElement("div", { className: "gasSettingSubhead" }, "Preview"),
-          React.createElement("div", { className: "closeRentalSummary" }, preview),
-          ...measures,
-          note && React.createElement("div", { className: note.ok ? "addVehicleSuccess" : "closeRentalWarning" }, note.text),
-
-          React.createElement("div", { className: "closeRentalActions" },
-            React.createElement("button", {
-              type: "button", className: "resModalCancel",
-              disabled: busy === k.kind,
-              onClick: () => {
-                setDrafts((p) => ({ ...p, [k.kind]: current }));
-                setNotice((p) => ({ ...p, [k.kind]: null }));
-                setEditing((p) => ({ ...p, [k.kind]: false }));
-              },
-            }, "Cancel"),
-            React.createElement("button", {
-              type: "button", className: "resModalSubmit",
-              disabled: busy === k.kind || !trimmed || trimmed === current || tooLong || unknown.length > 0,
-              onClick: () => save(k, trimmed),
-            }, busy === k.kind ? "Saving..." : "Save")))
-      );
-    })
-  );
-}
-
 function SettingsPage() {
   const { appSettings, saveSetting, fleet, guardAction, currentUser } = React.useContext(AppContext);
   const isExec = roleAtLeast(currentUser?.role, "Exec");
@@ -9767,7 +9491,7 @@ function SettingsPage() {
     { key: "twilio",  title: "Twilio SMS Setup",      body: "Twilio Account SID, Auth Token, and sending phone number for AI call and text automation." },
     { key: "billing", title: "Billing Configuration", body: "Billing address, HST registration number, and invoice export settings." },
   ];
-  const [sect, setSect] = React.useState({ gas: false, texts: true, ...Object.fromEntries(SECTS.map((s) => [s.key, true])) });
+  const [sect, setSect] = React.useState({ gas: false, ...Object.fromEntries(SECTS.map((s) => [s.key, true])) });
   const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
 
   // ── Gas collection settings ────────────────────────────────────────────────
@@ -9899,7 +9623,6 @@ function SettingsPage() {
 
     section("gas", "Gas Collection", gasBody),
 
-    isExec && section("texts", "Customer texts", React.createElement(CustomerTextsSettings)),
 
     SECTS.map(({ key, title, body }) =>
       section(key, title,
