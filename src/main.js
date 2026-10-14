@@ -7938,6 +7938,13 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       label);
   const row = (...children) =>
     el("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "flex-end", marginBottom: "12px" } }, ...children);
+  const addressField = (label, name, props, wide) =>
+    el("label", { className: wide ? "addressForm__field addressForm__field--wide" : "addressForm__field" },
+      el("span", { className: "addressForm__label" }, label),
+      el("input", {
+        className: "addressForm__input", value: draft[name], disabled: !!busy,
+        onChange: (e) => set(name, e.target.value), ...props,
+      }));
   const imageBlock = (kind, label) => {
     const path = listing && listing[kind === "logo" ? "logoPath" : "photoPath"];
     const url = listingPhotoUrl(path);
@@ -7992,13 +7999,14 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     el("div", { className: "gasSettingSubhead" }, "Address"),
     el("p", { className: "closeRentalHint" },
       "Every part is needed before the company can launch. It shows on fleetr.ai and in the confirmation text, and places the map pin."),
-    field("Street", input("street", { maxLength: 200, placeholder: "12 Water St", autoComplete: "street-address" })),
-    row(
-      field("City",        input("city",       { maxLength: 100, autoComplete: "address-level2" })),
-      field("Province",    input("province",   { maxLength: 100, autoComplete: "address-level1" }))),
-    row(
-      field("Postal code", input("postalCode", { maxLength: 20,  autoComplete: "postal-code", style: { width: "140px" } })),
-      field("Country",     input("country",    { maxLength: 100, autoComplete: "country-name" }))),
+    // Street across the top, then City and Province, then Postal code and
+    // Country, side by side; one column on a phone.
+    el("div", { className: "addressForm" },
+      addressField("Street",      "street",     { maxLength: 200, autoComplete: "street-address" }, true),
+      addressField("City",        "city",       { maxLength: 100, autoComplete: "address-level2" }),
+      addressField("Province",    "province",   { maxLength: 100, autoComplete: "address-level1" }),
+      addressField("Postal code", "postalCode", { maxLength: 20,  autoComplete: "postal-code" }),
+      addressField("Country",     "country",    { maxLength: 100, autoComplete: "country-name" })),
     Number.isFinite(lat) && Number.isFinite(lng)
       ? el(React.Fragment, null,
           el(ListingMapPin, {
@@ -19928,6 +19936,35 @@ body, * {
 .fleetGroup:last-child{ margin-bottom: 0; border-bottom: 1px solid rgba(31, 30, 29, 0.12); }
 .fleetGroup:has(> .fleetGroupHeader + *) .fleetGroupHeader{ border-bottom: 1px solid rgba(31, 30, 29, 0.10); }
 .fleetGroup .dashboardTable{ border: none; border-radius: 0; }
+/* A branch's address: labelled fields in a two-column grid, one on a phone. */
+.addressForm{
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 16px;
+  margin: 4px 0 16px;
+}
+.addressForm__field{ display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.addressForm__field--wide{ grid-column: 1 / -1; }
+.addressForm__label{ font-size: 12.5px; font-weight: 600; color: var(--cs-muted); }
+.addressForm__input{
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 14.5px;
+  color: var(--cs-ink);
+  background: var(--cs-card);
+  border: 1px solid var(--cs-line);
+  border-radius: 10px;
+  padding: 11px 13px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.addressForm__input:hover:not(:disabled){ border-color: rgba(31, 30, 29, 0.28); }
+.addressForm__input:focus{ outline: none; border-color: var(--cs-terra); box-shadow: 0 0 0 3px var(--cs-terra-soft); }
+.addressForm__input:disabled{ opacity: 0.6; }
+@media (max-width: 767px){
+  .addressForm{ grid-template-columns: minmax(0, 1fr); }
+  .addressForm__input{ font-size: 16px; }
+}
 /* The first floating card sits as far below the section's bar as the cards
    sit from each other. */
 .companyStep__body:has(.dashboardSection){ padding-top: 12px; }
