@@ -16124,6 +16124,14 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
     e.preventDefault();
     const u = username.trim().toLowerCase();
 
+    // Checked here, before anything is sent: an empty or impossible username
+    // used to go to the auth service as an email address, and its own
+    // "invalid format" error came back. A username that cannot exist reads as
+    // a wrong password, so it gives nothing away.
+    if (!u)   { setError("Enter your username."); return; }
+    if (!pin) { setError("Enter your password."); return; }
+    if (!/^[a-z0-9]{6,20}$/.test(u)) { setError(LOGIN_REASONS.credentials); return; }
+
     // Supabase Auth is the only way in. The hardcoded connor/1234 fallback that
     // stood here during the transition is gone, along with the account whose
     // password was a constant in this file.
