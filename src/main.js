@@ -2438,6 +2438,47 @@ function ChangedByCustomerTag({ meta }) {
   }, "Changed by customer");
 }
 
+// Shown on a rental whose customer extended it in the customer app
+// (rental_extensions.sql, fleetr-infra).
+function ExtendedByCustomerTag({ meta }) {
+  return React.createElement("span", {
+    className: `rentalAgreementBadge rentalAgreementBadge--neutral${meta ? " rentalAgreementBadge--meta" : ""}`,
+    style: meta ? null : { marginLeft: "6px" },
+  }, "Extended by customer");
+}
+
+// "2026-10-20T10:00:00" is the branch's local time: shown as written.
+function localWhen(ts) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(String(ts || ""));
+  if (!m) return "unknown";
+  const h = Number(m[4]);
+  const day = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+    .toLocaleDateString("en-CA", { timeZone: "UTC", month: "short", day: "numeric" });
+  return `${day}, ${h % 12 || 12}:${m[5]} ${h < 12 ? "AM" : "PM"}`;
+}
+
+// Each extension the customer made, newest first, in the branch's local time.
+function CustomerExtensionsNote({ resCode }) {
+  const [extensions, setExtensions] = React.useState([]);
+  React.useEffect(() => {
+    if (!resCode) { setExtensions([]); return undefined; }
+    let live = true;
+    supabase.from("rental_extensions").select("extendedAt,oldReturn,newReturn")
+      .eq("resCode", resCode).order("extendedAt", { ascending: false })
+      .then(({ data, error }) => {
+        if (!live) return;
+        if (error) console.warn("rental_extensions could not be loaded:", error.message);
+        setExtensions(!error && Array.isArray(data) ? data : []);
+      });
+    return () => { live = false; };
+  }, [resCode]);
+  if (!extensions.length) return null;
+  return React.createElement("div", { className: "closeRentalHint", style: { marginBottom: "12px" } },
+    extensions.map((e, i) => React.createElement("div", { key: i },
+      `Extended by the customer on ${new Date(e.extendedAt).toLocaleDateString("en-CA", { month: "short", day: "numeric" })}: `
+      + `return was ${localWhen(e.oldReturn)}, now ${localWhen(e.newReturn)}.`)));
+}
+
 // Each change the customer made, newest first, in the branch's local time.
 function CustomerChangesNote({ resCode }) {
   const [changes, setChanges] = React.useState([]);
@@ -12056,7 +12097,8 @@ function RentalAgreementsPage() {
                       React.createElement(CustomerLink, { name: r.customer, resCode: r.resCode, label: r.resCode })
                     ),
                     React.createElement("td", null,
-                      React.createElement(CustomerLink, { name: r.customer, resCode: r.resCode, label: r.customer })
+                      React.createElement(CustomerLink, { name: r.customer, resCode: r.resCode, label: r.customer }),
+                      rentalAgreements.find((ra) => ra.resCode === r.resCode)?.customerExtendedAt && React.createElement(ExtendedByCustomerTag)
                     ),
                     React.createElement("td", null, (() => {
                       const raRow = rentalAgreements.find((ra) => ra.resCode === r.resCode);
@@ -15294,10 +15336,12 @@ function CustomerPage() {
         return React.createElement("span", { className: cls }, statusLabel(raStatus));
       })(),
       localRecord?.bookingChannel === "fleetr.ai" && React.createElement(BookedOnFleetrTag, { meta: true }),
-      localRecord?.customerChangedAt && React.createElement(ChangedByCustomerTag, { meta: true })
+      localRecord?.customerChangedAt && React.createElement(ChangedByCustomerTag, { meta: true }),
+      ra?.customerExtendedAt && React.createElement(ExtendedByCustomerTag, { meta: true })
     ),
     React.createElement("div", { className: "page__titleUnderline" }),
     localRecord?.customerChangedAt && React.createElement(CustomerChangesNote, { resCode }),
+    ra?.customerExtendedAt && React.createElement(CustomerExtensionsNote, { resCode }),
     ra?.id && React.createElement(NameMismatchWarning, { rentalAgreementId: ra.id }),
     makeSection("resInfo",      "Reservation Information", resInfoBody),
     makeSection("vehicles",     "Vehicles",               vehiclesBody),
