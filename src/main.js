@@ -1085,7 +1085,7 @@ function commandBarActionKey({ table, operation, data, pmVehicle }) {
 const NAV_SECTIONS = [
   {
     header: "Overview",
-    items: [{ label: "Dashboard", path: "/dashboard" }],
+    items: [{ label: "Home", path: "/dashboard" }],
   },
   {
     header: "Rentals",
@@ -2099,25 +2099,7 @@ function AppProvider({ children, currentUser, signOut }) {
   // than this browser's localStorage. See worker.js -> scheduled().
 
   // ── Loading screen ───────────────────────────────────────────────────────
-  if (!dbReady) {
-    return React.createElement(
-      "div",
-      {
-        style: {
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          height: "100vh",
-          background: "#1F1E1D",
-          color: "#C9603D",
-          fontFamily: "'Inter', sans-serif",
-          fontSize: "1.4rem",
-          letterSpacing: "0.05em",
-        },
-      },
-      "Loading fleetr…"
-    );
-  }
+  if (!dbReady) return React.createElement(AppSkeleton);
 
   return React.createElement(
     AppContext.Provider,
@@ -2128,6 +2110,49 @@ function AppProvider({ children, currentUser, signOut }) {
 }
 
 // ─── NotesCell component ──────────────────────────────────────────────────────
+
+// ─── Loading skeleton ────────────────────────────────────────────────────────
+// While the first load runs after sign-in: the app's layout drawn in light
+// placeholder shapes, a sheen passing over them, so the page has its shape
+// before its data. On a phone, the top bar in place of the sidebar.
+function AppSkeleton() {
+  const el = React.createElement;
+  const bar = (cls, style, key) => el("span", { key, className: `skel ${cls || ""}`, style });
+  return el("div", { className: "appSkel", role: "status", "aria-live": "polite", "aria-busy": "true" },
+    el("span", { className: "appSkel__sr" }, "Loading fleetr"),
+    el("aside", { className: "appSkel__side", "aria-hidden": "true" },
+      el("span", { className: "appSkel__wordmark" }, "fleetr"),
+      [5, 3, 4, 4].map((n, i) => el("div", { key: i, className: "appSkel__group" },
+        bar("skel--label"),
+        Array.from({ length: n }, (_, j) => bar("skel--nav", { width: `${62 + ((i * 3 + j * 7) % 5) * 7}%` }, j)))),
+      el("div", { className: "appSkel__user" }, bar("skel--avatar"), el("div", { className: "appSkel__userText" }, bar("skel--line", { width: "70%" }), bar("skel--line skel--thin", { width: "40%" })))),
+    el("div", { className: "appSkel__main", "aria-hidden": "true" },
+      el("div", { className: "appSkel__top" }, el("span", { className: "appSkel__topWord" }, "fleetr"), bar("skel--pill"), bar("skel--search"), bar("skel--pill skel--pill--sm")),
+      // Home as it loads: the title, Close Rental and Switch Out, the
+      // Reservations and Vehicle Status sections, then the numbers.
+      el("div", { className: "appSkel__page" },
+        bar("skel--title"),
+        el("div", { className: "appSkel__ctas" }, bar("skel--cta"), bar("skel--cta")),
+        el("div", { className: "appSkel__section" },
+          el("div", { className: "appSkel__sectionHead" }, bar("skel--line", { width: "120px" }), bar("skel--chev")),
+          el("div", { className: "appSkel__sectionBody" },
+            el("div", { className: "appSkel__search" }, bar("skel--btn"), bar("skel--field"), bar("skel--field"), bar("skel--field"), bar("skel--field")),
+            el("div", { className: "appSkel__list" }, [0, 1, 2, 3].map((i) =>
+              el("div", { key: i, className: "appSkel__row" }, bar("skel--line", { width: "14%" }), bar("skel--line", { width: "10%" }), bar("skel--line", { width: "26%" }), bar("skel--line", { width: "18%" }), bar("skel--chip")))))),
+        el("div", { className: "appSkel__section" },
+          el("div", { className: "appSkel__sectionHead" }, bar("skel--line", { width: "130px" }), bar("skel--chev")),
+          el("div", { className: "appSkel__sectionBody" },
+            el("div", { className: "appSkel__groups" }, [0, 1, 2, 3, 4, 5].map((i) =>
+              el("div", { key: i, className: "appSkel__group2" }, bar("skel--dot"), bar("skel--line", { width: `${90 + (i % 3) * 30}px` }), bar("skel--count"), bar("skel--chev")))))),
+        el("div", { className: "appSkel__tiles" }, [0, 1, 2, 3].map((i) =>
+          el("div", { key: i, className: "appSkel__card" }, bar("skel--num"), bar("skel--line", { width: "60%" }), bar("skel--line skel--thin", { width: "45%" })))),
+        el("div", { className: "appSkel__cards" },
+          el("div", { className: "appSkel__card appSkel__card--chart" },
+            bar("skel--line", { width: "40%" }),
+            el("div", { className: "appSkel__bars" }, [55, 30, 80, 20, 60, 10, 45].map((h, i) => bar("skel--col", { height: `${h}%` }, i)))),
+          el("div", { className: "appSkel__card" },
+            bar("skel--line", { width: "35%" }), bar("skel--block"))))));
+}
 
 function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote }) {
   const notesLog = parseNotesLog(notesLogRaw);
@@ -3338,7 +3363,7 @@ function NonDriveIntakeSection({ standalone }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─── Dashboard numbers ───────────────────────────────────────────────────────
-// The row of cards at the top of the Dashboard: today's counts, the week's
+// The cards under the sections on Home: today's counts, the week's
 // pickups as bars, and the next two weeks of returns as a curve, with the next
 // few pickups listed under it. Everything is counted from the reservations and
 // fleet already loaded; nothing extra is fetched.
@@ -3384,23 +3409,12 @@ function CountUp({ value }) {
   return shown.toLocaleString("en-CA");
 }
 
-const STAT_ARROW_UP = "M7 17L17 7M9 7h8v8";
-const STAT_ARROW_DOWN = "M7 7l10 10M17 9v8H9";
-
-function StatTile({ title, value, change, note }) {
+function StatTile({ title, value, note }) {
   const el = React.createElement;
-  const trend = change == null ? null : change > 0 ? "up" : change < 0 ? "down" : "flat";
   return el("div", { className: "statTile", role: "group", "aria-label": `${title}: ${value}` },
     el("div", { className: "statTile__value" }, el(CountUp, { value })),
     el("div", { className: "statTile__title" }, title),
-    el("div", { className: "statTile__foot" },
-      trend && el("span", { className: `statTile__chip statTile__chip--${trend}`, "aria-hidden": "true" },
-        trend === "flat" ? "=" : el("svg", { width: 12, height: 12, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.5, strokeLinecap: "round", strokeLinejoin: "round" },
-          el("path", { d: trend === "up" ? STAT_ARROW_UP : STAT_ARROW_DOWN }))),
-      el("span", { className: "statTile__note" },
-        trend && el("strong", { className: `statTile__delta statTile__delta--${trend}` },
-          trend === "flat" ? "Same" : `${change > 0 ? "+" : ""}${change}`),
-        trend ? (trend === "flat" ? " as yesterday" : " vs yesterday") : note)));
+    note && el("div", { className: "statTile__foot" }, el("span", { className: "statTile__note" }, note)));
 }
 
 const dayShort = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-CA", { weekday: "short" });
@@ -3495,15 +3509,16 @@ function DashboardStats() {
   const navigate = useNavigate();
   const el = React.createElement;
   const today = isoOffset(0);
-  const yesterday = isoOffset(-1);
   const pickupsOn = (iso) => reservations.filter((r) => r.date === iso).length;
   // Rentals out or booked, by the day they are due back. Ones already back
   // (customer return, close pending, closed) are not due any more.
   const RETURNED = ["customer_return", "close_pending", "closed"];
   const returnsOn = (iso) => reservations.filter((r) => r.returnDate === iso && !RETURNED.includes(r.rentalAgreementStatus)).length;
-  // For today's tile: every rental due back that day, whether or not it is
-  // back yet, so today and yesterday are counted the same way.
-  const scheduledReturnsOn = (iso) => reservations.filter((r) => r.returnDate === iso && r.rentalAgreementStatus && r.rentalAgreementStatus !== "reservation").length;
+  // Today's pickups not picked up yet, and today's returns not back yet.
+  const bookedToday = reservations.filter((r) => r.date === today);
+  const pickupsLeft = bookedToday.filter((r) => (r.rentalAgreementStatus || "reservation") === "reservation").length;
+  const dueToday = reservations.filter((r) => r.returnDate === today && r.rentalAgreementStatus && r.rentalAgreementStatus !== "reservation");
+  const returnsLeft = dueToday.filter((r) => !RETURNED.includes(r.rentalAgreementStatus)).length;
   const fleetSize = fleet.length;
   const share = (n) => (fleetSize ? `${Math.round((n / fleetSize) * 100)}% of ${fleetSize} vehicles` : "No vehicles yet");
   const onRent = fleet.filter((v) => v.status === "On Rent").length;
@@ -3523,8 +3538,8 @@ function DashboardStats() {
     .slice(0, 3);
   return el("div", { className: "dashStats" },
     el("div", { className: "dashStats__tiles" },
-      el(StatTile, { title: "Pickups today", value: pickupsOn(today), change: pickupsOn(today) - pickupsOn(yesterday) }),
-      el(StatTile, { title: "Returns due today", value: scheduledReturnsOn(today), change: scheduledReturnsOn(today) - scheduledReturnsOn(yesterday) }),
+      el(StatTile, { title: "Pickups remaining today", value: pickupsLeft, note: `of ${bookedToday.length} booked for today` }),
+      el(StatTile, { title: "Returns due today", value: returnsLeft, note: `of ${dueToday.length} due back today` }),
       el(StatTile, { title: "On rent", value: onRent, note: share(onRent) }),
       el(StatTile, { title: "Available", value: available, note: share(available) })),
     el("div", { className: "dashStats__cards" },
@@ -3694,7 +3709,7 @@ function DashboardPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Dashboard"),
+    React.createElement("h1", { className: "page__title" }, "Home"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement("div", { className: "dashboardCtaRow" },
       React.createElement("button", {
@@ -3704,7 +3719,6 @@ function DashboardPage() {
         type: "button", className: "closeRentalCta", onClick: () => navigate("/switch-out"),
       }, "Switch Out")
     ),
-    React.createElement(DashboardStats),
     React.createElement("div", { className: "dashboardGrid" }, [
       // ── Section 1: Reservations ──────────────────────────────────────────
       React.createElement(
@@ -3819,12 +3833,7 @@ function DashboardPage() {
                 )
           )
       ),
-      // ── Section 2: Non-Drive Intake ──────────────────────────────────
-      // Not rendered at all when off. dashboardGrid spaces its children with
-      // gap, so the sections either side close up with nothing left between.
-      isFeatureEnabled("non_drive_intake") &&
-        React.createElement(NonDriveIntakeSection, { key: "nonDriveIntake", standalone: false }),
-      // ── Section 3: Vehicle Status ────────────────────────────────
+      // ── Section 2: Vehicle Status ────────────────────────────────
       React.createElement(
         CompanyStep, { key: "fleetAvailability", title: "Vehicle Status", open: !collapsedSections.fleetAvailability, onToggle: () => toggleSection("fleetAvailability") },
         !collapsedSections.fleetAvailability &&
@@ -3973,7 +3982,14 @@ function DashboardPage() {
             })()
           )
       ),
+      // ── Section 3: Non-Drive Intake ──────────────────────────────────
+      // Not rendered at all when off. dashboardGrid spaces its children with
+      // gap, so the sections either side close up with nothing left between.
+      isFeatureEnabled("non_drive_intake") &&
+        React.createElement(NonDriveIntakeSection, { key: "nonDriveIntake", standalone: false }),
     ]),
+    // Today's numbers and the week ahead, under the sections.
+    React.createElement(DashboardStats),
     showModal && React.createElement(
       "div",
       { className: "resModalBackdrop", onClick: () => setShowModal(false) },
@@ -15941,7 +15957,7 @@ function ForgotScreen({ onCancel }) {
     "div", { className: "loginWrap" },
     React.createElement(
       "div", { className: "loginCard" },
-      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#C9603D", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
+      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#F4845F", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
       React.createElement("div", { className: "loginSubtitle" },
         sent ? "Check your email." : "Reset your password."),
       sent
@@ -16057,7 +16073,7 @@ function SignupScreen({ onDone, onCancel }) {
     "div", { className: "loginWrap" },
     React.createElement(
       "div", { className: "loginCard" },
-      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#C9603D", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
+      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#F4845F", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
       React.createElement("div", { className: "loginSubtitle" }, "Create your account."),
       React.createElement(
         "form", { className: "loginForm", onSubmit: submit },
@@ -16135,11 +16151,10 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
     React.createElement(
       "div",
       { className: "loginCard" },
-      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#C9603D", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
-      React.createElement("div", { className: "loginSubtitle" }, "Enter details below."),
+      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#F4845F", fontSize: "2rem", fontWeight: "700", marginBottom: "28px", textAlign: "center" } }, "fleetr"),
       React.createElement(
         "form",
-        { className: "loginForm", onSubmit: handleSubmit },
+        { className: "loginForm loginForm--signIn", onSubmit: handleSubmit },
         React.createElement("input", {
           className: "loginInput",
           type: "text",
@@ -16164,17 +16179,20 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
           onChange: (e) => { setPin(e.target.value); setError(""); },
           onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); handleSubmit(e); } },
         }),
-        React.createElement("button", { type: "submit", className: "loginBtn", disabled: loading }, loading ? "Signing in…" : "Sign In"),
+        // Ported from Magic UI's Shimmer Button: a spark of light runs round
+        // the edge, behind a backdrop inset by a hair, so only the rim shows it.
+        React.createElement("button", { type: "submit", className: "loginBtn shimmerBtn", disabled: loading },
+          React.createElement("span", { className: "shimmerBtn__sparkWrap", "aria-hidden": "true" },
+            React.createElement("span", { className: "shimmerBtn__spark" },
+              React.createElement("span", { className: "shimmerBtn__sparkBefore" }))),
+          React.createElement("span", { className: "shimmerBtn__label" }, loading ? "Signing in…" : "Sign In"),
+          React.createElement("span", { className: "shimmerBtn__highlight", "aria-hidden": "true" }),
+          React.createElement("span", { className: "shimmerBtn__backdrop", "aria-hidden": "true" })),
         error && React.createElement("div", { className: "loginError" }, error),
-        notice && React.createElement("div", { className: "loginNotice", style: { color: "#3fbf7f", fontSize: "0.85rem", marginTop: "8px", textAlign: "center" } }, notice),
-        React.createElement("button", {
-          type: "button", onClick: onSignup,
-          style: { background: "none", border: "none", color: "#C9603D", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
-        }, "I have a join code"),
-        React.createElement("button", {
-          type: "button", onClick: onForgot,
-          style: { background: "none", border: "none", color: "#C9603D", cursor: "pointer", marginTop: "4px", fontSize: "0.85rem" },
-        }, "Forgot your password?")
+        notice && React.createElement("div", { className: "loginNotice", style: { color: "#3fbf7f", fontSize: "0.85rem", textAlign: "center" } }, notice),
+        React.createElement("div", { className: "loginLinks" },
+          React.createElement("button", { type: "button", className: "loginLink", onClick: onSignup }, "I have a join code"),
+          React.createElement("button", { type: "button", className: "loginLink", onClick: onForgot }, "Forgot your password?"))
       )
     )
   );
@@ -16326,7 +16344,7 @@ body, * {
 }
 .loginInput:focus{
   border-color: #F4845F;
-  box-shadow: 0 0 0 3px rgba(5,150,105,0.12);
+  box-shadow: 0 0 0 3px rgba(244,132,95,0.18);
 }
 
 /* ── PIN field ──────────────────────────────────────────────────────────────
@@ -19626,6 +19644,7 @@ body, * {
 }
 /* ── Dashboard numbers ─────────────────────────────────────────────────── */
 .dashStats{ display: grid; gap: 14px; margin-bottom: 20px; }
+.dashboardGrid + .dashStats{ margin-top: 18px; }
 .dashStats__tiles{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
 .dashStats__cards{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 14px; }
 .statTile, .statCard{
@@ -19639,18 +19658,7 @@ body, * {
 .statTile__value{ font-size: 40px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.05; font-variant-numeric: tabular-nums; }
 .statTile__title{ font-size: 14px; color: rgba(31, 30, 29, 0.62); font-weight: 500; }
 .statTile__foot{ margin-top: 10px; display: flex; align-items: center; gap: 8px; min-width: 0; }
-.statTile__chip{
-  flex: none; width: 22px; height: 22px; border-radius: 999px;
-  display: inline-grid; place-items: center; font-size: 12px; font-weight: 800;
-}
-.statTile__chip--up{ background: rgba(34, 139, 84, 0.14); color: #1F7A4A; }
-.statTile__chip--down{ background: rgba(192, 57, 43, 0.12); color: #B23A2E; }
-.statTile__chip--flat{ background: #F1F0EC; color: rgba(31, 30, 29, 0.62); }
 .statTile__note{ font-size: 12.5px; color: rgba(31, 30, 29, 0.62); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.statTile__delta{ font-weight: 700; }
-.statTile__delta--up{ color: #1F7A4A; }
-.statTile__delta--down{ color: #B23A2E; }
-.statTile__delta--flat{ color: #1F1E1D; }
 
 .statCard{ padding: 16px 18px 18px; min-width: 0; }
 .statCard--lift{ transition: transform 200ms cubic-bezier(.2,.8,.2,1), box-shadow 200ms ease; }
@@ -19968,6 +19976,146 @@ body, * {
 /* The first floating card sits as far below the section's bar as the cards
    sit from each other. */
 .companyStep__body:has(.dashboardSection){ padding-top: 12px; }
+/* The sign-in card: the fields 12px apart, the button a step further down,
+   then the two links together under it. */
+.loginForm--signIn{ margin: 0; }
+.loginForm--signIn .loginInput{ padding: 12px 14px; font-size: 14.5px; }
+.loginForm--signIn .shimmerBtn{ margin-top: 8px; }
+.loginLinks{ display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 8px; }
+.loginLink{
+  background: none; border: none; padding: 2px 4px; border-radius: 4px;
+  color: #C9603D; font: inherit; font-size: 0.85rem; cursor: pointer;
+}
+.loginLink:hover{ color: #B4532F; text-decoration: underline; text-underline-offset: 3px; }
+.loginLink:focus-visible{ outline: 2px solid #F4845F; outline-offset: 2px; }
+/* The Sign In button, after Magic UI's Shimmer Button. */
+.shimmerBtn{
+  --spread: 90deg;
+  --shimmer: rgba(255, 255, 255, 0.95);
+  --speed: 3s;
+  --cut: 2px;
+  --bg: #F4845F;
+  position: relative;
+  z-index: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 13px 16px;
+  border-radius: 999px;
+  background: var(--bg);
+  color: #F9F9F7;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  box-shadow: 0 8px 22px rgba(244, 132, 95, 0.35), 0 2px 6px rgba(31, 30, 29, 0.10);
+  transition: transform 300ms ease-in-out, box-shadow 300ms ease-in-out;
+}
+.shimmerBtn:hover{ background: var(--bg); box-shadow: 0 12px 28px rgba(244, 132, 95, 0.45), 0 3px 8px rgba(31, 30, 29, 0.12); transform: translateY(-1px); }
+.shimmerBtn:active{ transform: translateY(1px); }
+.shimmerBtn:focus-visible{ outline: 2px solid #1F1E1D; outline-offset: 3px; }
+.shimmerBtn:disabled{ cursor: default; opacity: 0.8; transform: none; }
+.shimmerBtn__sparkWrap{ position: absolute; inset: 0; z-index: -30; overflow: visible; filter: blur(2px); container-type: size; }
+.shimmerBtn__spark{
+  position: absolute; inset: 0; height: 100cqh; aspect-ratio: 1;
+  animation: shimmerSlide var(--speed) ease-in-out infinite alternate;
+}
+.shimmerBtn__sparkBefore{
+  position: absolute; inset: -100%; width: auto;
+  background: conic-gradient(from calc(270deg - (var(--spread) * 0.5)), transparent 0, var(--shimmer) var(--spread), transparent var(--spread));
+  animation: shimmerSpin calc(var(--speed) * 2) infinite linear;
+}
+.shimmerBtn__label{ position: relative; }
+.shimmerBtn__highlight{
+  position: absolute; inset: 0; border-radius: inherit;
+  box-shadow: inset 0 -8px 10px rgba(255, 255, 255, 0.12);
+  transition: box-shadow 300ms ease-in-out;
+}
+.shimmerBtn:hover .shimmerBtn__highlight{ box-shadow: inset 0 -6px 10px rgba(255, 255, 255, 0.25); }
+.shimmerBtn:active .shimmerBtn__highlight{ box-shadow: inset 0 -10px 10px rgba(255, 255, 255, 0.25); }
+.shimmerBtn__backdrop{ position: absolute; inset: var(--cut); z-index: -20; border-radius: inherit; background: var(--bg); }
+@keyframes shimmerSlide{ to{ transform: translate(calc(100cqw - 100%), 0); } }
+@keyframes shimmerSpin{
+  0%{ transform: translateZ(0) rotate(0); }
+  15%, 35%{ transform: translateZ(0) rotate(90deg); }
+  65%, 85%{ transform: translateZ(0) rotate(270deg); }
+  100%{ transform: translateZ(0) rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce){
+  .shimmerBtn__spark, .shimmerBtn__sparkBefore{ animation: none; }
+  .shimmerBtn, .shimmerBtn__highlight{ transition: none; }
+}
+/* ── Loading skeleton ── */
+.appSkel{ position: fixed; inset: 0; display: grid; grid-template-columns: 290px 1fr; background: #F9F9F7; overflow: hidden; }
+.appSkel__sr{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skel{
+  display: block; border-radius: 8px;
+  background: #ECEAE5 linear-gradient(100deg, rgba(255, 255, 255, 0) 30%, rgba(255, 255, 255, 0.75) 50%, rgba(255, 255, 255, 0) 70%) no-repeat;
+  background-size: 200% 100%;
+  animation: skelSheen 1.4s ease-in-out infinite;
+}
+@keyframes skelSheen{ from{ background-position: 150% 0; } to{ background-position: -50% 0; } }
+.appSkel__side{ background: #FFFFFF; border-right: 1px solid rgba(31, 30, 29, 0.08); padding: 18px 20px 20px 28px; display: flex; flex-direction: column; gap: 22px; }
+.appSkel__wordmark, .appSkel__topWord{ font-size: 22px; font-weight: 800; letter-spacing: -0.03em; color: #F4845F; }
+.appSkel__topWord{ display: none; }
+.appSkel__group{ display: flex; flex-direction: column; gap: 12px; }
+.skel--label{ width: 34%; height: 9px; border-radius: 4px; }
+.skel--nav{ height: 14px; border-radius: 6px; }
+.appSkel__user{ margin-top: auto; display: flex; align-items: center; gap: 10px; padding-top: 14px; border-top: 1px solid rgba(31, 30, 29, 0.08); }
+.appSkel__userText{ flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.skel--avatar{ width: 34px; height: 34px; border-radius: 999px; flex: none; }
+.appSkel__main{ display: flex; flex-direction: column; min-width: 0; }
+.appSkel__top{ height: 68px; display: flex; align-items: center; gap: 12px; padding: 0 20px; border-bottom: 1px solid rgba(31, 30, 29, 0.08); background: #FFFFFF; }
+.skel--pill{ width: 130px; height: 30px; border-radius: 999px; }
+.skel--pill--sm{ width: 80px; margin-left: auto; }
+.skel--search{ flex: 0 1 380px; height: 36px; border-radius: 999px; }
+.appSkel__page{ padding: 26px; max-width: 1100px; display: flex; flex-direction: column; gap: 16px; }
+.skel--title{ width: 220px; height: 34px; border-radius: 10px; }
+.appSkel__ctas{ display: flex; gap: 10px; }
+.skel--cta{ width: 130px; height: 44px; border-radius: 10px; }
+.appSkel__tiles{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.appSkel__cards{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 14px; }
+.appSkel__card{ background: #FFFFFF; border: 1px solid rgba(31, 30, 29, 0.08); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.skel--num{ width: 56px; height: 36px; border-radius: 8px; }
+.skel--line{ height: 12px; border-radius: 6px; }
+.skel--thin{ height: 9px; }
+.appSkel__bars{ display: flex; align-items: flex-end; gap: 8px; height: 120px; margin-top: 6px; }
+.skel--col{ flex: 1; border-radius: 7px 7px 3px 3px; }
+.skel--block{ flex: 1; min-height: 120px; border-radius: 10px; }
+.appSkel__list{ background: #FFFFFF; border: 1px solid rgba(31, 30, 29, 0.08); border-radius: 14px; overflow: hidden; }
+.appSkel__row{ display: flex; align-items: center; gap: 20px; padding: 15px 18px; border-bottom: 1px solid rgba(31, 30, 29, 0.06); }
+.appSkel__row:last-child{ border-bottom: none; }
+.skel--chip{ width: 72px; height: 20px; border-radius: 999px; margin-left: auto; }
+@media (max-width: 1100px){ .appSkel__cards{ grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 900px){ .appSkel{ grid-template-columns: 76px 1fr; } .appSkel__side{ padding: 18px 14px; } .appSkel__wordmark, .skel--label, .appSkel__userText{ display: none; } }
+@media (max-width: 767px){
+  .appSkel{ grid-template-columns: minmax(0, 1fr); }
+  .appSkel__side{ display: none; }
+  .appSkel__top{ height: 56px; padding: 0 16px; }
+  .appSkel__topWord{ display: block; }
+  .appSkel__top .skel--pill, .appSkel__top .skel--search{ display: none; }
+  .appSkel__page{ padding: 18px 16px; }
+  .appSkel__tiles{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .appSkel__row .skel--line:nth-child(3){ display: none; }
+}
+.appSkel__page{ overflow: hidden; }
+.appSkel__section{ background: #FFFFFF; border: 1px solid rgba(31, 30, 29, 0.08); border-radius: 14px; overflow: hidden; }
+.appSkel__sectionHead{ display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; }
+.appSkel__sectionBody{ background: #F9F9F7; border-top: 1px solid rgba(31, 30, 29, 0.08); padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 12px; }
+.appSkel__search{ display: flex; gap: 10px; flex-wrap: wrap; }
+.skel--btn{ width: 150px; height: 36px; border-radius: 8px; }
+.skel--field{ flex: 1 1 110px; height: 36px; border-radius: 8px; }
+.skel--chev{ width: 12px; height: 12px; border-radius: 3px; }
+.appSkel__groups{ display: flex; flex-direction: column; gap: 10px; }
+.appSkel__group2{ display: flex; align-items: center; gap: 10px; background: #FFFFFF; border: 1px solid rgba(31, 30, 29, 0.08); border-radius: 12px; padding: 13px 16px; }
+.appSkel__group2 .skel--line{ margin-right: auto; }
+.skel--dot{ width: 8px; height: 8px; border-radius: 999px; }
+.skel--count{ width: 30px; height: 18px; border-radius: 999px; }
+@media (max-width: 767px){
+  .appSkel__search .skel--field:nth-child(n+4){ display: none; }
+  .appSkel__row .skel--line:nth-child(n+3){ display: none; }
+}
+@media (prefers-reduced-motion: reduce){ .skel{ animation: none; } }
 `;
 document.head.appendChild(style);
 
