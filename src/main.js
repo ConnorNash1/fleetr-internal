@@ -19928,6 +19928,9 @@ body, * {
 .fleetGroup:last-child{ margin-bottom: 0; border-bottom: 1px solid rgba(31, 30, 29, 0.12); }
 .fleetGroup:has(> .fleetGroupHeader + *) .fleetGroupHeader{ border-bottom: 1px solid rgba(31, 30, 29, 0.10); }
 .fleetGroup .dashboardTable{ border: none; border-radius: 0; }
+/* The first floating card sits as far below the section's bar as the cards
+   sit from each other. */
+.companyStep__body:has(.dashboardSection){ padding-top: 12px; }
 `;
 document.head.appendChild(style);
 
