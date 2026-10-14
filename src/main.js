@@ -8107,6 +8107,7 @@ const LIST_REASONS = {
   nothing_picked:   "Tick at least one vehicle class.",
   not_standard:     "That vehicle class is not on the list.",
   bad_models:       "Keep the example models to 120 characters.",
+  models_fixed:     "The example models come from the standard list and cannot be changed.",
   not_found:        "That entry is not part of this company.",
   bad_branch:       "That branch is closed or is not part of this company.",
   duplicate_name:   "There is already an entry with that name.",
