@@ -16685,10 +16685,12 @@ body, * {
   margin: 12px 0 0 !important;
   padding: 0 18px;
   background: var(--cs-card);
-  border: 1px solid var(--cs-line);
+  /* Floating, like the sign-in card: a soft shadow and no outline. */
+  border: 1px solid transparent;
   border-radius: 12px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.10), 0 1.5px 6px rgba(0,0,0,0.06);
   overflow: visible;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: box-shadow 0.15s;
 }
 .companyStep__body > .dashboardSection,
 .companyStep__body .dashboardSection:first-child,
@@ -16698,8 +16700,7 @@ body, * {
 .staffPage .dashboardSection:not(:has(> h2[aria-expanded="false"])){ padding-bottom: 20px; }
 .companyStep__body .dashboardSection:has(> h2[aria-expanded="true"]),
 .staffPage .dashboardSection:has(> h2[aria-expanded="true"]){
-  border-color: var(--cs-terra);
-  box-shadow: inset 3px 0 0 var(--cs-terra);
+  box-shadow: 0 6px 28px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.07);
 }
 .companyStep__body .dashboardSection > h2,
 .staffPage .dashboardSection > h2{
