@@ -6140,12 +6140,11 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
   };
 
-  // On the Company page the fields start empty, with no examples in them.
-  const fi = (label, field, placeholder, type) =>
+  const fi = (label, field, type) =>
     React.createElement("div", { className: "addVehicleField" },
       React.createElement("label", { className: "addVehicleLabel" }, label),
       React.createElement("input", {
-        type: type || "text", className: "addVehicleInput", placeholder: embedded ? undefined : placeholder, value: addForm[field],
+        type: type || "text", className: "addVehicleInput", value: addForm[field],
         onChange: (e) => onAdd(field, e.target.value),
       })
     );
@@ -6155,12 +6154,12 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
   // No required marker: every field on this form is required, so singling any
   // one out would be misleading. Matches the Retire Vehicle form, which also
   // requires everything and simply says so on submit.
-  const unitField = (label, field, placeholder, unit, setCanonical) =>
+  const unitField = (label, field, unit, setCanonical) =>
     React.createElement("div", { className: "addVehicleField" },
       React.createElement("label", { className: "addVehicleLabel" }, `${label} (${unit})`),
       React.createElement("input", {
         type: "number", min: "0", step: "0.1", className: "addVehicleInput",
-        placeholder: embedded ? undefined : placeholder, value: addForm[field],
+        value: addForm[field],
         onChange: (e) => {
           onAdd(field, e.target.value);
           setCanonical(toCanonicalUnits(e.target.value, unit));
@@ -6195,8 +6194,7 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Plate Number"),
               React.createElement("input", {
-                type: "text", className: "addVehicleInput", placeholder: embedded ? undefined : "e.g. ABC123",
-                value: addForm.plate,
+                type: "text", className: "addVehicleInput",                 value: addForm.plate,
                 onChange: (e) => onAdd("plate", normalizePlate(e.target.value)),
               })
             ),
@@ -6207,17 +6205,13 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
                 PROV_STATE_LIST.filter((p) => p.value !== "All").map((p) => React.createElement("option", { key: p.value, value: p.value }, p.value))
               )
             ),
-            fi("Year",   "year",   "e.g. 2024"),
-            fi("Make",   "make",   "e.g. Toyota"),
-            fi("Model",  "model",  "e.g. Corolla"),
-            fi("Colour", "colour", "e.g. White"),
-            unitField("Tank Size", "tankSize",
-              tankUnit === "L" ? "e.g. 50, needed for gas charges" : "e.g. 13, needed for gas charges",
-              tankUnit, setTankCanonical),
-            unitField("Needs PM Every", "pmInterval",
-              pmUnit === "km" ? "e.g. 8000" : "e.g. 5000",
-              pmUnit, setPmCanonical),
-            fi(`Current Odometer (${distanceUnit()})`, "odometer", distanceUnit() === "mi" ? "e.g. 26000" : "e.g. 42000"),
+            fi("Year",   "year"),
+            fi("Make",   "make"),
+            fi("Model",  "model"),
+            fi("Colour", "colour"),
+            unitField("Tank Size", "tankSize", tankUnit, setTankCanonical),
+            unitField("Needs PM Every", "pmInterval", pmUnit, setPmCanonical),
+            fi(`Current Odometer (${distanceUnit()})`, "odometer"),
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Current Fuel Level"),
               React.createElement("select", { className: "addVehicleInput", value: addForm.fuelLevel, onChange: (e) => onAdd("fuelLevel", e.target.value) },
@@ -6236,8 +6230,7 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
             React.createElement("div", { className: "addVehicleField addVehicleField--full" },
               React.createElement("label", { className: "addVehicleLabel" }, "VIN"),
               React.createElement("input", {
-                type: "text", className: "addVehicleInput", placeholder: embedded ? undefined : "17-character VIN",
-                value: addForm.vin, onChange: (e) => onAdd("vin", e.target.value),
+                type: "text", className: "addVehicleInput",                 value: addForm.vin, onChange: (e) => onAdd("vin", e.target.value),
               })
             )
           ),
