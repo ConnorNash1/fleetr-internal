@@ -1,5 +1,6 @@
 import React from "https://esm.sh/react@18.3.1";
 import ReactDOM from "https://esm.sh/react-dom@18.3.1/client";
+import { createPortal } from "https://esm.sh/react-dom@18.3.1";
 import {
   NavLink,
   Navigate,
@@ -2939,7 +2940,7 @@ function ReservationsPage() {
             React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Pickup Date"),
-                React.createElement("input", { className: "resFormInput", type: "date", value: form.date, onChange: (e) => updateForm("date", e.target.value) }),
+                React.createElement(DateField, { className: "resFormInput", value: form.date, ariaLabel: "Pickup date", onChange: (v) => updateForm("date", v) }),
                 fieldErr("date")
               ),
               React.createElement("label", { className: "resFormGroup resFormGroup--time" },
@@ -2952,7 +2953,7 @@ function ReservationsPage() {
             React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Date"),
-                React.createElement("input", { className: "resFormInput", type: "date", value: form.returnDate, onChange: (e) => updateForm("returnDate", e.target.value) })
+                React.createElement(DateField, { className: "resFormInput", value: form.returnDate, ariaLabel: "Return date", onChange: (v) => updateForm("returnDate", v) })
               ),
               React.createElement("label", { className: "resFormGroup resFormGroup--time" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Time"),
@@ -4019,7 +4020,7 @@ function DashboardPage() {
             React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Pickup Date"),
-                React.createElement("input", { className: "resFormInput", type: "date", value: form.date, onChange: (e) => updateForm("date", e.target.value) }),
+                React.createElement(DateField, { className: "resFormInput", value: form.date, ariaLabel: "Pickup date", onChange: (v) => updateForm("date", v) }),
                 fieldErr("date")
               ),
               React.createElement("label", { className: "resFormGroup resFormGroup--time" },
@@ -4032,7 +4033,7 @@ function DashboardPage() {
             React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Date"),
-                React.createElement("input", { className: "resFormInput", type: "date", value: form.returnDate, onChange: (e) => updateForm("returnDate", e.target.value) })
+                React.createElement(DateField, { className: "resFormInput", value: form.returnDate, ariaLabel: "Return date", onChange: (v) => updateForm("returnDate", v) })
               ),
               React.createElement("label", { className: "resFormGroup resFormGroup--time" },
                 React.createElement("span", { className: "resFormLabel" }, "Return Time"),
@@ -5095,14 +5096,10 @@ function TORPage() {
                     React.createElement(
                       "td",
                       null,
-                      React.createElement("input", {
-                        type: "date",
+                      React.createElement(DateField, {
                         className: "torDateInput",
-                        defaultValue: "",
-                        onChange: (e) => {
-                          const val = e.target.value;
-                          if (val) handleConfirm(row.resCode, val);
-                        },
+                        value: "", placeholder: "Pick date", ariaLabel: `Repair date for ${row.resCode}`,
+                        onChange: (val) => { if (val) handleConfirm(row.resCode, val); },
                       })
                     )
                   )
@@ -6262,9 +6259,9 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
               ),
               React.createElement("div", { className: "addVehicleField" },
                 React.createElement("label", { className: "addVehicleLabel" }, "Disposal Date"),
-                React.createElement("input", {
-                  type: "date", className: "addVehicleInput", value: retireForm.disposalDate,
-                  onChange: (e) => { setRetireForm((p) => ({ ...p, disposalDate: e.target.value })); setRetireError(""); },
+                React.createElement(DateField, {
+                  className: "addVehicleInput", value: retireForm.disposalDate, ariaLabel: "Disposal date",
+                  onChange: (v) => { setRetireForm((p) => ({ ...p, disposalDate: v })); setRetireError(""); },
                 })
               ),
               React.createElement("div", { className: "addVehicleField addVehicleField--full" },
@@ -9477,9 +9474,9 @@ function AuditLogPage() {
   const dateInput = (label, value, onChange) =>
     React.createElement("div", { className: "auditFilter" },
       React.createElement("label", { className: "auditFilterLabel" }, label),
-      React.createElement("input", {
-        type: "date", className: "auditFilterInput", value,
-        onChange: (e) => onChange(e.target.value),
+      React.createElement(DateField, {
+        className: "auditFilterInput", value, clearable: true, placeholder: "Any date", ariaLabel: label,
+        onChange: (v) => onChange(v),
       })
     );
 
@@ -20071,8 +20068,351 @@ body, * {
   .appSkel__row .skel--line:nth-child(n+3){ display: none; }
 }
 @media (prefers-reduced-motion: reduce){ .skel{ animation: none; } }
+
+/* ── Boxes: every text box, select and date field ─────────────────────────────
+   One look for all of them: white, a soft border that darkens on hover, and
+   the terracotta ring on focus. Selects get their own chevron. */
+.resFormInput, .addVehicleInput, .resvSearchInput, .auditFilterInput, .torDateInput, .ndiSourceSelect{
+  border: 1px solid rgba(31, 30, 29, 0.14);
+  border-radius: 10px;
+  background-color: #FFFFFF;
+  color: #1F1E1D;
+  box-shadow: 0 1px 2px rgba(31, 30, 29, 0.04);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+.resFormInput:hover:not(:disabled), .addVehicleInput:hover:not(:disabled), .resvSearchInput:hover:not(:disabled),
+.auditFilterInput:hover:not(:disabled), .torDateInput:hover:not(:disabled), .ndiSourceSelect:hover:not(:disabled){
+  border-color: rgba(31, 30, 29, 0.28);
+}
+.resFormInput:focus, .addVehicleInput:focus, .resvSearchInput:focus,
+.auditFilterInput:focus, .torDateInput:focus, .ndiSourceSelect:focus{
+  outline: none;
+  border-color: #F4845F;
+  box-shadow: 0 0 0 3px rgba(244, 132, 95, 0.18);
+}
+.resFormInput::placeholder, .addVehicleInput::placeholder, .resvSearchInput::placeholder, .auditFilterInput::placeholder{
+  color: #9A9893;
+}
+.resFormInput:disabled, .addVehicleInput:disabled, .resvSearchInput:disabled,
+.auditFilterInput:disabled, .torDateInput:disabled, .ndiSourceSelect:disabled{
+  background-color: #F3F2EE;
+  color: #8A8984;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.auditFilterInput, select.ndiSourceSelect{
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238A8984' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 14px;
+  padding-right: 30px !important;
+  cursor: pointer;
+}
+
+/* ── DateField: the date picker ─────────────────────────────────────────────── */
+.dateField{
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 150px;
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.dateField__text{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dateField--empty .dateField__text{ color: #9A9893; }
+.dateField__icon{ flex-shrink: 0; color: #8A8984; }
+.dateField--open{
+  border-color: #F4845F !important;
+  box-shadow: 0 0 0 3px rgba(244, 132, 95, 0.18) !important;
+}
+.dateField--open .dateField__icon{ color: #F4845F; }
+.dateFieldPanel{
+  position: fixed;
+  z-index: 10050;
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  background: #FFFFFF;
+  border: 1px solid rgba(31, 30, 29, 0.08);
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(31, 30, 29, 0.14), 0 2px 6px rgba(31, 30, 29, 0.06);
+  color: #1F1E1D;
+  animation: dateFieldIn 0.16s ease-out;
+}
+@keyframes dateFieldIn{
+  from{ opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to{ opacity: 1; transform: none; }
+}
+.dateFieldPanel__presets{
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 96px;
+  padding-right: 10px;
+  border-right: 1px solid rgba(31, 30, 29, 0.08);
+}
+.dateFieldPanel__heading{
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8A8984;
+}
+.dateFieldPanel__preset{
+  border: 0;
+  background: none;
+  border-radius: 8px;
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: #5C5B57;
+  cursor: pointer;
+}
+.dateFieldPanel__preset:hover{ background: rgba(31, 30, 29, 0.05); color: #1F1E1D; }
+.dateFieldPanel__preset--on{ background: rgba(244, 132, 95, 0.16); color: #1F1E1D; font-weight: 600; }
+.dateFieldPanel__clear{ margin-top: auto; color: #B5533A; }
+.dateFieldPanel__head{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.dateFieldPanel__month{ font-size: 13px; font-weight: 600; }
+.dateFieldPanel__nav{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: #5C5B57;
+  cursor: pointer;
+}
+.dateFieldPanel__nav:hover{ background: rgba(31, 30, 29, 0.06); color: #1F1E1D; }
+.dateFieldPanel__grid{ display: grid; grid-template-columns: repeat(7, 32px); }
+.dateFieldPanel__weekday{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #8A8984;
+}
+.dateFieldPanel__day{
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: #1F1E1D;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+.dateFieldPanel__day:hover{ background: rgba(31, 30, 29, 0.06); }
+.dateFieldPanel__day--today{ box-shadow: inset 0 0 0 1px #F4845F; font-weight: 600; }
+.dateFieldPanel__day--on, .dateFieldPanel__day--on:hover{ background: #F4845F; box-shadow: none; font-weight: 600; }
+.dateFieldPanel button:focus-visible{ outline: 2px solid rgba(244, 132, 95, 0.6); outline-offset: 1px; }
+@media (max-width: 480px){
+  .dateFieldPanel{ flex-direction: column; }
+  .dateFieldPanel__presets{
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: auto;
+    padding: 0 0 8px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(31, 30, 29, 0.08);
+  }
+  .dateFieldPanel__heading{ display: none; }
+  .dateFieldPanel__clear{ margin-top: 0; }
+}
+
+/* ── The month calendars already on the page take the same look ─────────────── */
+.calendarPopover{
+  width: 252px;
+  padding: 12px;
+  border: 1px solid rgba(31, 30, 29, 0.08);
+  border-radius: 14px;
+  background: #FFFFFF;
+  box-shadow: 0 12px 32px rgba(31, 30, 29, 0.14), 0 2px 6px rgba(31, 30, 29, 0.06);
+  animation: dateFieldIn 0.16s ease-out;
+}
+.calendarHeader{ margin-bottom: 6px; }
+.calendarArrow{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: #5C5B57;
+  font-size: 0;
+}
+.calendarArrow::before{
+  content: "";
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 18l-6-6 6-6'/%3E%3C/svg%3E") center / 16px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 18l-6-6 6-6'/%3E%3C/svg%3E") center / 16px no-repeat;
+}
+.calendarHeader .calendarArrow:last-child::before{
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 18l6-6-6-6'/%3E%3C/svg%3E") center / 16px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 18l6-6-6-6'/%3E%3C/svg%3E") center / 16px no-repeat;
+}
+.calendarArrow:hover{ background: rgba(31, 30, 29, 0.06); color: #1F1E1D; }
+.calendarMonthLabel{ font-size: 13px; font-weight: 600; }
+.calendarWeekdays, .calendarGrid{ gap: 2px; }
+.calendarWeekday{ padding: 6px 0; font-size: 11px; font-weight: 500; color: #8A8984; }
+.calendarDay{
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  font-size: 13px;
+  transition: background-color 0.12s ease;
+}
+.calendarDay:hover{ background: rgba(31, 30, 29, 0.06); }
+.calendarDay--today{ box-shadow: inset 0 0 0 1px #F4845F; font-weight: 600; }
+.calendarDay--selected, .calendarDay--selected:hover{ background: #F4845F; box-shadow: none; font-weight: 600; }
+@media (prefers-reduced-motion: reduce){ .dateFieldPanel, .calendarPopover{ animation: none; } }
 `;
 document.head.appendChild(style);
+
+// ─── DateField: the date picker ──────────────────────────────────────────────
+// In place of the browser's own date box. A button that reads the date in
+// words, and a calendar under it with quick picks beside the month: Today,
+// Tomorrow and In a week, and Clear where a date is optional. The value is a
+// "YYYY-MM-DD" string, as the date box gave, and onChange gets that string ("" when
+// cleared). Dates are the device's own calendar days, never UTC ones.
+// Adapted from Magic MCP's Date Picker Preset.
+const DATE_FIELD_WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+const localIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const isoToDate = (iso) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ""));
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+};
+const DATE_FIELD_CHEVRON = { prev: "M15 18l-6-6 6-6", next: "M9 18l6-6-6-6" };
+
+function DateField({ value, onChange, className, placeholder, clearable, disabled, ariaLabel }) {
+  const el = React.createElement;
+  const picked = isoToDate(value);
+  const [open, setOpen] = React.useState(false);
+  const [month, setMonth] = React.useState(() => { const d = picked || new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); });
+  const [pos, setPos] = React.useState(null);
+  const triggerRef = React.useRef(null);
+  const panelRef = React.useRef(null);
+  const todayIso = localIso(new Date());
+
+  // Below the button, or above it when there is no room; kept on screen.
+  const place = React.useCallback(() => {
+    const t = triggerRef.current, p = panelRef.current;
+    if (!t) return;
+    const r = t.getBoundingClientRect();
+    const w = p ? p.offsetWidth : 336, h = p ? p.offsetHeight : 320;
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
+    const below = r.bottom + 6;
+    const top = below + h > window.innerHeight - 8 && r.top - h - 6 > 8 ? r.top - h - 6 : below;
+    setPos({ left, top });
+  }, []);
+
+  React.useLayoutEffect(() => { if (open) place(); }, [open, month, place]);
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); triggerRef.current?.focus(); } };
+    const onDown = (e) => {
+      if (panelRef.current?.contains(e.target) || triggerRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, place]);
+
+  const commit = (iso) => {
+    onChange(iso);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+  const toggle = () => {
+    if (disabled) return;
+    if (!open) { const d = picked || new Date(); setMonth(new Date(d.getFullYear(), d.getMonth(), 1)); }
+    setOpen((o) => !o);
+  };
+
+  const y = month.getFullYear(), m = month.getMonth();
+  const lead = new Date(y, m, 1).getDay();
+  const days = new Date(y, m + 1, 0).getDate();
+  const cells = [...Array(lead).fill(null), ...Array.from({ length: days }, (_, i) => localIso(new Date(y, m, i + 1)))];
+  const shift = (n) => localIso(new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + n));
+  const presets = [["Today", shift(0)], ["Tomorrow", shift(1)], ["In a week", shift(7)]];
+  const chevron = (dir) => el("svg", { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+    el("path", { d: DATE_FIELD_CHEVRON[dir] }));
+
+  return el(React.Fragment, null,
+    el("button", {
+      type: "button", ref: triggerRef, disabled,
+      className: `${className || "resFormInput"} dateField${picked ? "" : " dateField--empty"}${open ? " dateField--open" : ""}`,
+      "aria-haspopup": "dialog", "aria-expanded": open, "aria-label": ariaLabel,
+      onClick: toggle,
+    },
+      el("span", { className: "dateField__text" }, picked
+        ? picked.toLocaleDateString("en-CA", { weekday: "short", month: "short", day: "numeric", year: "numeric" })
+        : (placeholder || "Pick a date")),
+      el("svg", { className: "dateField__icon", width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+        el("rect", { x: 3, y: 4, width: 18, height: 18, rx: 2 }), el("path", { d: "M16 2v4M8 2v4M3 10h18" }))),
+    open && createPortal(
+      el("div", {
+        ref: panelRef, role: "dialog", "aria-label": ariaLabel || "Pick a date", className: "dateFieldPanel",
+        style: pos ? { left: `${pos.left}px`, top: `${pos.top}px` } : { visibility: "hidden" },
+      },
+        el("div", { className: "dateFieldPanel__presets", role: "group", "aria-label": "Quick picks" },
+          el("div", { className: "dateFieldPanel__heading" }, "Quick"),
+          presets.map(([label, iso]) => el("button", {
+            key: label, type: "button",
+            className: `dateFieldPanel__preset${iso === value ? " dateFieldPanel__preset--on" : ""}`,
+            onClick: () => commit(iso),
+          }, label)),
+          clearable && value && el("button", { type: "button", className: "dateFieldPanel__preset dateFieldPanel__clear", onClick: () => commit("") }, "Clear")),
+        el("div", { className: "dateFieldPanel__cal" },
+          el("div", { className: "dateFieldPanel__head" },
+            el("button", { type: "button", className: "dateFieldPanel__nav", "aria-label": "Previous month", onClick: () => setMonth(new Date(y, m - 1, 1)) }, chevron("prev")),
+            el("div", { className: "dateFieldPanel__month" }, month.toLocaleDateString("en-CA", { month: "long", year: "numeric" })),
+            el("button", { type: "button", className: "dateFieldPanel__nav", "aria-label": "Next month", onClick: () => setMonth(new Date(y, m + 1, 1)) }, chevron("next"))),
+          el("div", { className: "dateFieldPanel__grid", "aria-hidden": "true" },
+            DATE_FIELD_WEEKDAYS.map((d) => el("div", { key: d, className: "dateFieldPanel__weekday" }, d))),
+          el("div", { className: "dateFieldPanel__grid", role: "grid" },
+            cells.map((iso, i) => !iso
+              ? el("span", { key: `e${i}`, "aria-hidden": "true" })
+              : el("button", {
+                  key: iso, type: "button", role: "gridcell", "aria-selected": iso === value,
+                  "aria-label": isoToDate(iso).toLocaleDateString("en-CA", { weekday: "long", month: "long", day: "numeric", year: "numeric" }),
+                  className: `dateFieldPanel__day${iso === value ? " dateFieldPanel__day--on" : ""}${iso === todayIso ? " dateFieldPanel__day--today" : ""}`,
+                  onClick: () => commit(iso),
+                }, Number(iso.slice(-2))))))),
+      document.body));
+}
 
 // ─── Enter moves to the next field ───────────────────────────────────────────
 // In every form, Enter in a field goes to the next field, and on the last
