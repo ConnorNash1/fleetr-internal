@@ -298,7 +298,7 @@ async function loadCompanyLists(user) {
     const results = await Promise.all([
       own("pickup_locations",    "id,locationId,name,active,sortOrder"),
       own("vehicle_classes",     "id,name,active,sortOrder,category,electric,luxury,seats,bags,exampleModels"),
-      own("sources",             "id,name,billingType,active,sortOrder,standardKey"),
+      own("sources",             "id,name,billingType,payer,active,sortOrder,standardKey"),
       own("source_details",      "id,sourceId,name,active"),
       own("daily_rates",         "vehicleClassId,sourceId,amount"),
       own("protection_products", "id,name,active,sortOrder,customerWording,declineWording,required"),
@@ -7673,23 +7673,55 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
 
   React.useEffect(() => { reload(); }, [reload]);
 
+  // List on fleetr.ai, the company's one fleetr.ai switch: the fleetr.ai
+  // source on or off (set_fleetr_ai_listed). While it is on, each branch shows
+  // once its listing is complete; while it is off, none does.
+  const [switching, setSwitching] = React.useState(false);
+  const [switchError, setSwitchError] = React.useState("");
+  const fleetrOn = isFleetrAiListed();
+  const setListed = async (on) => {
+    setSwitching(true); setSwitchError("");
+    const { data, error } = await supabase.rpc("set_fleetr_ai_listed", { p_on: on });
+    if (error || !data || !data.ok) {
+      setSwitching(false);
+      setSwitchError(error ? LISTING_REASONS.network : (LIST_REASONS[data && data.reason] || "That did not work."));
+      return;
+    }
+    await loadCompanyLists(currentUser);
+    await saved();
+    setSwitching(false);
+  };
+
   const open = (branches || []).filter((b) => b.active);
   return React.createElement(
     CompanySection, { title: part === "address" ? "Address" : "Listing", style: { marginTop: "24px" }, defaultOpen },
     React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, part === "address"
       ? "Each branch's full address. It places the map pin, which sets the branch's local time, and shows on fleetr.ai and in customer texts."
-      : "What fleetr.ai shows for each branch, and the rules for booking it online. A branch is hidden until Show on fleetr.ai is on. Photos and logos are public. The address comes from Branch."),
+      : "What fleetr.ai shows for each branch, and the rules for booking it online. While List on fleetr.ai is on, a branch shows once its listing is complete. Photos and logos are public. The address comes from Branch."),
+    part === "listing" && React.createElement("div", { style: { marginBottom: "18px" } },
+      React.createElement("label", { style: { display: "inline-flex", alignItems: "center", gap: "8px", cursor: switching ? "default" : "pointer", fontWeight: 600 } },
+        React.createElement("input", { type: "checkbox", checked: fleetrOn, disabled: switching, onChange: (e) => setListed(e.target.checked) }),
+        switching ? "Saving…" : "List on fleetr.ai"),
+      React.createElement("p", { className: "closeRentalHint" }, fleetrOn
+        ? "On: fleetr.ai is a source under Rates, with a whole-dollar rate for every vehicle class, and staff can pick it for walk-in and phone customers too."
+        : "Off: nothing shows on fleetr.ai, and the fleetr.ai source is hidden from Rates and from the source lists."),
+      switchError && React.createElement("div", { className: "loginError" }, switchError)),
     loadError && React.createElement("div", { className: "loginError" }, loadError),
     !listings && !loadError && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Loading…"),
     listings && open.map((b) => React.createElement(ListingEditor, {
       key: b.id, branch: b, operatorId: currentUser?.operatorId,
       listing: listings.find((l) => l.locationId === b.id) || null,
-      timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: saved, onTimeZoneSet, part,
+      timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: saved, onTimeZoneSet, part, fleetrOn,
     })));
 }
 
+// True while List on fleetr.ai is on: the fleetr.ai source is switched on.
+function isFleetrAiListed() {
+  return !!(companyLists && companyLists.sources.some((x) => x.standardKey === "fleetr_ai" && x.active));
+}
+
 // One branch's listing. Its own component so each branch keeps its own draft.
-function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZoneSet, part }) {
+function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZoneSet, part, fleetrOn }) {
   const showAddress = part !== "listing";
   const showListing = part !== "address";
   const toDraft = (l) => {
@@ -7765,17 +7797,7 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     return true;
   };
 
-  const toggleListed = async (on) => {
-    if (on) {
-      const missing = listingMissing(listing, timeZone);
-      if (missing) { setError(missing); setNotice(""); return; }
-    }
-    if (await save("listed", { listed: on })) {
-      setNotice(on ? `${branch.name} now shows on fleetr.ai.` : `${branch.name} is hidden from fleetr.ai.`);
-    }
-  };
-
-  // Every field but the toggle, the photo and the logo, checked here so a
+  // Every field but the photo and the logo, checked here so a
   // mistake reads as a sentence rather than as the database's refusal.
   const saveDetails = async () => {
     const splitList = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
@@ -7880,12 +7902,6 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       zone = await branchTimeZoneAt(latitude, longitude);
       setBusy("");
     }
-    if (listed) {
-      const missing = listingMissing({ ...listing, ...fields }, zone || timeZone);
-      if (missing) {
-        setError(`${missing} Or turn off Show on fleetr.ai first.`); setNotice(""); return;
-      }
-    }
     if (!(await save("details", fields))) return;
     if (zone && zone !== timeZone) {
       const { data, error: err } = await supabase.rpc("set_branch_time_zone", { p_location_id: branch.id, p_time_zone: zone });
@@ -7987,8 +8003,12 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
 
     showListing && el(React.Fragment, null,
-      el("div", { style: { marginBottom: "14px" } },
-        check(busy === "listed" ? "Saving…" : "Show on fleetr.ai", listed, toggleListed)),
+      // Whether it shows, which the database works out: List on fleetr.ai on,
+      // and nothing missing from the listing.
+      el("p", { className: "closeRentalHint", style: { marginTop: 0, marginBottom: "14px" } },
+        !fleetrOn ? "Not on fleetr.ai: List on fleetr.ai is off."
+          : listed ? "Shows on fleetr.ai."
+          : `Shows on fleetr.ai once the listing is complete. ${listingMissing(listing, timeZone)}`.trim()),
 
       row(imageBlock("logo", "Logo"), imageBlock("photo", "Location photo")),
 
@@ -8101,7 +8121,7 @@ const LIST_REASONS = {
   use_standard_list: "Pick that one from the standard list.",
   name_fixed:       "It keeps the name it has in the standard list.",
   whole_dollars:    "A fleetr.ai daily rate is whole dollars only, for example 55.",
-  fleetr_ai_source: "The fleetr.ai source is what the website books at, so it cannot be deleted. Switch it off instead.",
+  fleetr_ai_source: "The fleetr.ai source is what the website books at, so it cannot be deleted. Turn off List on fleetr.ai instead.",
   nothing_picked:   "Tick at least one vehicle class.",
   not_standard:     "That vehicle class is not on the list.",
   bad_models:       "Keep the example models to 120 characters.",
@@ -8109,7 +8129,7 @@ const LIST_REASONS = {
   not_found:        "That entry is not part of this company.",
   bad_branch:       "That branch is closed or is not part of this company.",
   duplicate_name:   "There is already an entry with that name.",
-  bad_billing_type: "Choose a billing type.",
+  bad_billing_type: "Choose who pays.",
   bad_source:       "That source is not part of this company.",
   bad_class:        "That vehicle class is not part of this company.",
   bad_product:      "That protection product is not part of this company.",
@@ -8126,11 +8146,14 @@ const LIST_REASONS = {
   body_too_long:    "The acknowledgements are too long. Keep them to 4,000 characters.",
 };
 
-const BILLING_TYPE_LABELS = [
-  ["insurance",           "Insurance"],
-  ["bodyshop_dealership", "Bodyshop or dealership"],
-  ["corporate",           "Corporate"],
-  ["retail",              "Retail"],
+// Who pays for a source's rentals. The billing type, which decides the
+// billing fields a reservation asks for, follows from it in the database.
+const SOURCE_PAYERS = [
+  ["insurance",  "Insurance company"],
+  ["body_shop",  "Body shop"],
+  ["dealership", "Dealership"],
+  ["corporate",  "Corporate account"],
+  ["other",      "Other"],
 ];
 
 // A section of the Company page. Closed until its header is tapped, so the
@@ -8221,21 +8244,21 @@ function ListInlineName({ name, disabled, onSave }) {
 
 // The "add one" row under a list. Its own component so each list, and each
 // branch and source within one, keeps its own draft.
-function ListAddRow({ placeholder, label, withType, disabled, onAdd }) {
+function ListAddRow({ placeholder, label, withType, disabled, onAdd, wide }) {
   const [name, setName] = React.useState("");
   const [type, setType] = React.useState("");
   return React.createElement(
     "div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px", alignItems: "center" } },
     React.createElement("input", {
-      className: "resFormInput", style: { width: "auto" }, placeholder, maxLength: 60,
+      className: "resFormInput", style: { width: wide ? "320px" : "auto", maxWidth: "100%" }, placeholder, maxLength: 60,
       value: name, onChange: (e) => setName(e.target.value),
     }),
     withType && React.createElement("select", {
       className: "resFormInput", style: { width: "auto" },
       value: type, onChange: (e) => setType(e.target.value),
     },
-      React.createElement("option", { value: "" }, "Billing type"),
-      BILLING_TYPE_LABELS.map(([v, l]) => React.createElement("option", { key: v, value: v }, l))),
+      React.createElement("option", { value: "" }, "Who pays"),
+      SOURCE_PAYERS.map(([v, l]) => React.createElement("option", { key: v, value: v }, l))),
     React.createElement("button", {
       className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled,
       onClick: async () => {
@@ -8374,75 +8397,6 @@ function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
       className: "loginBtn", style: { width: "auto", padding: "5px 9px" },
       disabled: busy || unchanged, onClick: save,
     }, "Save")));
-}
-
-// The standard sources (standard_sources in the database) besides fleetr.ai,
-// which every company has already: Walk-in or phone, Insurance replacement,
-// Body shop, Dealership service loaner and Corporate. Picked the way vehicle
-// classes are; nothing is added unless it is ticked. Used on the Company page.
-function StandardSourcePicker({ disabled, onAdded }) {
-  const { currentUser } = React.useContext(AppContext);
-  const [list, setList]     = React.useState(null);
-  const [picked, setPicked] = React.useState({});
-  const [busy, setBusy]     = React.useState(false);
-  const [error, setError]   = React.useState("");
-  const [notice, setNotice] = React.useState("");
-  const [, setTick]         = React.useState(0);
-  const el = React.createElement;
-
-  React.useEffect(() => {
-    let live = true;
-    supabase.rpc("standard_sources").then(({ data, error: err }) => {
-      if (!live) return;
-      if (err || !Array.isArray(data)) setError("The standard sources could not be loaded. Reload the page to try again.");
-      else setList(data.filter((s) => s.key !== "fleetr_ai"));
-    });
-    return () => { live = false; };
-  }, []);
-
-  const own = (companyLists && companyLists.sources) || [];
-  const have = (s) => own.some((x) => x.standardKey === s.key || String(x.name).toLowerCase() === String(s.name).toLowerCase());
-  const chosen = (list || []).filter((s) => picked[s.key] && !have(s)).map((s) => s.key);
-
-  const add = async () => {
-    if (!chosen.length) return;
-    setBusy(true); setError(""); setNotice("");
-    const { data, error: err } = await supabase.rpc("add_standard_sources", { p_keys: chosen });
-    if (err || !data || !data.ok) {
-      setBusy(false);
-      setError(err ? "Could not reach the server." : (LIST_REASONS[data && data.reason] || "That did not work."));
-      return;
-    }
-    await loadCompanyLists(currentUser);
-    setPicked({});
-    setBusy(false);
-    setTick((n) => n + 1);
-    const n = (data.added || []).length;
-    setNotice(n ? `Added ${n} source${n === 1 ? "" : "s"}.` : "Those were already added.");
-    if (onAdded) await onAdded();
-  };
-
-  if (!list) return error ? el("div", { className: "loginError" }, error) : el("p", { className: "closeRentalHint" }, "Loading the standard sources...");
-  return el("div", { style: { marginTop: "12px" } },
-    el("div", { className: "gasSettingSubhead" }, list.length === 1 ? "Add the standard source" : "Add standard sources"),
-    list.map((s) => {
-      const added = have(s);
-      return el("label", { key: s.key, style: { display: "flex", gap: "8px", alignItems: "flex-start", marginBottom: "6px", cursor: added ? "default" : "pointer", opacity: added ? 0.6 : 1 } },
-        el("input", {
-          type: "checkbox", checked: added || !!picked[s.key], disabled: disabled || busy || added, style: { marginTop: "3px" },
-          onChange: (e) => { const on = e.target.checked; setPicked((p) => ({ ...p, [s.key]: on })); setNotice(""); },
-        }),
-        el("span", null,
-          el("span", { style: { fontWeight: 600 } }, s.name),
-          el("span", { className: "closeRentalHint", style: { display: "block", margin: 0 } },
-            added ? `${s.description} Added.` : s.description)));
-    }),
-    error && el("div", { className: "loginError" }, error),
-    notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginTop: "8px" } }, notice),
-    el("button", {
-      type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px", marginTop: "6px" },
-      disabled: disabled || busy || chosen.length === 0, onClick: add,
-    }, busy ? "Adding..." : chosen.length ? `Add ${chosen.length} source${chosen.length === 1 ? "" : "s"}` : "Add"));
 }
 
 // The standard vehicle classes (standard_vehicle_classes in the database),
@@ -8774,7 +8728,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   //             no order of its own
   //   rename    (name) => the save to make
   //   goesWith  what a delete takes with it, as a sentence, or ""
-  const entryRow = ({ at, kind, entry, reorder, rename, goesWith, lead, extra, indent, keep }) => {
+  const entryRow = ({ at, kind, entry, reorder, rename, goesWith, lead, extra, indent, fixed }) => {
     const key = `${kind}:${entry.id}`;
     const dragging = drag && reorder && drag.listKey === reorder.listKey;
     const isFrom   = dragging && drag.from === reorder.index;
@@ -8811,7 +8765,9 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
             })
           : entry.name),
       extra || el("td", null),
-      el("td", null,
+      // An entry switched on and off elsewhere, as the fleetr.ai source is by
+      // List on fleetr.ai, has no switch here, and no Delete.
+      fixed ? el("td", null) : el("td", null,
         el("label", { style: { display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer" } },
           el("input", {
             type: "checkbox", checked: !!entry.active, disabled: busy,
@@ -8828,9 +8784,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
                 setConfirming("");
               }),
               btn("Cancel", () => setConfirming(""))))
-        // An entry that must stay, such as the fleetr.ai source, has no Delete.
-        : keep
-          ? el("td", { style: { whiteSpace: "normal", fontSize: "0.85rem", opacity: 0.8 } }, keep)
+        : fixed
+          ? el("td", null)
           : el("td", null, btn("Delete", () => setConfirming(key))));
   };
 
@@ -8946,18 +8901,19 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
 
     // ── Sources ──
     sources: section("Sources",
-      "Who the work comes from. fleetr.ai is always here and stays. Add any of the standard sources below, or one of your own; nothing is added unless you pick it. The billing type decides which billing fields a reservation asks for, so a source of your own can be renamed freely. Open a source to see the specific sources under it.",
+      "Add each business that sends you rentals, like an insurer or body shop, so it can have its own rates.",
       "sources",
-      table("640px", listHeads("Source", "Billing type"),
-        sources.map((entry, i) => {
+      table("640px", listHeads("Source", "Who pays"),
+        // fleetr.ai shows only while List on fleetr.ai is on.
+        sources.filter((x) => x.standardKey !== "fleetr_ai" || x.active).map((entry, i, shown) => {
           const isOpen = !!openSources[entry.id];
           const n = entry.details.length;
           const rows = [entryRow({
             at: "sources", kind: "source", entry,
-            reorder: { listKey: "sources", list: sources, index: i, saveCall: saveSource },
-            // A standard source keeps its name and billing type, and the
-            // fleetr.ai one is never deleted: the website books at it.
-            keep: entry.standardKey === "fleetr_ai" ? "Used by fleetr.ai, so it stays." : null,
+            reorder: { listKey: "sources", list: shown, index: i, saveCall: saveSource },
+            // fleetr.ai keeps its name and who pays, and is never deleted: the
+            // website books at it. List on fleetr.ai switches it on and off.
+            fixed: entry.standardKey === "fleetr_ai",
             rename: entry.standardKey ? null : (name) => ["save_source", {
               p_id: entry.id, p_name: name, p_billing_type: entry.billingType, p_sort: null,
             }],
@@ -8969,14 +8925,14 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
               onClick: () => setOpenSources((p) => ({ ...p, [entry.id]: !p[entry.id] })),
             }, isOpen ? "▾" : "▸"),
             extra: el("td", null, entry.standardKey
-              ? (BILLING_TYPE_LABELS.find(([v]) => v === entry.billingType) || [null, entry.billingType])[1]
+              ? "The customer"
               : el("select", {
                 className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, disabled: busy,
-                value: entry.billingType,
+                value: entry.payer || "other", "aria-label": `Who pays for ${entry.name}`,
                 onChange: (e) => act("sources", "save_source", {
                   p_id: entry.id, p_name: entry.name, p_billing_type: e.target.value, p_sort: null,
                 }),
-              }, BILLING_TYPE_LABELS.map(([v, l]) => el("option", { key: v, value: v }, l)))),
+              }, SOURCE_PAYERS.map(([v, l]) => el("option", { key: v, value: v }, l)))),
           })];
           if (isOpen) {
             entry.details.forEach((d) => rows.push(entryRow({
@@ -8996,10 +8952,9 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
           }
           return rows;
         })),
-      el(StandardSourcePicker, { disabled: busy, onAdded: reload }),
-      subHeading("Add a source of your own"),
+      subHeading("Add a source"),
       el(ListAddRow, {
-        placeholder: "New source", label: "Add source", withType: true, disabled: busy,
+        placeholder: "Name, like Smith's Body Shop or Intact Insurance", label: "Add source", withType: true, wide: true, disabled: busy,
         onAdd: (name, type) => act("sources", "save_source", {
           p_id: null, p_name: name, p_billing_type: type, p_sort: null,
         }),
@@ -9007,7 +8962,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
 
     // ── Daily rates ──
     rates: section("Daily rates",
-      "One column per source, one row per vehicle class. Only the fleetr.ai rates are needed for setup, in whole dollars; every other source takes cents. The rate is filled in when a source and a vehicle class are chosen on a customer's file. A cell saves when you leave it. Blank means no rate, and staff type one in.",
+      "One column per source, one row per vehicle class. Setup needs one source with a rate for every vehicle class, and that has to be fleetr.ai while List on fleetr.ai is on. fleetr.ai rates are whole dollars; every other source takes cents. The rate is filled in when a source and a vehicle class are chosen on a customer's file. A cell saves when you leave it. Blank means no rate, and staff type one in.",
       "rates",
       priceGrid("rates",
         (c, x) => (rates[x.name] && rates[x.name][c.name] != null ? rates[x.name][c.name] : null),
@@ -11302,13 +11257,14 @@ const SETUP_ITEMS = {
   branch:                { title: "Branch", path: null,
                            text: "Every open branch's full address and map pin, and its sales tax confirmed." },
   vehicle_classes:       { title: "Vehicle classes", path: null, text: "At least one, ticked from the standard list." },
-  rates:                 { title: "Rates", path: null, text: "A daily rate for every vehicle class." },
+  rates:                 { title: "Rates", path: null,
+                           text: "One source with a daily rate for every vehicle class: fleetr.ai while List on fleetr.ai is on." },
   vehicles:              { title: "Vehicles", path: null, text: "At least one at the default branch, of one of your vehicle classes." },
   protection:            { title: "Protection and deductibles", path: null,
                            text: "Every product priced, and an optional one with its decline wording. Can be skipped." },
   contract:              { title: "Contract terms", path: null, text: "What the customer acknowledges at pickup." },
   listing:               { title: "fleetr.ai listing", path: null,
-                           text: "Needed only for a branch switched to show on fleetr.ai: that listing has to be complete. Can be skipped." },
+                           text: "Needed only while List on fleetr.ai is on: a branch shows once its listing is complete. Can be skipped otherwise." },
   staff:                 { title: "Staff", path: null, text: "Someone besides you. Can be skipped." },
   test_rentals_finished: { title: "Test rentals finished", path: "/rental-agreements",
                            text: "No test rental can still be open, returned or close pending when the company launches." },
