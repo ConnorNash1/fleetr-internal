@@ -4852,8 +4852,8 @@ function VehicleDetailPage() {
 // one status group to another. With a mouse a drag starts once the pointer has
 // moved a little, so a click on the plate still opens the vehicle; on a phone
 // or tablet a vehicle is picked up by pressing and holding it, so a swipe still
-// scrolls. While dragging, the groups it can go to are outlined and the ones it
-// cannot are dimmed; a refused drop says why.
+// scrolls. While dragging, the group under it is outlined if it can go there
+// and the ones it cannot go to are dimmed; a refused drop says why.
 //
 // The rules:
 //   - On Rent cannot be dragged in or out: only a pickup and a return change
@@ -21004,8 +21004,8 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
 .vsRow--locked{ cursor: default; }
 .vsRow--lifted{ opacity: 0.35; }
 body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-select: none; user-select: none; }
-.vsDrop--ok{ outline: 2px dashed #F4845F; outline-offset: 3px; border-radius: 10px; transition: background-color .12s; }
-.vsDrop--over{ outline-style: solid; background: rgba(244, 132, 95, 0.12); }
+.vsDrop--ok{ border-radius: 10px; transition: background-color .12s; }
+.vsDrop--over{ outline: 2px solid #F4845F; outline-offset: 3px; background: rgba(244, 132, 95, 0.12); }
 .vsDrop--no{ opacity: 0.45; }
 .vsGhost{ position: fixed; left: 0; top: 0; z-index: 2000; pointer-events: none; display: grid; gap: 2px; min-width: 150px; max-width: 260px; padding: 10px 12px; border-radius: 12px; background: #FFFFFF; color: #1F1E1D; border: 1px solid rgba(31, 30, 29, 0.12); box-shadow: 0 12px 32px rgba(31, 30, 29, 0.22); font-size: 13px; }
 .vsGhost b{ font-size: 14px; }
