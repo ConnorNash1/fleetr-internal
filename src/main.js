@@ -7649,7 +7649,8 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
       switchError && React.createElement("div", { className: "loginError" }, switchError)),
     loadError && React.createElement("div", { className: "loginError" }, loadError),
     !listings && !loadError && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Loading…"),
-    listings && open.map((b) => React.createElement(ListingEditor, {
+    // The listing is edited in its live preview; the address in its form.
+    listings && open.map((b) => React.createElement(part === "listing" ? ListingPreviewEditor : ListingEditor, {
       key: b.id, branch: b, operatorId: currentUser?.operatorId,
       listing: listings.find((l) => l.locationId === b.id) || null,
       timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: saved, onTimeZoneSet, part, fleetrOn,
@@ -8065,6 +8066,757 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
         type: "button", className: "resModalSubmit", disabled: !!busy, onClick: saveDetails,
       }, busy === "details" ? "Saving..." : part === "address" ? "Save address" : "Save listing"))
   );
+}
+
+// ─── fleetr.ai listing: the live preview ─────────────────────────────────────
+// One branch's listing shown as renters see it on fleetr.ai: the search result
+// card, then the branch page, in fleetr-website's layout and styles (app.js
+// SearchPage and branchView, index.html's .card, .branch-head, .hero-photo,
+// .sec, .perks, .hours, .class-row and .book-box, copied here under .fai). If
+// the website's copy changes, change this one. Every part a renter reads is
+// edited where it shows; a part with nothing in it yet shows what to add in
+// the spot it will take. The booking rules renters do not read directly sit
+// in a small section below.
+//
+// Photos and logos are cropped before they are saved, to the shape they show
+// in: the logo square, the location photo as wide as the branch page shows it
+// (21:9). Saved resized and compressed for the web, as WebP where the browser
+// can write it. The image as chosen is kept beside it, downsized, as
+// <kind>-original-<time>, so it can be cropped again without uploading it
+// again; the crop itself is kept in the saved file's name
+// (<kind>-<time>-c<x>_<y>_<zoom>), so cropping again starts where it was.
+const FAI_SAMPLE_DAYS = 3;
+const FAI_IMAGE = {
+  logo:  { aspect: 1,      outW: 512,  outH: 512, label: "logo",           fit: true },
+  photo: { aspect: 21 / 9, outW: 2100, outH: 900, label: "location photo", fit: false },
+};
+const FAI_ORIGINAL_MAX = 2400;
+const FAI_ZOOM_MAX = 4;
+
+// fleetr-website app.js's icons, the ones the listing shows.
+const FAI_WHEELS = '<circle cx="10.5" cy="17.5" r="2.6"/><circle cx="29.5" cy="17.5" r="2.6"/><path d="M3 17.5h4.9M13.1 17.5h13.8M32.1 17.5H37"/>';
+const FAI_VEHICLES = {
+  Car:      '<path d="M3 17.5v-3.1c0-1 .7-1.9 1.7-2.1L9.6 11l3.9-3.6c.7-.6 1.6-1 2.5-1h8.5c1 0 2 .4 2.7 1.2l3.1 3.4 4.6 1c1 .2 1.7 1.1 1.7 2.1v3.4"/><path d="M11.3 11h18.9M20.2 6.6V11"/>' + FAI_WHEELS,
+  SUV:      '<path d="M3 17.5V9.6C3 8.7 3.7 8 4.6 8h20.6l5.4 3.6 4.9 1c.9.2 1.5 1 1.5 1.9v3"/><path d="M3 11.6h27.6M12 8v3.6M21 8v3.6M6 5.6h17"/>' + FAI_WHEELS,
+  Minivan:  '<path d="M3 17.5V8.2C3 7 4 6 5.2 6h19.3c1 0 1.9.4 2.6 1.1l4.9 4.9 2.9.7c.9.2 1.6 1 1.6 2v2.8"/><path d="M3 10.8h28.4M17.8 6v11.5M10 6v4.8"/>' + FAI_WHEELS,
+  Truck:    '<path d="M3 17.5v-6.3h16.5"/><path d="M19.5 17.5V6.8h7.6l4.3 4.6 4.1.7c.9.2 1.5.9 1.5 1.8v3.6"/><path d="M23.4 6.8v4.6h8"/>' + FAI_WHEELS,
+  Van:      '<path d="M3 17.5V6.6C3 5.7 3.7 5 4.6 5h22.6l5.9 5.6 2.4.6c.9.2 1.5 1 1.5 1.9v4.4"/><path d="M27.2 5v5.6h5.9M7 8.6h15.5M17.5 8.6v8.9"/>' + FAI_WHEELS,
+  Electric: '<path d="M3 17.5v-3.1c0-1 .7-1.9 1.7-2.1L9.6 11l3.9-3.6c.7-.6 1.6-1 2.5-1h8.5c1 0 2 .4 2.7 1.2l3.1 3.4 4.6 1c1 .2 1.7 1.1 1.7 2.1v3.4"/><path d="M11.3 11h18.9M35.4 1.8l-2.7 3.7h2.6l-2 3.4"/>' + FAI_WHEELS,
+  Luxury:   '<path d="M3 17.5v-2.8c0-1 .7-1.9 1.7-2.1l6.6-1.2 4.7-3.6c.8-.6 1.7-.9 2.7-.9h4.6c1.1 0 2.1.5 2.8 1.3l3 3.2 5.4 1c1 .2 1.7 1.1 1.7 2.1v3"/><path d="M13.5 11.4h15.4M33.5 3.6l.6 1.5 1.5.6-1.5.6-.6 1.5-.6-1.5-1.5-.6 1.5-.6z"/>' + FAI_WHEELS,
+  Other:    '<circle cx="11" cy="12" r="5"/><circle cx="11" cy="12" r="1.5"/><path d="M16 12h19M30 12v4M34.5 12v3"/>',
+};
+const FAI_ICONS = {
+  plane:    '<path d="M2.5 13.5l7.5-1.2 4.8-6.8c.6-.9 1.9-1.1 2.7-.4.8.6 1 1.8.4 2.6l-4.8 6.8 1.6 7.4-1.8.9-3.4-6.2-4.6.8-1.4 2.3-1.4-.4.4-3.2z"/>',
+  delivery: '<path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/>',
+  moon:     '<path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/>',
+  card:     '<rect x="3" y="5.5" width="18" height="13" rx="2"/><path d="M3 10h18"/>',
+  id:       '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="M6 16a3 3 0 0 1 6 0M14.5 10h4M14.5 13.5h3"/>',
+  deposit:  '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+  camera:   '<path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/>',
+  plus:     '<path d="M12 5v14M5 12h14"/>',
+};
+function faiIcon(name, strokeWidth) {
+  const vehicle = FAI_VEHICLES[name];
+  return React.createElement("svg", {
+    viewBox: vehicle ? "0 0 40 24" : "0 0 24 24", fill: "none", stroke: "currentColor",
+    strokeWidth: strokeWidth || "1.6", strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true",
+    dangerouslySetInnerHTML: { __html: vehicle || FAI_ICONS[name] || "" },
+  });
+}
+
+// The website's formats: app.js money, dayRate, fmtTime, fmtShort and
+// rentalDays' sample trip.
+const faiMoney = (n, cents) => {
+  const v = Number(n) || 0;
+  const whole = !cents && Math.abs(v - Math.round(v)) < 0.005;
+  return "$" + v.toLocaleString("en-CA", { minimumFractionDigits: whole ? 0 : 2, maximumFractionDigits: whole ? 0 : 2 });
+};
+const faiDayRate = (n) => "$" + Math.round(Number(n) || 0).toLocaleString("en-CA", { maximumFractionDigits: 0 });
+const faiTime = (t) => { const [hh, mm] = String(t).split(":").map(Number); return `${hh % 12 || 12}:${String(mm).padStart(2, "0")} ${hh < 12 ? "AM" : "PM"}`; };
+const faiShort = (d) => d.toLocaleDateString("en-CA", { month: "short", day: "numeric" }).replace(".", "");
+// A sample trip for the prices: next Friday 10:00 AM to Monday 10:00 AM.
+function faiSampleTrip() {
+  const pu = new Date(); pu.setHours(10, 0, 0, 0);
+  pu.setDate(pu.getDate() + (((5 - pu.getDay()) + 7) % 7 || 7));
+  const rt = new Date(pu); rt.setDate(rt.getDate() + FAI_SAMPLE_DAYS);
+  return { pu, rt, range: `${faiShort(pu)} 10:00 AM – ${faiShort(rt)} 10:00 AM` };
+}
+const faiCityOf = (l) => ((l.citiesServed || [])[0]) || ((l.airportCodes || [])[0]) || "";
+function faiPerksOf(l) {
+  const out = [];
+  if (l.airportPickup) out.push({ icon: "plane", name: "Airport pickup", text: (l.airportCodes || []).length ? `At ${l.airportCodes.join(", ")}` : "Picked up at the airport" });
+  if (l.delivery) out.push({ icon: "delivery", name: "Delivery", text: "They can bring the vehicle to you" });
+  if (l.afterHoursDropoff) out.push({ icon: "moon", name: "After-hours drop-off", text: "Return outside opening hours" });
+  return out;
+}
+const faiClassTypes = (c) => [c.category, c.electric && "Electric", c.luxury && "Luxury"].filter(Boolean);
+const faiClassIcon = (c) => (c.electric ? "Electric" : c.luxury ? "Luxury" : c.category || "Other");
+function faiTodayKey(tz) {
+  try {
+    return new Intl.DateTimeFormat("en-US", { weekday: "short", timeZone: tz || undefined }).format(new Date()).slice(0, 3).toLowerCase();
+  } catch (e) { return ""; }
+}
+// The classes fleetr.ai offers: switched on, with a fleetr.ai daily rate.
+function faiClasses() {
+  if (!companyLists) return [];
+  const src = companyLists.sources.find((x) => x.active && x.standardKey === "fleetr_ai");
+  if (!src) return [];
+  return companyLists.vehicleClasses.filter((c) => c.active)
+    .map((c) => ({ ...c, dailyRate: companyLists.rates[src.name] && companyLists.rates[src.name][c.name] }))
+    .filter((c) => c.dailyRate != null);
+}
+
+// ── Images ──
+const faiLoadImage = (src, cors) => new Promise((resolve, reject) => {
+  const img = new Image();
+  if (cors) img.crossOrigin = "anonymous";
+  img.onload = () => resolve(img);
+  img.onerror = () => reject(new Error("image"));
+  img.src = src;
+});
+// A canvas as a web image: WebP where the browser can write it, else JPEG, or
+// PNG for a logo so its transparency stays.
+const faiEncode = (canvas, kind, quality) => new Promise((resolve) => {
+  canvas.toBlob((webp) => {
+    if (webp && webp.type === "image/webp") { resolve({ blob: webp, ext: "webp", type: "image/webp" }); return; }
+    const type = kind === "logo" ? "image/png" : "image/jpeg";
+    canvas.toBlob((b) => resolve(b ? { blob: b, ext: type === "image/png" ? "png" : "jpg", type } : null), type, quality);
+  }, "image/webp", quality);
+});
+// The crop kept in a saved file's name, or null.
+function faiCropOf(path) {
+  const m = /-c(-?\d+(?:\.\d+)?)_(-?\d+(?:\.\d+)?)_(\d+(?:\.\d+)?)\.\w+$/.exec(String(path || ""));
+  return m ? { cx: Number(m[1]), cy: Number(m[2]), zoom: Number(m[3]) } : null;
+}
+
+// The crop step, like a profile photo: drag to move, the slider, a pinch or
+// the wheel to zoom, framed to the shape the image shows in.
+function ListingCropDialog({ kind, src, cors, start, error, onCancel, onDone }) {
+  const el = React.createElement;
+  const spec = FAI_IMAGE[kind];
+  const frameRef = React.useRef(null);
+  const [img, setImg] = React.useState(null);
+  const [failed, setFailed] = React.useState(false);
+  const [box, setBox] = React.useState({ w: 0, h: 0 });
+  const [view, setView] = React.useState(null);   // { zoom, ox, oy }
+  const [saving, setSaving] = React.useState(false);
+  const pointers = React.useRef(new Map());
+  const gesture = React.useRef(null);
+
+  React.useEffect(() => {
+    let live = true;
+    faiLoadImage(src, cors).then((i) => { if (live) setImg(i); }).catch(() => { if (live) setFailed(true); });
+    return () => { live = false; };
+  }, [src, cors]);
+  React.useLayoutEffect(() => {
+    const measure = () => {
+      const n = frameRef.current;
+      if (n) setBox({ w: n.clientWidth, h: n.clientWidth / spec.aspect });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [spec.aspect]);
+  React.useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape" && !saving) onCancel(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel, saving]);
+
+  // Cover the frame at zoom 1. A logo can also zoom out until all of it fits.
+  const base = img && box.w ? Math.max(box.w / img.naturalWidth, box.h / img.naturalHeight) : 1;
+  const zoomMin = img && box.w && spec.fit ? Math.min(1, Math.min(box.w / img.naturalWidth, box.h / img.naturalHeight) / base) : 1;
+  const clamp = (v) => {
+    const zoom = Math.min(FAI_ZOOM_MAX, Math.max(zoomMin, v.zoom));
+    const dw = img.naturalWidth * base * zoom, dh = img.naturalHeight * base * zoom;
+    const lim = (o, d, f) => (d >= f ? Math.min(0, Math.max(f - d, o)) : Math.max(0, Math.min(f - d, o)));
+    return { zoom, ox: lim(v.ox, dw, box.w), oy: lim(v.oy, dh, box.h) };
+  };
+  React.useEffect(() => {
+    if (!img || !box.w) return;
+    const zoom = start && start.zoom ? start.zoom : (spec.fit ? zoomMin : 1);
+    const dw = img.naturalWidth * base * zoom, dh = img.naturalHeight * base * zoom;
+    const cx = start ? start.cx : 0.5, cy = start ? start.cy : 0.5;
+    setView(clamp({ zoom, ox: box.w / 2 - cx * dw, oy: box.h / 2 - cy * dh }));
+  }, [img, box.w]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Zooms keeping the point under (px, py) where it is.
+  const zoomAt = (next, px, py) => setView((v) => {
+    if (!v) return v;
+    const z = Math.min(FAI_ZOOM_MAX, Math.max(zoomMin, next));
+    const k = z / v.zoom;
+    return clamp({ zoom: z, ox: px - (px - v.ox) * k, oy: py - (py - v.oy) * k });
+  });
+  const local = (e) => { const r = frameRef.current.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  const onDown = (e) => {
+    if (!view) return;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* moves still arrive while over the frame */ }
+    pointers.current.set(e.pointerId, local(e));
+    const ps = [...pointers.current.values()];
+    gesture.current = ps.length === 1
+      ? { type: "drag", from: ps[0], at: view }
+      : { type: "pinch", dist: Math.hypot(ps[0][0] - ps[1][0], ps[0][1] - ps[1][1]), zoom: view.zoom };
+  };
+  const onMove = (e) => {
+    if (!pointers.current.has(e.pointerId) || !gesture.current) return;
+    pointers.current.set(e.pointerId, local(e));
+    const ps = [...pointers.current.values()];
+    const g = gesture.current;
+    if (g.type === "drag" && ps.length === 1) {
+      setView(clamp({ zoom: g.at.zoom, ox: g.at.ox + ps[0][0] - g.from[0], oy: g.at.oy + ps[0][1] - g.from[1] }));
+    } else if (g.type === "pinch" && ps.length >= 2 && g.dist > 0) {
+      const d = Math.hypot(ps[0][0] - ps[1][0], ps[0][1] - ps[1][1]);
+      zoomAt(g.zoom * (d / g.dist), (ps[0][0] + ps[1][0]) / 2, (ps[0][1] + ps[1][1]) / 2);
+    }
+  };
+  const onUp = (e) => {
+    pointers.current.delete(e.pointerId);
+    const ps = [...pointers.current.values()];
+    gesture.current = ps.length === 1 && view ? { type: "drag", from: ps[0], at: view } : null;
+  };
+  const onWheel = (e) => {
+    if (!view) return;
+    e.preventDefault();
+    const [px, py] = local(e);
+    zoomAt(view.zoom * Math.exp(-e.deltaY / 400), px, py);
+  };
+  React.useEffect(() => {
+    const n = frameRef.current;
+    if (!n) return undefined;
+    n.addEventListener("wheel", onWheel, { passive: false });
+    return () => n.removeEventListener("wheel", onWheel);
+  });
+  const nudge = (dx, dy) => setView((v) => (v ? clamp({ ...v, ox: v.ox + dx, oy: v.oy + dy }) : v));
+
+  const done = async () => {
+    if (!view || !img) return;
+    setSaving(true);
+    const k = spec.outW / box.w;
+    const dw = img.naturalWidth * base * view.zoom, dh = img.naturalHeight * base * view.zoom;
+    const canvas = document.createElement("canvas");
+    canvas.width = spec.outW; canvas.height = spec.outH;
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, view.ox * k, view.oy * k, dw * k, dh * k);
+    let out = null;
+    try { out = await faiEncode(canvas, kind, kind === "logo" ? 0.9 : 0.82); } catch (e) { out = null; }
+    const crop = { cx: (box.w / 2 - view.ox) / dw, cy: (box.h / 2 - view.oy) / dh, zoom: view.zoom };
+    const ok = await onDone(out, crop);
+    if (!ok) setSaving(false);
+  };
+
+  const dw = view && img ? img.naturalWidth * base * view.zoom : 0;
+  const dh = view && img ? img.naturalHeight * base * view.zoom : 0;
+  return el("div", { className: "faiCropBackdrop", role: "dialog", "aria-modal": "true", "aria-label": `Crop the ${spec.label}` },
+    el("div", { className: "faiCrop" },
+      el("div", { className: "faiCrop__title" }, `Crop the ${spec.label}`),
+      el("p", { className: "faiCrop__hint" }, kind === "logo"
+        ? "Drag to move it, and zoom to fit. It shows in a square on fleetr.ai."
+        : "Drag to move it, and zoom to frame it. The branch page shows all of it on a wide screen; the dashed box is what the search card and phones show."),
+      el("div", {
+        ref: frameRef, className: `faiCrop__frame faiCrop__frame--${kind}`,
+        style: { height: box.h ? `${box.h}px` : undefined },
+        tabIndex: 0, "aria-label": "Image position. Use the arrow keys to move it.",
+        onPointerDown: onDown, onPointerMove: onMove, onPointerUp: onUp, onPointerCancel: onUp,
+        onKeyDown: (e) => {
+          const step = e.shiftKey ? 20 : 5;
+          const map = { ArrowLeft: [step, 0], ArrowRight: [-step, 0], ArrowUp: [0, step], ArrowDown: [0, -step] };
+          if (map[e.key]) { e.preventDefault(); nudge(...map[e.key]); }
+        },
+      },
+        failed && el("div", { className: "faiCrop__failed" }, "This image could not be opened. Choose another."),
+        img && view && el("img", {
+          src: img.src, alt: "", draggable: false, className: "faiCrop__img",
+          style: { width: `${dw}px`, height: `${dh}px`, transform: `translate(${view.ox}px, ${view.oy}px)` },
+        }),
+        kind === "photo" && box.h > 0 && el("div", { className: "faiCrop__guide", style: { width: `${Math.min(box.w, box.h * 4 / 3)}px` } })),
+      el("label", { className: "faiCrop__zoom" },
+        el("span", null, "Zoom"),
+        el("input", {
+          type: "range", min: zoomMin, max: FAI_ZOOM_MAX, step: 0.01, value: view ? view.zoom : 1, disabled: !view,
+          onChange: (e) => zoomAt(Number(e.target.value), box.w / 2, box.h / 2),
+        })),
+      error && el("div", { className: "loginError" }, error),
+      el("div", { className: "faiCrop__actions" },
+        el("button", { type: "button", className: "faiBtn faiBtn--ghost", disabled: saving, onClick: onCancel }, "Cancel"),
+        el("button", { type: "button", className: "faiBtn faiBtn--primary", disabled: saving || !view, onClick: done },
+          saving ? "Saving…" : `Save ${spec.label}`))));
+}
+
+// One branch's listing as the preview.
+function ListingPreviewEditor({ branch, operatorId, listing, timeZone, onSaved, fleetrOn, multi }) {
+  const el = React.createElement;
+  const l = listing || {};
+  const [busy, setBusy] = React.useState("");
+  const [error, setError] = React.useState("");
+  const [notice, setNotice] = React.useState("");
+  const [editing, setEditing] = React.useState("");
+  // Where the part being edited was clicked: the cities and the perks show
+  // on the card and on the page, and are edited where they were clicked.
+  const [spot, setSpot] = React.useState("");
+  const [draft, setDraft] = React.useState(null);
+  const [menu, setMenu] = React.useState("");
+  const [crop, setCrop] = React.useState(null);   // { kind, src, cors, start, file }
+  const files = { logo: React.useRef(null), photo: React.useRef(null) };
+  const num = (v) => (v == null ? "" : String(Number(v)));
+  const rulesOf = (x) => ({ minNoticeHours: num(x.minNoticeHours), maxRentalDays: num(x.maxRentalDays), turnaroundHours: num(x.turnaroundHours) });
+  const [rules, setRules] = React.useState(() => rulesOf(l));
+  const savedKey = JSON.stringify(listing);
+  React.useEffect(() => { setRules(rulesOf(listing || {})); }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => {
+    if (!menu) return undefined;
+    const close = () => setMenu("");
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [menu]);
+
+  const listed = !!l.listed;
+  const shown = !listing || listing.shown !== false;
+  const missingKeys = listingMissingKeys(listing, timeZone);
+  const folder = `${operatorId}/${branch.id}`;
+
+  const save = async (label, fields) => {
+    setBusy(label); setError(""); setNotice("");
+    const { data, error: err } = await supabase.rpc("save_branch_listing", { p_location_id: branch.id, p_listing: fields });
+    setBusy("");
+    if (err || !data || !data.ok) {
+      setError(err ? LISTING_REASONS.network
+        : data && data.reason === "listing_incomplete" ? listingNeedsSentence(data.missing || [])
+        : (LISTING_REASONS[data && data.reason] || "That did not work."));
+      return false;
+    }
+    await onSaved();
+    return true;
+  };
+  const toggleShown = async (on) => {
+    setBusy("shown"); setError(""); setNotice("");
+    const { data, error: err } = await supabase.rpc("set_branch_shown", { p_location_id: branch.id, p_shown: on });
+    setBusy("");
+    if (err || !data || !data.ok) { setError(err ? LISTING_REASONS.network : (LISTING_REASONS[data && data.reason] || "That did not work.")); return; }
+    await onSaved();
+  };
+
+  // ── Inline editing: one part at a time ──
+  const hoursDraft = () => {
+    const hours = l.hours && typeof l.hours === "object" ? l.hours : {};
+    return Object.fromEntries(LISTING_DAYS.map(([k]) => {
+      const d = hours[k];
+      return [k, d && d.open && d.close ? { open: String(d.open).slice(0, 5), close: String(d.close).slice(0, 5) } : { open: "", close: "" }];
+    }));
+  };
+  const startEdit = (part, where) => {
+    if (busy) return;
+    setError(""); setNotice(""); setMenu("");
+    setEditing(part);
+    setSpot(where || part);
+    setDraft({
+      description:  { description: l.description || "" },
+      places:       { citiesServed: (l.citiesServed || []).join(", ") || (l.city || ""), airportCodes: (l.airportCodes || []).join(", ") },
+      perks:        { airportPickup: !!l.airportPickup, delivery: !!l.delivery, afterHoursDropoff: !!l.afterHoursDropoff, airportCodes: (l.airportCodes || []).join(", ") },
+      hours:        { hours: hoursDraft(), sameOpen: "", sameClose: "" },
+      requirements: { minimumAge: num(l.minimumAge), deposit: num(l.deposit) },
+      payment:      { paymentMethods: l.paymentMethods || [] },
+    }[part]);
+  };
+  const stopEdit = () => { setEditing(""); setSpot(""); setDraft(null); setError(""); };
+  const setD = (k, v) => setDraft((p) => ({ ...p, [k]: v }));
+  const fail = (text) => { setError(text); setNotice(""); return null; };
+  const splitList = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
+  const numberIn = (s, min, max, label, whole) => {
+    const t = String(s).trim();
+    if (t === "") return { ok: true, value: null };
+    const n = Number(t);
+    if (!Number.isFinite(n) || n < min || n > max || (whole && !Number.isInteger(n))) {
+      return { ok: false, text: `${label} has to be ${whole ? "a whole number" : "a number"} from ${min} to ${max}.` };
+    }
+    return { ok: true, value: n };
+  };
+  const airportsOf = (s) => {
+    const a = splitList(s).map((x) => x.toUpperCase());
+    return a.some((x) => !/^[A-Z]{3,4}$/.test(x)) ? null : a;
+  };
+  // The fields one part saves, checked as the old form checked them.
+  const fieldsFor = (part, d) => {
+    if (part === "description") {
+      const description = d.description.trim();
+      if (description.length > 2000) return fail("Keep the description to 2,000 characters.");
+      return { description: description || null };
+    }
+    if (part === "places") {
+      const airportCodes = airportsOf(d.airportCodes);
+      if (!airportCodes) return fail("Airport codes are 3 or 4 letters, separated by commas, for example YYT.");
+      return { citiesServed: splitList(d.citiesServed), airportCodes };
+    }
+    if (part === "perks") {
+      const airportCodes = airportsOf(d.airportCodes);
+      if (!airportCodes) return fail("Airport codes are 3 or 4 letters, separated by commas, for example YYT.");
+      return { airportPickup: d.airportPickup, delivery: d.delivery, afterHoursDropoff: d.afterHoursDropoff, airportCodes };
+    }
+    if (part === "hours") {
+      const hours = {};
+      for (const [k, name] of LISTING_DAYS) {
+        const x = d.hours[k];
+        if (!x.open && !x.close) continue;
+        if (!x.open || !x.close) return fail(`${name}: enter the opening and closing times.`);
+        if (x.close <= x.open) return fail(`${name}: the closing time has to be after the opening time.`);
+        hours[k] = { open: x.open, close: x.close };
+      }
+      return { hours };
+    }
+    if (part === "requirements") {
+      const age = numberIn(d.minimumAge, 16, 99, "Minimum age", true);
+      if (!age.ok) return fail(age.text);
+      const dep = numberIn(d.deposit, 0, 99999, "Deposit");
+      if (!dep.ok) return fail(dep.text);
+      return { minimumAge: age.value, deposit: dep.value };
+    }
+    if (part === "payment") return { paymentMethods: d.paymentMethods };
+    return null;
+  };
+  const saveEdit = async () => {
+    const fields = fieldsFor(editing, draft);
+    if (!fields) return;
+    if (await save(editing, fields)) { stopEdit(); setNotice("Saved."); }
+  };
+  const saveRules = async () => {
+    const checks = [
+      ["minNoticeHours", 0, 720, "Minimum notice"], ["maxRentalDays", 1, 365, "Maximum rental length"], ["turnaroundHours", 0, 72, "Turnaround buffer"],
+    ].map(([k, min, max, label]) => [k, String(rules[k]).trim() === "" ? { ok: false, text: `${label} is needed.` } : numberIn(rules[k], min, max, label, true)]);
+    const bad = checks.find(([, c]) => !c.ok);
+    if (bad) { setError(bad[1].text); setNotice(""); return; }
+    if (await save("rules", Object.fromEntries(checks.map(([k, c]) => [k, c.value])))) setNotice("Booking rules saved.");
+  };
+
+  // ── Images ──
+  const fieldOf = (kind) => (kind === "logo" ? "logoPath" : "photoPath");
+  const originalsOf = async (kind) => {
+    const { data } = await supabase.storage.from(LISTING_BUCKET).list(folder, { limit: 100 });
+    return (data || []).map((f) => f.name).filter((n) => n.startsWith(`${kind}-original-`)).sort();
+  };
+  const choose = (kind) => { setMenu(""); setError(""); setNotice(""); if (files[kind].current) files[kind].current.click(); };
+  const picked = (kind, file) => {
+    if (!file) return;
+    if (!/^image\//.test(file.type || "")) { setError("Choose a JPEG, PNG or WebP image."); return; }
+    if (!operatorId) { setError(LISTING_REASONS.not_signed_in); return; }
+    setCrop({ kind, src: URL.createObjectURL(file), cors: false, start: null, file });
+  };
+  // Crop again, from the image as it was chosen, starting where it was cut.
+  const recrop = async (kind) => {
+    setMenu(""); setError(""); setNotice("");
+    const current = l[fieldOf(kind)];
+    if (!current) return;
+    setBusy(kind);
+    const originals = await originalsOf(kind);
+    setBusy("");
+    const original = originals.length ? `${folder}/${originals[originals.length - 1]}` : null;
+    // A file saved before cropping existed is its own original.
+    setCrop({ kind, src: listingPhotoUrl(original || current), cors: true, start: original ? faiCropOf(current) : null, file: null });
+  };
+  const closeCrop = () => { if (crop && crop.file) URL.revokeObjectURL(crop.src); setCrop(null); };
+  // A newly chosen image, downsized, kept so it can be cropped again.
+  const encodeOriginal = async (kind, src) => {
+    const img = await faiLoadImage(src, false);
+    const k = Math.min(1, FAI_ORIGINAL_MAX / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.naturalWidth * k); canvas.height = Math.round(img.naturalHeight * k);
+    const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return faiEncode(canvas, kind, 0.9);
+  };
+  const upload = (path, out) => supabase.storage.from(LISTING_BUCKET)
+    .upload(path, out.blob, { contentType: out.type, cacheControl: "3600", upsert: false });
+  const cropped = async (out, c) => {
+    const kind = crop.kind;
+    if (!out) { setError("The image could not be prepared. Try again."); return false; }
+    if (out.blob.size > LISTING_PHOTO_MAX_BYTES) { setError("That image is still over 5 MB once cropped. Choose a smaller one."); return false; }
+    setError(""); setBusy(kind);
+    const stamp = Date.now();
+    const added = [];
+    let original = null;
+    if (crop.file) {
+      const o = await encodeOriginal(kind, crop.src).catch(() => null);
+      if (o && o.blob.size <= LISTING_PHOTO_MAX_BYTES) {
+        original = `${folder}/${kind}-original-${stamp}.${o.ext}`;
+        if ((await upload(original, o)).error) original = null; else added.push(original);
+      }
+    }
+    const path = `${folder}/${kind}-${stamp}-c${c.cx.toFixed(4)}_${c.cy.toFixed(4)}_${c.zoom.toFixed(3)}.${out.ext}`;
+    const up = await upload(path, out);
+    setBusy("");
+    if (up.error) {
+      if (added.length) await supabase.storage.from(LISTING_BUCKET).remove(added);
+      setError("The image could not be uploaded. Try again.");
+      return false;
+    }
+    const before = l[fieldOf(kind)];
+    const oldOriginals = original ? (await originalsOf(kind)).map((n) => `${folder}/${n}`).filter((p) => p !== original) : [];
+    if (await save(kind, { [fieldOf(kind)]: path })) {
+      const gone = [before, ...oldOriginals].filter(Boolean);
+      if (gone.length) await supabase.storage.from(LISTING_BUCKET).remove(gone);
+      closeCrop();
+      setNotice(kind === "logo" ? "Logo saved." : "Location photo saved.");
+      return true;
+    }
+    await supabase.storage.from(LISTING_BUCKET).remove([path, ...added]);
+    return false;
+  };
+  const removeImage = async (kind) => {
+    setMenu("");
+    const old = l[fieldOf(kind)];
+    if (!old) return;
+    if (await save(kind, { [fieldOf(kind)]: null })) {
+      const originals = (await originalsOf(kind)).map((n) => `${folder}/${n}`);
+      await supabase.storage.from(LISTING_BUCKET).remove([old, ...originals]);
+      setNotice(kind === "logo" ? "Logo removed." : "Location photo removed.");
+    }
+  };
+
+  // ── Pieces ──
+  const keyClick = (fn) => (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(e); } };
+  // A part of the preview that opens its editor when clicked.
+  const editable = (part, label, children, where) => editing === part && spot === (where || part)
+    ? el("div", { className: "faiEditing" }, editor(part))
+    : el("div", {
+        className: "faiEditable", role: "button", tabIndex: 0,
+        "aria-label": `Edit ${label}`, title: `Edit ${label}`,
+        onClick: () => startEdit(part, where), onKeyDown: keyClick(() => startEdit(part, where)),
+      }, children, el("span", { className: "faiEditTag", "aria-hidden": "true" }, "Edit"));
+  const add = (text) => el("span", { className: "faiAdd" }, faiIcon("plus", "2"), text);
+
+  const imageMenu = (kind, where) => menu === `${kind}@${where}` && el("div", { className: `faiMenu faiMenu--${kind}`, onClick: (e) => e.stopPropagation() },
+    el("button", { type: "button", onClick: () => choose(kind) }, kind === "logo" ? "Replace logo" : "Replace photo"),
+    el("button", { type: "button", onClick: () => recrop(kind) }, "Adjust crop"),
+    el("button", { type: "button", className: "faiMenu__danger", onClick: () => removeImage(kind) }, "Remove"));
+  const openImage = (kind, where) => (e) => {
+    e.stopPropagation();
+    if (busy) return;
+    const key = `${kind}@${where}`;
+    if (l[fieldOf(kind)]) setMenu((m) => (m === key ? "" : key)); else choose(kind);
+  };
+  // The photo with the logo on it, as the card and the branch page show them.
+  const photoBlock = (cls, where) => {
+    const url = listingPhotoUrl(l.photoPath), logo = listingPhotoUrl(l.logoPath);
+    return el("div", { className: `${cls} faiImage` },
+      el("div", {
+        className: "faiImage__hit", role: "button", tabIndex: 0,
+        "aria-label": url ? "Change the location photo" : "Add a photo of your location",
+        onClick: openImage("photo", where), onKeyDown: keyClick(openImage("photo", where)),
+      },
+        url ? el("img", { src: url, alt: branch.name })
+          : el("div", { className: "placeholder-photo faiImage__empty" },
+              faiIcon("camera", "1.4"),
+              el("span", null, busy === "photo" ? "Uploading…" : "Add a photo of your location"))),
+      el("div", {
+        className: `card-logo faiLogo${logo ? "" : " faiLogo--empty"}`, role: "button", tabIndex: 0,
+        "aria-label": logo ? "Change the logo" : "Add your logo",
+        onClick: openImage("logo", where), onKeyDown: keyClick(openImage("logo", where)),
+      }, logo ? el("img", { src: logo, alt: `${branch.name} logo` }) : el("span", null, busy === "logo" ? "…" : "Add logo")),
+      imageMenu("photo", where),
+      imageMenu("logo", where));
+  };
+
+  const classes = faiClasses();
+  const lowest = classes.length ? Math.min(...classes.map((c) => Number(c.dailyRate))) : null;
+  const trip = faiSampleTrip();
+  const perks = faiPerksOf(l);
+  const city = faiCityOf(l);
+  const hours = listingHasHours(l.hours) ? l.hours : null;
+  const tk = faiTodayKey(timeZone);
+  const lat = l.latitude != null ? Number(l.latitude) : NaN, lng = l.longitude != null ? Number(l.longitude) : NaN;
+
+  // ── Editors, each in the spot its part shows ──
+  const editor = (part) => {
+    const d = draft || {};
+    const check = (label, checked, onChange) => el("label", { className: "faiCheck" },
+      el("input", { type: "checkbox", checked, disabled: !!busy, onChange: (e) => onChange(e.target.checked) }), label);
+    const field = (label, child) => el("label", { className: "faiField" }, el("span", null, label), child);
+    const input = (k, props) => el("input", { className: "faiInput", value: d[k] ?? "", disabled: !!busy, onChange: (e) => setD(k, e.target.value), ...props });
+    let body = null;
+    if (part === "description") {
+      body = el("textarea", {
+        className: "faiInput faiTextarea", rows: 5, maxLength: 2000, autoFocus: true, value: d.description, disabled: !!busy,
+        placeholder: "What renters should know about this branch: where it is, what makes it easy, anything to bring.",
+        "aria-label": "About this branch", onChange: (e) => setD("description", e.target.value),
+      });
+    } else if (part === "places") {
+      body = el(React.Fragment, null,
+        field("Cities served", input("citiesServed", { placeholder: "St. John's, Mount Pearl", autoFocus: true })),
+        field("Airport codes", input("airportCodes", { placeholder: "YYT" })),
+        el("p", { className: "faiHint" }, "Separate each with a comma. Renters find the branch by searching one of these, and the first shows under its name."));
+    } else if (part === "perks") {
+      body = el(React.Fragment, null,
+        el("div", { className: "faiChecks" },
+          check("Airport pickup", d.airportPickup, (v) => setD("airportPickup", v)),
+          check("Delivery", d.delivery, (v) => setD("delivery", v)),
+          check("After-hours drop-off", d.afterHoursDropoff, (v) => setD("afterHoursDropoff", v))),
+        d.airportPickup && field("Airport codes", input("airportCodes", { placeholder: "YYT" })));
+    } else if (part === "hours") {
+      const setDay = (k, f, v) => setDraft((p) => ({ ...p, hours: { ...p.hours, [k]: { ...p.hours[k], [f]: v } } }));
+      const fill = () => {
+        if (!d.sameOpen || !d.sameClose) { setError("Enter an opening and a closing time to fill every day."); return; }
+        setError("");
+        setDraft((p) => ({ ...p, hours: Object.fromEntries(LISTING_DAYS.map(([k]) => [k, { open: p.sameOpen, close: p.sameClose }])) }));
+      };
+      const picker = (value, label, onChange) => el(QuarterTimePicker, { ...time24Parts(value), className: "faiInput faiSelect", disabled: !!busy, label,
+        onChange: (h, m, mer) => onChange(partsTime24(h, m, mer)) });
+      body = el(React.Fragment, null,
+        el("div", { className: "faiHoursRow faiHoursRow--same" },
+          el("span", null, "Every day"),
+          picker(d.sameOpen, "Opening time for every day", (v) => setD("sameOpen", v)),
+          el("span", null, "to"),
+          picker(d.sameClose, "Closing time for every day", (v) => setD("sameClose", v)),
+          el("button", { type: "button", className: "faiBtn faiBtn--ghost", disabled: !!busy, onClick: fill }, "Fill every day")),
+        LISTING_DAYS.map(([k, name]) => el("div", { key: k, className: "faiHoursRow" },
+          el("span", null, name),
+          picker(d.hours[k].open, `${name} opening time`, (v) => setDay(k, "open", v)),
+          el("span", null, "to"),
+          picker(d.hours[k].close, `${name} closing time`, (v) => setDay(k, "close", v)))),
+        el("p", { className: "faiHint" }, "Leave a day blank if the branch is closed that day."));
+    } else if (part === "requirements") {
+      body = el("div", { className: "faiFieldRow" },
+        field("Minimum age", input("minimumAge", { inputMode: "numeric", autoFocus: true, style: { width: "110px" } })),
+        field("Deposit ($)", input("deposit", { inputMode: "decimal", style: { width: "120px" } })));
+    } else if (part === "payment") {
+      body = el("div", { className: "faiChecks" }, LISTING_PAYMENT_METHODS.map((m) => el("span", { key: m },
+        check(m, d.paymentMethods.includes(m), (on) => setD("paymentMethods",
+          on ? LISTING_PAYMENT_METHODS.filter((x) => x === m || d.paymentMethods.includes(x)) : d.paymentMethods.filter((x) => x !== m))))));
+    }
+    return el("div", { className: "faiEditor", onKeyDown: (e) => { if (e.key === "Escape") stopEdit(); } },
+      body,
+      error && el("div", { className: "loginError" }, error),
+      el("div", { className: "faiEditor__actions" },
+        el("button", { type: "button", className: "faiBtn faiBtn--ghost", disabled: !!busy, onClick: stopEdit }, "Cancel"),
+        el("button", { type: "button", className: "faiBtn faiBtn--primary", disabled: !!busy, onClick: saveEdit }, busy === part ? "Saving…" : "Save")));
+  };
+
+  // ── The search result card ──
+  const card = el("div", { className: "card faiCard" },
+    photoBlock("card-photo", "card"),
+    el("div", { className: "card-body" },
+      el("div", { className: "card-name" }, branch.name),
+      editable("places", "the cities and airports served",
+        el("div", { className: "card-sub" }, city || add("Add the cities you serve")), "places@card"),
+      editable("perks", "what this branch offers", perks.length
+        ? el("div", { className: "tags" }, perks.map((p) => el("span", { key: p.name, className: "tag" }, p.name)))
+        : el("div", { className: "tags" }, add("Add perks")), "perks@card"),
+      el("div", { className: "card-price" },
+        lowest != null
+          ? el(React.Fragment, null,
+              el("div", null, "from ", el("b", null, `${faiDayRate(lowest)}/day`)),
+              el("span", null, `${faiMoney(lowest * FAI_SAMPLE_DAYS)} total`))
+          : el("div", { className: "faiMuted" }, "Add a fleetr.ai daily rate under Rates"))));
+
+  // ── The branch page ──
+  const facts = [
+    { part: "requirements", icon: "id", name: "Minimum age", text: l.minimumAge != null ? `${l.minimumAge} years old` : null, empty: "Add a minimum age" },
+    { part: "requirements", icon: "deposit", name: "Deposit", text: l.deposit != null && Number(l.deposit) > 0 ? `${faiMoney(l.deposit, true)}, held at pickup` : null, empty: "Add a deposit, if you take one", optional: true },
+    { part: "payment", icon: "card", name: "Payment", text: (l.paymentMethods || []).length ? l.paymentMethods.join(", ") : null, empty: "Add the payment methods you take" },
+  ];
+  const factRow = (f) => el("div", { key: f.name, className: `perk${f.text ? "" : " faiEmptyPerk"}` }, faiIcon(f.icon, "1.5"),
+    el("div", null, el("b", null, f.name), el("span", null, f.text || f.empty)));
+  const section = (title, body, extra) => el("section", { className: `sec${extra ? ` ${extra}` : ""}` }, title && el("h2", null, title), body);
+
+  const content = el("div", null,
+    section("Free for your dates", el(React.Fragment, null,
+      el("p", { className: "sec-sub" }, `${trip.range} · ${FAI_SAMPLE_DAYS} days · prices before tax`),
+      classes.length
+        ? el("div", { className: "classes" }, classes.map((c) => el("div", { key: c.id, className: "class-row" },
+            el("div", { className: "class-icon" }, faiIcon(faiClassIcon(c), "1.5")),
+            el("div", null,
+              el("div", { className: "class-name" }, c.name),
+              el("div", { className: "class-meta" },
+                faiClassTypes(c).length > 0 && el("span", null, faiClassTypes(c).join(", ")),
+                c.seats != null && el("span", null, `${c.seats} seats`),
+                c.bags != null && el("span", null, `${c.bags} bag${c.bags === 1 ? "" : "s"}`))),
+            el("div", { className: "class-price" }, el("b", null, `${faiDayRate(c.dailyRate)}/day`), el("span", null, `${faiMoney(c.dailyRate * FAI_SAMPLE_DAYS, true)} total`)))))
+        : el("p", { className: "faiMuted" }, "Vehicle classes show here once they have a fleetr.ai daily rate under Rates."),
+      el("p", { className: "faiHint" }, "Renters see the classes free for their dates. These come from Vehicle classes and Rates."))),
+    section("About this branch", editable("description", "about this branch",
+      l.description ? el("p", { className: "faiPre" }, l.description) : add("Add a description of this branch"))),
+    section("What this branch offers", editable("perks", "what this branch offers", perks.length
+      ? el("div", { className: "perks two" }, perks.map((p) => el("div", { key: p.name, className: "perk" }, faiIcon(p.icon, "1.5"),
+          el("div", null, el("b", null, p.name), el("span", null, p.text)))))
+      : el(React.Fragment, null, add("Add airport pickup, delivery or after-hours drop-off"),
+          el("p", { className: "faiHint" }, "This part is left off fleetr.ai until you add one.")))),
+    section("Hours", editable("hours", "the hours", hours
+      ? el("div", { className: "hours" }, LISTING_DAYS.map(([k, name]) => {
+          const d = hours[k];
+          const open = d && d.open && d.close;
+          return el(React.Fragment, { key: k },
+            el("span", { className: k === tk ? "today" : null }, name),
+            el("span", { className: `${k === tk ? "today" : ""} ${open ? "" : "closed"}` },
+              open ? `${faiTime(String(d.open).slice(0, 5))} – ${faiTime(String(d.close).slice(0, 5))}` : "Closed"));
+        }))
+      : add("Add your opening hours"))),
+    section("Requirements", el("div", { className: "perks two" },
+      editing === "requirements" || editing === "payment"
+        ? el("div", { className: "faiEditing faiSpan" }, editor(editing))
+        : facts.map((f) => el("div", {
+            key: f.name, className: "faiEditable faiEditable--row", role: "button", tabIndex: 0,
+            "aria-label": `Edit ${f.name.toLowerCase()}`, title: `Edit ${f.name.toLowerCase()}`,
+            onClick: () => startEdit(f.part), onKeyDown: keyClick(() => startEdit(f.part)),
+          }, factRow(f), el("span", { className: "faiEditTag", "aria-hidden": "true" }, "Edit"))))),
+    section("Where you'll pick up", el(React.Fragment, null,
+      l.address ? el("p", { style: { marginBottom: "8px" } }, l.address) : el("p", { className: "faiMuted" }, "Add the address under Branch."),
+      Number.isFinite(lat) && Number.isFinite(lng) && el(ListingMapPin, { lat, lng, disabled: true, onPlace: () => {} }),
+      el("p", { className: "faiHint" }, "The address and the pin are set under Branch."))));
+
+  const bookBox = el("aside", { className: "book-box faiBookBox", "aria-label": "Reserve, as renters see it" },
+    el("div", { className: "bb-price" }, lowest != null ? `from ${faiDayRate(lowest)}` : "Not available", lowest != null && el("span", null, "/day")),
+    el("div", { className: "bb-fields" },
+      el("div", { className: "bb-dates" },
+        el("div", { className: "bb-field" }, el("small", null, "Pick-up"), el("span", null, `${faiShort(trip.pu)}, 10:00 AM`)),
+        el("div", { className: "bb-field" }, el("small", null, "Return"), el("span", null, `${faiShort(trip.rt)}, 10:00 AM`))),
+      classes.length > 0 && el("div", { className: "bb-class" }, el("small", null, "Vehicle"), el("span", null, "Choose a vehicle"))),
+    el("div", { className: "btn btn-primary btn-block", "aria-disabled": "true" }, "Choose a vehicle"),
+    el("p", { className: "bb-note" }, "You won't be charged now. Pay at pickup."));
+
+  return el("div", { className: "faiBranch" },
+    el("div", { className: "gasSettingSubhead" }, branch.name),
+    multi && el("div", { style: { marginBottom: "6px" } },
+      el("label", { style: { display: "inline-flex", alignItems: "center", gap: "8px", cursor: "pointer" } },
+        el("input", { type: "checkbox", checked: shown, disabled: !!busy, onChange: (e) => toggleShown(e.target.checked) }),
+        busy === "shown" ? "Saving…" : "Show this branch on fleetr.ai")),
+    el("p", { className: "closeRentalHint", style: { marginTop: 0, marginBottom: "14px" } },
+      [!fleetrOn ? "Not on fleetr.ai: List on fleetr.ai is off."
+        : multi && !shown ? "Not on fleetr.ai: Show this branch on fleetr.ai is off."
+        : listed ? "Shows on fleetr.ai."
+        : "Not on fleetr.ai yet.",
+       missingKeys.length ? `Missing: ${listingNeedsList(missingKeys)}.` : ""].filter(Boolean).join(" ")),
+    error && !editing && !crop && el("div", { className: "loginError" }, error),
+    notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
+
+    el("div", { className: "fai" },
+      el("div", { className: "faiStage" },
+        el("div", { className: "faiStage__label" }, "In search results"),
+        el("div", { className: "faiCardWrap" }, card)),
+      el("div", { className: "faiStage faiStage--page" },
+        el("div", { className: "faiStage__label" }, "The branch page"),
+        el("div", { className: "branch-head" },
+          editable("places", "the cities and airports served", el("span", { className: "kicker" }, city || add("Add the cities you serve"))),
+          el("h1", null, branch.name),
+          l.address ? el("div", { className: "sub" }, l.address) : el("div", { className: "sub faiMuted" }, "Add the address under Branch.")),
+        photoBlock("hero-photo", "hero"),
+        el("div", { className: "branch-cols" }, content, el("div", null, bookBox))),
+      el("p", { className: "faiHint faiStage__foot" }, `Prices are shown for a sample ${FAI_SAMPLE_DAYS} day trip, before tax. Click any part to change it.`)),
+
+    el("div", { className: "faiRules" },
+      el("div", { className: "gasSettingSubhead" }, "Booking rules"),
+      el("p", { className: "closeRentalHint", style: { marginTop: 0 } }, "How online bookings are checked. Renters only see these when a search breaks one."),
+      el("div", { className: "faiFieldRow" },
+        [["minNoticeHours", "Minimum notice (hours)"], ["maxRentalDays", "Maximum rental length (days)"], ["turnaroundHours", "Turnaround buffer (hours)"]].map(([k, label]) =>
+          el("label", { key: k, className: "faiField" }, el("span", null, label),
+            el("input", { className: "faiInput", inputMode: "numeric", style: { width: "150px" }, value: rules[k], disabled: !!busy,
+              onChange: (e) => { const v = e.target.value; setRules((p) => ({ ...p, [k]: v })); } }))),
+        el("button", { type: "button", className: "faiBtn faiBtn--primary", disabled: !!busy, onClick: saveRules },
+          busy === "rules" ? "Saving…" : "Save booking rules"))),
+
+    ["logo", "photo"].map((kind) => el("input", {
+      key: kind, ref: files[kind], type: "file", accept: "image/*", style: { display: "none" },
+      onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; picked(kind, f); },
+    })),
+    crop && el(ListingCropDialog, { kind: crop.kind, src: crop.src, cors: crop.cors, start: crop.start, error, onCancel: () => { setError(""); closeCrop(); }, onDone: cropped }));
 }
 
 // ─── Company lists: the Exec's editing sections ──────────────────────────────
@@ -19980,6 +20732,175 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
 .calendarDay--today{ box-shadow: inset 0 0 0 1px #F4845F; font-weight: 600; }
 .calendarDay--selected, .calendarDay--selected:hover{ background: #F4845F; box-shadow: none; font-weight: 600; }
 @media (prefers-reduced-motion: reduce){ .dateFieldPanel, .calendarPopover{ animation: none; } }
+/* ── fleetr.ai listing preview ── */
+/* fleetr-website index.html's palette and the rules the search card and the
+   branch page use, scoped to .fai so they reach nothing else. The branch
+   page lays itself out by the preview's own width (a container query), as
+   the website does by the window's. */
+.fai{
+  --paper: #F9F9F7; --ink: #1F1E1D; --terra: #F4845F; --terra-dk: #E06D47;
+  --ink-70: #5C5B57; --ink-55: #6B6A66; --ink-06: #F1F0EC; --rule: #E3E2DE; --rule-2: #E3E2DE;
+  --shadow: 0 1px 2px rgba(31, 30, 29, 0.06), 0 8px 24px rgba(31, 30, 29, 0.08);
+  --shadow-lg: 0 2px 4px rgba(31, 30, 29, 0.06), 0 18px 48px rgba(31, 30, 29, 0.16);
+  --display: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --r: 14px; --r-lg: 22px;
+  background: var(--paper); color: var(--ink); font-family: var(--body); font-size: 16px; line-height: 1.55;
+  border: 1px solid var(--rule); border-radius: 18px; padding: 22px; margin-bottom: 18px;
+  -webkit-font-smoothing: antialiased;
+}
+.fai *, .fai *::before, .fai *::after{ box-sizing: border-box; }
+.fai h1, .fai h2, .fai p{ margin: 0; }
+.fai h1, .fai h2{ font-family: var(--display); font-weight: 600; letter-spacing: -0.02em; line-height: 1.08; }
+.fai img{ display: block; max-width: 100%; }
+.fai svg{ display: block; }
+.faiStage__label{ font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-55); margin-bottom: 12px; }
+.faiStage--page{ margin-top: 30px; padding-top: 24px; border-top: 1px dashed var(--rule); container-type: inline-size; }
+.faiStage__foot{ margin-top: 18px !important; }
+.faiCardWrap{ max-width: 340px; }
+
+.fai .kicker{ display: inline-flex; align-items: center; gap: 12px; font-size: 12.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink); }
+.fai .card{ display: block; text-decoration: none; color: var(--ink); }
+.fai .card-photo{ position: relative; aspect-ratio: 4 / 3; border-radius: var(--r); overflow: hidden; background: var(--ink-06); }
+.fai .card-photo img, .fai .hero-photo img{ width: 100%; height: 100%; object-fit: cover; }
+.fai .card-logo{ position: absolute; left: 12px; bottom: 12px; width: 50px; height: 50px; border-radius: 12px; background: var(--paper); box-shadow: var(--shadow); padding: 6px; display: flex; align-items: center; justify-content: center; }
+.fai .card-logo img{ max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.fai .card-body{ padding-top: 14px; display: grid; gap: 3px; }
+.fai .card-name{ font-family: var(--display); font-size: 21px; font-weight: 500; line-height: 1.2; }
+.fai .card-sub{ color: var(--ink-55); font-size: 14.5px; }
+.fai .tags{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.fai .tag{ font-size: 12.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--ink-06); color: var(--ink-70); }
+.fai .card-price{ display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--rule); font-size: 15px; }
+.fai .card-price b{ font-size: 17px; }
+.fai .card-price span{ color: var(--ink-55); font-size: 14px; }
+.fai .placeholder-photo{ width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--ink-55); background: repeating-linear-gradient(135deg, var(--ink-06) 0 1px, transparent 1px 14px); }
+
+.fai .branch-head .kicker{ margin-bottom: 14px; }
+.fai .branch-head h1{ font-size: clamp(32px, 5vw, 56px); letter-spacing: -0.025em; line-height: 1.0; }
+.fai .branch-head .sub{ color: var(--ink-55); margin-top: 10px; }
+.fai .hero-photo{ position: relative; margin-top: 26px; border-radius: var(--r-lg); overflow: hidden; aspect-ratio: 4 / 3; background: var(--ink-06); }
+.fai .hero-photo .card-logo{ width: 72px; height: 72px; left: 20px; bottom: 20px; border-radius: 16px; padding: 9px; }
+.fai .branch-cols{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 44px; margin-top: 36px; }
+.fai .sec{ padding: 32px 0; border-top: 1px solid var(--rule); }
+.fai .sec:first-child{ border-top: none; padding-top: 0; }
+.fai .sec > h2{ font-size: 26px; margin-bottom: 18px; }
+.fai .faiPre{ white-space: pre-line; max-width: 38em; }
+.fai .sec-sub{ color: var(--ink-55); font-size: 15px; margin: -10px 0 18px; }
+.fai .classes{ border-top: 1px solid var(--rule); }
+.fai .class-row{ display: grid; grid-template-columns: 60px minmax(0, 1fr); gap: 2px 16px; align-items: center; width: 100%; text-align: left; padding: 18px 12px 18px 14px; border-bottom: 1px solid var(--rule); position: relative; }
+.fai .class-icon{ grid-row: span 2; color: var(--ink); }
+.fai .class-icon svg{ width: 56px; height: 34px; }
+.fai .class-name{ font-family: var(--display); font-size: 20px; font-weight: 500; }
+.fai .class-meta{ color: var(--ink-55); font-size: 14px; display: flex; gap: 14px; flex-wrap: wrap; }
+.fai .class-price{ grid-column: 2; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.fai .class-price b{ font-size: 17px; }
+.fai .class-price span{ color: var(--ink-55); font-size: 14px; }
+.fai .perks{ display: grid; gap: 0; }
+.fai .perk{ display: flex; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--rule); }
+.fai .perk:first-child{ border-top: 1px solid var(--rule); }
+.fai .perk svg{ width: 24px; height: 24px; flex: none; margin-top: 2px; }
+.fai .perk b{ display: block; font-weight: 600; }
+.fai .perk span{ color: var(--ink-55); font-size: 14.5px; }
+.fai .hours{ display: grid; grid-template-columns: auto 1fr; gap: 0; max-width: 420px; }
+.fai .hours span{ padding: 9px 0; border-bottom: 1px solid var(--rule); font-size: 15px; }
+.fai .hours span:nth-child(2n){ text-align: right; }
+.fai .hours .today{ font-weight: 700; }
+.fai .hours .closed{ color: var(--ink-55); }
+.fai .book-box{ background: var(--paper); border: 1px solid var(--rule-2); border-radius: var(--r-lg); box-shadow: var(--shadow-lg); padding: 24px; }
+.fai .bb-price{ font-family: var(--display); font-size: 28px; font-weight: 500; }
+.fai .bb-price span{ font-family: var(--body); font-size: 15px; color: var(--ink-55); }
+.fai .bb-fields{ position: relative; border: 1px solid var(--rule-2); border-radius: 12px; margin: 18px 0 14px; }
+.fai .bb-dates{ display: grid; grid-template-columns: 1fr 1fr; }
+.fai .bb-field{ padding: 10px 14px; text-align: left; display: flex; flex-direction: column; min-width: 0; }
+.fai .bb-field + .bb-field{ border-left: 1px solid var(--rule-2); }
+.fai .bb-field small, .fai .bb-class small{ font-size: 10.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.fai .bb-field span, .fai .bb-class span{ font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fai .bb-class{ display: block; border-top: 1px solid var(--rule-2); padding: 10px 14px; }
+.fai .bb-class small{ display: block; }
+.fai .bb-note{ text-align: center; font-size: 14px; color: var(--ink-55); margin: 12px 0 2px; }
+.fai .btn{ display: inline-flex; align-items: center; justify-content: center; gap: 10px; white-space: nowrap; padding: 14px 24px; border-radius: 12px; font-weight: 600; font-size: 16px; border: 1px solid transparent; }
+.fai .btn-primary{ background: var(--terra); color: var(--ink); box-shadow: inset 0 -3px 0 rgba(31, 30, 29, 0.16), 0 1px 2px rgba(31, 30, 29, 0.12); }
+.fai .btn-block{ width: 100%; }
+@container (min-width: 640px){
+  .fai .perks.two{ grid-template-columns: 1fr 1fr; column-gap: 32px; }
+  .fai .perks.two .perk:nth-child(2){ border-top: 1px solid var(--rule); }
+  .fai .class-row{ grid-template-columns: 64px minmax(0, 1fr) auto; }
+  .fai .class-icon{ grid-row: span 1; }
+  .fai .class-price{ grid-column: 3; flex-direction: column; align-items: flex-end; margin-top: 0; gap: 0; }
+}
+@container (min-width: 700px){ .fai .hero-photo{ aspect-ratio: 21 / 9; } }
+@container (min-width: 900px){ .fai .branch-cols{ grid-template-columns: minmax(0, 1fr) 320px; gap: 56px; } }
+
+/* Editing in place. A part that can be changed shows a terracotta outline and
+   an Edit tag on hover or focus; its editor opens in the same spot. */
+.faiEditable{ position: relative; cursor: pointer; border-radius: 10px; outline: 1px dashed transparent; outline-offset: 6px; transition: outline-color .12s, background-color .12s; }
+.faiEditable:hover, .faiEditable:focus-visible{ outline-color: var(--terra); background: rgba(244, 132, 95, 0.05); }
+.faiEditTag{ position: absolute; top: -10px; right: -6px; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--terra); color: var(--ink); opacity: 0; transition: opacity .12s; pointer-events: none; }
+.faiEditable:hover > .faiEditTag, .faiEditable:focus-visible > .faiEditTag{ opacity: 1; }
+.fai .perks.two > .faiEditable--row .perk{ border-top: 1px solid var(--rule); }
+.fai .perks.two > .faiEditable--row + .faiEditable--row .perk{ border-top: none; }
+@container (min-width: 640px){ .fai .perks.two > .faiEditable--row:nth-child(2) .perk{ border-top: 1px solid var(--rule); } }
+.faiSpan{ grid-column: 1 / -1; }
+.faiAdd{ display: inline-flex; align-items: center; gap: 6px; color: var(--terra-dk); font-weight: 600; font-size: 14.5px; letter-spacing: normal; text-transform: none; }
+.faiAdd svg{ width: 14px; height: 14px; }
+.fai .faiEmptyPerk span{ color: var(--terra-dk); font-weight: 600; }
+.fai .faiMuted{ color: var(--ink-55); font-size: 14.5px; }
+.fai .faiHint{ color: var(--ink-55); font-size: 13px; margin-top: 10px; }
+.faiImage__hit{ position: absolute; inset: 0; cursor: pointer; }
+.faiImage__hit:hover::after, .faiImage__hit:focus-visible::after{ content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 2px var(--terra); border-radius: inherit; pointer-events: none; }
+.faiImage__empty{ flex-direction: column; gap: 10px; font-weight: 600; font-size: 15px; color: var(--terra-dk); }
+.faiImage__empty svg{ width: 34px; height: 34px; }
+.faiLogo{ cursor: pointer; z-index: 2; }
+.faiLogo:hover, .faiLogo:focus-visible{ box-shadow: 0 0 0 2px var(--terra), var(--shadow); }
+.faiLogo--empty{ border: 1.5px dashed var(--terra); box-shadow: none; text-align: center; font-size: 11px; font-weight: 700; line-height: 1.15; color: var(--terra-dk); }
+.faiMenu{ position: absolute; z-index: 5; display: grid; min-width: 160px; padding: 6px; border-radius: 12px; background: #fff; box-shadow: var(--shadow-lg); border: 1px solid var(--rule); }
+.faiMenu--photo{ top: 12px; right: 12px; }
+.faiMenu--logo{ left: 12px; bottom: 78px; }
+.hero-photo .faiMenu--logo{ left: 20px; bottom: 102px; }
+.faiMenu button{ text-align: left; padding: 8px 10px; border: 0; border-radius: 8px; background: none; font-size: 14px; font-weight: 500; cursor: pointer; color: var(--ink); }
+.faiMenu button:hover{ background: var(--ink-06); }
+.faiMenu .faiMenu__danger{ color: #b3261e; }
+.faiEditing{ border: 1px solid var(--terra); border-radius: 12px; background: #fff; padding: 14px; box-shadow: 0 0 0 3px rgba(244, 132, 95, 0.14); }
+.faiEditor{ display: grid; gap: 12px; font-size: 14.5px; }
+.faiEditor__actions{ display: flex; justify-content: flex-end; gap: 8px; }
+.faiField{ display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; color: var(--ink-70); }
+.faiFieldRow{ display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.faiInput{ font: inherit; font-size: 14.5px; font-weight: 400; color: var(--ink); background: #fff; border: 1px solid var(--rule); border-radius: 10px; padding: 9px 11px; min-height: 40px; }
+.faiInput:focus{ outline: none; border-color: var(--terra); box-shadow: 0 0 0 3px rgba(244, 132, 95, 0.18); }
+.faiSelect{ padding: 7px 8px; }
+.faiTextarea{ width: 100%; resize: vertical; line-height: 1.5; }
+.faiChecks{ display: flex; flex-wrap: wrap; gap: 10px 18px; }
+.faiCheck{ display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.faiCheck input{ accent-color: #F4845F; width: 16px; height: 16px; }
+.faiHoursRow{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.faiHoursRow > span:first-child{ width: 96px; font-weight: 600; }
+.faiHoursRow--same{ padding-bottom: 10px; border-bottom: 1px solid var(--rule); }
+.faiBtn{ font: inherit; font-size: 14px; font-weight: 600; padding: 9px 16px; border-radius: 10px; border: 1px solid transparent; cursor: pointer; }
+.faiBtn:disabled{ opacity: .55; cursor: default; }
+.faiBtn--primary{ background: #F4845F; color: #1F1E1D; }
+.faiBtn--primary:hover:not(:disabled){ background: #E06D47; }
+.faiBtn--ghost{ background: #fff; border-color: rgba(31, 30, 29, 0.16); color: #1F1E1D; }
+.faiBtn--ghost:hover:not(:disabled){ background: #F1F0EC; }
+.faiRules{ border: 1px solid rgba(31, 30, 29, 0.12); border-radius: 14px; padding: 16px 18px; margin-bottom: 28px; }
+.faiRules .faiField{ color: rgba(31, 30, 29, 0.7); }
+.faiBranch{ margin-bottom: 8px; }
+
+/* The crop step. */
+.faiCropBackdrop{ position: fixed; inset: 0; z-index: 1000; background: rgba(31, 30, 29, 0.55); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.faiCrop{ box-sizing: border-box; width: min(640px, 100%); max-height: calc(100vh - 32px); overflow: auto; background: #F9F9F7; color: #1F1E1D; border-radius: 18px; padding: 20px; box-shadow: 0 18px 48px rgba(31, 30, 29, 0.3); display: grid; gap: 14px; }
+.faiCrop__title{ font-size: 19px; font-weight: 700; letter-spacing: -0.01em; }
+.faiCrop__hint{ margin: 0; font-size: 14px; color: rgba(31, 30, 29, 0.68); }
+.faiCrop__frame{ position: relative; width: 100%; overflow: hidden; touch-action: none; cursor: grab; user-select: none; background: repeating-conic-gradient(#ECEBE7 0 25%, #F9F9F7 0 50%) 0 0 / 18px 18px; border-radius: 14px; }
+.faiCrop__frame:active{ cursor: grabbing; }
+.faiCrop__frame:focus-visible{ outline: 2px solid #F4845F; outline-offset: 3px; }
+.faiCrop__frame--logo{ max-width: 340px; margin: 0 auto; border-radius: 24%; }
+.faiCrop__img{ position: absolute; left: 0; top: 0; max-width: none !important; pointer-events: none; }
+.faiCrop__guide{ position: absolute; top: 0; bottom: 0; left: 50%; transform: translateX(-50%); border-left: 2px dashed rgba(249, 249, 247, 0.95); border-right: 2px dashed rgba(249, 249, 247, 0.95); box-shadow: 0 0 0 1px rgba(31, 30, 29, 0.25); pointer-events: none; }
+.faiCrop__failed{ position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 20px; font-weight: 600; }
+.faiCrop__zoom{ display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 600; }
+.faiCrop__zoom input{ flex: 1; accent-color: #F4845F; }
+.faiCrop__actions{ display: flex; justify-content: flex-end; gap: 8px; }
+@media (prefers-reduced-motion: reduce){ .faiEditable, .faiEditTag{ transition: none; } }
 `;
 document.head.appendChild(style);
 
