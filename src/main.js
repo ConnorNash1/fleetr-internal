@@ -7401,8 +7401,12 @@ async function geocodeBranchCity(parts) {
   }
 }
 
-const listingPhotoUrl = (path) =>
-  path ? supabase.storage.from(LISTING_BUCKET).getPublicUrl(path).data.publicUrl : null;
+// supabase-js v1 names it publicURL; publicUrl is v2's name.
+const listingPhotoUrl = (path) => {
+  if (!path) return null;
+  const r = supabase.storage.from(LISTING_BUCKET).getPublicUrl(path);
+  return (r && (r.publicURL || (r.data && (r.data.publicURL || r.data.publicUrl)))) || null;
+};
 
 // True when the company has a fleetr.ai daily rate for a class that
 // is switched on: public booking quotes and books that rate only.
@@ -7602,14 +7606,21 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
   const { currentUser } = React.useContext(AppContext);
   const [listings, setListings] = React.useState(null);
   const [loadError, setLoadError] = React.useState("");
+  // The company's name, which the listing preview shows as fleetr.ai does.
+  const [company, setCompany] = React.useState("");
 
   const reload = React.useCallback(async () => {
-    const { data, error } = await supabase.from("branch_listings").select("*")
-      .eq("operatorId", currentUser?.operatorId ?? null);
+    const [{ data, error }, op] = await Promise.all([
+      supabase.from("branch_listings").select("*").eq("operatorId", currentUser?.operatorId ?? null),
+      part === "listing"
+        ? supabase.from("operators").select("name").eq("id", currentUser?.operatorId ?? null).maybeSingle()
+        : Promise.resolve({ data: null }),
+    ]);
+    if (op && op.data) setCompany(op.data.name || "");
     if (error) { setLoadError("The listings could not be loaded. Reload the page to try again."); return; }
     setLoadError("");
     setListings(data || []);
-  }, [currentUser]);
+  }, [currentUser, part]);
   const saved = React.useCallback(async () => { await reload(); if (onSaved) await onSaved(); }, [reload, onSaved]);
 
   React.useEffect(() => { reload(); }, [reload]);
@@ -7651,7 +7662,7 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
     !listings && !loadError && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Loading…"),
     // The listing is edited in its live preview; the address in its form.
     listings && open.map((b) => React.createElement(part === "listing" ? ListingPreviewEditor : ListingEditor, {
-      key: b.id, branch: b, operatorId: currentUser?.operatorId,
+      key: b.id, branch: b, operatorId: currentUser?.operatorId, company,
       listing: listings.find((l) => l.locationId === b.id) || null,
       timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: saved, onTimeZoneSet, part, fleetrOn,
       // Each branch has its own switch only when there is more than one.
@@ -8070,17 +8081,18 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
 
 // ─── fleetr.ai listing: the live preview ─────────────────────────────────────
 // One branch's listing shown as renters see it on fleetr.ai: the search result
-// card, then the branch page, in fleetr-website's layout and styles (app.js
-// SearchPage and branchView, index.html's .card, .branch-head, .hero-photo,
-// .sec, .perks, .hours, .class-row and .book-box, copied here under .fai). If
+// row, then the branch page, in fleetr-website's layout and styles (app.js
+// SearchPage and branchView, index.html's .card, .card-mark, .branch-head,
+// .about, .sec, .perks, .hours, .class-row and .book-box, copied here under
+// .fai). If
 // the website's copy changes, change this one. Every part a renter reads is
 // edited where it shows; a part with nothing in it yet shows what to add in
 // the spot it will take. The booking rules renters do not read directly sit
 // in a small section below.
 //
 // Photos and logos are cropped before they are saved, to the shape they show
-// in: the logo square, the location photo as wide as the branch page shows it
-// (21:9). Saved resized and compressed for the web, as WebP where the browser
+// in: the logo square, the location photo 4:3, as About this branch shows it.
+// Saved resized and compressed for the web, as WebP where the browser
 // can write it. The image as chosen is kept beside it, downsized, as
 // <kind>-original-<time>, so it can be cropped again without uploading it
 // again; the crop itself is kept in the saved file's name
@@ -8088,7 +8100,7 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
 const FAI_SAMPLE_DAYS = 3;
 const FAI_IMAGE = {
   logo:  { aspect: 1,      outW: 512,  outH: 512, label: "logo",           fit: true },
-  photo: { aspect: 21 / 9, outW: 2100, outH: 900, label: "location photo", fit: false },
+  photo: { aspect: 4 / 3,  outW: 1200, outH: 900, label: "location photo", fit: false },
 };
 const FAI_ORIGINAL_MAX = 2400;
 const FAI_ZOOM_MAX = 4;
@@ -8312,7 +8324,7 @@ function ListingCropDialog({ kind, src, cors, start, error, onCancel, onDone }) 
       el("div", { className: "faiCrop__title" }, `Crop the ${spec.label}`),
       el("p", { className: "faiCrop__hint" }, kind === "logo"
         ? "Drag to move it, and zoom to fit. It shows in a square on fleetr.ai."
-        : "Drag to move it, and zoom to frame it. The branch page shows all of it on a wide screen; the dashed box is what the search card and phones show."),
+        : "Drag to move it, and zoom to frame it. It shows in About this branch at this shape."),
       el("div", {
         ref: frameRef, className: `faiCrop__frame faiCrop__frame--${kind}`,
         style: { height: box.h ? `${box.h}px` : undefined },
@@ -8329,7 +8341,7 @@ function ListingCropDialog({ kind, src, cors, start, error, onCancel, onDone }) 
           src: img.src, alt: "", draggable: false, className: "faiCrop__img",
           style: { width: `${dw}px`, height: `${dh}px`, transform: `translate(${view.ox}px, ${view.oy}px)` },
         }),
-        kind === "photo" && box.h > 0 && el("div", { className: "faiCrop__guide", style: { width: `${Math.min(box.w, box.h * 4 / 3)}px` } })),
+        null),
       el("label", { className: "faiCrop__zoom" },
         el("span", null, "Zoom"),
         el("input", {
@@ -8344,7 +8356,7 @@ function ListingCropDialog({ kind, src, cors, start, error, onCancel, onDone }) 
 }
 
 // One branch's listing as the preview.
-function ListingPreviewEditor({ branch, operatorId, listing, timeZone, onSaved, fleetrOn, multi }) {
+function ListingPreviewEditor({ branch, operatorId, company, listing, timeZone, onSaved, fleetrOn, multi }) {
   const el = React.createElement;
   const l = listing || {};
   const [busy, setBusy] = React.useState("");
@@ -8592,28 +8604,35 @@ function ListingPreviewEditor({ branch, operatorId, listing, timeZone, onSaved, 
     e.stopPropagation();
     if (busy) return;
     const key = `${kind}@${where}`;
-    if (l[fieldOf(kind)]) setMenu((m) => (m === key ? "" : key)); else choose(kind);
+    // An empty spot opens the file picker straight away; the menu is for an
+    // image that is there.
+    if (listingPhotoUrl(l[fieldOf(kind)])) setMenu((m) => (m === key ? "" : key)); else choose(kind);
   };
-  // The photo with the logo on it, as the card and the branch page show them.
-  const photoBlock = (cls, where) => {
-    const url = listingPhotoUrl(l.photoPath), logo = listingPhotoUrl(l.logoPath);
-    return el("div", { className: `${cls} faiImage` },
+  const companyName = company || branch.name;
+  // The logo in its rounded square, as a result and the branch page show it.
+  const logoBlock = (cls, where) => {
+    const logo = listingPhotoUrl(l.logoPath);
+    return el("div", {
+      className: `${cls} faiImage faiLogo${logo ? "" : " faiLogo--empty"}`, role: "button", tabIndex: 0,
+      "aria-label": logo ? "Change the logo" : "Add your logo",
+      onClick: openImage("logo", where), onKeyDown: keyClick(openImage("logo", where)),
+    }, logo ? el("img", { src: logo, alt: `${companyName} logo` }) : el("span", null, busy === "logo" ? "Uploading…" : "Add logo"),
+      imageMenu("logo", where));
+  };
+  // The location photo, at a moderate size in About this branch.
+  const photoBlock = () => {
+    const url = listingPhotoUrl(l.photoPath);
+    return el("div", { className: "about-photo faiImage" },
       el("div", {
         className: "faiImage__hit", role: "button", tabIndex: 0,
         "aria-label": url ? "Change the location photo" : "Add a photo of your location",
-        onClick: openImage("photo", where), onKeyDown: keyClick(openImage("photo", where)),
+        onClick: openImage("photo", "about"), onKeyDown: keyClick(openImage("photo", "about")),
       },
         url ? el("img", { src: url, alt: branch.name })
           : el("div", { className: "placeholder-photo faiImage__empty" },
               faiIcon("camera", "1.4"),
               el("span", null, busy === "photo" ? "Uploading…" : "Add a photo of your location"))),
-      el("div", {
-        className: `card-logo faiLogo${logo ? "" : " faiLogo--empty"}`, role: "button", tabIndex: 0,
-        "aria-label": logo ? "Change the logo" : "Add your logo",
-        onClick: openImage("logo", where), onKeyDown: keyClick(openImage("logo", where)),
-      }, logo ? el("img", { src: logo, alt: `${branch.name} logo` }) : el("span", null, busy === "logo" ? "…" : "Add logo")),
-      imageMenu("photo", where),
-      imageMenu("logo", where));
+      imageMenu("photo", "about"));
   };
 
   const classes = faiClasses();
@@ -8690,22 +8709,23 @@ function ListingPreviewEditor({ branch, operatorId, listing, timeZone, onSaved, 
         el("button", { type: "button", className: "faiBtn faiBtn--primary", disabled: !!busy, onClick: saveEdit }, busy === part ? "Saving…" : "Save")));
   };
 
-  // ── The search result card ──
+  // ── The search result: a row with the logo, the company, the price ──
   const card = el("div", { className: "card faiCard" },
-    photoBlock("card-photo", "card"),
+    logoBlock("card-mark", "card"),
     el("div", { className: "card-body" },
-      el("div", { className: "card-name" }, branch.name),
+      el("div", { className: "card-name" }, companyName),
       editable("places", "the cities and airports served",
-        el("div", { className: "card-sub" }, city || add("Add the cities you serve")), "places@card"),
+        el("div", { className: "card-sub" }, [company ? branch.name : null, city].filter(Boolean).join(" \u00b7 "),
+          !city && el(React.Fragment, null, company ? " \u00b7 " : "", add("Add the cities you serve"))), "places@card"),
       editable("perks", "what this branch offers", perks.length
         ? el("div", { className: "tags" }, perks.map((p) => el("span", { key: p.name, className: "tag" }, p.name)))
-        : el("div", { className: "tags" }, add("Add perks")), "perks@card"),
-      el("div", { className: "card-price" },
-        lowest != null
-          ? el(React.Fragment, null,
-              el("div", null, "from ", el("b", null, `${faiDayRate(lowest)}/day`)),
-              el("span", null, `${faiMoney(lowest * FAI_SAMPLE_DAYS)} total`))
-          : el("div", { className: "faiMuted" }, "Add a fleetr.ai daily rate under Rates"))));
+        : el("div", { className: "tags" }, add("Add perks")), "perks@card")),
+    el("div", { className: "card-price" },
+      lowest != null
+        ? el(React.Fragment, null,
+            el("div", null, "from ", el("b", null, `${faiDayRate(lowest)}/day`)),
+            el("span", null, `${faiMoney(lowest * FAI_SAMPLE_DAYS)} total`))
+        : el("div", { className: "faiMuted" }, "Add a fleetr.ai daily rate under Rates")));
 
   // ── The branch page ──
   const facts = [
@@ -8717,8 +8737,8 @@ function ListingPreviewEditor({ branch, operatorId, listing, timeZone, onSaved, 
     el("div", null, el("b", null, f.name), el("span", null, f.text || f.empty)));
   const section = (title, body, extra) => el("section", { className: `sec${extra ? ` ${extra}` : ""}` }, title && el("h2", null, title), body);
 
-  const content = el("div", null,
-    section("Free for your dates", el(React.Fragment, null,
+  const content = el("div", { className: "branch-main" },
+    section("Available for your dates", el(React.Fragment, null,
       el("p", { className: "sec-sub" }, `${trip.range} · ${FAI_SAMPLE_DAYS} days · prices before tax`),
       classes.length
         ? el("div", { className: "classes" }, classes.map((c) => el("div", { key: c.id, className: "class-row" },
@@ -8732,14 +8752,14 @@ function ListingPreviewEditor({ branch, operatorId, listing, timeZone, onSaved, 
             el("div", { className: "class-price" }, el("b", null, `${faiDayRate(c.dailyRate)}/day`), el("span", null, `${faiMoney(c.dailyRate * FAI_SAMPLE_DAYS, true)} total`)))))
         : el("p", { className: "faiMuted" }, "Vehicle classes show here once they have a fleetr.ai daily rate under Rates."),
       el("p", { className: "faiHint" }, "Renters see the classes free for their dates. These come from Vehicle classes and Rates."))),
-    section("About this branch", editable("description", "about this branch",
-      l.description ? el("p", { className: "faiPre" }, l.description) : add("Add a description of this branch"))),
-    section("What this branch offers", editable("perks", "what this branch offers", perks.length
-      ? el("div", { className: "perks two" }, perks.map((p) => el("div", { key: p.name, className: "perk" }, faiIcon(p.icon, "1.5"),
-          el("div", null, el("b", null, p.name), el("span", null, p.text)))))
-      : el(React.Fragment, null, add("Add airport pickup, delivery or after-hours drop-off"),
-          el("p", { className: "faiHint" }, "This part is left off fleetr.ai until you add one.")))),
-    section("Hours", editable("hours", "the hours", hours
+    // The location photo, at a moderate size beside the description, the
+    // hours and where to pick up, as the website shows them.
+    section("About this branch", el("div", { className: "about with-photo" },
+      el("div", { className: "about-text" },
+        editable("description", "about this branch",
+          l.description ? el("p", { className: "about-desc" }, l.description) : add("Add a description of this branch")),
+        el("h3", null, "Hours"),
+        editable("hours", "the hours", hours
       ? el("div", { className: "hours" }, LISTING_DAYS.map(([k, name]) => {
           const d = hours[k];
           const open = d && d.open && d.close;
@@ -8748,7 +8768,17 @@ function ListingPreviewEditor({ branch, operatorId, listing, timeZone, onSaved, 
             el("span", { className: `${k === tk ? "today" : ""} ${open ? "" : "closed"}` },
               open ? `${faiTime(String(d.open).slice(0, 5))} – ${faiTime(String(d.close).slice(0, 5))}` : "Closed"));
         }))
-      : add("Add your opening hours"))),
+      : add("Add your opening hours")),
+        el("h3", null, "Where you'll pick up"),
+        l.address ? el("p", { style: { marginBottom: "8px" } }, l.address) : el("p", { className: "faiMuted" }, "Add the address under Branch."),
+        Number.isFinite(lat) && Number.isFinite(lng) && el(ListingMapPin, { lat, lng, disabled: true, onPlace: () => {} }),
+        el("p", { className: "faiHint" }, "The address and the pin are set under Branch.")),
+      photoBlock())),
+    section("What this branch offers", editable("perks", "what this branch offers", perks.length
+      ? el("div", { className: "perks two" }, perks.map((p) => el("div", { key: p.name, className: "perk" }, faiIcon(p.icon, "1.5"),
+          el("div", null, el("b", null, p.name), el("span", null, p.text)))))
+      : el(React.Fragment, null, add("Add airport pickup, delivery or after-hours drop-off"),
+          el("p", { className: "faiHint" }, "This part is left off fleetr.ai until you add one.")))),
     section("Requirements", el("div", { className: "perks two" },
       editing === "requirements" || editing === "payment"
         ? el("div", { className: "faiEditing faiSpan" }, editor(editing))
@@ -8756,11 +8786,7 @@ function ListingPreviewEditor({ branch, operatorId, listing, timeZone, onSaved, 
             key: f.name, className: "faiEditable faiEditable--row", role: "button", tabIndex: 0,
             "aria-label": `Edit ${f.name.toLowerCase()}`, title: `Edit ${f.name.toLowerCase()}`,
             onClick: () => startEdit(f.part), onKeyDown: keyClick(() => startEdit(f.part)),
-          }, factRow(f), el("span", { className: "faiEditTag", "aria-hidden": "true" }, "Edit"))))),
-    section("Where you'll pick up", el(React.Fragment, null,
-      l.address ? el("p", { style: { marginBottom: "8px" } }, l.address) : el("p", { className: "faiMuted" }, "Add the address under Branch."),
-      Number.isFinite(lat) && Number.isFinite(lng) && el(ListingMapPin, { lat, lng, disabled: true, onPlace: () => {} }),
-      el("p", { className: "faiHint" }, "The address and the pin are set under Branch."))));
+          }, factRow(f), el("span", { className: "faiEditTag", "aria-hidden": "true" }, "Edit"))))));
 
   const bookBox = el("aside", { className: "book-box faiBookBox", "aria-label": "Reserve, as renters see it" },
     el("div", { className: "bb-price" }, lowest != null ? `from ${faiDayRate(lowest)}` : "Not available", lowest != null && el("span", null, "/day")),
@@ -8790,14 +8816,15 @@ function ListingPreviewEditor({ branch, operatorId, listing, timeZone, onSaved, 
     el("div", { className: "fai" },
       el("div", { className: "faiStage" },
         el("div", { className: "faiStage__label" }, "In search results"),
-        el("div", { className: "faiCardWrap" }, card)),
+        el("div", { className: "cards" }, card)),
       el("div", { className: "faiStage faiStage--page" },
         el("div", { className: "faiStage__label" }, "The branch page"),
         el("div", { className: "branch-head" },
-          editable("places", "the cities and airports served", el("span", { className: "kicker" }, city || add("Add the cities you serve"))),
-          el("h1", null, branch.name),
-          l.address ? el("div", { className: "sub" }, l.address) : el("div", { className: "sub faiMuted" }, "Add the address under Branch.")),
-        photoBlock("hero-photo", "hero"),
+          logoBlock("branch-mark", "head"),
+          el("div", null,
+            el("h1", null, companyName),
+            el("div", { className: "sub" }, [company ? branch.name : null, l.address].filter(Boolean).join(" \u00b7 "),
+              !l.address && el("span", { className: "faiMuted" }, `${company ? " \u00b7 " : ""}Add the address under Branch.`)))),
         el("div", { className: "branch-cols" }, content, el("div", null, bookBox))),
       el("p", { className: "faiHint faiStage__foot" }, `Prices are shown for a sample ${FAI_SAMPLE_DAYS} day trip, before tax. Click any part to change it.`)),
 
@@ -20755,31 +20782,32 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
 .fai img{ display: block; max-width: 100%; }
 .fai svg{ display: block; }
 .faiStage__label{ font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-55); margin-bottom: 12px; }
+.faiStage{ container-type: inline-size; }
 .faiStage--page{ margin-top: 30px; padding-top: 24px; border-top: 1px dashed var(--rule); container-type: inline-size; }
 .faiStage__foot{ margin-top: 18px !important; }
-.faiCardWrap{ max-width: 340px; }
 
-.fai .kicker{ display: inline-flex; align-items: center; gap: 12px; font-size: 12.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink); }
-.fai .card{ display: block; text-decoration: none; color: var(--ink); }
-.fai .card-photo{ position: relative; aspect-ratio: 4 / 3; border-radius: var(--r); overflow: hidden; background: var(--ink-06); }
-.fai .card-photo img, .fai .hero-photo img{ width: 100%; height: 100%; object-fit: cover; }
-.fai .card-logo{ position: absolute; left: 12px; bottom: 12px; width: 50px; height: 50px; border-radius: 12px; background: var(--paper); box-shadow: var(--shadow); padding: 6px; display: flex; align-items: center; justify-content: center; }
-.fai .card-logo img{ max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
-.fai .card-body{ padding-top: 14px; display: grid; gap: 3px; }
+.fai .cards{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; border-top: 1px solid var(--rule); }
+.fai .card{ display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; align-items: center; gap: 18px; padding: 18px 12px; border-bottom: 1px solid var(--rule); color: var(--ink); border-radius: var(--r); }
+.fai .card-mark, .fai .branch-mark{ position: relative; width: 72px; height: 72px; flex: none; border-radius: 16px; background: var(--paper); border: 1px solid var(--rule); box-shadow: var(--shadow); padding: 8px; display: flex; align-items: center; justify-content: center; }
+.fai .card-mark img, .fai .branch-mark img{ max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.fai .card-body{ display: grid; gap: 3px; min-width: 0; }
 .fai .card-name{ font-family: var(--display); font-size: 21px; font-weight: 500; line-height: 1.2; }
 .fai .card-sub{ color: var(--ink-55); font-size: 14.5px; }
 .fai .tags{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.fai .tag{ font-size: 12.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--ink-06); color: var(--ink-70); }
-.fai .card-price{ display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--rule); font-size: 15px; }
+.fai .tag{ font-size: 12.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--paper); border: 1px solid var(--rule); color: var(--ink-70); }
+.fai .card-price{ display: flex; flex-direction: column; align-items: flex-end; gap: 2px; text-align: right; font-size: 15px; white-space: nowrap; }
 .fai .card-price b{ font-size: 17px; }
 .fai .card-price span{ color: var(--ink-55); font-size: 14px; }
 .fai .placeholder-photo{ width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--ink-55); background: repeating-linear-gradient(135deg, var(--ink-06) 0 1px, transparent 1px 14px); }
 
-.fai .branch-head .kicker{ margin-bottom: 14px; }
+.fai .branch-head{ display: flex; align-items: center; gap: 20px; }
 .fai .branch-head h1{ font-size: clamp(32px, 5vw, 56px); letter-spacing: -0.025em; line-height: 1.0; }
 .fai .branch-head .sub{ color: var(--ink-55); margin-top: 10px; }
-.fai .hero-photo{ position: relative; margin-top: 26px; border-radius: var(--r-lg); overflow: hidden; aspect-ratio: 4 / 3; background: var(--ink-06); }
-.fai .hero-photo .card-logo{ width: 72px; height: 72px; left: 20px; bottom: 20px; border-radius: 16px; padding: 9px; }
+.fai .about{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
+.fai .about-desc{ white-space: pre-line; max-width: 38em; }
+.fai .about-text h3{ font-family: var(--display); font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; font-size: 18px; margin: 26px 0 12px; }
+.fai .about-photo{ position: relative; border-radius: var(--r); overflow: hidden; aspect-ratio: 4 / 3; background: var(--ink-06); order: -1; max-width: 460px; width: 100%; }
+.fai .about-photo img{ width: 100%; height: 100%; object-fit: cover; }
 .fai .branch-cols{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 44px; margin-top: 36px; }
 .fai .sec{ padding: 32px 0; border-top: 1px solid var(--rule); }
 .fai .sec:first-child{ border-top: none; padding-top: 0; }
@@ -20828,7 +20856,18 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
   .fai .class-icon{ grid-row: span 1; }
   .fai .class-price{ grid-column: 3; flex-direction: column; align-items: flex-end; margin-top: 0; gap: 0; }
 }
-@container (min-width: 700px){ .fai .hero-photo{ aspect-ratio: 21 / 9; } }
+@container (max-width: 519px){
+  .fai .card{ grid-template-columns: 56px minmax(0, 1fr); gap: 4px 14px; align-items: start; }
+  .fai .card .card-mark{ width: 56px; height: 56px; border-radius: 13px; padding: 6px; }
+  .fai .card .card-price{ grid-column: 2; flex-direction: row; align-items: baseline; justify-content: space-between; margin-top: 8px; }
+  .fai .branch-head{ align-items: flex-start; gap: 14px; }
+  .fai .branch-head .branch-mark{ width: 56px; height: 56px; border-radius: 13px; padding: 6px; }
+}
+.fai .branch-main{ container-type: inline-size; min-width: 0; }
+@container (min-width: 560px){
+  .fai .about.with-photo{ grid-template-columns: minmax(0, 1fr) 260px; gap: 32px; align-items: start; }
+  .fai .about-photo{ order: 0; max-width: none; }
+}
 @container (min-width: 900px){ .fai .branch-cols{ grid-template-columns: minmax(0, 1fr) 320px; gap: 56px; } }
 
 /* Editing in place. A part that can be changed shows a terracotta outline and
@@ -20850,13 +20889,12 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
 .faiImage__hit:hover::after, .faiImage__hit:focus-visible::after{ content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 2px var(--terra); border-radius: inherit; pointer-events: none; }
 .faiImage__empty{ flex-direction: column; gap: 10px; font-weight: 600; font-size: 15px; color: var(--terra-dk); }
 .faiImage__empty svg{ width: 34px; height: 34px; }
-.faiLogo{ cursor: pointer; z-index: 2; }
+.faiLogo{ cursor: pointer; }
 .faiLogo:hover, .faiLogo:focus-visible{ box-shadow: 0 0 0 2px var(--terra), var(--shadow); }
-.faiLogo--empty{ border: 1.5px dashed var(--terra); box-shadow: none; text-align: center; font-size: 11px; font-weight: 700; line-height: 1.15; color: var(--terra-dk); }
+.fai .faiLogo--empty{ border: 1.5px dashed var(--terra); box-shadow: none; text-align: center; font-size: 11px; font-weight: 700; line-height: 1.15; color: var(--terra-dk); }
 .faiMenu{ position: absolute; z-index: 5; display: grid; min-width: 160px; padding: 6px; border-radius: 12px; background: #fff; box-shadow: var(--shadow-lg); border: 1px solid var(--rule); }
 .faiMenu--photo{ top: 12px; right: 12px; }
-.faiMenu--logo{ left: 12px; bottom: 78px; }
-.hero-photo .faiMenu--logo{ left: 20px; bottom: 102px; }
+.faiMenu--logo{ left: 0; top: calc(100% + 6px); }
 .faiMenu button{ text-align: left; padding: 8px 10px; border: 0; border-radius: 8px; background: none; font-size: 14px; font-weight: 500; cursor: pointer; color: var(--ink); }
 .faiMenu button:hover{ background: var(--ink-06); }
 .faiMenu .faiMenu__danger{ color: #b3261e; }
@@ -20895,7 +20933,6 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
 .faiCrop__frame:focus-visible{ outline: 2px solid #F4845F; outline-offset: 3px; }
 .faiCrop__frame--logo{ max-width: 340px; margin: 0 auto; border-radius: 24%; }
 .faiCrop__img{ position: absolute; left: 0; top: 0; max-width: none !important; pointer-events: none; }
-.faiCrop__guide{ position: absolute; top: 0; bottom: 0; left: 50%; transform: translateX(-50%); border-left: 2px dashed rgba(249, 249, 247, 0.95); border-right: 2px dashed rgba(249, 249, 247, 0.95); box-shadow: 0 0 0 1px rgba(31, 30, 29, 0.25); pointer-events: none; }
 .faiCrop__failed{ position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 20px; font-weight: 600; }
 .faiCrop__zoom{ display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 600; }
 .faiCrop__zoom input{ flex: 1; accent-color: #F4845F; }
