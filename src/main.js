@@ -636,7 +636,7 @@ Reservations operation rules:
 
 Rental agreement lifecycle:
 - A rental agreement moves through five statuses, in this order: "reservation" (not yet picked up), "open_rental_agreement" (the vehicle is out), "customer_return" (the customer returned it through the customer app and staff have not processed it yet), "close_pending" (staff have processed the return, paperwork not finished), "closed" (done).
-- To change it, use operation "raStatus" on table "reservations", match on "resCode", and data containing only rentalAgreementStatus. Example: {"table":"reservations","operation":"raStatus","match":{"resCode":"ABC 123 456"},"data":{"rentalAgreementStatus":"open_rental_agreement"}}
+- To change it, use operation "raStatus" on table "reservations", match on "resCode", and data containing only rentalAgreementStatus. Example: {"table":"reservations","operation":"raStatus","match":{"resCode":"ABC 123 456"},"data":{"rentalAgreementStatus":"closed"}}
 - Never change rentalAgreementStatus through an "update", and never send any other field in the same action.
 - Opening sets the vehicle to On Rent. Moving to customer_return or to close_pending sets it to Ready Returns. All of these happen automatically, do not also send a fleet status change.
 - Do not set customer_return yourself. The customer app writes it when a customer returns a vehicle, and it records that a customer did so; setting it by hand would claim a return that did not happen that way.
@@ -950,7 +950,7 @@ const VEHICLE_DETAIL_KEYS = [
   "plate", "province", "year", "make", "model",
   "colour", "tankSizeLiters", "pmIntervalKm", "vehicleClass", "vin",
 ];
-function commandBarActionKey({ table, operation, data, pmVehicle }) {
+function commandBarActionKey({ table, operation, data }) {
   const fields = Object.keys(data || {});
   const touches = (list) => fields.some((f) => list.includes(f));
 
@@ -960,16 +960,9 @@ function commandBarActionKey({ table, operation, data, pmVehicle }) {
   if (operation === "confirmPickup") return "noShow.confirmPickup";
   if (operation === "addNote")       return "note.add";
   if (operation === "pmComplete")    return "vehicle.pmComplete";
-  // Opening is called out separately from advancing because opening is what puts
-  // a vehicle on the road, and it is the one that can override a PM flag.
-  if (operation === "raStatus") {
-    if (data?.rentalAgreementStatus !== "open_rental_agreement") return "ra.advance";
-    // Overriding a PM flag is a different action from opening a rental, and it
-    // has to be recognised here too. The command bar reaches the same tables as
-    // the UI, so a split that only exists in the page hands the AI path the
-    // route around it.
-    return pmVehicle?.needsPm ? "ra.openDespitePm" : "ra.open";
-  }
+  // A rental is only opened by the customer app pickup, so every status change
+  // here is an advance (manualRaTransition then allows only closing).
+  if (operation === "raStatus") return "ra.advance";
   if (table === "app_settings") {
     return fields.includes("gasMarkupPercent") ? "gas.markup" : "gas.regionPrice";
   }
@@ -5204,25 +5197,6 @@ function resolvePmStatus(vehicle, requestedStatus) {
     forced: true,
     message: `${vehicle.plate} is due for preventative maintenance, so it has been set to PM instead of ${requestedStatus}. Use PM Complete on its detail page once serviced.`,
   };
-}
-
-// Soft block on renting out a vehicle that is due for preventative maintenance.
-// Deliberately not a hard block: whether a flagged vehicle can still go out is
-// an operator judgement, not something the system should decide. But it must
-// never happen silently, and the safe choice is the default, since dismissing
-// the dialog (Escape or Cancel) cancels the rental rather than allowing it.
-//
-// Overriding changes status only. needsPm is untouched, so the vehicle stays in
-// the Preventative Maintenance list and in the reminder banner. PM Complete is
-// still the only thing that clears the flag.
-function confirmRentalDespitePm(vehicle) {
-  if (!vehicle?.needsPm) return true;
-  return window.confirm(
-    `${vehicle.plate} is flagged for preventative maintenance.\n\n` +
-    `It is due for service and should normally be sent to PM before going out again.\n\n` +
-    `OK: rent it anyway. The PM flag stays on and the vehicle keeps showing under Preventative Maintenance.\n` +
-    `Cancel: do not open the rental.`
-  );
 }
 
 // ─── Shared write rules ──────────────────────────────────────────────────────
@@ -10514,6 +10488,9 @@ function FleetrCommandBar() {
     if (table === "reservations" && operation === "insert") {
       const check = validateReservation(data);
       if (!check.ok) return fail(check.error);
+      // A new reservation is never picked up yet, whatever status it is given:
+      // rentals are only opened by the customer app pickup.
+      data = { ...data, rentalAgreementStatus: "reservation", pickupStatus: "Pending arrival" };
     }
 
     // Every field the Add Vehicle form collects is correctable on a vehicle
@@ -10597,12 +10574,6 @@ function FleetrCommandBar() {
       const allowed = manualRaTransition(fromStatus, check.status);
       if (!allowed.ok) return fail(allowed.error);
 
-      if (check.status === "open_rental_agreement") {
-        const ra    = raRow || rentalAgreements.find((x) => x.resCode === raResCode);
-        const plate = ra?.plate || res?.plate;
-        const veh   = plate ? fleet.find((v) => normalizePlate(v.plate) === normalizePlate(plate)) : null;
-        if (!confirmRentalDespitePm(veh)) return fail("Cancelled. The vehicle is still flagged for preventative maintenance.");
-      }
     }
 
     // ── PM Complete ───────────────────────────────────────────────────────────
@@ -14440,41 +14411,6 @@ function CustomerPage() {
   const rentalAgreementStatus =
     ra?.rentalAgreementStatus || localRecord?.rentalAgreementStatus || "reservation";
 
-  // The vehicle this reservation will actually go out on. Checked before a
-  // rental agreement is opened so a PM-due vehicle cannot be rented silently.
-  const pmVehicle = React.useMemo(() => {
-    const plate = ra?.plate || localRecord?.plate || rentalVehicle.plate;
-    if (!plate) return null;
-    return fleet.find((v) => normalizePlate(v.plate) === normalizePlate(plate)) || null;
-  }, [ra, localRecord, rentalVehicle.plate, fleet]);
-
-  const openRentalAgreement = () => {
-    // Warn before the PIN prompt so staff are not asked to authenticate an
-    // action they are about to cancel.
-    if (!confirmRentalDespitePm(pmVehicle)) {
-      console.log("rental open cancelled: vehicle flagged for PM", pmVehicle?.plate);
-      // Declining the PM warning never reaches guardAction, so it logs itself.
-      logAudit({
-        actionType: pmVehicle?.needsPm ? "ra.openDespitePm" : "ra.open",
-        tableName: "reservations", recordId: resCode,
-        outcome: "refused",
-        description: `Declined to open the rental: ${pmVehicle?.plate || "the vehicle"} is flagged for preventative maintenance.`,
-      });
-      return;
-    }
-    // The key depends on the vehicle, not on the button. Overriding a PM flag
-    // is Admin-only and is logged under its own action, so the log can answer
-    // "who put a vehicle that was due for service on the road" without anyone
-    // reading descriptions to work out which ra.open entries were overrides.
-    guardAction(pmVehicle?.needsPm ? "ra.openDespitePm" : "ra.open", () => {
-      setLocalRecord((prev) => prev ? { ...prev, rentalAgreementStatus: "open_rental_agreement" } : prev);
-      setReservations((prev) =>
-        prev.map((r) => r.resCode === resCode ? { ...r, rentalAgreementStatus: "open_rental_agreement" } : r)
-      );
-      syncRAStatus(resCode, "open_rental_agreement");
-    }, { tableName: "reservations", recordId: resCode, description: `Rental agreement opened${pmVehicle?.plate ? ` on ${pmVehicle.plate}` : ""}.` });
-  };
-
   const updateRentalAgreementStatus = (status) => {
     // The rule, checked here as well as enforced by which buttons exist below.
     // A refusal reaching this point means a button got out of step with the
@@ -14489,20 +14425,7 @@ function CustomerPage() {
       });
       return;
     }
-    // Reopening a rental agreement is the same soft block as opening one.
-    if (status === "open_rental_agreement" && !confirmRentalDespitePm(pmVehicle)) {
-      console.log("rental reopen cancelled: vehicle flagged for PM", pmVehicle?.plate);
-      logAudit({
-        actionType: pmVehicle?.needsPm ? "ra.openDespitePm" : "ra.open",
-        tableName: "reservations", recordId: resCode,
-        outcome: "refused",
-        description: `Declined to reopen the rental: ${pmVehicle?.plate || "the vehicle"} is flagged for preventative maintenance.`,
-      });
-      return;
-    }
-    guardAction(
-      status !== "open_rental_agreement" ? "ra.advance"
-        : pmVehicle?.needsPm ? "ra.openDespitePm" : "ra.open", () => {
+    guardAction("ra.advance", () => {
       setLocalRecord((prev) => prev ? { ...prev, rentalAgreementStatus: status } : prev);
       setReservations((prev) =>
         prev.map((r) => r.resCode === resCode ? { ...r, rentalAgreementStatus: status } : r)
