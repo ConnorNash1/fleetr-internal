@@ -3519,6 +3519,7 @@ function DashboardPage() {
   const isMobile = useMobile();
   const readyReturns = fleet.filter((v) => v.status === "Ready Returns");
   const navigate = useNavigate();
+  const statusDrag = useVehicleStatusDrag();
   const [collapsedSections, setCollapsedSections] = React.useState({
     reservations: true,
     nonDriveIntake: true,
@@ -3818,7 +3819,7 @@ function DashboardPage() {
               const noneCard = () => React.createElement("div", { className: "resvEmpty" }, "None");
               const fleetCards = (rows, showStatus) =>
                 rows.length === 0 ? [noneCard()] : rows.map((v) =>
-                  React.createElement("div", { key: v.id, className: "dashCard" },
+                  React.createElement("div", { key: v.id, className: `dashCard ${statusDrag.rowClass(v)}`, ...statusDrag.rowProps(v) },
                     React.createElement("div", { className: "dashCard__header" },
                       React.createElement("span", null, `${v.make} ${v.model}`),
                       React.createElement(PlateLink, { plate: v.plate })
@@ -3845,7 +3846,7 @@ function DashboardPage() {
                       ? React.createElement("tr", null, React.createElement("td", { colSpan: showStatus ? 4 : 3, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
                       : rows.map((v) => {
                           const statusClass = fleetStatusClass(v.status);
-                          return React.createElement("tr", { key: v.id },
+                          return React.createElement("tr", { key: v.id, className: statusDrag.rowClass(v), ...statusDrag.rowProps(v) },
                             React.createElement("td", null, React.createElement(PlateLink, { plate: v.plate })),
                             React.createElement("td", null, `${v.make} ${v.model}`),
                             React.createElement("td", null, v.vehicleClass),
@@ -3857,12 +3858,13 @@ function DashboardPage() {
 
               const avail    = fleet.filter((v) => v.status === "Available");
               const cleaning = fleet.filter((v) => v.status === "Needs Cleaning");
-              const pm     = fleet.filter((v) => v.needsPm);
+              // Due for PM, or moved to PM by hand.
+              const pm     = fleet.filter((v) => v.needsPm || v.status === "PM");
               const damaged  = fleet.filter((v) => v.status === "Damaged");
               const onRent   = fleet.filter((v) => v.status === "On Rent");
 
               const group = (label, cls, key, rows, showStatus, children) =>
-                React.createElement("div", { className: "fleetGroup" },
+                React.createElement("div", { className: `fleetGroup${statusDrag.groupClass(VS_GROUP_STATUS[key])}`, ...statusDrag.groupProps(VS_GROUP_STATUS[key]) },
                   React.createElement("div", {
                     className: `fleetGroupHeader fleetGroupHeader--${cls}`,
                     ...barToggle(() => toggleFleetGroup(key), !fleetGroupCollapsed[key]),
@@ -3880,7 +3882,7 @@ function DashboardPage() {
                 group("Available", "available", "available", avail, false),
                 group("Needs Cleaning", "cleaning", "needsCleaning", cleaning, false),
                 // Ready Returns — two sub-sections: returned & ready + projected
-                React.createElement("div", { className: "fleetGroup" },
+                React.createElement("div", { className: `fleetGroup${statusDrag.groupClass("Ready Returns")}`, ...statusDrag.groupProps("Ready Returns") },
                   React.createElement("div", {
                     className: "fleetGroupHeader fleetGroupHeader--readyReturns",
                     ...barToggle(() => toggleFleetGroup("readyReturns"), !fleetGroupCollapsed.readyReturns),
@@ -3895,7 +3897,7 @@ function DashboardPage() {
                     ? (readyReturns.length === 0 ? [noneCard()] : readyReturns.map((r) => {
                         const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
                         const loc = matchRA?.returnVehicleLocation || "";
-                        return React.createElement("div", { key: r.id, className: "dashCard" },
+                        return React.createElement("div", { key: r.id, className: `dashCard ${statusDrag.rowClass(r)}`, ...statusDrag.rowProps(r) },
                           React.createElement("div", { className: "dashCard__header" },
                             React.createElement("span", null, `${r.make} ${r.model}`),
                             React.createElement(PlateLink, { plate: r.plate })
@@ -3922,7 +3924,7 @@ function DashboardPage() {
                           : readyReturns.map((r) => {
                               const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
                               const loc = matchRA?.returnVehicleLocation || "";
-                              return React.createElement("tr", { key: r.id },
+                              return React.createElement("tr", { key: r.id, className: statusDrag.rowClass(r), ...statusDrag.rowProps(r) },
                                 React.createElement("td", null, React.createElement(PlateLink, { plate: r.plate })),
                                 React.createElement("td", null, `${r.make} ${r.model}`),
                                 React.createElement("td", null, r.fileType || ""),
@@ -3935,7 +3937,8 @@ function DashboardPage() {
                 ),
                 group("Preventative Maintenance", "pm", "pm", pm, false),
                 group("Damaged", "damaged", "damaged", damaged, false),
-                group("On Rent", "onRent", "onRent", onRent, true)
+                group("On Rent", "onRent", "onRent", onRent, true),
+                statusDrag.layer
               );
             })()
           )
@@ -4844,6 +4847,240 @@ function VehicleDetailPage() {
   );
 }
 
+// ─── Dragging a vehicle to another status ────────────────────────────────────
+// The vehicle status boards (Dashboard, Vehicles) let staff drag a vehicle from
+// one status group to another. With a mouse a drag starts once the pointer has
+// moved a little, so a click on the plate still opens the vehicle; on a phone
+// or tablet a vehicle is picked up by pressing and holding it, so a swipe still
+// scrolls. While dragging, the groups it can go to are outlined and the ones it
+// cannot are dimmed; a refused drop says why.
+//
+// The rules:
+//   - On Rent cannot be dragged in or out: only a pickup and a return change
+//     it. A vehicle whose rental agreement still holds it (open, or returned by
+//     the customer and not yet processed) is locked the same way, as on its
+//     detail page.
+//   - Only a return puts a vehicle in Ready Returns. Leaving Ready Returns
+//     clears the renter, due date and file type, as collecting it always has.
+//   - Leaving Damaged while the vehicle has an open damage claim asks first.
+//   - A vehicle due for PM going to Available or Needs Cleaning goes to PM
+//     (resolvePmStatus), as the status dropdown does.
+// Every move goes through guardAction, so it is in the audit log under who
+// made it. After a move, "Moved to <status>" shows with Undo for a few seconds.
+const VS_GROUP_STATUS = {
+  available: "Available", needsCleaning: "Needs Cleaning", readyReturns: "Ready Returns",
+  pm: "PM", damaged: "Damaged", onRent: "On Rent",
+};
+const VS_HOLD_MS = 450;
+const VS_UNDO_MS = 6000;
+
+// The nearest ancestor that scrolls, or null for the page itself.
+function vsScrollerOf(el) {
+  for (let n = el && el.parentElement; n && n !== document.body; n = n.parentElement) {
+    const oy = getComputedStyle(n).overflowY;
+    if ((oy === "auto" || oy === "scroll") && n.scrollHeight > n.clientHeight) return n;
+  }
+  return null;
+}
+
+function useVehicleStatusDrag() {
+  const { fleet, setFleet, rentalAgreements, damageClaims, guardAction, logAudit } = React.useContext(AppContext);
+  const [drag, setDrag] = React.useState(null);     // { id, plate, label, from, over }
+  const [toast, setToast] = React.useState(null);   // { text, note, error, undo }
+  const ghost = React.useRef(null);
+  const toastTimer = React.useRef(null);
+  const live = React.useRef({});
+  live.current = { fleet, rentalAgreements, damageClaims };
+  React.useEffect(() => () => clearTimeout(toastTimer.current), []);
+
+  const showToast = (t) => {
+    clearTimeout(toastTimer.current);
+    setToast(t);
+    toastTimer.current = setTimeout(() => setToast(null), t.error ? 4000 : VS_UNDO_MS);
+  };
+
+  // Why this vehicle cannot be moved at all, or null.
+  const lockOf = (v) => {
+    if (v.status === "On Rent") return "On Rent changes only at pickup and return.";
+    const ra = (live.current.rentalAgreements || []).find((a) => a.plate === v.plate && RA_LOCKS_VEHICLE_STATUS.includes(a.rentalAgreementStatus));
+    if (ra) return ra.rentalAgreementStatus === "customer_return"
+      ? "Its return is not processed yet. Finish it in Close Rental."
+      : "Its rental is still open.";
+    return null;
+  };
+  // Why no vehicle can be dropped on this status, or null.
+  const refusal = (to) => (to === "On Rent" ? "Only a pickup puts a vehicle On Rent."
+    : to === "Ready Returns" ? "Only a return puts a vehicle in Ready Returns." : null);
+
+  // Saves a move, or an undo, and offers Undo after a move.
+  const apply = (v, to, undo) => {
+    const from = v.status;
+    const pm = undo ? { status: to, forced: false } : resolvePmStatus(v, to);
+    const patch = undo ? { ...undo.restore } : { status: pm.status };
+    if (!undo && from === "Ready Returns") Object.assign(patch, { currentRenter: null, dueBack: null, fileType: null });
+    const before = Object.fromEntries(Object.keys(patch).map((k) => [k, v[k] ?? null]));
+    guardAction("vehicle.status", async () => {
+      setFleet((prev) => prev.map((x) => (x.id === v.id ? { ...x, ...patch } : x)));
+      const { error } = await supabase.from("fleet").update(patch).eq("id", v.id);
+      if (error) {
+        setFleet((prev) => prev.map((x) => (x.id === v.id ? { ...x, ...before } : x)));
+        showToast({ text: "The move could not be saved. Try again.", error: true });
+        throw new Error(error.message);
+      }
+      showToast(undo
+        ? { text: `Moved back to ${patch.status}` }
+        : { text: `Moved to ${pm.status}`, note: pm.forced ? "It is due for preventative maintenance." : null,
+            undo: { id: v.id, status: pm.status, restore: before } });
+    }, {
+      tableName: "fleet", recordId: v.plate,
+      description: undo
+        ? `Undid a move on the vehicle status board: ${v.plate} back from ${from} to ${patch.status}.`
+        : `Moved ${v.plate} from ${from} to ${pm.status} on the vehicle status board${pm.forced ? ` (dropped on ${to}; it is due for preventative maintenance)` : ""}.`,
+    });
+  };
+
+  const drop = (id, to) => {
+    const v = (live.current.fleet || []).find((x) => x.id === id);
+    if (!v || !to || to === v.status) return;
+    const bad = refusal(to);
+    if (bad) { showToast({ text: bad, error: true }); return; }
+    const claim = v.status === "Damaged" && (live.current.damageClaims || [])
+      .some((c) => (c.plate || "") === v.plate && c.status !== "resolved");
+    if (claim && !window.confirm(`${v.plate} has an open damage claim. Move it out of Damaged to ${to} anyway?`)) {
+      logAudit({ actionType: "vehicle.status", tableName: "fleet", recordId: v.plate, outcome: "cancelled",
+        description: `Did not move ${v.plate} out of Damaged to ${to}: it has an open damage claim.` });
+      return;
+    }
+    apply(v, to, null);
+  };
+
+  const undoMove = (u) => {
+    const v = (live.current.fleet || []).find((x) => x.id === u.id);
+    setToast(null);
+    if (!v || v.status !== u.status) { showToast({ text: "It has moved since, so it was left where it is.", error: true }); return; }
+    apply(v, u.restore.status, u);
+  };
+
+  const targetAt = (x, y) => {
+    const el = document.elementFromPoint(x, y);
+    const g = el && el.closest("[data-vs-drop]");
+    return g ? g.getAttribute("data-vs-drop") : null;
+  };
+
+  // A press on a vehicle: a drag once it moves (mouse) or once it is held
+  // (touch).
+  const start = (e, v) => {
+    if (drag) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    if (e.target.closest("select, input, textarea")) return;
+    const touch = e.pointerType !== "mouse";
+    const sx = e.clientX, sy = e.clientY;
+    const scroller = vsScrollerOf(e.currentTarget);
+    let x = sx, y = sy, started = false, over = null, timer = null, raf = 0;
+
+    const place = () => {
+      if (ghost.current) ghost.current.style.transform = `translate(${x + 14}px, ${y + 14}px)`;
+      const t = targetAt(x, y);
+      if (t !== over) { over = t; setDrag((d) => (d ? { ...d, over: t } : d)); }
+    };
+    // Near the top or bottom of the screen, the page scrolls to reach the
+    // groups out of view.
+    const tick = () => {
+      const edge = 70;
+      const dy = y < edge ? -Math.ceil((edge - y) / 5) : y > window.innerHeight - edge ? Math.ceil((y - (window.innerHeight - edge)) / 5) : 0;
+      if (dy) { if (scroller) scroller.scrollTop += dy; else window.scrollBy(0, dy); place(); }
+      raf = requestAnimationFrame(tick);
+    };
+    // The click a drag ends with is not a click on what it ends over. With a
+    // mouse it comes straight after the release; a touch can send one a moment
+    // later.
+    let unswallow = null;
+    const swallowClick = () => {
+      const stop = (ev) => { ev.preventDefault(); ev.stopPropagation(); };
+      window.addEventListener("click", stop, true);
+      unswallow = (ms) => setTimeout(() => window.removeEventListener("click", stop, true), ms);
+    };
+    const begin = () => {
+      const lock = lockOf(v);
+      swallowClick();
+      if (lock) { cleanup(); showToast({ text: `${v.plate} cannot be moved. ${lock}`, error: true }); return; }
+      started = true;
+      if (touch && navigator.vibrate) navigator.vibrate(12);
+      document.body.classList.add("vsDragging");
+      setDrag({ id: v.id, plate: v.plate, label: `${v.make || ""} ${v.model || ""}`.trim(), from: v.status, over: null });
+      requestAnimationFrame(place);
+      raf = requestAnimationFrame(tick);
+    };
+    const onMove = (ev) => {
+      x = ev.clientX; y = ev.clientY;
+      if (!started) {
+        const d = Math.hypot(x - sx, y - sy);
+        if (touch) { if (d > 10) cleanup(); } else if (d > 6) begin();
+        return;
+      }
+      ev.preventDefault();
+      place();
+    };
+    const onUp = (ev) => {
+      if (started) {
+        const to = targetAt(ev.clientX, ev.clientY);
+        setDrag(null);
+        cleanup();
+        drop(v.id, to);
+        return;
+      }
+      cleanup();
+    };
+    const onCancel = () => { if (started) setDrag(null); cleanup(); };
+    // Once a vehicle is held, the finger drags it rather than the page.
+    const blockScroll = (ev) => { if (started) ev.preventDefault(); };
+    const onKey = (ev) => { if (ev.key === "Escape") onCancel(); };
+    function cleanup() {
+      if (unswallow) { unswallow(touch ? 350 : 0); unswallow = null; }
+      clearTimeout(timer);
+      cancelAnimationFrame(raf);
+      document.body.classList.remove("vsDragging");
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onCancel);
+      document.removeEventListener("touchmove", blockScroll);
+      document.removeEventListener("keydown", onKey);
+    }
+    document.addEventListener("pointermove", onMove, { passive: false });
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onCancel);
+    document.addEventListener("touchmove", blockScroll, { passive: false });
+    document.addEventListener("keydown", onKey);
+    if (touch) timer = setTimeout(begin, VS_HOLD_MS);
+  };
+
+  const fromGroupOk = (status) => drag && status !== drag.from && !refusal(status);
+  return {
+    // On a vehicle's row or card: its class, and the press that picks it up.
+    rowClass: (v) => `vsRow${lockOf(v) ? " vsRow--locked" : ""}${drag && drag.id === v.id ? " vsRow--lifted" : ""}`,
+    rowProps: (v) => ({
+      onPointerDown: (e) => start(e, v),
+      onContextMenu: (e) => { if (e.nativeEvent && e.nativeEvent.pointerType !== "mouse") e.preventDefault(); },
+    }),
+    // On a status group: where a vehicle can be dropped.
+    groupClass: (status) => !drag ? ""
+      : status === drag.from ? " vsDrop--home"
+      : refusal(status) ? " vsDrop--no"
+      : ` vsDrop--ok${drag.over === status ? " vsDrop--over" : ""}`,
+    groupProps: (status) => ({ "data-vs-drop": status }),
+    // The vehicle under the finger, and the message after a move.
+    layer: React.createElement(React.Fragment, null,
+      drag && React.createElement("div", { ref: ghost, className: "vsGhost", "aria-hidden": "true" },
+        React.createElement("b", null, drag.plate),
+        drag.label && React.createElement("span", null, drag.label),
+        drag.over && drag.over !== drag.from && React.createElement("span", { className: fromGroupOk(drag.over) ? "vsGhost__to" : "vsGhost__no" },
+          fromGroupOk(drag.over) ? `Move to ${drag.over}` : refusal(drag.over))),
+      toast && React.createElement("div", { className: `vsToast${toast.error ? " vsToast--error" : ""}`, role: toast.error ? "alert" : "status" },
+        React.createElement("span", null, toast.text, toast.note && React.createElement("small", null, toast.note)),
+        toast.undo && React.createElement("button", { type: "button", onClick: () => undoMove(toast.undo) }, "Undo"))),
+  };
+}
+
 // ─── FleetPage ────────────────────────────────────────────────────────────────
 
 function FleetPage() {
@@ -5749,6 +5986,7 @@ function FleetFilterBar({ filterState }) {
 function FleetVehiclesPage() {
   const { fleet, setFleet, rentalAgreements, guardAction } = React.useContext(AppContext);
   const { filtered, filterState } = useFleetFilter(fleet);
+  const statusDrag = useVehicleStatusDrag();
 
   // Status dropdown change: update fleet state immediately then persist
   const handleStatusChange = (vehicle, newStatus) => {
@@ -5844,7 +6082,7 @@ function FleetVehiclesPage() {
                   rows.length === 0
                     ? React.createElement("tr", null, React.createElement("td", { colSpan, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
                     : rows.map((v) =>
-                        React.createElement("tr", { key: v.id },
+                        React.createElement("tr", { key: v.id, className: statusDrag.rowClass(v), ...statusDrag.rowProps(v) },
                           React.createElement("td", null, React.createElement(PlateLink, { plate: v.plate })),
                           React.createElement("td", null, `${v.make} ${v.model}`),
                           React.createElement("td", null, v.vehicleClass),
@@ -5866,13 +6104,14 @@ function FleetVehiclesPage() {
 
             const avail    = filtered.filter((v) => v.status === "Available");
             const cleaning = filtered.filter((v) => v.status === "Needs Cleaning");
-            const pm     = filtered.filter((v) => v.needsPm);
+            // Due for PM, or moved to PM by hand.
+            const pm     = filtered.filter((v) => v.needsPm || v.status === "PM");
             const damaged  = filtered.filter((v) => v.status === "Damaged");
             const onRent   = filtered.filter((v) => v.status === "On Rent");
             const filteredRR = filtered.filter((v) => v.status === "Ready Returns");
 
             const group = (label, cls, key, rows, children) =>
-              React.createElement("div", { className: "fleetGroup" },
+              React.createElement("div", { className: `fleetGroup${statusDrag.groupClass(VS_GROUP_STATUS[key])}`, ...statusDrag.groupProps(VS_GROUP_STATUS[key]) },
                 React.createElement("div", {
                   className: `fleetGroupHeader fleetGroupHeader--${cls}`,
                   ...barToggle(() => toggleFleetGroup(key), !fleetGroupCollapsed[key]),
@@ -5887,7 +6126,7 @@ function FleetVehiclesPage() {
             return React.createElement(React.Fragment, null,
               group("Available", "available", "available", avail),
               group("Needs Cleaning", "cleaning", "needsCleaning", cleaning),
-              React.createElement("div", { className: "fleetGroup" },
+              React.createElement("div", { className: `fleetGroup${statusDrag.groupClass("Ready Returns")}`, ...statusDrag.groupProps("Ready Returns") },
                 React.createElement("div", {
                   className: "fleetGroupHeader fleetGroupHeader--readyReturns",
                   ...barToggle(() => toggleFleetGroup("readyReturns"), !fleetGroupCollapsed.readyReturns),
@@ -5911,7 +6150,7 @@ function FleetVehiclesPage() {
                         : filteredRR.map((r) => {
                             const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
                             const loc = matchRA?.returnVehicleLocation || "";
-                            return React.createElement("tr", { key: r.id },
+                            return React.createElement("tr", { key: r.id, className: statusDrag.rowClass(r), ...statusDrag.rowProps(r) },
                               React.createElement("td", null, React.createElement(PlateLink, { plate: r.plate })),
                               React.createElement("td", null, `${r.make} ${r.model}`),
                               React.createElement("td", null, r.fileType || ""),
@@ -5924,7 +6163,8 @@ function FleetVehiclesPage() {
               ),
               group("Preventative Maintenance", "pm", "pm", pm),
               group("Damaged", "damaged", "damaged", damaged),
-              group("On Rent", "onRent", "onRent", onRent)
+              group("On Rent", "onRent", "onRent", onRent),
+              statusDrag.layer
             );
           })()
         )
@@ -20759,6 +20999,25 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
 .calendarDay--today{ box-shadow: inset 0 0 0 1px #F4845F; font-weight: 600; }
 .calendarDay--selected, .calendarDay--selected:hover{ background: #F4845F; box-shadow: none; font-weight: 600; }
 @media (prefers-reduced-motion: reduce){ .dateFieldPanel, .calendarPopover{ animation: none; } }
+/* Dragging a vehicle to another status (useVehicleStatusDrag). */
+.vsRow{ cursor: grab; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.vsRow--locked{ cursor: default; }
+.vsRow--lifted{ opacity: 0.35; }
+body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-select: none; user-select: none; }
+.vsDrop--ok{ outline: 2px dashed #F4845F; outline-offset: 3px; border-radius: 10px; transition: background-color .12s; }
+.vsDrop--over{ outline-style: solid; background: rgba(244, 132, 95, 0.12); }
+.vsDrop--no{ opacity: 0.45; }
+.vsGhost{ position: fixed; left: 0; top: 0; z-index: 2000; pointer-events: none; display: grid; gap: 2px; min-width: 150px; max-width: 260px; padding: 10px 12px; border-radius: 12px; background: #FFFFFF; color: #1F1E1D; border: 1px solid rgba(31, 30, 29, 0.12); box-shadow: 0 12px 32px rgba(31, 30, 29, 0.22); font-size: 13px; }
+.vsGhost b{ font-size: 14px; }
+.vsGhost span{ color: rgba(31, 30, 29, 0.65); }
+.vsGhost .vsGhost__to{ color: #B4532F; font-weight: 600; }
+.vsGhost .vsGhost__no{ color: #991b1b; font-weight: 600; }
+.vsToast{ position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 2000; display: flex; align-items: center; gap: 14px; max-width: calc(100vw - 32px); padding: 11px 14px 11px 16px; border-radius: 12px; background: #1F1E1D; color: #F9F9F7; font-size: 14px; box-shadow: 0 12px 32px rgba(31, 30, 29, 0.28); }
+.vsToast > span{ display: grid; gap: 2px; }
+.vsToast small{ font-size: 12px; opacity: 0.75; }
+.vsToast--error{ background: #8A1C14; }
+.vsToast button{ flex: none; border: 0; background: none; padding: 4px 6px; color: #F4845F; font: inherit; font-weight: 700; cursor: pointer; }
+@media (prefers-reduced-motion: reduce){ .vsDrop--ok{ transition: none; } }
 /* ── fleetr.ai listing preview ── */
 /* fleetr-website index.html's palette and the rules the search card and the
    branch page use, scoped to .fai so they reach nothing else. The branch
