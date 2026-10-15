@@ -7848,15 +7848,21 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
   const [loadError, setLoadError] = React.useState("");
   // The company's name, which the listing preview shows as fleetr.ai does.
   const [company, setCompany] = React.useState("");
+  const [taxes, setTaxes] = React.useState({});
 
   const reload = React.useCallback(async () => {
-    const [{ data, error }, op] = await Promise.all([
+    const [{ data, error }, op, locs] = await Promise.all([
       supabase.from("branch_listings").select("*").eq("operatorId", currentUser?.operatorId ?? null),
       part === "listing"
         ? supabase.from("operators").select("name").eq("id", currentUser?.operatorId ?? null).maybeSingle()
         : Promise.resolve({ data: null }),
+      // Each branch's sales taxes, for the preview's total.
+      part === "listing"
+        ? supabase.from("locations").select("id,salesTaxes").eq("operatorId", currentUser?.operatorId ?? null)
+        : Promise.resolve({ data: null }),
     ]);
     if (op && op.data) setCompany(op.data.name || "");
+    if (locs && locs.data) setTaxes(Object.fromEntries(locs.data.map((x) => [x.id, x.salesTaxes || []])));
     if (error) { setLoadError("The listings could not be loaded. Reload the page to try again."); return; }
     setLoadError("");
     setListings(data || []);
@@ -7902,7 +7908,7 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
     !listings && !loadError && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Loading…"),
     // The listing is edited in its live preview; the address in its form.
     listings && open.map((b) => React.createElement(part === "listing" ? ListingPreviewEditor : ListingEditor, {
-      key: b.id, branch: b, operatorId: currentUser?.operatorId, company,
+      key: b.id, branch: b, operatorId: currentUser?.operatorId, company, taxes: taxes[b.id] || [],
       listing: listings.find((l) => l.locationId === b.id) || null,
       timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: saved, onTimeZoneSet, part, fleetrOn,
       // Each branch has its own switch only when there is more than one.
@@ -7923,7 +7929,6 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     const hours = (l && l.hours && typeof l.hours === "object") ? l.hours : {};
     const num = (v) => (v == null ? "" : String(Number(v)));
     return {
-      description: (l && l.description) || "",
       ...Object.fromEntries(BRANCH_ADDRESS_PARTS.map(([k]) => [k, (l && l[k]) || ""])),
       latitude:    num(l && l.latitude),
       longitude:   num(l && l.longitude),
@@ -8049,8 +8054,6 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     if (showListing && airports.some((x) => !/^[A-Z]{3,4}$/.test(x))) {
       setError("Airport codes are 3 or 4 letters, separated by commas, for example YYT."); setNotice(""); return;
     }
-    const description = draft.description.trim();
-    if (showListing && description.length > 2000) { setError("Keep the description to 2,000 characters."); setNotice(""); return; }
     const address = {};
     for (const [k, label, max] of BRANCH_ADDRESS_PARTS) {
       const v = draft[k].trim();
@@ -8084,7 +8087,6 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
 
     const addressFields = { ...address, latitude, longitude };
     const listingFields = {
-      description: description || null,
       hours,
       citiesServed: splitList(draft.citiesServed),
       airportCodes: airports,
@@ -8224,13 +8226,7 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
           : "Not on fleetr.ai yet.",
          missingKeys.length ? `Missing: ${listingNeedsList(missingKeys)}.` : ""].filter(Boolean).join(" ")),
 
-      row(imageBlock("logo", "Logo"), imageBlock("photo", "Location photo")),
-
-      field("Description",
-        el("textarea", {
-          className: "resFormInput resFormTextarea", rows: 4, value: draft.description, disabled: !!busy,
-          maxLength: 2000, onChange: (e) => set("description", e.target.value),
-        }))),
+      row(imageBlock("logo", "Logo"), imageBlock("photo", "Location photo"))),
 
     !showAddress && el("p", { className: "closeRentalHint" }, branchAddressComplete(listing || {})
       ? `Address: ${BRANCH_ADDRESS_PARTS.map(([k]) => listing[k]).filter(Boolean).join(", ")}. Change it under Branch.`
@@ -8323,15 +8319,15 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
 // One branch's listing shown as renters see it on fleetr.ai: the search result
 // row, then the branch page, in fleetr-website's layout and styles (app.js
 // SearchPage and branchView, index.html's .card, .card-mark, .branch-head,
-// .about, .sec, .perks, .hours, .class-row and .book-box, copied here under
-// .fai). If
+// .sec, .pickup-media, .hours-compact, .tiles, .class-row, .book-box and
+// .book-bar, copied here under .fai). If
 // the website's copy changes, change this one. Every part a renter reads is
 // edited where it shows; a part with nothing in it yet shows what to add in
 // the spot it will take. The booking rules renters do not read directly sit
 // in a small section below.
 //
 // Photos and logos are cropped before they are saved, to the shape they show
-// in: the logo square, the location photo 4:3, as About this branch shows it.
+// in: the logo square, the location photo 4:3, as Where you'll pick up shows it.
 // Saved resized and compressed for the web, as WebP where the browser
 // can write it. The image as chosen is kept beside it, downsized, as
 // <kind>-original-<time>, so it can be cropped again without uploading it
@@ -8366,6 +8362,16 @@ const FAI_ICONS = {
   deposit:  '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
   camera:   '<path d="M3 8h4l2-3h6l2 3h4v11H3z"/><circle cx="12" cy="13" r="3.5"/>',
   plus:     '<path d="M12 5v14M5 12h14"/>',
+  // The branch page's own set, as fleetr-website's: Lucide's outline icons
+  // (lucide.dev, ISC licence).
+  lPlane:     '<path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/>',
+  lTruck:     '<path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/>',
+  lMoon:      '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+  lId:        '<path d="M16 10h2"/><path d="M16 14h2"/><path d="M6.17 15a3 3 0 0 1 5.66 0"/><circle cx="9" cy="11" r="2"/><rect x="2" y="5" width="20" height="14" rx="2"/>',
+  lWallet:    '<path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/><path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>',
+  lCard:      '<rect width="20" height="14" x="2" y="5" rx="2"/><path d="M2 10h20"/>',
+  lNav:       '<path d="M3 11 22 2l-9 19-2-8z"/>',
+  lArrowLeft: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
 };
 function faiIcon(name, strokeWidth) {
   const vehicle = FAI_VEHICLES[name];
@@ -8396,10 +8402,44 @@ function faiSampleTrip() {
 const faiCityOf = (l) => ((l.citiesServed || [])[0]) || ((l.airportCodes || [])[0]) || "";
 function faiPerksOf(l) {
   const out = [];
-  if (l.airportPickup) out.push({ icon: "plane", name: "Airport pickup", text: (l.airportCodes || []).length ? `At ${l.airportCodes.join(", ")}` : "Picked up at the airport" });
-  if (l.delivery) out.push({ icon: "delivery", name: "Delivery", text: "They can bring the vehicle to you" });
-  if (l.afterHoursDropoff) out.push({ icon: "moon", name: "After-hours drop-off", text: "Return outside opening hours" });
+  if (l.airportPickup) out.push({ icon: "lPlane", name: "Airport pickup", text: (l.airportCodes || []).length ? `At ${l.airportCodes.join(", ")}` : "Picked up at the airport" });
+  if (l.delivery) out.push({ icon: "lTruck", name: "Delivery", text: "They can bring the vehicle to you" });
+  if (l.afterHoursDropoff) out.push({ icon: "lMoon", name: "After-hours drop-off", text: "Return outside opening hours" });
   return out;
+}
+// fleetr-website app.js's hoursRows, openNow, directionsUrl and quote.
+const FAI_DAY_SHORT = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
+function faiHoursRows(hours) {
+  const rows = [];
+  LISTING_DAYS.forEach(([k]) => {
+    const d = hours[k];
+    const text = d && d.open && d.close ? `${faiTime(String(d.open).slice(0, 5))} \u2013 ${faiTime(String(d.close).slice(0, 5))}` : "Closed";
+    const last = rows[rows.length - 1];
+    if (last && last.text === text) last.keys.push(k); else rows.push({ keys: [k], text });
+  });
+  return rows.map((r) => ({ ...r, label: r.keys.length === 1 ? FAI_DAY_SHORT[r.keys[0]] : `${FAI_DAY_SHORT[r.keys[0]]}\u2013${FAI_DAY_SHORT[r.keys[r.keys.length - 1]]}` }));
+}
+function faiOpenNow(hours, tz) {
+  try {
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz || undefined })
+      .formatToParts(new Date()).map((x) => [x.type, x.value]));
+    const d = hours[p.weekday.slice(0, 3).toLowerCase()];
+    if (!d || !d.open || !d.close) return false;
+    const now = `${p.hour}:${p.minute}`;
+    return now >= String(d.open).slice(0, 5) && now < String(d.close).slice(0, 5);
+  } catch (e) { return null; }
+}
+function faiDirectionsUrl(l) {
+  const to = encodeURIComponent(l.address || `${l.latitude},${l.longitude}`);
+  const apple = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  return apple ? `https://maps.apple.com/?daddr=${to}` : `https://www.google.com/maps/dir/?api=1&destination=${to}`;
+}
+const faiRound2 = (n) => Math.round(n * 100) / 100;
+function faiQuote(rate, days, taxes) {
+  const subtotal = faiRound2(rate * days);
+  const taxLines = (Array.isArray(taxes) ? taxes : []).filter((t) => t && Number(t.rate) > 0)
+    .map((t) => ({ label: `${t.name} (${Number(t.rate)}%)`, amount: faiRound2(subtotal * Number(t.rate) / 100) }));
+  return { taxLines, total: faiRound2(subtotal + taxLines.reduce((x, t) => x + t.amount, 0)) };
 }
 const faiClassTypes = (c) => [c.category, c.electric && "Electric", c.luxury && "Luxury"].filter(Boolean);
 const faiClassIcon = (c) => (c.electric ? "Electric" : c.luxury ? "Luxury" : c.category || "Other");
@@ -8564,7 +8604,7 @@ function ListingCropDialog({ kind, src, cors, start, error, onCancel, onDone }) 
       el("div", { className: "faiCrop__title" }, `Crop the ${spec.label}`),
       el("p", { className: "faiCrop__hint" }, kind === "logo"
         ? "Drag to move it, and zoom to fit. It shows in a square on fleetr.ai."
-        : "Drag to move it, and zoom to frame it. It shows in About this branch at this shape."),
+        : "Drag to move it, and zoom to frame it. It shows beside the map in Where you'll pick up."),
       el("div", {
         ref: frameRef, className: `faiCrop__frame faiCrop__frame--${kind}`,
         style: { height: box.h ? `${box.h}px` : undefined },
@@ -8596,7 +8636,7 @@ function ListingCropDialog({ kind, src, cors, start, error, onCancel, onDone }) 
 }
 
 // One branch's listing as the preview.
-function ListingPreviewEditor({ branch, operatorId, company, listing, timeZone, onSaved, fleetrOn, multi }) {
+function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, timeZone, onSaved, fleetrOn, multi }) {
   const el = React.createElement;
   const l = listing || {};
   const [busy, setBusy] = React.useState("");
@@ -8609,6 +8649,8 @@ function ListingPreviewEditor({ branch, operatorId, company, listing, timeZone, 
   const [draft, setDraft] = React.useState(null);
   const [menu, setMenu] = React.useState("");
   const [crop, setCrop] = React.useState(null);   // { kind, src, cors, start, file }
+  // The vehicle clicked in the preview, for the booking card's summary.
+  const [chosenId, setChosenId] = React.useState(null);
   const files = { logo: React.useRef(null), photo: React.useRef(null) };
   const num = (v) => (v == null ? "" : String(Number(v)));
   const rulesOf = (x) => ({ minNoticeHours: num(x.minNoticeHours), maxRentalDays: num(x.maxRentalDays), turnaroundHours: num(x.turnaroundHours) });
@@ -8662,7 +8704,6 @@ function ListingPreviewEditor({ branch, operatorId, company, listing, timeZone, 
     setEditing(part);
     setSpot(where || part);
     setDraft({
-      description:  { description: l.description || "" },
       places:       { citiesServed: (l.citiesServed || []).join(", ") || (l.city || ""), airportCodes: (l.airportCodes || []).join(", ") },
       perks:        { airportPickup: !!l.airportPickup, delivery: !!l.delivery, afterHoursDropoff: !!l.afterHoursDropoff, airportCodes: (l.airportCodes || []).join(", ") },
       hours:        { hours: hoursDraft(), sameOpen: "", sameClose: "" },
@@ -8689,11 +8730,6 @@ function ListingPreviewEditor({ branch, operatorId, company, listing, timeZone, 
   };
   // The fields one part saves, checked as the old form checked them.
   const fieldsFor = (part, d) => {
-    if (part === "description") {
-      const description = d.description.trim();
-      if (description.length > 2000) return fail("Keep the description to 2,000 characters.");
-      return { description: description || null };
-    }
     if (part === "places") {
       const airportCodes = airportsOf(d.airportCodes);
       if (!airportCodes) return fail("Airport codes are 3 or 4 letters, separated by commas, for example YYT.");
@@ -8859,20 +8895,20 @@ function ListingPreviewEditor({ branch, operatorId, company, listing, timeZone, 
     }, logo ? el("img", { src: logo, alt: `${companyName} logo` }) : el("span", null, busy === "logo" ? "Uploading…" : "Add logo"),
       imageMenu("logo", where));
   };
-  // The location photo, at a moderate size in About this branch.
+  // The location photo, beside the map in Where you'll pick up.
   const photoBlock = () => {
     const url = listingPhotoUrl(l.photoPath);
-    return el("div", { className: "about-photo faiImage" },
+    return el("div", { className: "pickup-photo faiImage" },
       el("div", {
         className: "faiImage__hit", role: "button", tabIndex: 0,
         "aria-label": url ? "Change the location photo" : "Add a photo of your location",
-        onClick: openImage("photo", "about"), onKeyDown: keyClick(openImage("photo", "about")),
+        onClick: openImage("photo", "pickup"), onKeyDown: keyClick(openImage("photo", "pickup")),
       },
         url ? el("img", { src: url, alt: branch.name })
           : el("div", { className: "placeholder-photo faiImage__empty" },
               faiIcon("camera", "1.4"),
               el("span", null, busy === "photo" ? "Uploading…" : "Add a photo of your location"))),
-      imageMenu("photo", "about"));
+      imageMenu("photo", "pickup"));
   };
 
   const classes = faiClasses();
@@ -8892,13 +8928,7 @@ function ListingPreviewEditor({ branch, operatorId, company, listing, timeZone, 
     const field = (label, child) => el("label", { className: "faiField" }, el("span", null, label), child);
     const input = (k, props) => el("input", { className: "faiInput", value: d[k] ?? "", disabled: !!busy, onChange: (e) => setD(k, e.target.value), ...props });
     let body = null;
-    if (part === "description") {
-      body = el("textarea", {
-        className: "faiInput faiTextarea", rows: 5, maxLength: 2000, autoFocus: true, value: d.description, disabled: !!busy,
-        placeholder: "What renters should know about this branch: where it is, what makes it easy, anything to bring.",
-        "aria-label": "About this branch", onChange: (e) => setD("description", e.target.value),
-      });
-    } else if (part === "places") {
+    if (part === "places") {
       body = el(React.Fragment, null,
         field("Cities served", input("citiesServed", { placeholder: "St. John's, Mount Pearl", autoFocus: true })),
         field("Airport codes", input("airportCodes", { placeholder: "YYT" })),
@@ -8969,19 +8999,28 @@ function ListingPreviewEditor({ branch, operatorId, company, listing, timeZone, 
 
   // ── The branch page ──
   const facts = [
-    { part: "requirements", icon: "id", name: "Minimum age", text: l.minimumAge != null ? `${l.minimumAge} years old` : null, empty: "Add a minimum age" },
-    { part: "requirements", icon: "deposit", name: "Deposit", text: l.deposit != null && Number(l.deposit) > 0 ? `${faiMoney(l.deposit, true)}, held at pickup` : null, empty: "Add a deposit, if you take one", optional: true },
-    { part: "payment", icon: "card", name: "Payment", text: (l.paymentMethods || []).length ? l.paymentMethods.join(", ") : null, empty: "Add the payment methods you take" },
+    { part: "requirements", icon: "lId", name: "Minimum age", text: l.minimumAge != null ? `${l.minimumAge} years old` : null, empty: "Add a minimum age" },
+    { part: "requirements", icon: "lWallet", name: "Deposit", text: l.deposit != null && Number(l.deposit) > 0 ? `${faiMoney(l.deposit, true)}, held at pickup` : null, empty: "Add a deposit, if you take one" },
+    { part: "payment", icon: "lCard", name: "Payment", text: (l.paymentMethods || []).length ? l.paymentMethods.join(", ") : null, empty: "Add the payment methods you take" },
   ];
-  const factRow = (f) => el("div", { key: f.name, className: `perk${f.text ? "" : " faiEmptyPerk"}` }, faiIcon(f.icon, "1.5"),
+  // Perks and requirements: the website's tile.
+  const tile = (f) => el("div", { key: f.name, className: `feature-tile${f.text ? "" : " faiEmptyTile"}` },
+    el("span", { className: "ft-icon" }, faiIcon(f.icon, "1.8")),
     el("div", null, el("b", null, f.name), el("span", null, f.text || f.empty)));
   const section = (title, body, extra) => el("section", { className: `sec${extra ? ` ${extra}` : ""}` }, title && el("h2", null, title), body);
+  const chosen = classes.find((c) => c.id === chosenId) || null;
+  const open = hours ? faiOpenNow(hours, timeZone) : null;
+  const hasPin = Number.isFinite(lat) && Number.isFinite(lng);
+  const photoUrlNow = listingPhotoUrl(l.photoPath);
 
   const content = el("div", { className: "branch-main" },
     section("Available for your dates", el(React.Fragment, null,
-      el("p", { className: "sec-sub" }, `${trip.range} · ${FAI_SAMPLE_DAYS} days · prices before tax`),
+      el("p", { className: "sec-sub" }, `${trip.range} \u00b7 ${FAI_SAMPLE_DAYS} days \u00b7 prices before tax`),
       classes.length
-        ? el("div", { className: "classes" }, classes.map((c) => el("div", { key: c.id, className: "class-row" },
+        ? el("div", { className: "classes" }, classes.map((c) => el("button", {
+            key: c.id, type: "button", className: `class-row${chosenId === c.id ? " chosen" : ""}`, "aria-pressed": chosenId === c.id,
+            onClick: () => setChosenId(c.id),
+          },
             el("div", { className: "class-icon" }, faiIcon(faiClassIcon(c), "1.5")),
             el("div", null,
               el("div", { className: "class-name" }, c.name),
@@ -8991,52 +9030,64 @@ function ListingPreviewEditor({ branch, operatorId, company, listing, timeZone, 
                 c.bags != null && el("span", null, `${c.bags} bag${c.bags === 1 ? "" : "s"}`))),
             el("div", { className: "class-price" }, el("b", null, `${faiDayRate(c.dailyRate)}/day`), el("span", null, `${faiMoney(c.dailyRate * FAI_SAMPLE_DAYS, true)} total`)))))
         : el("p", { className: "faiMuted" }, "Vehicle classes show here once they have a fleetr.ai daily rate under Rates."),
-      el("p", { className: "faiHint" }, "Renters see the classes free for their dates. These come from Vehicle classes and Rates."))),
-    // The location photo, at a moderate size beside the description, the
-    // hours and where to pick up, as the website shows them.
-    section("About this branch", el("div", { className: "about with-photo" },
-      el("div", { className: "about-text" },
-        editable("description", "about this branch",
-          l.description ? el("p", { className: "about-desc" }, l.description) : add("Add a description of this branch")),
-        el("h3", null, "Hours"),
-        editable("hours", "the hours", hours
-      ? el("div", { className: "hours" }, LISTING_DAYS.map(([k, name]) => {
-          const d = hours[k];
-          const open = d && d.open && d.close;
-          return el(React.Fragment, { key: k },
-            el("span", { className: k === tk ? "today" : null }, name),
-            el("span", { className: `${k === tk ? "today" : ""} ${open ? "" : "closed"}` },
-              open ? `${faiTime(String(d.open).slice(0, 5))} – ${faiTime(String(d.close).slice(0, 5))}` : "Closed"));
-        }))
-      : add("Add your opening hours")),
-        el("h3", null, "Where you'll pick up"),
-        l.address ? el("p", { style: { marginBottom: "8px" } }, l.address) : el("p", { className: "faiMuted" }, "Add the address under Branch."),
-        Number.isFinite(lat) && Number.isFinite(lng) && el(ListingMapPin, { lat, lng, disabled: true, onPlace: () => {} }),
-        el("p", { className: "faiHint" }, "The address and the pin are set under Branch.")),
-      photoBlock())),
+      el("p", { className: "faiHint" }, "Renters see the types they searched for that are free for their dates, with the rest under See other options. Click one to see the booking card. These come from Vehicle classes and Rates."))),
+    // The address, then the photo and the map side by side, then directions.
+    section("Where you'll pick up", el(React.Fragment, null,
+      l.address ? el("p", { className: "pickup-address" }, l.address) : el("p", { className: "pickup-address faiMuted" }, "Add the address under Branch."),
+      el("div", { className: `pickup-media${hasPin ? " two" : ""}` },
+        photoBlock(),
+        hasPin && el("div", { className: "pickup-map" }, el(ListingMapPin, { lat, lng, disabled: true, onPlace: () => {} }))),
+      (l.address || hasPin) && el("a", { className: "directions", href: faiDirectionsUrl(l), target: "_blank", rel: "noopener noreferrer" }, faiIcon("lNav", "1.8"), "Get directions"),
+      el("p", { className: "faiHint" }, "The address and the pin are set under Branch."))),
+    el("section", { className: "sec" },
+      el("div", { className: "sec-head" }, el("h2", null, "Hours"),
+        open != null && el("span", { className: `open-badge${open ? " is-open" : ""}` }, open ? "Open now" : "Closed now")),
+      editable("hours", "the hours", hours
+        ? el("div", { className: "hours-compact" }, faiHoursRows(hours).map((r) => el("div", { key: r.label, className: `hrow${r.keys.includes(tk) ? " today" : ""}` },
+            el("span", null, r.label), el("span", { className: r.text === "Closed" ? "closed" : null }, r.text))))
+        : add("Add your opening hours"))),
     section("What this branch offers", editable("perks", "what this branch offers", perks.length
-      ? el("div", { className: "perks two" }, perks.map((p) => el("div", { key: p.name, className: "perk" }, faiIcon(p.icon, "1.5"),
-          el("div", null, el("b", null, p.name), el("span", null, p.text)))))
+      ? el("div", { className: "tiles" }, perks.map(tile))
       : el(React.Fragment, null, add("Add airport pickup, delivery or after-hours drop-off"),
           el("p", { className: "faiHint" }, "This part is left off fleetr.ai until you add one.")))),
-    section("Requirements", el("div", { className: "perks two" },
+    section("Requirements", el("div", { className: "tiles" },
       editing === "requirements" || editing === "payment"
         ? el("div", { className: "faiEditing faiSpan" }, editor(editing))
         : facts.map((f) => el("div", {
-            key: f.name, className: "faiEditable faiEditable--row", role: "button", tabIndex: 0,
+            key: f.name, className: "faiEditable", role: "button", tabIndex: 0,
             "aria-label": `Edit ${f.name.toLowerCase()}`, title: `Edit ${f.name.toLowerCase()}`,
             onClick: () => startEdit(f.part), onKeyDown: keyClick(() => startEdit(f.part)),
-          }, factRow(f), el("span", { className: "faiEditTag", "aria-hidden": "true" }, "Edit"))))));
+          }, tile(f), el("span", { className: "faiEditTag", "aria-hidden": "true" }, "Edit"))))));
 
-  const bookBox = el("aside", { className: "book-box faiBookBox", "aria-label": "Reserve, as renters see it" },
-    el("div", { className: "bb-price" }, lowest != null ? `from ${faiDayRate(lowest)}` : "Not available", lowest != null && el("span", null, "/day")),
-    el("div", { className: "bb-fields" },
-      el("div", { className: "bb-dates" },
-        el("div", { className: "bb-field" }, el("small", null, "Pick-up"), el("span", null, `${faiShort(trip.pu)}, 10:00 AM`)),
-        el("div", { className: "bb-field" }, el("small", null, "Return"), el("span", null, `${faiShort(trip.rt)}, 10:00 AM`))),
-      classes.length > 0 && el("div", { className: "bb-class" }, el("small", null, "Vehicle"), el("span", null, "Choose a vehicle"))),
-    el("div", { className: "btn btn-primary btn-block", "aria-disabled": "true" }, "Choose a vehicle"),
-    el("p", { className: "bb-note" }, "You won't be charged now. Pay at pickup."));
+  // The booking card: the chosen vehicle's summary, or Select a vehicle; on a
+  // narrow page, the bar the website pins to the bottom of a phone's screen.
+  const q = chosen ? faiQuote(Number(chosen.dailyRate), FAI_SAMPLE_DAYS, taxes) : null;
+  const fmtDay = (d) => d.toLocaleDateString("en-CA", { weekday: "short", month: "short", day: "numeric" }).replace(/\./g, "");
+  const summaryLine = (label, value) => el("div", { key: label }, el("dt", null, label), el("dd", null, value));
+  const bookBox = el("aside", { className: "book-box faiBookBox", "aria-label": "Your rental, as renters see it" },
+    chosen
+      ? el(React.Fragment, null,
+          el("div", { className: "bb-title" }, chosen.name),
+          el("dl", { className: "bb-summary" },
+            summaryLine("Pick-up", `${fmtDay(trip.pu)}, 10:00 AM`),
+            summaryLine("Return", `${fmtDay(trip.rt)}, 10:00 AM`),
+            summaryLine("Days", String(FAI_SAMPLE_DAYS)),
+            summaryLine("Daily rate", `${faiDayRate(chosen.dailyRate)}/day`),
+            q.taxLines.length ? q.taxLines.map((t) => summaryLine(t.label, faiMoney(t.amount, true))) : summaryLine("Tax", "None")),
+          el("div", { className: "bb-total" }, el("span", null, "Total"), el("b", null, faiMoney(q.total, true))),
+          el("div", { className: "btn btn-primary btn-block", "aria-disabled": "true" }, "Reserve"),
+          el("p", { className: "bb-note" }, "You won't be charged now. Pay at pickup."))
+      : el(React.Fragment, null,
+          el("div", { className: "bb-title" }, "Select a vehicle"),
+          el("p", { className: "bb-hint" }, classes.length ? "Choose a vehicle to see your total." : "Nothing is free for these dates.")));
+  const bookBar = el("div", { className: "book-bar faiBookBar", "aria-hidden": "true" },
+    chosen
+      ? el(React.Fragment, null,
+          el("div", null, el("b", null, `${faiMoney(q.total, true)} total`), el("small", null, `${chosen.name} \u00b7 ${FAI_SAMPLE_DAYS} days`)),
+          el("div", { className: "btn btn-primary" }, "Reserve"))
+      : el(React.Fragment, null,
+          el("div", null, el("b", null, "Select a vehicle"), el("small", null, trip.range)),
+          classes.length > 0 && el("div", { className: "btn btn-primary" }, "Choose")));
 
   return el("div", { className: "faiBranch" },
     el("div", { className: "gasSettingSubhead" }, branch.name),
@@ -9059,13 +9110,15 @@ function ListingPreviewEditor({ branch, operatorId, company, listing, timeZone, 
         el("div", { className: "cards" }, card)),
       el("div", { className: "faiStage faiStage--page" },
         el("div", { className: "faiStage__label" }, "The branch page"),
+        el("span", { className: "back-link" }, faiIcon("lArrowLeft", "1.8"), "Back to results"),
         el("div", { className: "branch-head" },
           logoBlock("branch-mark", "head"),
           el("div", null,
             el("h1", null, companyName),
             el("div", { className: "sub" }, [company ? branch.name : null, l.address].filter(Boolean).join(" \u00b7 "),
               !l.address && el("span", { className: "faiMuted" }, `${company ? " \u00b7 " : ""}Add the address under Branch.`)))),
-        el("div", { className: "branch-cols" }, content, el("div", null, bookBox))),
+        el("div", { className: "branch-cols" }, content, el("div", null, bookBox)),
+        bookBar),
       el("p", { className: "faiHint faiStage__foot" }, `Prices are shown for a sample ${FAI_SAMPLE_DAYS} day trip, before tax. Click any part to change it.`)),
 
     el("div", { className: "faiRules" },
@@ -21062,11 +21115,45 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .fai .branch-head{ display: flex; align-items: center; gap: 20px; }
 .fai .branch-head h1{ font-size: clamp(32px, 5vw, 56px); letter-spacing: -0.025em; line-height: 1.0; }
 .fai .branch-head .sub{ color: var(--ink-55); margin-top: 10px; }
-.fai .about{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; }
-.fai .about-desc{ white-space: pre-line; max-width: 38em; }
-.fai .about-text h3{ font-family: var(--display); font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; font-size: 18px; margin: 26px 0 12px; }
-.fai .about-photo{ position: relative; border-radius: var(--r); overflow: hidden; aspect-ratio: 4 / 3; background: var(--ink-06); order: -1; max-width: 460px; width: 100%; }
-.fai .about-photo img{ width: 100%; height: 100%; object-fit: cover; }
+.fai .back-link{ display: inline-flex; align-items: center; gap: 8px; margin-bottom: 22px; font-size: 15px; font-weight: 600; color: var(--ink-70); }
+.fai .back-link svg{ width: 18px; height: 18px; }
+.fai .class-row{ background: none; border-left: 0; border-right: 0; border-top: 0; font: inherit; color: inherit; cursor: pointer; }
+.fai .class-row:hover, .fai .class-row.chosen{ background: var(--ink-06); }
+.fai .class-row.chosen::before{ content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--terra); }
+.fai .pickup-address{ margin-bottom: 14px; }
+.fai .pickup-media{ display: grid; gap: 10px; }
+.fai .pickup-media.two{ grid-template-columns: 1fr 1fr; }
+.fai .pickup-media > *{ position: relative; height: 180px; border-radius: var(--r); overflow: hidden; }
+.fai .pickup-photo{ background: var(--ink-06); }
+.fai .pickup-photo img{ width: 100%; height: 100%; object-fit: cover; }
+.fai .pickup-map > *{ height: 100% !important; margin: 0 !important; border-radius: 0 !important; }
+.fai .directions{ display: inline-flex; align-items: center; gap: 8px; margin-top: 16px; font-weight: 600; color: var(--ink); text-decoration: none; border-bottom: 2px solid var(--terra); padding-bottom: 2px; }
+.fai .directions svg{ width: 16px; height: 16px; }
+.fai .sec-head{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.fai .sec-head h2{ font-size: 26px; }
+.fai .open-badge{ font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: var(--ink-06); color: var(--ink-70); white-space: nowrap; }
+.fai .open-badge.is-open{ background: #E3F2E8; color: #1E6B43; }
+.fai .hours-compact{ display: grid; gap: 2px; max-width: 420px; }
+.fai .hrow{ display: flex; justify-content: space-between; gap: 16px; padding: 8px 12px; border-radius: 10px; font-size: 15px; }
+.fai .hrow.today{ background: rgba(244, 132, 95, 0.12); font-weight: 700; }
+.fai .hrow .closed{ color: var(--ink-55); }
+.fai .tiles{ display: grid; gap: 12px; }
+.fai .feature-tile{ display: flex; gap: 14px; align-items: flex-start; padding: 16px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--paper); height: 100%; }
+.fai .ft-icon{ flex: none; width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; background: rgba(244, 132, 95, 0.12); color: var(--terra-dk); }
+.fai .ft-icon svg{ width: 20px; height: 20px; }
+.fai .feature-tile b{ display: block; font-weight: 600; }
+.fai .feature-tile span{ color: var(--ink-55); font-size: 14.5px; }
+.fai .faiEmptyTile span{ color: var(--terra-dk); font-weight: 600; }
+.fai .bb-title{ font-family: var(--display); font-size: 22px; font-weight: 600; line-height: 1.2; }
+.fai .bb-hint{ color: var(--ink-55); font-size: 15px; margin-top: 6px; }
+.fai .bb-summary{ display: grid; gap: 10px; margin: 18px 0 0; font-size: 15px; }
+.fai .bb-summary > div{ display: flex; justify-content: space-between; gap: 14px; }
+.fai .bb-summary dt{ color: var(--ink-55); }
+.fai .bb-summary dd{ margin: 0; text-align: right; font-weight: 500; }
+.fai .bb-total{ display: flex; justify-content: space-between; align-items: baseline; margin: 16px 0 18px; padding-top: 14px; border-top: 1px solid var(--ink); font-size: 17px; font-weight: 700; }
+.fai .book-bar{ display: none; align-items: center; justify-content: space-between; gap: 12px; margin-top: 24px; padding: 12px 16px; border: 1px solid var(--rule-2); border-radius: 14px; background: var(--paper); box-shadow: var(--shadow); }
+.fai .book-bar b{ font-size: 16px; }
+.fai .book-bar small{ display: block; font-size: 13px; color: var(--ink-55); }
 .fai .branch-cols{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 44px; margin-top: 36px; }
 .fai .sec{ padding: 32px 0; border-top: 1px solid var(--rule); }
 .fai .sec:first-child{ border-top: none; padding-top: 0; }
@@ -21123,9 +21210,15 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
   .fai .branch-head .branch-mark{ width: 56px; height: 56px; border-radius: 13px; padding: 6px; }
 }
 .fai .branch-main{ container-type: inline-size; min-width: 0; }
-@container (min-width: 560px){
-  .fai .about.with-photo{ grid-template-columns: minmax(0, 1fr) 260px; gap: 32px; align-items: start; }
-  .fai .about-photo{ order: 0; max-width: none; }
+@container (min-width: 520px){
+  .fai .pickup-media{ gap: 14px; }
+  .fai .pickup-media > *{ height: 260px; }
+  .fai .tiles{ grid-template-columns: 1fr 1fr; }
+}
+/* Narrower than the website's two columns: the card is the bar instead. */
+@container (max-width: 899px){
+  .fai .book-box{ display: none; }
+  .fai .book-bar{ display: flex; }
 }
 @container (min-width: 900px){ .fai .branch-cols{ grid-template-columns: minmax(0, 1fr) 320px; gap: 56px; } }
 
