@@ -12,6 +12,18 @@ import {
 } from "https://esm.sh/react-router-dom@6.26.2?deps=react@18.3.1,react-dom@18.3.1";
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@1/+esm";
 
+// ─── The fleetr logo ──────────────────────────────────────────────────────────
+// The supplied files (fleetr logo system), never retyped: "light" is the
+// near-black logo for light backgrounds, "dark" the off-white one for dark
+// backgrounds. The horizontal lockup is 1113 by 260, so a height above about
+// 23px keeps it over the 96px minimum width; the CSS that places each one keeps
+// its clear space, one bar of the mark (about a quarter of its height).
+const FLEETR_LOGO = { light: "/fleetr-horizontal-light.svg", dark: "/fleetr-horizontal-dark.svg" };
+const fleetrLogo = (tone, height, className) => React.createElement("img", {
+  src: FLEETR_LOGO[tone], alt: "fleetr", className,
+  height, width: Math.round((height * 1113.03) / 260.48), style: { display: "block", height: `${height}px`, width: "auto" },
+});
+
 // ─── Supabase client ──────────────────────────────────────────────────────────
 // Paste your Project URL and anon key from Supabase → Settings → API
 const SUPABASE_URL  = "https://hzcatlecvwpqxedrzfog.supabase.co";
@@ -2038,13 +2050,13 @@ function AppSkeleton() {
   return el("div", { className: "appSkel", role: "status", "aria-live": "polite", "aria-busy": "true" },
     el("span", { className: "appSkel__sr" }, "Loading fleetr"),
     el("aside", { className: "appSkel__side", "aria-hidden": "true" },
-      el("span", { className: "appSkel__wordmark" }, "fleetr"),
+      el("span", { className: "appSkel__wordmark" }, fleetrLogo("light", 26)),
       [5, 3, 4, 4].map((n, i) => el("div", { key: i, className: "appSkel__group" },
         bar("skel--label"),
         Array.from({ length: n }, (_, j) => bar("skel--nav", { width: `${62 + ((i * 3 + j * 7) % 5) * 7}%` }, j)))),
       el("div", { className: "appSkel__user" }, bar("skel--avatar"), el("div", { className: "appSkel__userText" }, bar("skel--line", { width: "70%" }), bar("skel--line skel--thin", { width: "40%" })))),
     el("div", { className: "appSkel__main", "aria-hidden": "true" },
-      el("div", { className: "appSkel__top" }, el("span", { className: "appSkel__topWord" }, "fleetr"), bar("skel--pill"), bar("skel--search"), bar("skel--pill skel--pill--sm")),
+      el("div", { className: "appSkel__top" }, el("span", { className: "appSkel__topWord" }, fleetrLogo("light", 24)), bar("skel--pill"), bar("skel--search"), bar("skel--pill skel--pill--sm")),
       // Home as it loads: the title, Close Rental and Switch Out, the
       // Reservations and Vehicle Status sections, then the numbers.
       el("div", { className: "appSkel__page" },
@@ -10795,7 +10807,7 @@ function MobileNav() {
               )
         )
       ),
-      React.createElement("span", { className: "mobileTopbar__wordmark" }, "fleetr"),
+      React.createElement("span", { className: "mobileTopbar__wordmark" }, fleetrLogo("dark", 24)),
       React.createElement(
         "button",
         {
@@ -11189,7 +11201,7 @@ function Sidebar({ collapsed, onToggle }) {
   }, [location.pathname, collapsed]);
   return el("aside", { className: collapsed ? "sidebar sidebar--collapsed" : "sidebar", ref: asideRef },
     el("div", { className: "sidebar__top" },
-      el("span", { className: "sidebar__wordmark" }, "fleetr"),
+      el("span", { className: "sidebar__wordmark" }, fleetrLogo("dark", 26)),
       el("button", {
         type: "button", className: "sidebar__collapse", onClick: onToggle,
         "aria-label": collapsed ? "Expand sidebar" : "Collapse sidebar", title: collapsed ? "Expand sidebar" : "Collapse sidebar",
@@ -16663,7 +16675,7 @@ function ForgotScreen({ onCancel }) {
     "div", { className: "loginWrap" },
     React.createElement(
       "div", { className: "loginCard" },
-      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#F4845F", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
+      React.createElement("div", { className: "loginBrand", style: { marginBottom: "4px" } }, fleetrLogo("light", 34)),
       React.createElement("div", { className: "loginSubtitle" },
         sent ? "Check your email." : "Reset your password."),
       sent
@@ -16779,7 +16791,7 @@ function SignupScreen({ onDone, onCancel }) {
     "div", { className: "loginWrap" },
     React.createElement(
       "div", { className: "loginCard" },
-      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#F4845F", fontSize: "2rem", fontWeight: "700", marginBottom: "4px", textAlign: "center" } }, "fleetr"),
+      React.createElement("div", { className: "loginBrand", style: { marginBottom: "4px" } }, fleetrLogo("light", 34)),
       React.createElement("div", { className: "loginSubtitle" }, "Create your account."),
       React.createElement(
         "form", { className: "loginForm", onSubmit: submit },
@@ -16865,7 +16877,7 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
     React.createElement(
       "div",
       { className: "loginCard" },
-      React.createElement("div", { style: { fontFamily: "'Inter', sans-serif", color: "#F4845F", fontSize: "2rem", fontWeight: "700", marginBottom: "28px", textAlign: "center" } }, "fleetr"),
+      React.createElement("div", { className: "loginBrand", style: { marginBottom: "28px" } }, fleetrLogo("light", 34)),
       React.createElement(
         "form",
         { className: "loginForm loginForm--signIn", onSubmit: handleSubmit },
@@ -17029,6 +17041,9 @@ body, * {
   width: 340px;
   box-shadow: 0 4px 24px rgba(0,0,0,0.10), 0 1.5px 6px rgba(0,0,0,0.06);
 }
+/* The logo on the sign-in, sign-up and reset cards: centred, with its clear
+   space above and below. */
+.loginBrand{ display: flex; justify-content: center; padding: 8px 0; }
 .loginLogo{
   display: block;
   width: 100%;
@@ -19064,10 +19079,9 @@ body, * {
     flex-shrink: 0;
   }
   .mobileTopbar__wordmark{
-    font-size: 17px;
-    font-weight: 800;
-    color: #fff;
-    letter-spacing: -0.02em;
+    display: flex;
+    align-items: center;
+    padding: 6px 0;
     flex: 1;
   }
   .mobileTopbar__signOut{
@@ -20516,7 +20530,7 @@ body, * {
 .app{ transition: grid-template-columns 220ms ease; }
 .sidebar{ gap: 14px; transition: width 220ms ease; }
 .sidebar__top{ display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 14px 4px 28px; min-height: 34px; }
-.sidebar__wordmark{ font-size: 22px; font-weight: 800; letter-spacing: -0.03em; color: #F9F9F7; }
+.sidebar__wordmark{ display: flex; align-items: center; padding: 7px 0; }
 .sidebar__collapse{
   width: 30px; height: 30px; flex: none; display: grid; place-items: center;
   border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.14); background: transparent;
@@ -20770,7 +20784,7 @@ body, * {
 }
 @keyframes skelSheen{ from{ background-position: 150% 0; } to{ background-position: -50% 0; } }
 .appSkel__side{ background: #FFFFFF; border-right: 1px solid rgba(31, 30, 29, 0.08); padding: 18px 20px 20px 28px; display: flex; flex-direction: column; gap: 22px; }
-.appSkel__wordmark, .appSkel__topWord{ font-size: 22px; font-weight: 800; letter-spacing: -0.03em; color: #F4845F; }
+.appSkel__wordmark, .appSkel__topWord{ display: flex; align-items: center; padding: 7px 0; }
 .appSkel__topWord{ display: none; }
 .appSkel__group{ display: flex; flex-direction: column; gap: 12px; }
 .skel--label{ width: 34%; height: 9px; border-radius: 4px; }
