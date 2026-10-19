@@ -652,10 +652,8 @@ Rental agreement lifecycle:
 
 Settings (app_settings):
 - The current branch's settings are passed in the user message as "App settings". Read them from there to answer questions; that needs no action.
-- gasMarkupPercent is the company's percentage added on top of every automatic gas charge. A gasMarkupPercent in App settings is this branch's own markup, which overrides the company's.
-- To change the company's markup: {"table":"app_settings","operation":"update","data":{"gasMarkupPercent":18}}. It must be zero or more. No "match" is needed. It changes the markup for every branch without its own; a branch's own markup is set on the Company page.
-- Fuel prices are set automatically from the official source for each branch's area. They cannot be changed by anyone at the company. If the user asks to change one, say so rather than emitting an action.
-- The markup is the only setting that can be changed.
+- postPayFuelRate in App settings is this branch's own post-pay fuel rate, in dollars per litre, where it has one. Gas charges at return are the amount short times the branch's rate, or the company's where the branch has none.
+- No setting can be changed through fleetr ai. The post-pay fuel rate is set by an Exec on the Company page, under Business details. If the user asks to change it, say so rather than emitting an action.
 
 Non-drive intake (ndi_rows) table fields:
 - id (primary key, do not modify), rescode, customer, phone, type, rate (read-only, not editable)
@@ -762,8 +760,7 @@ const ACTION_POLICY = {
   // Not obviously money until you read the handler: marking a balance Paid also
   // writes gasOwed to "0", so this writes off what a customer owed.
   "gas.collected":   { tier: "pin", label: "Change gas payment status" },
-  "gas.markup":      { tier: "pin", role: "Exec", label: "Change the gas markup" },
-  "gas.regionPrice": { tier: "pin", role: "Admin", label: "Change a regional fuel price" },
+  "gas.rate":        { tier: "pin", role: "Exec", label: "Change the post-pay fuel rate" },
   // Tank size is a money input: it is the divisor in every future gas charge.
   "vehicle.tankSize": { tier: "pin", label: "Set tank size" },
 
@@ -969,7 +966,7 @@ function commandBarActionKey({ table, operation, data }) {
   // here is an advance (manualRaTransition then allows only closing).
   if (operation === "raStatus") return "ra.advance";
   if (table === "app_settings") {
-    return fields.includes("gasMarkupPercent") ? "gas.markup" : "gas.regionPrice";
+    return "gas.rate";
   }
   if (table === "fleet") {
     if (operation === "insert") return "vehicle.add";
@@ -5768,33 +5765,14 @@ function resolvePmComplete(vehicle) {
 }
 
 // ─── Gas settings rules ──────────────────────────────────────────────────────
-// The markup feeds every automatic gas charge, so the Company page and the
-// command bar validate it identically. Fuel prices are not a setting: each
-// branch's is set automatically from the official source for its area.
-const GAS_SETTING_KEYS = ["gasMarkupPercent"];
-
-function validateGasMarkup(raw) {
+// The post-pay fuel rate is what every gas charge at return is worked out
+// from, so it has to be a real price: more than zero, and at most $100.
+function validateFuelRate(raw) {
   const n = typeof raw === "number" ? raw : parseFloat(String(raw ?? "").trim());
-  if (!Number.isFinite(n) || n < 0) {
-    return { ok: false, value: null, error: "The gas markup has to be a percentage of zero or more." };
+  if (!Number.isFinite(n) || n <= 0 || n > 100) {
+    return { ok: false, value: null, error: "The post-pay fuel rate has to be a dollar amount more than zero." };
   }
   return { ok: true, value: n, error: null };
-}
-
-// Turns a settings payload into the list of writes it implies.
-function resolveGasSettingsUpdate(data) {
-  const keys = Object.keys(data || {});
-  if (!keys.length) return { ok: false, writes: [], error: "No setting was given to change." };
-  if (keys.includes("gasPrices")) {
-    return { ok: false, writes: [], error: "Fuel prices are set automatically from the official source for each branch's area, so they cannot be changed here." };
-  }
-  const unknown = keys.filter((k) => !GAS_SETTING_KEYS.includes(k));
-  if (unknown.length) {
-    return { ok: false, writes: [], error: `fleetr ai can only change these settings: ${GAS_SETTING_KEYS.join(", ")}.` };
-  }
-  const check = validateGasMarkup(data.gasMarkupPercent);
-  if (!check.ok) return { ok: false, writes: [], error: check.error };
-  return { ok: true, writes: [["gasMarkupPercent", check.value]], error: null };
 }
 
 // ─── Rental agreement lifecycle ──────────────────────────────────────────────
@@ -7054,7 +7032,7 @@ function ChangeRecoveryEmail({ account, onDone }) {
 // company_setup_status item it holds is done; afterwards the same sections
 // hold the settings. Every section stays folded until it is clicked.
 const COMPANY_STEPS = [
-  { key: "business",   title: "Business details",           items: ["branch"] },
+  { key: "business",   title: "Business details",           items: ["branch", "fuel_rate"] },
   { key: "vehicles",   title: "Vehicles",                   items: ["vehicle_classes", "vehicles"] },
   { key: "rates",      title: "Rates",                      items: ["rates"] },
   { key: "protection", title: "Protection and deductibles", items: ["protection"], skippable: true },
@@ -7163,7 +7141,7 @@ function CompanyPage() {
 
   const [branches, setBranches] = React.useState([]);
   const [gas,      setGas]      = React.useState([]);
-  const [companyMarkup, setCompanyMarkup] = React.useState(null);
+  const [companyFuelRate, setCompanyFuelRate] = React.useState(null);
   const [taxes,    setTaxes]    = React.useState([]);
   // Per branch: its time zone, and whether its sales tax has been saved.
   const [branchSetup, setBranchSetup] = React.useState({});
@@ -7193,7 +7171,7 @@ function CompanyPage() {
       setTaxSuggestions(Object.fromEntries(unset.map((b, i) => [b.id, Array.isArray(found[i]) ? found[i] : null])));
     }
     if (ov.ok)  setBranches(ov.branches || []);
-    if (gs.ok)  { setGas(gs.branches || []); setCompanyMarkup(gs.companyMarkupPercent ?? null); }
+    if (gs.ok)  { setGas(gs.branches || []); setCompanyFuelRate(gs.companyPostPayFuelRate ?? null); }
     if (tx.ok)  setTaxes(tx.branches || []);
     if (act.ok) setActing(act);
     if (!ov.ok) setError(COMPANY_REASONS[ov.reason] || "Could not load the company.");
@@ -7258,6 +7236,7 @@ function CompanyPage() {
       case "business": return el(React.Fragment, null,
         el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "address", onSaved: refreshAll }),
         el(CompanyUnitsSection, { key: `${fuelUnit()}-${distanceUnit()}`, onSaved: () => { setNotice("Units saved."); changed(); } }),
+        el(PostPayFuelRateSection, { key: `rate-${fuelUnit()}`, gas, companyRate: companyFuelRate, busy, onSave: run }),
         React.createElement(
           CompanySection, { title: "Sales tax" },
           React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
@@ -7332,8 +7311,7 @@ function CompanyPage() {
             }, "Open a branch")
           )
         ),
-        launched && parts.pickup,
-        launched && React.createElement(FuelPricingSection, { gas, companyMarkup, busy, onSave: run }));
+        launched && parts.pickup);
       case "vehicles": return el(React.Fragment, null,
         parts.classes,
         el(CompanySection, { title: "Add vehicles", style: { marginTop: "24px" } }, el(VehiclesStep, { onAdded: changed })));
@@ -7373,114 +7351,98 @@ function CompanyPage() {
   );
 }
 
-// ─── Fuel pricing ────────────────────────────────────────────────────────────
-// Each branch's gas price per litre is set automatically from the official
-// source for its area (automatic_gas_prices.sql), so it is shown here, never
-// typed. The company sets one markup; a branch can have its own, behind a
-// toggle, since most companies never need one.
-const FUEL_PENDING = {
-  no_area: "Price pending. fleetr has not set this branch's fuel price area yet.",
-  not_from_base: "Price pending. The Board does not price this zone from the base zone.",
-  permission: "Price pending. Prices outside Atlantic Canada are not available yet.",
-  not_fetched: "Price pending. The first price has not been read yet.",
+// ─── Post-pay fuel rate ──────────────────────────────────────────────────────
+// What the company charges per litre of fuel a vehicle comes back short. Kept
+// per litre; shown and typed per gallon for a company that uses gallons. A
+// branch can have its own, behind a toggle, since most companies never need
+// one. A gallon rate is kept to four places per litre, which shows back to
+// the cent.
+const fuelRateForDisplay = (perLitre) => {
+  const n = Number(perLitre);
+  if (perLitre === null || perLitre === undefined || perLitre === "" || !Number.isFinite(n)) return null;
+  return fuelUnit() === "gal" ? Math.round(n * L_PER_GAL * 1000) / 1000 : n;
+};
+const fuelRateToLitre = (perUnit) =>
+  fuelUnit() === "gal" ? Math.round((perUnit / L_PER_GAL) * 10000) / 10000 : perUnit;
+const fuelRateUnit = () => (fuelUnit() === "gal" ? "gallon" : "litre");
+const fuelRateText = (perLitre) => {
+  const n = fuelRateForDisplay(perLitre);
+  return n == null ? null : `$${n.toFixed(2)} per ${fuelRateUnit()}`;
 };
 
-function fuelDay(iso) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
-  if (!m) return "";
-  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
-    .toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-}
-
-// "193.1 ¢/L · Nova Scotia Energy Board, Zone 1 · effective Fri, Oct 16", or
-// why there is no price yet.
-function fuelPriceLine(fuel) {
-  if (!fuel || fuel.centsPerLitre == null) return FUEL_PENDING[fuel?.pending] || FUEL_PENDING.no_area;
-  const area = fuel.province === "NS" || fuel.province === "NL" ? `, ${fuel.areaName}` : "";
-  return [`${Number(fuel.centsPerLitre).toFixed(1)} ¢/L`, `${fuel.sourceName}${area}`,
-    `effective ${fuelDay(fuel.effectiveDate)}`].join(LIST_SEP);
-}
-
-function FuelPricingSection({ gas, companyMarkup, busy, onSave }) {
+function PostPayFuelRateSection({ gas, companyRate, busy, onSave }) {
   const el = React.createElement;
-  const [markup, setMarkup] = React.useState(companyMarkup != null ? String(companyMarkup) : "");
-  React.useEffect(() => { setMarkup(companyMarkup != null ? String(companyMarkup) : ""); }, [companyMarkup]);
-  const overridden = gas.some((g) => g.active && g.gasMarkupPercent != null);
-  const [showOverrides, setShowOverrides] = React.useState(false);
+  const shown = (v) => (fuelRateForDisplay(v) != null ? String(fuelRateForDisplay(v)) : "");
+  const [rate, setRate] = React.useState(shown(companyRate));
+  React.useEffect(() => { setRate(shown(companyRate)); }, [companyRate]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [error, setError] = React.useState("");
   const rows = gas.filter((g) => g.active);
-  const companyText = companyMarkup != null ? `${companyMarkup}%` : "none";
+  const overridden = rows.some((g) => g.postPayFuelRate != null);
+  const [showOverrides, setShowOverrides] = React.useState(false);
 
   return el(
-    CompanySection, { title: "Fuel pricing" },
+    CompanySection, { title: "Post-pay fuel rate" },
     el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-      "Each branch's regular gas price per litre is set automatically from the official source for its area, and checked every day. Your markup is added on top of every automatic gas charge. A branch with no price leaves the gas charge blank, for staff to enter."),
+      `What you charge per ${fuelRateUnit()} when a vehicle comes back with less fuel than it went out with. The gas charge at return is this rate times the amount short.`),
     el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", margin: "12px 0" } },
-      el("label", { htmlFor: "company-gas-markup", style: { fontSize: "0.9rem" } }, "Markup %"),
+      el("label", { htmlFor: "company-fuel-rate", style: { fontSize: "0.9rem" } }, `Post-pay fuel rate ($ per ${fuelRateUnit()})`),
       el("input", {
-        id: "company-gas-markup", className: "resFormInput", style: { width: "90px" },
-        inputMode: "decimal", value: markup, onChange: (e) => setMarkup(e.target.value),
+        id: "company-fuel-rate", className: "resFormInput", style: { width: "110px" },
+        inputMode: "decimal", value: rate, onChange: (e) => { setRate(e.target.value); setError(""); },
       }),
       el("button", {
         className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
         disabled: busy === "gas",
         onClick: () => {
-          const check = validateGasMarkup(markup);
-          if (!check.ok) return;
-          onSave("gas", "set_company_gas_markup", { p_markup: check.value });
+          const check = validateFuelRate(rate);
+          if (!check.ok) { setError(check.error); return; }
+          onSave("gas", "set_company_fuel_rate", { p_rate: fuelRateToLitre(check.value) });
         },
       }, "Save")),
-    el("div", { style: { overflowX: "auto" } },
-      el("table", { className: "dashboardTable", style: { minWidth: "620px" } },
-        el("thead", null, el("tr", null,
-          ["Branch", "Gas price", "Markup"].map((h) => el("th", { key: h }, h)))),
-        el("tbody", null, rows.map((g) =>
-          el("tr", { key: g.locationId },
-            el("td", null, g.name),
-            el("td", { style: { fontSize: "0.85rem" } },
-              fuelPriceLine(g.fuel),
-              g.fuel && g.fuel.stale && el("span", { style: { marginLeft: "8px", color: "#d9822b" } },
-                `Stale: the source has not been read since ${fuelDay(g.fuel.checkedAt)}. The last good price is used.`)),
-            el("td", null, g.gasMarkupPercent != null ? `${g.gasMarkupPercent}% (this branch)` : companyText)))))),
-    el("button", {
-      type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px", marginTop: "12px" },
+    error && el("div", { className: "loginError" }, error),
+    rows.length > 0 && el("button", {
+      type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px", marginTop: "4px" },
       onClick: () => setShowOverrides((v) => !v),
-    }, showOverrides ? "Hide branch markups" : (overridden ? "Change a branch's own markup" : "Set a different markup for a branch")),
+    }, showOverrides ? "Hide branch rates" : (overridden ? "Change a branch's own rate" : "Set a different rate for a branch")),
     showOverrides && el("div", { style: { overflowX: "auto", marginTop: "12px" } },
       el("table", { className: "dashboardTable", style: { minWidth: "520px" } },
-        el("thead", null, el("tr", null, ["Branch", "Its own markup %", ""].map((h) => el("th", { key: h }, h)))),
-        el("tbody", null, rows.map((g) => el(GasRow, { key: g.locationId, row: g, busy, onSave }))))));
+        el("thead", null, el("tr", null, ["Branch", `Its own rate ($ per ${fuelRateUnit()})`, ""].map((h) => el("th", { key: h }, h)))),
+        el("tbody", null, rows.map((g) => el(GasRow, { key: g.locationId, row: g, busy, onSave, companyRate }))))));
 }
 
-// One branch's own markup. Its own component so each branch keeps its own
-// draft: one shared draft meant typing in one row and saving another, which
-// for a markup is a real charge to a real customer. Blank uses the company's.
-function GasRow({ row, busy, onSave }) {
-  const [markup, setMarkup] = React.useState(
-    row.gasMarkupPercent != null ? String(row.gasMarkupPercent) : "");
-  React.useEffect(() => { setMarkup(row.gasMarkupPercent != null ? String(row.gasMarkupPercent) : ""); }, [row.gasMarkupPercent]);
+// One branch's own post-pay fuel rate. Its own component so each branch keeps
+// its own draft: one shared draft meant typing in one row and saving another,
+// which for a rate is a real charge to a real customer. Blank uses the
+// company's.
+function GasRow({ row, busy, onSave, companyRate }) {
+  const shown = (v) => (fuelRateForDisplay(v) != null ? String(fuelRateForDisplay(v)) : "");
+  const [rate, setRate] = React.useState(
+    row.postPayFuelRate != null ? shown(row.postPayFuelRate) : "");
+  React.useEffect(() => { setRate(shown(row.postPayFuelRate)); }, [row.postPayFuelRate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return React.createElement(
     "tr", null,
     React.createElement("td", null, row.name),
     React.createElement("td", null,
       React.createElement("input", {
-        className: "resFormInput", style: { width: "90px" }, placeholder: "Company",
-        inputMode: "decimal", value: markup,
-        onChange: (e) => setMarkup(e.target.value),
+        className: "resFormInput", style: { width: "110px" },
+        placeholder: fuelRateForDisplay(companyRate) != null ? `Company: ${fuelRateForDisplay(companyRate)}` : "Company",
+        inputMode: "decimal", value: rate,
+        onChange: (e) => setRate(e.target.value),
       })),
     React.createElement("td", null,
       React.createElement("button", {
         className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
         disabled: busy === "gas",
         onClick: () => {
-          if (markup.trim() === "") {
-            onSave("gas", "set_company_gas_setting", { location_id: row.locationId, setting_key: "gasMarkupPercent", setting_value: null });
+          if (rate.trim() === "") {
+            onSave("gas", "set_company_gas_setting", { location_id: row.locationId, setting_key: "postPayFuelRate", setting_value: null });
             return;
           }
-          const check = validateGasMarkup(markup);
+          const check = validateFuelRate(rate);
           if (!check.ok) return;
           onSave("gas", "set_company_gas_setting", {
-            location_id: row.locationId, setting_key: "gasMarkupPercent", setting_value: check.value,
+            location_id: row.locationId, setting_key: "postPayFuelRate", setting_value: fuelRateToLitre(check.value),
           });
         },
       }, "Save"))
@@ -11245,7 +11207,7 @@ function FleetrCommandBar() {
         `No-shows data: ${JSON.stringify(noShows)}\n\n` +
         `Damage claims data: ${JSON.stringify(damageClaims)}\n\n` +
         // Settings are read straight from app_settings rather than a table dump,
-        // so the model can answer "what is the markup" without a write.
+        // so the model can answer "what is the fuel rate" without a write.
         `App settings: ${JSON.stringify(appSettings)}\n\n` +
         `User command: ${trimmed}`;
       // The proxy verifies this token before spending anything on our Anthropic
@@ -11541,21 +11503,17 @@ function FleetrCommandBar() {
     }
 
     // ── Settings ──────────────────────────────────────────────────────────────
-    let settingWrites = null;
     if (table === "app_settings") {
-      if (operation !== "update") return fail("Settings can only be changed, not added or removed.");
-      const check = resolveGasSettingsUpdate(data);
-      if (!check.ok) return fail(check.error);
-      settingWrites = check.writes;
+      return fail("The post-pay fuel rate is set by an Exec on the Company page, under Business details.");
     }
 
-    return { ok: true, table, operation, match, data, raResCode, pmVehicle, settingWrites };
+    return { ok: true, table, operation, match, data, raResCode, pmVehicle };
   };
 
   const executeAction = async (plan) => {
     if (!plan?.ok) return;
     setActionLoading(true);
-    const { table, operation, match, data, raResCode, pmVehicle, settingWrites } = plan;
+    const { table, operation, match, data, raResCode, pmVehicle } = plan;
 
     // One place that knows which React setter owns which table. The update,
     // insert and delete branches each used to carry their own if/else chain over
@@ -11598,16 +11556,6 @@ function FleetrCommandBar() {
       } else if (operation === "pmComplete") {
         ({ error } = await supabase.from("fleet").update(data).eq("id", pmVehicle.id));
         if (!error) setFleet((prev) => prev.map((v) => (v.id === pmVehicle.id ? { ...v, ...data } : v)));
-      } else if (table === "app_settings") {
-        // The markup is the company's, set by the database (Exec only, and
-        // audited there), so there is nothing in local state to mirror.
-        for (const [, value] of settingWrites) {
-          const { data: res, error: err } = await supabase.rpc("set_company_gas_markup", { p_markup: value });
-          if (err || !res || !res.ok) {
-            error = { message: res?.reason === "exec_only" ? "Only an Exec can change the gas markup." : "Could not save the gas markup." };
-            break;
-          }
-        }
       } else if (operation === "update") {
         let q = supabase.from(table).update(data);
         if (match) Object.entries(match).forEach(([k, v]) => { q = q.eq(k, v); });
@@ -11966,6 +11914,8 @@ function SetupBar() {
 const SETUP_ITEMS = {
   branch:                { title: "Branch", path: null,
                            text: "Every open branch's full address and map pin, and its sales tax confirmed." },
+  fuel_rate:             { title: "Post-pay fuel rate", path: null,
+                           text: "What you charge per litre or gallon of fuel a vehicle comes back short." },
   vehicle_classes:       { title: "Vehicle classes", path: null, text: "At least one, ticked from the standard list." },
   rates:                 { title: "Rates", path: null,
                            text: "One source with a daily rate for every vehicle class: fleetr.ai while List on fleetr.ai is on." },
@@ -13690,7 +13640,7 @@ function returnedVehicleStatus(damageFound, rentable) {
 // noticing later.
 //
 // No prepaid-fuel exemption, because there is no such field. The system has
-// gasOwed, gasCollected, the markup and the branch fuel price, all about charging for
+// gasOwed, gasCollected and the post-pay fuel rate, all about charging for
 // fuel after the fact, and nothing recording that a customer bought a tank up
 // front. If that is added, it belongs here.
 // What to tell the person, for each reason closeRentalOutcome holds an
@@ -13724,19 +13674,17 @@ function closeRentalOutcome({ damageFound, pickupGas, returnGas }) {
 // the customer app charged for fuel and Close Rental did not, so the same
 // shortage cost nothing when a staff member processed the return.
 //
-//   eighths short / 8 x tank litres x price per litre x (1 + markup)
+//   eighths short / 8 x tank litres x post-pay fuel rate per litre
 //
-// gas is the rental's branch's price per litre and markup, from branch_gas:
-// the price is set automatically from the official source for the branch's
-// area, the markup is the branch's own or the company's. Markup is optional
-// and treated as zero when unset.
+// ratePerLitre is the rental's branch's post-pay fuel rate, from
+// branch_fuel_rate: the branch's own, else the company's.
 //
 // Returns null rather than zero whenever the sum cannot be made: no tank size
-// on the vehicle, no price for the branch, or a level either side that is not
+// on the vehicle, no rate for the branch, or a level either side that is not
 // one of FUEL_LABELS. Null means "leave gasOwed alone for manual entry", which
 // is what the Company page promises. Zero would read as a settled balance and
 // drop the rental off Gas Collections entirely.
-function gasChargeForReturn({ pickupGas, returnGas, vehicle, gas }) {
+function gasChargeForReturn({ pickupGas, returnGas, vehicle, ratePerLitre }) {
   const from = FUEL_LABELS.indexOf(pickupGas);
   const to   = FUEL_LABELS.indexOf(returnGas);
   if (from === -1 || to === -1 || to >= from) return null;
@@ -13744,13 +13692,10 @@ function gasChargeForReturn({ pickupGas, returnGas, vehicle, gas }) {
   const tank = parseFloat(vehicle?.tankSizeLiters);
   if (!Number.isFinite(tank) || tank <= 0) return null;
 
-  const price = parseFloat(gas?.pricePerLitre);
-  if (!Number.isFinite(price) || price <= 0) return null;
+  const rate = parseFloat(ratePerLitre);
+  if (!Number.isFinite(rate) || rate <= 0) return null;
 
-  const markupRaw = parseFloat(gas?.markupPercent);
-  const markup    = Number.isFinite(markupRaw) ? markupRaw : 0;
-
-  const charge = ((from - to) / 8) * tank * price * (1 + markup / 100);
+  const charge = ((from - to) / 8) * tank * rate;
   if (!Number.isFinite(charge) || charge <= 0) return null;
   // Two decimals as a string, matching the column: gasOwed is text everywhere
   // else in the app, and Gas Collections parses it back out.
@@ -14063,26 +14008,26 @@ function CloseRentalPage() {
   // open. Only for fuel_short: a damage close and a close with an unreadable
   // pickup level both stay out of Gas Collections, the first because the fuel
   // says nothing and the second because there is nothing to measure against.
-  // The rental's branch's price and markup, read when there is a shortage to
-  // charge for. Nothing read leaves the charge blank, for manual entry.
-  const [branchGas, setBranchGas] = React.useState(null);
+  // The rental's branch's post-pay fuel rate, read when there is a shortage
+  // to charge for. Nothing read leaves the charge blank, for manual entry.
+  const [branchRate, setBranchRate] = React.useState(null);
   const gasBranch = agreementOutcome.reason === "fuel_short" ? ra?.locationId || null : null;
   React.useEffect(() => {
     let live = true;
-    setBranchGas(null);
+    setBranchRate(null);
     if (!gasBranch) return undefined;
-    supabase.rpc("branch_gas", { p_location_id: gasBranch }).then(({ data }) => {
-      if (live && data && data.ok) setBranchGas(data);
+    supabase.rpc("branch_fuel_rate", { p_location_id: gasBranch }).then(({ data }) => {
+      if (live && data && data.ok) setBranchRate(data.ratePerLitre ?? null);
     });
     return () => { live = false; };
   }, [gasBranch]);
   const gasCharge = React.useMemo(() => (
     agreementOutcome.reason === "fuel_short"
       ? gasChargeForReturn({
-          pickupGas: ra?.fuelAtPickup, returnGas: final?.closingGasLevel, vehicle, gas: branchGas,
+          pickupGas: ra?.fuelAtPickup, returnGas: final?.closingGasLevel, vehicle, ratePerLitre: branchRate,
         })
       : null
-  ), [agreementOutcome.reason, ra?.fuelAtPickup, final?.closingGasLevel, vehicle, branchGas]);
+  ), [agreementOutcome.reason, ra?.fuelAtPickup, final?.closingGasLevel, vehicle, branchRate]);
 
   const resetFlow = () => {
     setSelectedId(null); setReadings(EMPTY_CLOSE_READINGS); setClosing(null);
