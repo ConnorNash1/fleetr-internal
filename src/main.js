@@ -294,7 +294,11 @@ let companyLaunched = true;
 // holds it, so opening and saving that record does not change it.
 let companyLists = null;
 
-const LIST_SEP = " \u2014 ";
+// Shown between a source and its specific source (and the old vehicle class
+// group and size) as a middle dot. Values saved with the em dash it used to be
+// still split, through splitList.
+const LIST_SEP = " \u00b7 ";
+const splitList = (v) => String(v || "").split(/ \u2014 | \u00b7 /);
 
 const byListOrder = (a, b) =>
   ((a.sortOrder ?? 0) - (b.sortOrder ?? 0)) || String(a.name).localeCompare(String(b.name));
@@ -465,9 +469,9 @@ function dailyRateFor(source, vehicleClass) {
   if (!companyLists) return undefined;
   const src = String(source || "");
   const vc  = String(vehicleClass || "");
-  const parts = vc.split(LIST_SEP);
+  const parts = splitList(vc);
   const className = parts.length > 1 ? `${parts[1]} ${parts[0]}` : vc;
-  return companyLists.rates[src.split(LIST_SEP)[0]]?.[className];
+  return companyLists.rates[splitList(src)[0]]?.[className];
 }
 
 // A reservation form with its daily rate filled for its source and vehicle
@@ -505,7 +509,7 @@ function ndiSourceOptions(current) {
 // source the company's list does not have (an old record, or the list did not
 // load) has no billing type: its name is not taken as a guess at one.
 function sourceBillingType(source) {
-  const name = String(source || "").split(LIST_SEP)[0];
+  const name = splitList(source)[0];
   const known = companyLists && companyLists.sources.find((x) => x.name === name);
   return known ? known.billingType : null;
 }
@@ -580,7 +584,7 @@ function requestReservationConfirmation(resCode) {
 
 const CLAUDE_SYSTEM    = `You are fleetr ai, an assistant built into a vehicle fleet rental management system. You have access to the current reservations, rental agreements, fleet, non-drive intake, no-shows, and damage claims data passed in the user message.
 
-Always respond with a valid JSON object — no markdown, no code fences, no text outside the JSON. Use this exact structure:
+Always respond with a valid JSON object: no markdown, no code fences, no text outside the JSON. Use this exact structure:
 {
   "message": "Plain English description of what you found or what action you are about to take.",
   "action": {
@@ -592,7 +596,7 @@ Always respond with a valid JSON object — no markdown, no code fences, no text
 }
 
 Rules:
-- "message" is always required. Write in plain conversational English.
+- "message" is always required. Write in plain conversational English. Never use em dashes; use a comma or a middle dot instead.
 - When "action" is included, nothing has happened yet. The staff member still has to confirm it, most actions then ask for a PIN, and the system may refuse the action outright. So describe what WILL happen, never what has happened. Write "This will set the tank size to 55 litres", not "I've set the tank size to 55 litres". Do not say done, updated, recorded, saved, opened, closed or changed about the action you are proposing.
 - For a read or lookup, where nothing is being written, describe what you found in the normal past or present tense. This rule is only about actions.
 - "action" is optional. Only include it when the user is requesting a write operation. For read/lookup requests omit "action" entirely.
@@ -1033,7 +1037,7 @@ const NAV_SECTIONS = [
     ],
   },
   {
-    header: "AI Calls and Texts",
+    header: "Customer texts",
     items: [
       { label: "Non-Drive's", path: "/arms", feature: "non_drive_intake" },
       { label: "Pre-Rental Check", path: "/pre-rental-check", feature: "pre_rental_check" },
@@ -2193,7 +2197,7 @@ function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote })
     showPreRentalCheck && React.createElement("span", { className: statusClass }, preRentalCheck),
 
     // ── dash + notes preview button ───────────────────────────────────────
-    hasNotes && showPreRentalCheck && React.createElement("span", { className: "notesDash" }, " \u2014 "),
+    hasNotes && showPreRentalCheck && React.createElement("span", { className: "notesDash" }, " \u00b7 "),
     hasNotes &&
       React.createElement(
         "button",
@@ -2402,7 +2406,7 @@ function CustomerLink({ name, resCode, label, hideBadge }) {
   const isTest = !!res?.isTest;
   const badgeClass = raBadgeClass(raStatus);
   const displayText = label !== undefined ? label
-    : resCode ? `${name} — ${resCode}` : name;
+    : resCode ? `${name} · ${resCode}` : name;
   return React.createElement(
     "span",
     { className: "customerLinkWrap" },
@@ -3162,7 +3166,7 @@ function NonDriveIntakeSection({ standalone }) {
                 ? Math.max(0, Math.floor((now - row.requestedAtMs) / 60000))
                 : 0;
               return React.createElement("tr", { key: row.id }, [
-                React.createElement("td", { key: `${row.id}-res` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.rescode, label: row.rescode || "—" })),
+                React.createElement("td", { key: `${row.id}-res` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.rescode, label: row.rescode || "·" })),
                 React.createElement("td", { key: `${row.id}-customer` },
                   React.createElement(CustomerLink, { name: row.customer, resCode: row.rescode, label: row.customer })
                 ),
@@ -4329,7 +4333,7 @@ function NoShowsPage() {
                     "tr",
                     { key: row.id },
                     React.createElement("td", null, fmt12h(row.time)),
-                    React.createElement("td", null, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode || "—" })),
+                    React.createElement("td", null, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode || "·" })),
                     React.createElement("td", null, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })),
                     React.createElement("td", null, row.vehicleClass),
                     React.createElement("td", null, row.location),
@@ -4351,7 +4355,7 @@ function OverdueRentalsPage() {
   const [callStatuses, setCallStatuses] = React.useState({});
 
   const fmtDate = (iso) => {
-    if (!iso) return "—";
+    if (!iso) return "·";
     const d = new Date(`${iso}T00:00:00`);
     return Number.isNaN(d.getTime()) ? iso
       : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
@@ -4422,7 +4426,7 @@ function OverdueRentalsPage() {
             React.createElement("td", null, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
             React.createElement("td", null, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })),
             React.createElement("td", null, row.phone),
-            React.createElement("td", null, row.plate ? React.createElement(PlateLink, { plate: row.plate }) : "—"),
+            React.createElement("td", null, row.plate ? React.createElement(PlateLink, { plate: row.plate }) : "·"),
             React.createElement("td", null, fmtDate(row.returnDate)),
             React.createElement(
               "td", null,
@@ -4459,7 +4463,7 @@ function OverdueRentalsPage() {
     React.createElement(
       "p",
       { className: "aiTabDesc" },
-      "Rental agreements past their return date. An AI call triggers automatically. Customers with no response are moved to Manual Follow-Up."
+      "Rental agreements past their return date. The customer gets a text automatically. Customers with no response are moved to Manual Follow-Up."
     ),
     React.createElement(
       "section",
@@ -4605,7 +4609,7 @@ function VehicleDetailPage() {
   const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
 
   const fmtDate = (iso) => {
-    if (!iso) return "\u2014";
+    if (!iso) return "\u00b7";
     const d = new Date(`${iso}T00:00:00`);
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
   };
@@ -4625,7 +4629,7 @@ function VehicleDetailPage() {
     React.createElement(
       "div", { className: "vehicleDetailRow" },
       React.createElement("span", { className: "vehicleDetailLabel" }, label),
-      React.createElement("span", { className: "vehicleDetailValue" }, value !== undefined && value !== null && value !== "" ? String(value) : "\u2014")
+      React.createElement("span", { className: "vehicleDetailValue" }, value !== undefined && value !== null && value !== "" ? String(value) : "\u00b7")
     );
 
   const subHdr = (title) =>
@@ -4661,12 +4665,12 @@ function VehicleDetailPage() {
       React.createElement(React.Fragment, null,
         detailRow("Plate", plate.replace(/-/g, "")),
         detailRow("Province / State", vehicle.province),
-        detailRow("Year / Make / Model", [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(" ") || "\u2014"),
+        detailRow("Year / Make / Model", [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(" ") || "\u00b7"),
         detailRow("Colour", vehicle.colour),
         detailRow("VIN", vehicle.vin),
         detailRow("Odometer", latestRa?.mileage != null
           ? fmtDistance(latestRa.mileage)
-          : vehicle.currentOdometer != null ? fmtDistance(vehicle.currentOdometer) : "\u2014"),
+          : vehicle.currentOdometer != null ? fmtDistance(vehicle.currentOdometer) : "\u00b7"),
         detailRow("Fuel Level", latestRa?.fuelAtPickup || vehicle.currentFuelLevel),
         React.createElement(
           "div", { className: "vehicleDetailRow" },
@@ -4780,7 +4784,7 @@ function VehicleDetailPage() {
           )
         ),
         (vehicle.status === "On Rent" || activeRa) && detailRow("Current Renter", activeRa?.customer || vehicle.currentRenter),
-        (vehicle.status === "On Rent" || activeRa) && detailRow("Reservation Code", activeRa?.resCode || currentRes?.resCode || "\u2014"),
+        (vehicle.status === "On Rent" || activeRa) && detailRow("Reservation Code", activeRa?.resCode || currentRes?.resCode || "\u00b7"),
         (vehicle.status === "On Rent" || activeRa) && detailRow("Expected Return", fmtDate(activeRa?.returnDate || vehicle.dueBack)),
         subHdr("Rental History"),
         rentalHistory.length === 0
@@ -4815,7 +4819,7 @@ function VehicleDetailPage() {
         React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "12px 0" } }, "No damage on record."),
         subHdr("Last Inspection Photos"),
         React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "12px 0" } }, "No inspection photos available."),
-        detailRow("Last Inspection Date", "\u2014")
+        detailRow("Last Inspection Date", "\u00b7")
       )
     ),
 
@@ -6191,7 +6195,7 @@ function FleetVehiclesPage() {
 function FleetAdditionsPage({ embedded, onAdded } = {}) {
   const { fleet, setFleet, guardAction, archivedVehicles, setArchivedVehicles, currentUser } = React.useContext(AppContext);
   const { filtered, filterState } = useFleetFilter(fleet);
-  const [activeTab,  setActiveTab]  = React.useState("add");
+  const [openCards, setOpenCards] = React.useState({ add: true, retire: false, archived: false });
 
 
   // tankSize / pmInterval are typed in the company's own units, set once on
@@ -6354,29 +6358,17 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
       })
     );
 
-  return React.createElement(
-    "div", { className: embedded ? null : "page" },
-    !embedded && React.createElement("h1", { className: "page__title" }, "Additions and Deletions"),
-    !embedded && React.createElement("div", { className: "page__titleUnderline" }),
-    !embedded && React.createElement(FleetFilterBar, { filterState }),
-    !embedded && React.createElement("div", { className: "aiSubTabs" },
-      [{ key: "add", label: "Add Vehicle" }, { key: "retire", label: "Retire Vehicle" }].map(({ key, label }) =>
-        React.createElement("button", {
-          key, type: "button",
-          className: `aiSubTab${activeTab === key ? " aiSubTab--active" : ""}`,
-          onClick: () => setActiveTab(key),
-        }, label)
-      )
-    ),
-
-    activeTab === "add" && !unitsSet() && React.createElement("div", { className: "resvEmpty", style: { textAlign: "left" } }, UNITS_NOT_SET),
-    activeTab === "add" && unitsSet() && React.createElement(
-      "section", { className: "dashboardSection" },
-      React.createElement("div", { className: "dashboardSection__header" },
-        React.createElement("div", { className: "dashboardSection__headerRow" }, React.createElement("span", null, "Add Vehicle to Fleet"))
-      ),
-      React.createElement("div", { className: "dashboardSection__body" },
-        React.createElement("form", { className: "addVehicleForm", onSubmit: handleAddSubmit },
+  // Inside the Company page's Vehicles step: the add form alone, as it was.
+  if (embedded) {
+    return React.createElement("div", null,
+      !unitsSet() && React.createElement("div", { className: "resvEmpty", style: { textAlign: "left" } }, UNITS_NOT_SET),
+      unitsSet() && React.createElement(
+        "section", { className: "dashboardSection" },
+        React.createElement("div", { className: "dashboardSection__header" },
+          React.createElement("div", { className: "dashboardSection__headerRow" }, React.createElement("span", null, "Add Vehicle to Fleet"))
+        ),
+        React.createElement("div", { className: "dashboardSection__body" },
+          React.createElement("form", { className: "addVehicleForm", onSubmit: handleAddSubmit },
           React.createElement("div", { className: "addVehicleGrid" },
             React.createElement("div", { className: "addVehicleField" },
               React.createElement("label", { className: "addVehicleLabel" }, "Plate Number"),
@@ -6425,17 +6417,75 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
           addSuccess && React.createElement("div", { className: "addVehicleSuccess" }, "Vehicle added to fleet."),
           React.createElement("button", { type: "submit", className: "addVehicleBtn" }, "Add to Fleet")
         )
+        )
       )
-    ),
+    );
+  }
 
-    !embedded && activeTab === "retire" && React.createElement(
-      React.Fragment, null,
-      React.createElement("section", { className: "dashboardSection" },
-        React.createElement("div", { className: "dashboardSection__header" },
-          React.createElement("div", { className: "dashboardSection__headerRow" }, React.createElement("span", null, "Retire Vehicle"))
-        ),
-        React.createElement("div", { className: "dashboardSection__body" },
-          React.createElement("form", { className: "addVehicleForm", onSubmit: handleRetireSubmit },
+  // The page: the Company page's section cards, each opening and closing.
+  const card = (key, title, ...children) => React.createElement(CompanyStep, {
+    key, id: `additions-${key}`, stepKey: key, title, open: !!openCards[key],
+    onToggle: () => setOpenCards((p) => ({ ...p, [key]: !p[key] })),
+  }, ...children);
+  return React.createElement(
+    "div", { className: "page companySetup" },
+    React.createElement("h1", { className: "companySetup__title" }, "Additions and Deletions"),
+    React.createElement(FleetFilterBar, { filterState }),
+    card("add", "Add Vehicle to Fleet",
+      !unitsSet()
+        ? React.createElement("div", { className: "resvEmpty", style: { textAlign: "left" } }, UNITS_NOT_SET)
+        : React.createElement("form", { className: "addVehicleForm", onSubmit: handleAddSubmit },
+          React.createElement("div", { className: "addVehicleGrid" },
+            React.createElement("div", { className: "addVehicleField" },
+              React.createElement("label", { className: "addVehicleLabel" }, "Plate Number"),
+              React.createElement("input", {
+                type: "text", className: "addVehicleInput",                 value: addForm.plate,
+                onChange: (e) => onAdd("plate", normalizePlate(e.target.value)),
+              })
+            ),
+            React.createElement("div", { className: "addVehicleField" },
+              React.createElement("label", { className: "addVehicleLabel" }, "Province / State"),
+              React.createElement("select", { className: "addVehicleInput", value: addForm.province, onChange: (e) => onAdd("province", e.target.value) },
+                React.createElement("option", { value: "" }, "Select"),
+                PROV_STATE_LIST.filter((p) => p.value !== "All").map((p) => React.createElement("option", { key: p.value, value: p.value }, p.value))
+              )
+            ),
+            fi("Year",   "year"),
+            fi("Make",   "make"),
+            fi("Model",  "model"),
+            fi("Colour", "colour"),
+            unitField("Tank Size", "tankSize", tankUnit, setTankCanonical),
+            unitField("Needs PM Every", "pmInterval", pmUnit, setPmCanonical),
+            fi(`Current Odometer (${distanceUnit()})`, "odometer"),
+            React.createElement("div", { className: "addVehicleField" },
+              React.createElement("label", { className: "addVehicleLabel" }, "Current Fuel Level"),
+              React.createElement("select", { className: "addVehicleInput", value: addForm.fuelLevel, onChange: (e) => onAdd("fuelLevel", e.target.value) },
+                React.createElement("option", { value: "" }, "Choose"),
+                FUEL_LABELS.map((f) => React.createElement("option", { key: f, value: f }, f))
+              )
+            ),
+            React.createElement("div", { className: "addVehicleField" },
+              React.createElement("label", { className: "addVehicleLabel" }, "Vehicle Class"),
+              React.createElement("select", { className: "addVehicleInput", value: addForm.vehicleClass, onChange: (e) => onAdd("vehicleClass", e.target.value) },
+                vehicleClassOptions(addForm.vehicleClass).map((vc) =>
+                  React.createElement("option", { key: vc, value: vc }, vc)
+                )
+              )
+            ),
+            React.createElement("div", { className: "addVehicleField addVehicleField--full" },
+              React.createElement("label", { className: "addVehicleLabel" }, "VIN"),
+              React.createElement("input", {
+                type: "text", className: "addVehicleInput",                 value: addForm.vin, onChange: (e) => onAdd("vin", e.target.value),
+              })
+            )
+          ),
+          addError   && React.createElement("div", { className: "addVehicleError"   }, addError),
+          addSuccess && React.createElement("div", { className: "addVehicleSuccess" }, "Vehicle added to fleet."),
+          React.createElement("div", { className: "closeRentalActions" },
+            React.createElement("button", { type: "submit", className: "resModalSubmit" }, "Add to Fleet"))
+        )),
+    card("retire", "Retire Vehicle",
+            React.createElement("form", { className: "addVehicleForm", onSubmit: handleRetireSubmit },
             React.createElement("div", { className: "addVehicleGrid" },
               React.createElement("div", { className: "addVehicleField" },
                 React.createElement("label", { className: "addVehicleLabel" }, "Vehicle"),
@@ -6464,17 +6514,11 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
               )
             ),
             retireError && React.createElement("div", { className: "addVehicleError" }, retireError),
-            React.createElement("button", { type: "submit", className: "addVehicleBtn addVehicleBtn--retire" }, "Retire Vehicle")
-          )
-        )
-      ),
-      archivedVehicles.length > 0 && React.createElement(
-        "section", { className: "dashboardSection", style: { marginTop: "20px" } },
-        React.createElement("div", { className: "dashboardSection__header" },
-          React.createElement("div", { className: "dashboardSection__headerRow" }, React.createElement("span", null, "Archived Vehicles"))
-        ),
-        React.createElement("div", { className: "dashboardSection__body" },
-          React.createElement("table", { className: "dashboardTable" },
+            React.createElement("div", { className: "closeRentalActions" },
+              React.createElement("button", { type: "submit", className: "resModalSubmit" }, "Retire Vehicle"))
+          )),
+    archivedVehicles.length > 0 && card("archived", "Archived Vehicles",
+            React.createElement("table", { className: "dashboardTable" },
             React.createElement("thead", null,
               React.createElement("tr", null,
                 ["Plate", "Make", "Model", "Year", "Disposal Date", "Reason"].map((col) => React.createElement("th", { key: col }, col))
@@ -6493,8 +6537,6 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
               )
             )
           )
-        )
-      )
     )
   );
 }
@@ -6550,7 +6592,7 @@ function FleetDamageClaimsPage() {
             React.createElement("td", null,
               c.plate
                 ? React.createElement(PlateLink, { plate: c.plate })
-                : "—"
+                : "·"
             ),
             React.createElement("td", null, c.vehicle),
             React.createElement("td", null,
@@ -6675,7 +6717,7 @@ function GasCollectionsPage() {
                     React.createElement("td", null,
                       a.plate
                         ? React.createElement(PlateLink, { plate: a.plate })
-                        : "—"
+                        : "·"
                     ),
                     React.createElement("td", null,
                       React.createElement("div", { className: "gasOwedWrap" },
@@ -6717,7 +6759,7 @@ function ReportsPage() {
     { key: "daily",   title: "Daily Summary",          body: "Summarises the day’s rentals, returns, no-shows, and pre-rental check completions." },
     { key: "revenue", title: "Rental Revenue",         body: "Breakdown of rental revenue by file type (Retail, Insurance, Bodyshop/Dealership, Corporate) for the selected period." },
     { key: "util",    title: "Fleet Utilization",      body: "Utilisation rate per vehicle class and overall. Highlights idle vehicles and high-demand periods." },
-    { key: "noshow",  title: "No-Show Report",         body: "No-show rate, AI call outcomes, and resolutions for the selected date range." },
+    { key: "noshow",  title: "No-Show Report",         body: "No-show rate, text outcomes, and resolutions for the selected date range." },
     { key: "overdue", title: "Overdue Rentals Report", body: "All overdue rental agreements, including customer contact history and resolution status." },
   ];
   const [sect, setSect] = React.useState(Object.fromEntries(SECTS.map((s) => [s.key, true])));
@@ -6896,25 +6938,30 @@ function AccountPage() {
   }, []);
   React.useEffect(() => { refresh(); }, [refresh]);
 
+  // The Company page's section cards, each opening and closing.
+  const [open, setOpen] = React.useState({ who: true, password: false, pin: false, recovery: false });
+  const card = (key, title, ...children) => React.createElement(CompanyStep, {
+    key, id: `account-${key}`, stepKey: key, title, open: !!open[key],
+    onToggle: () => setOpen((p) => ({ ...p, [key]: !p[key] })),
+  }, ...children);
+
   return React.createElement(
-    "div", { className: "page" },
-    React.createElement("h1", null, "Your account"),
+    "div", { className: "page companySetup" },
+    React.createElement("h1", { className: "companySetup__title" }, "Your account"),
     loadErr && React.createElement("div", { className: "loginError" }, loadErr),
 
-    React.createElement(
-      "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
-      React.createElement("h2", null, "Who you are"),
+    card("who", "Who you are",
       React.createElement("div", { style: { fontSize: "0.95rem", lineHeight: "1.9" } },
         React.createElement("div", null, `Username: ${account ? account.username : "…"}`),
         React.createElement("div", null, `Name: ${account ? account.name : "…"}`),
         React.createElement("div", null, `Role: ${account ? account.role : "…"}`)),
-      React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } },
-        "Your username and role are set by an Admin. Ask one if either is wrong.")
-    ),
+      React.createElement("p", { className: "closeRentalHint" },
+        "Your username and role are set by an Admin. Ask one if either is wrong.")),
 
-    React.createElement(ChangePassword),
-    React.createElement(ChangePin, { hasPin: account && account.hasPin, onDone: refresh }),
-    React.createElement(ChangeRecoveryEmail, { account, onDone: refresh })
+    card("password", "Password", React.createElement(ChangePassword)),
+    card("pin", account && account.hasPin ? "PIN" : "Set a PIN",
+      React.createElement(ChangePin, { hasPin: account && account.hasPin, onDone: refresh })),
+    card("recovery", "Recovery email", React.createElement(ChangeRecoveryEmail, { account, onDone: refresh }))
   );
 }
 
@@ -6947,8 +6994,7 @@ function ChangePassword() {
   };
 
   return React.createElement(
-    "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
-    React.createElement("h2", null, "Password"),
+    React.Fragment, null,
     React.createElement(
       "form", { onSubmit: submit, style: { display: "flex", flexDirection: "column", gap: "8px", maxWidth: "340px" } },
       React.createElement("input", { className: "resFormInput", type: "password", placeholder: "Current password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX,
@@ -6957,8 +7003,9 @@ function ChangePassword() {
         autoComplete: "new-password", value: next, onChange: (e) => { setNext(e.target.value); setMsg(""); } }),
       React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password again", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX,
         autoComplete: "new-password", value: again, onChange: (e) => { setAgain(e.target.value); setMsg(""); } }),
-      React.createElement("button", { className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy },
-        busy ? "Changing…" : "Change password"),
+      React.createElement("div", { className: "closeRentalActions" },
+        React.createElement("button", { className: "resModalSubmit", disabled: busy },
+          busy ? "Changing…" : "Change password")),
       msg && React.createElement("div", { className: "loginError" }, msg),
       ok  && React.createElement("div", { style: { color: "#3fbf7f", fontSize: "0.85rem" } }, ok)
     )
@@ -6994,9 +7041,8 @@ function ChangePin({ hasPin, onDone }) {
   };
 
   return React.createElement(
-    "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
-    React.createElement("h2", null, hasPin ? "PIN" : "Set a PIN"),
-    React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+    React.Fragment, null,
+    React.createElement("p", { className: "closeRentalHint" },
       hasPin
         ? "Confirms actions that are hard to undo. Keep it different from your password."
         : "You do not have a PIN yet, so actions that need one will ask you to set it. You can do that here instead."),
@@ -7008,8 +7054,9 @@ function ChangePin({ hasPin, onDone }) {
       React.createElement("input", { className: "resFormInput", type: "password", inputMode: "numeric",
         maxLength: 4, placeholder: hasPin ? "New PIN" : "Choose a 4-digit PIN", value: next,
         onChange: (e) => { setNext(e.target.value.replace(/\D/g, "").slice(0, 4)); setMsg(""); } }),
-      React.createElement("button", { className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy },
-        busy ? "Saving…" : (hasPin ? "Change PIN" : "Set PIN")),
+      React.createElement("div", { className: "closeRentalActions" },
+        React.createElement("button", { className: "resModalSubmit", disabled: busy },
+          busy ? "Saving…" : (hasPin ? "Change PIN" : "Set PIN"))),
       msg && React.createElement("div", { className: "loginError" }, msg),
       ok  && React.createElement("div", { style: { color: "#3fbf7f", fontSize: "0.85rem" } }, ok)
     )
@@ -7043,9 +7090,8 @@ function ChangeRecoveryEmail({ account, onDone }) {
   const verified = account && account.recoveryEmailVerified;
 
   return React.createElement(
-    "div", { className: "dashboardSection" },
-    React.createElement("h2", null, "Recovery email"),
-    React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+    React.Fragment, null,
+    React.createElement("p", { className: "closeRentalHint" },
       "The only real address we hold for you. Your login address is not a real mailbox, so this is how you get back in if you forget your password."),
     account && React.createElement("div", { style: { opacity: 0.7, fontSize: "0.85rem", marginBottom: "8px" } },
       account.recoveryEmail
@@ -7054,7 +7100,7 @@ function ChangeRecoveryEmail({ account, onDone }) {
     account && account.recoveryEmail && !verified && React.createElement(
       "div", { style: { marginBottom: "12px" } },
       React.createElement("button", {
-        type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 12px" },
+        type: "button", className: "resModalCancel",
         onClick: (e) => {
           const btn = e.currentTarget;
           btn.disabled = true;
@@ -7075,8 +7121,9 @@ function ChangeRecoveryEmail({ account, onDone }) {
       React.createElement("input", { className: "resFormInput", type: "password", inputMode: "numeric",
         maxLength: 4, placeholder: "Your PIN", value: pin,
         onChange: (e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setMsg(""); } }),
-      React.createElement("button", { className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy },
-        busy ? "Saving…" : "Update address"),
+      React.createElement("div", { className: "closeRentalActions" },
+        React.createElement("button", { className: "resModalSubmit", disabled: busy },
+          busy ? "Saving…" : "Update address")),
       msg && React.createElement("div", { className: "loginError" }, msg),
       ok  && React.createElement("div", { style: { color: "#3fbf7f", fontSize: "0.85rem" } }, ok)
     )
@@ -7439,7 +7486,7 @@ function GasRow({ row, busy, onSave }) {
     React.createElement("td", { style: { fontSize: "0.85rem", opacity: 0.85 } },
       Object.keys(prices).length
         ? Object.entries(prices).map(([k, v]) => `${k} ${fuelPriceForDisplay(v) ?? v} / ${fuelUnit() || "L"}`).join("  ")
-        : "—"),
+        : "·"),
     React.createElement("td", null,
       React.createElement("button", {
         className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
@@ -10265,7 +10312,7 @@ function StaffPage({ embedded, onChanged } = {}) {
   };
 
   const branchName = (id) =>
-    (branches.find((b) => b.id === id) || {}).name || (id ? "another branch" : "\u2014");
+    (branches.find((b) => b.id === id) || {}).name || (id ? "another branch" : "\u00b7");
 
   // New sign-ups waiting for approval are listed on their own, above everyone
   // else, rather than as deactivated rows in the main list.
@@ -10473,7 +10520,7 @@ function AuditLogPage() {
   });
 
   const fmtWhen = (iso) => {
-    if (!iso) return "—";
+    if (!iso) return "·";
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? iso
       : d.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -10554,19 +10601,19 @@ function AuditLogPage() {
                 filtered.map((r) =>
                   React.createElement("tr", { key: r.id },
                     React.createElement("td", { style: { whiteSpace: "nowrap" } }, fmtWhen(r.timestamp)),
-                    React.createElement("td", null, r.actor || "—"),
+                    React.createElement("td", null, r.actor || "·"),
                     React.createElement("td", null,
                       React.createElement("div", null, r.actionLabel || r.actionType),
                       React.createElement("div", { className: "auditActionKey" }, r.actionType)
                     ),
                     React.createElement("td", null,
-                      r.recordId || "—",
+                      r.recordId || "·",
                       r.tableName && React.createElement("div", { className: "auditActionKey" }, r.tableName)
                     ),
-                    React.createElement("td", null, r.tier || "—"),
+                    React.createElement("td", null, r.tier || "·"),
                     React.createElement("td", null,
-                      React.createElement("span", { className: outcomeClass(r.outcome) }, r.outcome || "—")),
-                    React.createElement("td", { className: "auditDescription" }, r.description || "—")
+                      React.createElement("span", { className: outcomeClass(r.outcome) }, r.outcome || "·")),
+                    React.createElement("td", { className: "auditDescription" }, r.description || "·")
                   )
                 )
               )
@@ -10580,17 +10627,12 @@ function SettingsPage() {
   const { appSettings, saveSetting, fleet, guardAction, currentUser } = React.useContext(AppContext);
   const isExec = roleAtLeast(currentUser?.role, "Exec");
 
-  const SECTS = [
-    { key: "branch",  title: "Branch Information",    body: "Branch name, address, phone number, operating hours, and SIPP codes." },
-    // Roles are described here but nothing enforces them: there is no users
-    // table and the PIN is checked against the single signed-in user. Said
-    // plainly so the panel does not read as a working feature.
-    { key: "users",   title: "User Accounts",         body: "Staff, roles and join codes have moved to the Staff page. Roles are real for staff administration: only an Admin can promote, deactivate, or see the join code. Everywhere else in the app, an Agent and an Admin still have the same access." },
-    { key: "notifs",  title: "Notification Settings", body: "Configure which events trigger notifications and to which staff members." },
-    { key: "twilio",  title: "Twilio SMS Setup",      body: "Twilio Account SID, Auth Token, and sending phone number for AI call and text automation." },
-    { key: "billing", title: "Billing Configuration", body: "Billing address, HST registration number, and invoice export settings." },
-  ];
-  const [sect, setSect] = React.useState({ gas: false, ...Object.fromEntries(SECTS.map((s) => [s.key, true])) });
+  // Gas Collection is the only section. Branch Information, User Accounts,
+  // Notification Settings, Twilio SMS Setup and Billing Configuration were
+  // placeholders with nothing in them: the branch is on the Company page, staff
+  // on the Staff page, the customer texts in fleetr-hq and sales tax on the
+  // Company page.
+  const [sect, setSect] = React.useState({ gas: false });
   const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
 
   // ── Gas collection settings ────────────────────────────────────────────────
@@ -10720,15 +10762,7 @@ function SettingsPage() {
     React.createElement("h1", { className: "page__title" }, "Settings"),
     React.createElement("div", { className: "page__titleUnderline" }),
 
-    section("gas", "Gas Collection", gasBody),
-
-
-    SECTS.map(({ key, title, body }) =>
-      section(key, title,
-        React.createElement("p", { className: "aiTabDesc", style: { marginBottom: 0 } }, body),
-        React.createElement("div", { className: "resvEmpty", style: { marginTop: "16px" } }, "Settings UI will appear here.")
-      )
-    )
+    section("gas", "Gas Collection", gasBody)
   );
 }
 
@@ -12272,7 +12306,7 @@ function PreRentalCheckPage() {
         React.createElement(
           "div",
           { className: "dashboardSection__headerRow" },
-          React.createElement("span", null, "Tomorrow\u2019s Pickups \u2014 ",
+          React.createElement("span", null, "Tomorrow\u2019s Pickups \u00b7 ",
             React.createElement("strong", null, tomorrowLabel)
           )
         )
@@ -12830,7 +12864,7 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
   };
 
   const fmtDate = (iso) => {
-    if (!iso) return "—";
+    if (!iso) return "·";
     const d = new Date(`${iso}T00:00:00`);
     return Number.isNaN(d.getTime()) ? iso
       : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
@@ -12858,7 +12892,7 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
   const field = (label, value) =>
     React.createElement("div", { className: "rentalAgreementField", key: label },
       React.createElement("span", { className: "rentalAgreementFieldLabel" }, label),
-      React.createElement("span", { className: "rentalAgreementFieldValue" }, value || "—")
+      React.createElement("span", { className: "rentalAgreementFieldValue" }, value || "·")
     );
 
   const pickupDateDisplay = fmtInspectedDate(rentalAgreement.inspectedAt) || fmtDate(rentalAgreement.pickupDate);
@@ -12872,7 +12906,7 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
             React.createElement("div", { key: i, style: { marginBottom: "8px", padding: "8px 10px", background: "#131f1e", borderRadius: "6px" } },
               React.createElement("div", { style: { fontSize: "0.72rem", color: "#6B6A66", marginBottom: "3px" } },
                 (n.author || "ADJ") + (n.at
-                  ? " — " + new Date(n.at).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", hour12: true })
+                  ? " · " + new Date(n.at).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", hour12: true })
                   : "")
               ),
               React.createElement("div", { style: { fontSize: "0.9rem", color: "#E7E5E0" } }, n.text)
@@ -12899,7 +12933,7 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
     React.createElement("div", { className: "rentalAgreementDetailHeader" },
       React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: onBack }, "← Back"),
       React.createElement("div", { className: "rentalAgreementDetailTitle" },
-        React.createElement("h1", { className: "page__title", style: { margin: 0 } }, rentalAgreement.resCode ? `${rentalAgreement.customer} — ${rentalAgreement.resCode}` : rentalAgreement.customer),
+        React.createElement("h1", { className: "page__title", style: { margin: 0 } }, rentalAgreement.resCode ? `${rentalAgreement.customer} · ${rentalAgreement.resCode}` : rentalAgreement.customer),
         React.createElement("span", { className: statusClass }, statusLabel(rentalAgreement.status))
       )
     ),
@@ -12937,27 +12971,27 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
     section("datesRates", "Dates & Rates",
       React.createElement("div", { className: "rentalAgreementFields" },
         field("Pickup Date", pickupDateDisplay),
-        field("Return Date", "—"),
-        field("Daily Rate", "—"),
-        field("Duration", "—")
+        field("Return Date", "·"),
+        field("Daily Rate", "·"),
+        field("Duration", "·")
       )
     ),
     section("billTo", "Bill-To Information",
       React.createElement("div", { className: "rentalAgreementFields" },
-        field("Bill To", "—"),
-        field("PO Number", "—"),
-        field("Authorization #", "—"),
-        field("Insurance Co.", "—")
+        field("Bill To", "·"),
+        field("PO Number", "·"),
+        field("Authorization #", "·"),
+        field("Insurance Co.", "·")
       )
     ),
     section("charges", "Charges & Payments",
       React.createElement("div", { className: "rentalAgreementFields" },
-        field("Base Charge", "—"),
-        field("Additional Charges", "—"),
-        field("Taxes & Fees", "—"),
-        field("Total", "—"),
-        field("Amount Paid", "—"),
-        field("Balance Due", "—")
+        field("Base Charge", "·"),
+        field("Additional Charges", "·"),
+        field("Taxes & Fees", "·"),
+        field("Total", "·"),
+        field("Amount Paid", "·"),
+        field("Balance Due", "·")
       )
     ),
     section("notes", "Notes", notesContent)
@@ -12999,7 +13033,7 @@ function RentalAgreementsPage() {
   }, [openRentalAgreementId]);
 
   const fmtDate = (iso) => {
-    if (!iso) return "—";
+    if (!iso) return "·";
     const d = new Date(`${iso}T00:00:00`);
     return Number.isNaN(d.getTime()) ? iso
       : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
@@ -13020,8 +13054,8 @@ function RentalAgreementsPage() {
       // agreement that moved to close_pending somewhere else in the session.
       // Same precedence as the overdue list.
       status:      matchingRa?.rentalAgreementStatus || selectedRes.rentalAgreementStatus,
-      vehicle:     [selectedRes.vehicleYear, selectedRes.vehicleMake, selectedRes.vehicleModel].filter(Boolean).join(" ") || selectedRes.vehicleClass || "—",
-      vehicleClass: selectedRes.vehicleClass || "—",
+      vehicle:     [selectedRes.vehicleYear, selectedRes.vehicleMake, selectedRes.vehicleModel].filter(Boolean).join(" ") || selectedRes.vehicleClass || "·",
+      vehicleClass: selectedRes.vehicleClass || "·",
       pickupDate:  selectedRes.date,
       returnDate:  selectedRes.returnDate,
       inspectedAt: matchingRa?.inspectedAt || null,
@@ -13159,7 +13193,7 @@ function RentalAgreementsPage() {
                       const raRow = rentalAgreements.find((ra) => ra.resCode === r.resCode);
                       return raRow?.plate
                         ? React.createElement(PlateLink, { plate: raRow.plate })
-                        : React.createElement("span", null, "—");
+                        : React.createElement("span", null, "·");
                     })()),
                     React.createElement("td", null, fmtDate(r.date)),
                     React.createElement("td", null,
@@ -14496,7 +14530,7 @@ function CloseRentalPage() {
       React.createElement("h1", { className: "page__title" }, "Close Rental"),
       React.createElement("div", { className: "page__titleUnderline" }),
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Confirm the close"),
-      line("Rental agreement", ra?.resCode || "—"),
+      line("Rental agreement", ra?.resCode || "·"),
       line("Closing mileage", fmtDistance(final.closingMileage)),
       line("Closing gas level", final.closingGasLevel),
       line("New damage found", final.newDamageFound ? "Yes" : "No"),
@@ -15125,7 +15159,7 @@ function sourceCatsFor(current) {
   if (companyLists) {
     // The same rule on the company's own list: an insurance source is offered
     // when the feature is on, or when it is what the record already says.
-    const curCat = String(current || "").split(LIST_SEP)[0];
+    const curCat = splitList(current)[0];
     const cats = {};
     companyLists.sources.forEach((x) => {
       const isCurrent = x.name === curCat;
@@ -15137,7 +15171,7 @@ function sourceCatsFor(current) {
     return cats;
   }
   // The lists could not be read: nothing to offer but what the record says.
-  const curCat = String(current || "").split(LIST_SEP)[0];
+  const curCat = splitList(current)[0];
   return curCat ? { [curCat]: [] } : {};
 }
 
@@ -15335,7 +15369,7 @@ function CustomerPage() {
       licenseExpiry:  localRecord.licenseExpiry  || "",
     });
     const srcStr = localRecord.sourceDetail
-      ? `${localRecord.source} — ${localRecord.sourceDetail}`
+      ? `${localRecord.source}${LIST_SEP}${localRecord.sourceDetail}`
       : (localRecord.source || "");
     // One vehicle class for the whole reservation: the one it was booked with.
     setRatesForm({ source: srcStr, vehicleClass: localRecord.vehicleClass || "" });
@@ -15406,8 +15440,8 @@ function CustomerPage() {
     if (!resCode) return;
     setSaveStatus("saving");
     try {
-      const srcParts = ratesForm.source.includes(" — ")
-        ? ratesForm.source.split(" — ") : [ratesForm.source, ""];
+      const srcParts = splitList(ratesForm.source).length > 1
+        ? splitList(ratesForm.source) : [ratesForm.source, ""];
       // Build the full candidate payload (form → Supabase field names)
       const candidate = {
         firstName:       resInfoForm.firstName,
@@ -15741,7 +15775,7 @@ function CustomerPage() {
                   key: opt,
                   className: "readyFleetModelItem",
                   onClick: () => {
-                    updateRates(valueKey, `${ratesHoverCat} \u2014 ${opt}`);
+                    updateRates(valueKey, `${ratesHoverCat}${LIST_SEP}${opt}`);
                     setOpenRatesPicker(null);
                     setRatesHoverCat(null);
                   },
@@ -15769,7 +15803,7 @@ function CustomerPage() {
       React.createElement("span", { className: "resFormLabel" }, label),
       React.createElement("input", {
         className: "resFormInput", type: "text", readOnly: true,
-        value: value || "—",
+        value: value || "·",
         style: { color: "#6B6A66", background: "#F1F0EC" },
       })
     );
@@ -15881,8 +15915,8 @@ function CustomerPage() {
     insurance:           "Insurance",
     corporate:           "Corporate",
   }[sourceBillingType(ratesForm.source)] || null;
-  const btSrcName = ratesForm.source.includes(" \u2014 ")
-    ? ratesForm.source.split(" \u2014 ")[1] : ratesForm.source;
+  const btSrcName = splitList(ratesForm.source).length > 1
+    ? splitList(ratesForm.source)[1] : ratesForm.source;
 
   const dynamicBillingRows = (() => {
     if (btSrcCat === "Insurance") return [
@@ -16001,7 +16035,7 @@ function CustomerPage() {
   const fmtPayment = (p) => {
     const card = isCardType(p.type) && p.last4 ? `${p.type} Ending in ${p.last4}` : p.type;
     const parts = [card, p.cardholderName, p.amount ? fmtMoney(parseFloat(p.amount) || 0) : ""].filter(Boolean);
-    return parts.join(" — ");
+    return parts.join(" · ");
   };
 
   const renderChargesRow = (item) =>
@@ -16102,15 +16136,15 @@ function CustomerPage() {
       React.createElement("div", { className: "chargesInfoRow" },
         React.createElement("div", { className: "chargesInfoItem" },
           React.createElement("span", { className: "chargesInfoLabel" }, "Billed To"),
-          React.createElement("span", { className: "chargesInfoValue" }, billedToName || "—")
+          React.createElement("span", { className: "chargesInfoValue" }, billedToName || "·")
         ),
         React.createElement("div", { className: "chargesInfoItem" },
           React.createElement("span", { className: "chargesInfoLabel" }, "Daily Rate"),
-          React.createElement("span", { className: "chargesInfoValue" }, dailyRateNum ? fmtMoney(dailyRateNum) : "—")
+          React.createElement("span", { className: "chargesInfoValue" }, dailyRateNum ? fmtMoney(dailyRateNum) : "·")
         ),
         React.createElement("div", { className: "chargesInfoItem" },
           React.createElement("span", { className: "chargesInfoLabel" }, "Total Days"),
-          React.createElement("span", { className: "chargesInfoValue" }, totalDays || "—")
+          React.createElement("span", { className: "chargesInfoValue" }, totalDays || "·")
         )
       ),
       // A retail customer is their own bill-to, so their charges are one list.
@@ -16258,7 +16292,7 @@ function CustomerPage() {
         React.createElement("span", { className: "resFormLabel" }, "Reservation Code"),
         React.createElement("input", {
           className: "resFormInput", type: "text", readOnly: true,
-          value: resCode || "—",
+          value: resCode || "·",
           style: { color: "#6B6A66", background: "#F1F0EC" },
         })
       )
@@ -16327,7 +16361,7 @@ function CustomerPage() {
         onClick: handleSave,
       },
         saveStatus === "saving" ? "Saving\u2026"
-        : saveStatus === "error" ? "Error \u2014 Retry"
+        : saveStatus === "error" ? "Error \u00b7 Retry"
         : "Save"
       )
     ),
@@ -16363,7 +16397,7 @@ function CustomerPage() {
                 React.createElement("div", { key: i, style: { marginBottom: "8px", padding: "8px 10px", background: "#131f1e", borderRadius: "6px" } },
                   React.createElement("div", { style: { fontSize: "0.72rem", color: "#6B6A66", marginBottom: "3px" } },
                     (n.author || "ADJ") + (n.at
-                      ? " — " + new Date(n.at).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", hour12: true })
+                      ? " · " + new Date(n.at).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", hour12: true })
                       : "")
                   ),
                   React.createElement("div", { style: { fontSize: "0.9rem", color: "#E7E5E0" } }, n.text)
@@ -17916,13 +17950,11 @@ body, * {
   font-weight: 800;
   color: #1F1E1D;
 }
+/* Was a terracotta line under every page title; now only the space under
+   the title (and the header beside it), with no line. */
 .page__titleUnderline{
-  width: 100%;
-  max-width: 260px;
-  height: 4px;
-  border-radius: 3px;
-  margin: 10px 0 20px;
-  background: #F4845F;
+  height: 0;
+  margin: 0 0 24px;
 }
 .page__body{
   margin: 0;
