@@ -415,16 +415,6 @@ const fmtDistance = (km) => {
 const distanceToKm = (n) => (distanceUnit() === "mi" ? Math.round(n * KM_PER_MI) : n);
 const kmToDistance = (km) => (distanceUnit() === "mi" ? Math.round(km / KM_PER_MI) : km);
 
-// Fuel prices are stored per litre. Shown and typed per the company's unit; a
-// gallon price is kept to four places per litre, which shows back to the cent.
-const fuelPriceForDisplay = (perLitre) => {
-  const n = Number(perLitre);
-  if (perLitre === null || perLitre === undefined || perLitre === "" || !Number.isFinite(n)) return null;
-  return fuelUnit() === "gal" ? Math.round(n * L_PER_GAL * 1000) / 1000 : n;
-};
-const fuelPriceToLitre = (perUnit) =>
-  fuelUnit() === "gal" ? Math.round((perUnit / L_PER_GAL) * 10000) / 10000 : perUnit;
-
 const VOLUME_UNIT_OPTIONS   = [{ value: "L",  label: "Litres" },     { value: "gal", label: "US gallons" }];
 const DISTANCE_UNIT_OPTIONS = [{ value: "km", label: "Kilometres" }, { value: "mi",  label: "Miles" }];
 
@@ -661,12 +651,11 @@ Rental agreement lifecycle:
 - Use the rental agreements data passed in the user message to find the current status of an agreement, and the reservations data to find the resCode.
 
 Settings (app_settings):
-- The current settings are passed in the user message as "App settings". Read them from there to answer questions; that needs no action.
-- gasMarkupPercent is the percentage added on top of every automatic gas charge. gasPrices is the price per litre by region, e.g. {"NL": 1.72}.
-- To change the markup: {"table":"app_settings","operation":"update","data":{"gasMarkupPercent":18}}. It must be zero or more. No "match" is needed.
-- To change a region's fuel price: {"table":"app_settings","operation":"update","data":{"gasPrices":{"NL":1.79}}}. Send ONLY the regions being changed; they are merged into the existing prices, so the others are kept. The price is per LITRE and must be positive.
-- A price can only be set for a region in the "Fleet regions" list passed in the user message. If the user names one that is not there, say so rather than emitting the action.
-- These are the only two settings that can be changed. Everything else on the Settings page is read-only to you.
+- The current branch's settings are passed in the user message as "App settings". Read them from there to answer questions; that needs no action.
+- gasMarkupPercent is the company's percentage added on top of every automatic gas charge. A gasMarkupPercent in App settings is this branch's own markup, which overrides the company's.
+- To change the company's markup: {"table":"app_settings","operation":"update","data":{"gasMarkupPercent":18}}. It must be zero or more. No "match" is needed. It changes the markup for every branch without its own; a branch's own markup is set on the Company page.
+- Fuel prices are set automatically from the official source for each branch's area. They cannot be changed by anyone at the company. If the user asks to change one, say so rather than emitting an action.
+- The markup is the only setting that can be changed.
 
 Non-drive intake (ndi_rows) table fields:
 - id (primary key, do not modify), rescode, customer, phone, type, rate (read-only, not editable)
@@ -773,7 +762,7 @@ const ACTION_POLICY = {
   // Not obviously money until you read the handler: marking a balance Paid also
   // writes gasOwed to "0", so this writes off what a customer owed.
   "gas.collected":   { tier: "pin", label: "Change gas payment status" },
-  "gas.markup":      { tier: "pin", role: "Admin", label: "Change the gas markup" },
+  "gas.markup":      { tier: "pin", role: "Exec", label: "Change the gas markup" },
   "gas.regionPrice": { tier: "pin", role: "Admin", label: "Change a regional fuel price" },
   // Tank size is a money input: it is the divisor in every future gas charge.
   "vehicle.tankSize": { tier: "pin", label: "Set tank size" },
@@ -1054,7 +1043,6 @@ const NAV_SECTIONS = [
       { label: "Audit Log", path: "/audit-log" },
       { label: "Company", path: "/company" },
       { label: "Staff", path: "/staff" },
-      { label: "Settings", path: "/settings" },
       { label: "Your Account", path: "/account" },
     ],
   },
@@ -1778,28 +1766,6 @@ function AppProvider({ children, currentUser, signOut }) {
   const setNoShows      = setNoShowsState;
   const setDamageClaims = setDamageClaimsState;
 
-  // Writes one app_settings key and mirrors it into local state. Used by the
-  // Settings page for the gas markup and per-region fuel prices.
-  //
-  // locationId is passed explicitly rather than left to the fill_tenant trigger,
-  // and it is part of the conflict target. The key alone is no longer unique:
-  // every location holds its own gasMarkupPercent, and upserting on "key" would
-  // find another company's row and overwrite their fuel price with this one.
-  const saveSetting = React.useCallback(async (key, value) => {
-    const locationId = currentUser?.locationId;
-    if (!locationId) {
-      console.warn("saveSetting called with no location on the profile:", key);
-      return false;
-    }
-    setAppSettingsState((prev) => ({ ...prev, [key]: value }));
-    const { error } = await supabase
-      .from("app_settings")
-      .upsert({ key, value, locationId, updatedAt: new Date().toISOString() },
-              { onConflict: "locationId,key" });
-    if (error) console.warn("app_settings upsert failed:", key, error);
-    return !error;
-  }, [currentUser?.locationId]);
-
   // ── Initial load from Supabase ───────────────────────────────────────────
   React.useEffect(() => {
     async function load() {
@@ -2036,7 +2002,7 @@ function AppProvider({ children, currentUser, signOut }) {
 
   return React.createElement(
     AppContext.Provider,
-    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, archivedVehicles, setArchivedVehicles, readyReturns, setReadyReturns, appSettings, saveSetting, guardAction, logAudit, currentUser, signOut, setup, refreshSetup } },
+    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, archivedVehicles, setArchivedVehicles, readyReturns, setReadyReturns, appSettings, guardAction, logAudit, currentUser, signOut, setup, refreshSetup } },
     children,
     pinModalOpen && React.createElement(PinConfirmModal, { onConfirm: confirmPin, onCancel: dismissPinModal })
   );
@@ -5802,9 +5768,10 @@ function resolvePmComplete(vehicle) {
 }
 
 // ─── Gas settings rules ──────────────────────────────────────────────────────
-// The markup and the per-region price feed every automatic gas charge, so the
-// settings page and the command bar validate them identically.
-const GAS_SETTING_KEYS = ["gasMarkupPercent", "gasPrices"];
+// The markup feeds every automatic gas charge, so the Company page and the
+// command bar validate it identically. Fuel prices are not a setting: each
+// branch's is set automatically from the official source for its area.
+const GAS_SETTING_KEYS = ["gasMarkupPercent"];
 
 function validateGasMarkup(raw) {
   const n = typeof raw === "number" ? raw : parseFloat(String(raw ?? "").trim());
@@ -5814,66 +5781,20 @@ function validateGasMarkup(raw) {
   return { ok: true, value: n, error: null };
 }
 
-function validateGasPrice(raw) {
-  const n = typeof raw === "number" ? raw : parseFloat(String(raw ?? "").trim());
-  if (!Number.isFinite(n) || n <= 0) {
-    return { ok: false, value: null, error: "a fuel price has to be a positive dollar amount per litre" };
-  }
-  return { ok: true, value: n, error: null };
-}
-
-// A price is only ever looked up by a vehicle's province, so one filed under a
-// region no vehicle is in would sit there and never apply to anything. Both
-// paths are limited to regions the fleet is actually in.
-function validateGasPriceRegion(region, knownRegions) {
-  const r = String(region ?? "").trim();
-  if (!r) return { ok: false, region: null, error: "That price needs a region." };
-  const hit = (knownRegions || []).find((k) => String(k).toLowerCase() === r.toLowerCase());
-  if (!hit) {
-    return {
-      ok: false,
-      region: null,
-      error: `There is no ${r} region. Fuel prices can only be set for regions the fleet is in: ${(knownRegions || []).join(", ") || "none yet"}.`,
-    };
-  }
-  return { ok: true, region: hit, error: null };
-}
-
-// Turns a settings payload into the list of app_settings writes it implies.
-//
-// gasPrices is MERGED into the current prices, never replaced. Sending the whole
-// object would drop every region the model did not happen to mention, which is
-// the same way a plain update to notesLog erases the earlier notes.
-function resolveGasSettingsUpdate(data, currentPrices, knownRegions) {
+// Turns a settings payload into the list of writes it implies.
+function resolveGasSettingsUpdate(data) {
   const keys = Object.keys(data || {});
   if (!keys.length) return { ok: false, writes: [], error: "No setting was given to change." };
+  if (keys.includes("gasPrices")) {
+    return { ok: false, writes: [], error: "Fuel prices are set automatically from the official source for each branch's area, so they cannot be changed here." };
+  }
   const unknown = keys.filter((k) => !GAS_SETTING_KEYS.includes(k));
   if (unknown.length) {
     return { ok: false, writes: [], error: `fleetr ai can only change these settings: ${GAS_SETTING_KEYS.join(", ")}.` };
   }
-
-  const writes = [];
-  if (keys.includes("gasMarkupPercent")) {
-    const check = validateGasMarkup(data.gasMarkupPercent);
-    if (!check.ok) return { ok: false, writes: [], error: check.error };
-    writes.push(["gasMarkupPercent", check.value]);
-  }
-  if (keys.includes("gasPrices")) {
-    const incoming = data.gasPrices;
-    if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
-      return { ok: false, writes: [], error: 'Fuel prices are given per region, e.g. { "NL": 1.79 }.' };
-    }
-    const next = { ...(currentPrices || {}) };
-    for (const [region, price] of Object.entries(incoming)) {
-      const r = validateGasPriceRegion(region, knownRegions);
-      if (!r.ok) return { ok: false, writes: [], error: r.error };
-      const p = validateGasPrice(price);
-      if (!p.ok) return { ok: false, writes: [], error: `For ${r.region}, ${p.error}.` };
-      next[r.region] = p.value;
-    }
-    writes.push(["gasPrices", next]);
-  }
-  return { ok: true, writes, error: null };
+  const check = validateGasMarkup(data.gasMarkupPercent);
+  if (!check.ok) return { ok: false, writes: [], error: check.error };
+  return { ok: true, writes: [["gasMarkupPercent", check.value]], error: null };
 }
 
 // ─── Rental agreement lifecycle ──────────────────────────────────────────────
@@ -6780,8 +6701,6 @@ function ReportsPage() {
   );
 }
 
-// ─── SettingsPage ──────────────────────────────────────────────────────────────
-
 // ─── AuditLogPage ────────────────────────────────────────────────────────────
 // Read only, deliberately. Nothing in the app writes here except guardAction,
 // and an audit log staff can edit is not an audit log.
@@ -7244,6 +7163,7 @@ function CompanyPage() {
 
   const [branches, setBranches] = React.useState([]);
   const [gas,      setGas]      = React.useState([]);
+  const [companyMarkup, setCompanyMarkup] = React.useState(null);
   const [taxes,    setTaxes]    = React.useState([]);
   // Per branch: its time zone, and whether its sales tax has been saved.
   const [branchSetup, setBranchSetup] = React.useState({});
@@ -7273,7 +7193,7 @@ function CompanyPage() {
       setTaxSuggestions(Object.fromEntries(unset.map((b, i) => [b.id, Array.isArray(found[i]) ? found[i] : null])));
     }
     if (ov.ok)  setBranches(ov.branches || []);
-    if (gs.ok)  setGas(gs.branches || []);
+    if (gs.ok)  { setGas(gs.branches || []); setCompanyMarkup(gs.companyMarkupPercent ?? null); }
     if (tx.ok)  setTaxes(tx.branches || []);
     if (act.ok) setActing(act);
     if (!ov.ok) setError(COMPANY_REASONS[ov.reason] || "Could not load the company.");
@@ -7324,7 +7244,7 @@ function CompanyPage() {
       "div", { className: "page" },
       React.createElement("h1", null, "Company"),
       React.createElement("div", { className: "resvEmpty" },
-        "This screen is for Execs. Your branch is managed from Staff and Settings.")
+        "This screen is for Execs. Your branch is managed from Staff.")
     );
   }
 
@@ -7413,20 +7333,7 @@ function CompanyPage() {
           )
         ),
         launched && parts.pickup,
-        launched && React.createElement(
-          CompanySection, { title: "Fuel pricing" },
-          React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-            "Every branch at once. These two change what future customers are charged, so each edit is recorded against the branch it applies to, not the one you are acting in."),
-          React.createElement(
-            "div", { style: { overflowX: "auto" } },
-            React.createElement(
-              "table", { className: "dashboardTable", style: { minWidth: "620px" } },
-              React.createElement("thead", null, React.createElement("tr", null,
-                ["Branch", "Markup %", "Fuel prices", ""].map((h) => React.createElement("th", { key: h }, h)))),
-              React.createElement("tbody", null, gas.filter((g) => g.active).map((g) =>
-                React.createElement(GasRow, { key: g.locationId, row: g, busy, onSave: run }))))
-          )
-        ));
+        launched && React.createElement(FuelPricingSection, { gas, companyMarkup, busy, onSave: run }));
       case "vehicles": return el(React.Fragment, null,
         parts.classes,
         el(CompanySection, { title: "Add vehicles", style: { marginTop: "24px" } }, el(VehiclesStep, { onAdded: changed })));
@@ -7466,36 +7373,114 @@ function CompanyPage() {
   );
 }
 
-// Its own component so each branch keeps its own draft. One shared draft object
-// meant typing in one row and saving another wrote the wrong number into the
-// wrong branch, which for a fuel price is a real charge to a real customer.
+// ─── Fuel pricing ────────────────────────────────────────────────────────────
+// Each branch's gas price per litre is set automatically from the official
+// source for its area (automatic_gas_prices.sql), so it is shown here, never
+// typed. The company sets one markup; a branch can have its own, behind a
+// toggle, since most companies never need one.
+const FUEL_PENDING = {
+  no_area: "Price pending. fleetr has not set this branch's fuel price area yet.",
+  not_from_base: "Price pending. The Board does not price this zone from the base zone.",
+  permission: "Price pending. Prices outside Atlantic Canada are not available yet.",
+  not_fetched: "Price pending. The first price has not been read yet.",
+};
+
+function fuelDay(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ""));
+  if (!m) return "";
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+    .toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+
+// "193.1 ¢/L · Nova Scotia Energy Board, Zone 1 · effective Fri, Oct 16", or
+// why there is no price yet.
+function fuelPriceLine(fuel) {
+  if (!fuel || fuel.centsPerLitre == null) return FUEL_PENDING[fuel?.pending] || FUEL_PENDING.no_area;
+  const area = fuel.province === "NS" || fuel.province === "NL" ? `, ${fuel.areaName}` : "";
+  return [`${Number(fuel.centsPerLitre).toFixed(1)} ¢/L`, `${fuel.sourceName}${area}`,
+    `effective ${fuelDay(fuel.effectiveDate)}`].join(LIST_SEP);
+}
+
+function FuelPricingSection({ gas, companyMarkup, busy, onSave }) {
+  const el = React.createElement;
+  const [markup, setMarkup] = React.useState(companyMarkup != null ? String(companyMarkup) : "");
+  React.useEffect(() => { setMarkup(companyMarkup != null ? String(companyMarkup) : ""); }, [companyMarkup]);
+  const overridden = gas.some((g) => g.active && g.gasMarkupPercent != null);
+  const [showOverrides, setShowOverrides] = React.useState(false);
+  const rows = gas.filter((g) => g.active);
+  const companyText = companyMarkup != null ? `${companyMarkup}%` : "none";
+
+  return el(
+    CompanySection, { title: "Fuel pricing" },
+    el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+      "Each branch's regular gas price per litre is set automatically from the official source for its area, and checked every day. Your markup is added on top of every automatic gas charge. A branch with no price leaves the gas charge blank, for staff to enter."),
+    el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", margin: "12px 0" } },
+      el("label", { htmlFor: "company-gas-markup", style: { fontSize: "0.9rem" } }, "Markup %"),
+      el("input", {
+        id: "company-gas-markup", className: "resFormInput", style: { width: "90px" },
+        inputMode: "decimal", value: markup, onChange: (e) => setMarkup(e.target.value),
+      }),
+      el("button", {
+        className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+        disabled: busy === "gas",
+        onClick: () => {
+          const check = validateGasMarkup(markup);
+          if (!check.ok) return;
+          onSave("gas", "set_company_gas_markup", { p_markup: check.value });
+        },
+      }, "Save")),
+    el("div", { style: { overflowX: "auto" } },
+      el("table", { className: "dashboardTable", style: { minWidth: "620px" } },
+        el("thead", null, el("tr", null,
+          ["Branch", "Gas price", "Markup"].map((h) => el("th", { key: h }, h)))),
+        el("tbody", null, rows.map((g) =>
+          el("tr", { key: g.locationId },
+            el("td", null, g.name),
+            el("td", { style: { fontSize: "0.85rem" } },
+              fuelPriceLine(g.fuel),
+              g.fuel && g.fuel.stale && el("span", { style: { marginLeft: "8px", color: "#d9822b" } },
+                `Stale: the source has not been read since ${fuelDay(g.fuel.checkedAt)}. The last good price is used.`)),
+            el("td", null, g.gasMarkupPercent != null ? `${g.gasMarkupPercent}% (this branch)` : companyText)))))),
+    el("button", {
+      type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px", marginTop: "12px" },
+      onClick: () => setShowOverrides((v) => !v),
+    }, showOverrides ? "Hide branch markups" : (overridden ? "Change a branch's own markup" : "Set a different markup for a branch")),
+    showOverrides && el("div", { style: { overflowX: "auto", marginTop: "12px" } },
+      el("table", { className: "dashboardTable", style: { minWidth: "520px" } },
+        el("thead", null, el("tr", null, ["Branch", "Its own markup %", ""].map((h) => el("th", { key: h }, h)))),
+        el("tbody", null, rows.map((g) => el(GasRow, { key: g.locationId, row: g, busy, onSave }))))));
+}
+
+// One branch's own markup. Its own component so each branch keeps its own
+// draft: one shared draft meant typing in one row and saving another, which
+// for a markup is a real charge to a real customer. Blank uses the company's.
 function GasRow({ row, busy, onSave }) {
   const [markup, setMarkup] = React.useState(
     row.gasMarkupPercent != null ? String(row.gasMarkupPercent) : "");
-  const prices = row.gasPrices && typeof row.gasPrices === "object" ? row.gasPrices : {};
+  React.useEffect(() => { setMarkup(row.gasMarkupPercent != null ? String(row.gasMarkupPercent) : ""); }, [row.gasMarkupPercent]);
 
   return React.createElement(
     "tr", null,
     React.createElement("td", null, row.name),
     React.createElement("td", null,
       React.createElement("input", {
-        className: "resFormInput", style: { width: "90px" },
+        className: "resFormInput", style: { width: "90px" }, placeholder: "Company",
         inputMode: "decimal", value: markup,
         onChange: (e) => setMarkup(e.target.value),
       })),
-    React.createElement("td", { style: { fontSize: "0.85rem", opacity: 0.85 } },
-      Object.keys(prices).length
-        ? Object.entries(prices).map(([k, v]) => `${k} ${fuelPriceForDisplay(v) ?? v} / ${fuelUnit() || "L"}`).join("  ")
-        : "·"),
     React.createElement("td", null,
       React.createElement("button", {
         className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
         disabled: busy === "gas",
         onClick: () => {
-          const n = Number(markup);
-          if (!Number.isFinite(n) || n < 0) return;
+          if (markup.trim() === "") {
+            onSave("gas", "set_company_gas_setting", { location_id: row.locationId, setting_key: "gasMarkupPercent", setting_value: null });
+            return;
+          }
+          const check = validateGasMarkup(markup);
+          if (!check.ok) return;
           onSave("gas", "set_company_gas_setting", {
-            location_id: row.locationId, setting_key: "gasMarkupPercent", setting_value: n,
+            location_id: row.locationId, setting_key: "gasMarkupPercent", setting_value: check.value,
           });
         },
       }, "Save"))
@@ -10623,149 +10608,6 @@ function AuditLogPage() {
   );
 }
 
-function SettingsPage() {
-  const { appSettings, saveSetting, fleet, guardAction, currentUser } = React.useContext(AppContext);
-  const isExec = roleAtLeast(currentUser?.role, "Exec");
-
-  // Gas Collection is the only section. Branch Information, User Accounts,
-  // Notification Settings, Twilio SMS Setup and Billing Configuration were
-  // placeholders with nothing in them: the branch is on the Company page, staff
-  // on the Staff page, the customer texts in fleetr-hq and sales tax on the
-  // Company page.
-  const [sect, setSect] = React.useState({ gas: false });
-  const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
-
-  // ── Gas collection settings ────────────────────────────────────────────────
-  // Regions offered are the provinces/states actually represented in the fleet,
-  // since a price is only ever looked up by a vehicle's province.
-  const fleetRegions = React.useMemo(() => {
-    const set = new Set(fleet.map((v) => v.province).filter(Boolean));
-    const dflt = appSettings.gasDefaultRegion;
-    if (dflt) set.add(dflt);
-    return [...set].sort();
-  }, [fleet, appSettings.gasDefaultRegion]);
-
-  const gasPrices = appSettings.gasPrices || {};
-
-  const [markupDraft, setMarkupDraft] = React.useState("");
-  const [priceDrafts, setPriceDrafts] = React.useState({});
-  const [savedFlash,  setSavedFlash]  = React.useState("");
-
-  React.useEffect(() => {
-    setMarkupDraft(appSettings.gasMarkupPercent != null ? String(appSettings.gasMarkupPercent) : "");
-  }, [appSettings.gasMarkupPercent]);
-
-  React.useEffect(() => {
-    setPriceDrafts(Object.fromEntries(fleetRegions.map((r) => [r, gasPrices[r] != null ? String(fuelPriceForDisplay(gasPrices[r])) : ""])));
-  }, [fleetRegions.join(","), JSON.stringify(gasPrices)]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const flash = (msg) => { setSavedFlash(msg); setTimeout(() => setSavedFlash(""), 2000); };
-
-  // Both commits validate through the same shared rules the command bar uses, so
-  // a number the settings page rejects is a number fleetr ai rejects too. An
-  // unusable entry is reverted to the saved value rather than left on screen.
-  const commitMarkup = async () => {
-    const raw   = markupDraft.trim();
-    const check = raw === "" ? { ok: false } : validateGasMarkup(raw);
-    if (!check.ok) {
-      setMarkupDraft(appSettings.gasMarkupPercent != null ? String(appSettings.gasMarkupPercent) : "");
-      return;
-    }
-    const n = check.value;
-    if (n === appSettings.gasMarkupPercent) return;
-    guardAction("gas.markup", async () => {
-      if (await saveSetting("gasMarkupPercent", n)) flash("Markup saved.");
-    }, { tableName: "app_settings", recordId: "gasMarkupPercent", description: `Gas markup ${appSettings.gasMarkupPercent ?? "unset"}% -> ${n}%.` });
-  };
-
-  const commitPrice = async (region) => {
-    const raw = (priceDrafts[region] || "").trim();
-    // Blank clears the price for that region, which is a real choice: it puts
-    // that region's gas charges back to manual entry.
-    const check = raw === "" ? { ok: true, value: null } : validateGasPrice(raw);
-    if (!check.ok) {
-      setPriceDrafts((p) => ({ ...p, [region]: gasPrices[region] != null ? String(fuelPriceForDisplay(gasPrices[region])) : "" }));
-      return;
-    }
-    // Typed per the company's fuel unit, stored per litre. An unchanged
-    // gallon figure is not saved again, which would only move it by rounding.
-    if (check.value !== null && check.value === fuelPriceForDisplay(gasPrices[region])) return;
-    const n = check.value === null ? null : fuelPriceToLitre(check.value);
-    if (n === (gasPrices[region] ?? null)) return;
-    const next = { ...gasPrices };
-    if (n === null) delete next[region]; else next[region] = n;
-    guardAction("gas.regionPrice", async () => {
-      if (await saveSetting("gasPrices", next)) flash(`${region} price saved.`);
-    }, { tableName: "app_settings", recordId: region, description: `${region} fuel price ${gasPrices[region] ?? "unset"} -> ${n ?? "cleared"} per litre.` });
-  };
-
-  const missingTank = fleet.filter((v) => v.tankSizeLiters == null).length;
-
-  const gasBody = !unitsSet() ? React.createElement("p", { className: "aiTabDesc" }, UNITS_NOT_SET) : React.createElement(React.Fragment, null,
-    React.createElement("p", { className: "aiTabDesc" },
-      "On return, if the vehicle comes back with less fuel than it left with, the charge is calculated as ",
-      React.createElement("em", null, `${fuelUnitWord()} short × price per ${fuelUnitWord(false)} × (1 + markup)`),
-      " and written to Gas Collections automatically. Any missing value below leaves the charge blank for manual entry."
-    ),
-
-    React.createElement("div", { className: "gasSettingRow" },
-      React.createElement("label", { className: "gasSettingLabel" }, "Markup"),
-      React.createElement("div", { className: "gasSettingControl" },
-        React.createElement("input", {
-          type: "number", min: "0", step: "1", className: "gasSettingInput",
-          placeholder: "e.g. 15", value: markupDraft,
-          onChange: (e) => setMarkupDraft(e.target.value),
-          onBlur: commitMarkup,
-          onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
-        }),
-        React.createElement("span", { className: "gasSettingUnit" }, "%")
-      )
-    ),
-
-    React.createElement("div", { className: "gasSettingSubhead" }, `Price per ${fuelUnitWord(false)} by region`),
-    fleetRegions.length === 0
-      ? React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "10px 0" } },
-          "No vehicle regions yet. Add a vehicle with a province to set its fuel price.")
-      : fleetRegions.map((region) =>
-          React.createElement("div", { className: "gasSettingRow", key: region },
-            React.createElement("label", { className: "gasSettingLabel" }, region),
-            React.createElement("div", { className: "gasSettingControl" },
-              React.createElement("span", { className: "gasSettingUnit" }, "$"),
-              React.createElement("input", {
-                type: "number", min: "0", step: "0.001", className: "gasSettingInput",
-                placeholder: "Not set", value: priceDrafts[region] ?? "",
-                onChange: (e) => setPriceDrafts((p) => ({ ...p, [region]: e.target.value })),
-                onBlur: () => commitPrice(region),
-                onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
-              }),
-              React.createElement("span", { className: "gasSettingUnit" }, `/ ${fuelUnit()}`),
-              gasPrices[region] == null &&
-                React.createElement("span", { className: "tankSizeMissing" }, "Not set")
-            )
-          )
-        ),
-
-    missingTank > 0 && React.createElement("div", { className: "tankSizeBanner", style: { marginTop: "14px", marginBottom: 0 } },
-      React.createElement("strong", null, `${missingTank} vehicle${missingTank === 1 ? "" : "s"} still missing a tank size`),
-      ". Gas charges stay manual for ", missingTank === 1 ? "it" : "them",
-      " until set on the vehicle's detail page."
-    ),
-
-    savedFlash && React.createElement("div", { className: "addVehicleSuccess", style: { marginTop: "12px" } }, savedFlash)
-  );
-  // The same sections as the Company page: the whole box opens and closes.
-  const section = (key, title, ...children) => React.createElement(CompanyStep, {
-    key, id: `settings-${key}`, stepKey: key, title, open: !sect[key], onToggle: () => toggle(key),
-  }, ...children);
-  return React.createElement(
-    "div", { className: "page companySetup" },
-    React.createElement("h1", { className: "page__title" }, "Settings"),
-    React.createElement("div", { className: "page__titleUnderline" }),
-
-    section("gas", "Gas Collection", gasBody)
-  );
-}
-
 // ─── useMobile ───────────────────────────────────────────────────────────────
 
 function useMobile() {
@@ -11158,7 +11000,6 @@ const NAV_ICONS = {
   "/audit-log":            ["M8 6h13", "M8 12h13", "M8 18h13", "M3 6h.01", "M3 12h.01", "M3 18h.01"],
   "/company":              ["M3 21h18", "M5 21V7l7-4 7 4v14", "M9 9h.01", "M15 9h.01", "M9 13h.01", "M15 13h.01", "M10 21v-4h4v4"],
   "/staff":                ["M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2", "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z", "M23 21v-2a4 4 0 0 0-3-3.9", "M16 3.1a4 4 0 0 1 0 7.8"],
-  "/settings":             ["M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z", "M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"],
   "/account":              ["M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z", "M12 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6z", "M6.2 19a6 6 0 0 1 11.6 0"],
 };
 const NAV_ICON_FALLBACK = ["M12 12h.01"];
@@ -11296,7 +11137,7 @@ const isPreRentalCheckEdit = (table, operation, data) =>
   !!data && Object.prototype.hasOwnProperty.call(data, "preRentalCheck");
 
 function FleetrCommandBar() {
-  const { guardAction, logAudit, currentUser, reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows, damageClaims, setDamageClaims, appSettings, saveSetting } = React.useContext(AppContext);
+  const { guardAction, logAudit, currentUser, reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, fleet, setFleet, ndiRows, setNdiRows, noShows, setNoShows, damageClaims, setDamageClaims, appSettings } = React.useContext(AppContext);
   const [command,        setCommand]        = React.useState("");
   const [aiMessage,      setAiMessage]      = React.useState("");
   const [pendingAction,  setPendingAction]  = React.useState(null);
@@ -11312,14 +11153,6 @@ function FleetrCommandBar() {
 
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const speechSupported   = !!SpeechRecognition;
-
-  // The regions a fuel price can be set for, computed the same way the Settings
-  // page computes them: the provinces the fleet is actually in, plus the default.
-  const gasRegions = React.useMemo(() => {
-    const set = new Set(fleet.map((v) => v.province).filter(Boolean));
-    if (appSettings.gasDefaultRegion) set.add(appSettings.gasDefaultRegion);
-    return [...set].sort();
-  }, [fleet, appSettings.gasDefaultRegion]);
 
   const stopMic = () => {
     clearTimeout(micTimeoutRef.current);
@@ -11414,7 +11247,6 @@ function FleetrCommandBar() {
         // Settings are read straight from app_settings rather than a table dump,
         // so the model can answer "what is the markup" without a write.
         `App settings: ${JSON.stringify(appSettings)}\n\n` +
-        `Fleet regions with a fuel price that can be set: ${JSON.stringify(gasRegions)}\n\n` +
         `User command: ${trimmed}`;
       // The proxy verifies this token before spending anything on our Anthropic
       // key. Without it the endpoint was open to anyone who read this file and
@@ -11712,7 +11544,7 @@ function FleetrCommandBar() {
     let settingWrites = null;
     if (table === "app_settings") {
       if (operation !== "update") return fail("Settings can only be changed, not added or removed.");
-      const check = resolveGasSettingsUpdate(data, appSettings.gasPrices, gasRegions);
+      const check = resolveGasSettingsUpdate(data);
       if (!check.ok) return fail(check.error);
       settingWrites = check.writes;
     }
@@ -11767,11 +11599,12 @@ function FleetrCommandBar() {
         ({ error } = await supabase.from("fleet").update(data).eq("id", pmVehicle.id));
         if (!error) setFleet((prev) => prev.map((v) => (v.id === pmVehicle.id ? { ...v, ...data } : v)));
       } else if (table === "app_settings") {
-        // saveSetting mirrors into appSettings state itself, so there is no
-        // entry for app_settings in SETTERS.
-        for (const [key, value] of settingWrites) {
-          if (!(await saveSetting(key, value))) {
-            error = { message: `Could not save ${key}.` };
+        // The markup is the company's, set by the database (Exec only, and
+        // audited there), so there is nothing in local state to mirror.
+        for (const [, value] of settingWrites) {
+          const { data: res, error: err } = await supabase.rpc("set_company_gas_markup", { p_markup: value });
+          if (err || !res || !res.ok) {
+            error = { message: res?.reason === "exec_only" ? "Only an Exec can change the gas markup." : "Could not save the gas markup." };
             break;
           }
         }
@@ -13857,7 +13690,7 @@ function returnedVehicleStatus(damageFound, rentable) {
 // noticing later.
 //
 // No prepaid-fuel exemption, because there is no such field. The system has
-// gasOwed, gasCollected, gasMarkupPercent and gasPrices, all about charging for
+// gasOwed, gasCollected, the markup and the branch fuel price, all about charging for
 // fuel after the fact, and nothing recording that a customer bought a tank up
 // front. If that is added, it belongs here.
 // What to tell the person, for each reason closeRentalOutcome holds an
@@ -13893,16 +13726,17 @@ function closeRentalOutcome({ damageFound, pickupGas, returnGas }) {
 //
 //   eighths short / 8 x tank litres x price per litre x (1 + markup)
 //
-// The price comes from the vehicle's own province, falling back to the
-// configured default region, because that is the province the fuel was bought
-// in. Markup is optional and treated as zero when unset.
+// gas is the rental's branch's price per litre and markup, from branch_gas:
+// the price is set automatically from the official source for the branch's
+// area, the markup is the branch's own or the company's. Markup is optional
+// and treated as zero when unset.
 //
 // Returns null rather than zero whenever the sum cannot be made: no tank size
-// on the vehicle, no price for its region, or a level either side that is not
+// on the vehicle, no price for the branch, or a level either side that is not
 // one of FUEL_LABELS. Null means "leave gasOwed alone for manual entry", which
-// is what the Gas Collection settings page promises. Zero would read as a
-// settled balance and drop the rental off Gas Collections entirely.
-function gasChargeForReturn({ pickupGas, returnGas, vehicle, appSettings }) {
+// is what the Company page promises. Zero would read as a settled balance and
+// drop the rental off Gas Collections entirely.
+function gasChargeForReturn({ pickupGas, returnGas, vehicle, gas }) {
   const from = FUEL_LABELS.indexOf(pickupGas);
   const to   = FUEL_LABELS.indexOf(returnGas);
   if (from === -1 || to === -1 || to >= from) return null;
@@ -13910,11 +13744,10 @@ function gasChargeForReturn({ pickupGas, returnGas, vehicle, appSettings }) {
   const tank = parseFloat(vehicle?.tankSizeLiters);
   if (!Number.isFinite(tank) || tank <= 0) return null;
 
-  const region = vehicle?.province || appSettings?.gasDefaultRegion || null;
-  const price  = region ? parseFloat((appSettings?.gasPrices || {})[region]) : NaN;
+  const price = parseFloat(gas?.pricePerLitre);
   if (!Number.isFinite(price) || price <= 0) return null;
 
-  const markupRaw = parseFloat(appSettings?.gasMarkupPercent);
+  const markupRaw = parseFloat(gas?.markupPercent);
   const markup    = Number.isFinite(markupRaw) ? markupRaw : 0;
 
   const charge = ((from - to) / 8) * tank * price * (1 + markup / 100);
@@ -14166,7 +13999,7 @@ async function pendingPickupRefusal(rentalAgreementId, fleet, messageFor) {
 }
 
 function CloseRentalPage() {
-  const { reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, syncRAStatus, setDamageClaims, appSettings, guardAction, currentUser } =
+  const { reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, syncRAStatus, setDamageClaims, guardAction, currentUser } =
     React.useContext(AppContext);
   const navigate = useNavigate();
   const location = useLocation();
@@ -14230,13 +14063,26 @@ function CloseRentalPage() {
   // open. Only for fuel_short: a damage close and a close with an unreadable
   // pickup level both stay out of Gas Collections, the first because the fuel
   // says nothing and the second because there is nothing to measure against.
+  // The rental's branch's price and markup, read when there is a shortage to
+  // charge for. Nothing read leaves the charge blank, for manual entry.
+  const [branchGas, setBranchGas] = React.useState(null);
+  const gasBranch = agreementOutcome.reason === "fuel_short" ? ra?.locationId || null : null;
+  React.useEffect(() => {
+    let live = true;
+    setBranchGas(null);
+    if (!gasBranch) return undefined;
+    supabase.rpc("branch_gas", { p_location_id: gasBranch }).then(({ data }) => {
+      if (live && data && data.ok) setBranchGas(data);
+    });
+    return () => { live = false; };
+  }, [gasBranch]);
   const gasCharge = React.useMemo(() => (
     agreementOutcome.reason === "fuel_short"
       ? gasChargeForReturn({
-          pickupGas: ra?.fuelAtPickup, returnGas: final?.closingGasLevel, vehicle, appSettings,
+          pickupGas: ra?.fuelAtPickup, returnGas: final?.closingGasLevel, vehicle, gas: branchGas,
         })
       : null
-  ), [agreementOutcome.reason, ra?.fuelAtPickup, final?.closingGasLevel, vehicle, appSettings]);
+  ), [agreementOutcome.reason, ra?.fuelAtPickup, final?.closingGasLevel, vehicle, branchGas]);
 
   const resetFlow = () => {
     setSelectedId(null); setReadings(EMPTY_CLOSE_READINGS); setClosing(null);
@@ -16551,10 +16397,6 @@ function AppRoutes() {
       element: React.createElement(ExecNeedsBranch, null, React.createElement(ReportsPage)),
     }),
     React.createElement(Route, {
-      path: "/settings",
-      element: React.createElement(ExecNeedsBranch, null, React.createElement(SettingsPage)),
-    }),
-    React.createElement(Route, {
       path: "/audit-log",
       element: React.createElement(ExecNeedsBranch, null, React.createElement(AuditLogPage)),
     }),
@@ -16594,7 +16436,7 @@ function AppRoutes() {
       path: "/switch-out",
       element: React.createElement(ExecNeedsBranch, null, React.createElement(SwitchOutPage)),
     }),
-    NAV.filter((item) => !["/setup", "/dashboard", "/reservations", "/arms", "/pre-rental-check", "/overdue-rentals", "/time-of-repair", "/no-shows", "/fleet", "/fleet/vehicles", "/fleet/additions", "/fleet/gas-collections", "/fleet/damage-claims", "/reports", "/settings", "/audit-log", "/rental-agreements", "/customer", "/vehicle"].includes(item.path))
+    NAV.filter((item) => !["/setup", "/dashboard", "/reservations", "/arms", "/pre-rental-check", "/overdue-rentals", "/time-of-repair", "/no-shows", "/fleet", "/fleet/vehicles", "/fleet/additions", "/fleet/gas-collections", "/fleet/damage-claims", "/reports", "/audit-log", "/rental-agreements", "/customer", "/vehicle"].includes(item.path))
       .map((item) =>
         React.createElement(Route, {
           key: item.path,
