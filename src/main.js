@@ -16877,7 +16877,11 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
     React.createElement(
       "div",
       { className: "loginCard" },
-      React.createElement("div", { className: "loginBrand", style: { marginBottom: "28px" } }, fleetrLogo("light", 34)),
+      // The sign-in card's logo: the off-white logo on its terracotta tile
+      // (fleetr-horizontal-on-terracotta.svg, 1324 by 472), 64px tall so the
+      // logo in it stays over the guide's 32px minimum on terracotta.
+      React.createElement("div", { className: "loginBrand", style: { marginBottom: "28px" } },
+        React.createElement("img", { src: "/fleetr-horizontal-on-terracotta.svg", alt: "fleetr", className: "loginBrand__tile", width: 180, height: 64 })),
       React.createElement(
         "form",
         { className: "loginForm loginForm--signIn", onSubmit: handleSubmit },
@@ -17044,6 +17048,7 @@ body, * {
 /* The logo on the sign-in, sign-up and reset cards: centred, with its clear
    space above and below. */
 .loginBrand{ display: flex; justify-content: center; padding: 8px 0; }
+.loginBrand__tile{ display: block; height: 64px; width: auto; border-radius: 12px; }
 .loginLogo{
   display: block;
   width: 100%;
