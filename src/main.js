@@ -236,10 +236,11 @@ function clearSession() {
 
 // ─── Company features ─────────────────────────────────────────────────────────
 // Which optional features the signed-in person's company has switched on, as
-// set by Fleetr in fleetr hq. Loaded once at sign-in and kept with the stored
-// profile, so it survives a reload for the life of the session. A change made
-// in hq therefore reaches a company at its staff's next sign-in, at most 12
-// hours later.
+// set by Fleetr in fleetr hq. Loaded at sign-in and kept with the stored
+// profile, so it survives a reload, then read again every minute and whenever
+// the app comes back into view (refreshCompanyFeatures, from AppProvider). A
+// change made in hq reaches every staff member within a minute, without them
+// signing out.
 //
 // This decides what the app SHOWS, not what anyone can do. The copy lives in
 // localStorage, where anyone at the keyboard can edit it, so a feature that has
@@ -265,6 +266,29 @@ async function loadCompanyFeatures(operatorId) {
     companyFeatures = toFeatureMap(data);
   } catch (e) {
     console.warn("Fleetr: company features could not be loaded, all off:", e.message || String(e));
+  }
+}
+
+// Reads the flags again while signed in. Returns true when they changed. A
+// read that fails keeps the flags as they are, so a dropped connection does
+// not switch everything off for a minute. The stored profile takes the new
+// flags too, so a reload shows the same thing.
+async function refreshCompanyFeatures(operatorId) {
+  if (!operatorId) return false;
+  try {
+    const { data, error } = await supabase
+      .from("company_features").select("featureKey,enabled").eq("operatorId", operatorId);
+    if (error) return false;
+    const next = toFeatureMap(data);
+    if (JSON.stringify(next) === JSON.stringify(companyFeatures)) return false;
+    companyFeatures = next;
+    try {
+      const raw = localStorage.getItem(PROFILE_KEY);
+      if (raw) localStorage.setItem(PROFILE_KEY, JSON.stringify({ ...JSON.parse(raw), features: companyFeatures }));
+    } catch (e) { /* storage unavailable, kept for this visit only */ }
+    return true;
+  } catch (e) {
+    return false;
   }
 }
 
@@ -1028,16 +1052,16 @@ const NAV_SECTIONS = [
       { label: "Non-Drive's", path: "/arms", feature: "non_drive_intake" },
       { label: "Pre-Rental Check", path: "/pre-rental-check", feature: "pre_rental_check" },
       { label: "Overdue Rentals", path: "/overdue-rentals" },
-      { label: "Unknown Repair Date", path: "/time-of-repair" },
+      { label: "Unknown Repair Date", path: "/time-of-repair", feature: "unknown_repair_date" },
 
-      { label: "No Shows", path: "/no-shows" },
+      { label: "No Shows", path: "/no-shows", feature: "no_shows" },
     ],
   },
   {
     header: "Branch",
     items: [
-      { label: "Reports", path: "/reports" },
-      { label: "Audit Log", path: "/audit-log" },
+      { label: "Reports", path: "/reports", feature: "reports" },
+      { label: "Audit Log", path: "/audit-log", feature: "audit_log" },
       { label: "Company", path: "/company" },
       { label: "Staff", path: "/staff" },
       { label: "Your Account", path: "/account" },
@@ -1484,6 +1508,27 @@ function PinConfirmModal({ onConfirm, onCancel }) {
 }
 
 function AppProvider({ children, currentUser, signOut }) {
+  // Bumped when fleetr hq switches a feature on or off, so everything that
+  // reads isFeatureEnabled draws again: the menu, the routes, the pages.
+  const [featuresVersion, setFeaturesVersion] = React.useState(0);
+  React.useEffect(() => {
+    const op = currentUser?.operatorId;
+    if (!op) return undefined;
+    let live = true;
+    const check = () => refreshCompanyFeatures(op).then((changed) => {
+      if (live && changed) setFeaturesVersion((v) => v + 1);
+    });
+    const onShow = () => { if (document.visibilityState === "visible") check(); };
+    const timer = setInterval(check, 60 * 1000);
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", onShow);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", onShow);
+    };
+  }, [currentUser?.operatorId]);
   // ── Persisted state (synced to Supabase) ─────────────────────────────────
   const [reservations, setReservationsState] = React.useState([]);
   const [ndiRows,      setNdiRowsState]      = React.useState([]);
@@ -1999,7 +2044,7 @@ function AppProvider({ children, currentUser, signOut }) {
 
   return React.createElement(
     AppContext.Provider,
-    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, archivedVehicles, setArchivedVehicles, readyReturns, setReadyReturns, appSettings, guardAction, logAudit, currentUser, signOut, setup, refreshSetup } },
+    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, archivedVehicles, setArchivedVehicles, readyReturns, setReadyReturns, appSettings, guardAction, logAudit, currentUser, signOut, setup, refreshSetup, featuresVersion } },
     children,
     pinModalOpen && React.createElement(PinConfirmModal, { onConfirm: confirmPin, onCancel: dismissPinModal })
   );
@@ -2560,6 +2605,9 @@ function ReservationsPage() {
   // Note: no_shows.id is a strict UUID column and no_shows.rescode is lowercase,
   // same as the AppProvider load-time sweep. Keep both in sync if this changes.
   React.useEffect(() => {
+    // With No-shows off there is nowhere for them to go, so a missed pickup
+    // stays a reservation rather than vanishing into a hidden page.
+    if (!isFeatureEnabled("no_shows")) return;
     const overdue = reservations.filter(
       (r) => r.date < todayIso &&
              r.pickupStatus === "Pending arrival" &&
@@ -9188,6 +9236,10 @@ const LIST_REASONS = {
 
 // Who pays for a source's rentals. The billing type, which decides the
 // billing fields a reservation asks for, follows from it in the database.
+// Insurance company is offered only while insurance_rentals is on, or to a
+// source that already has it, so its picker still shows what it is.
+const sourcePayers = (current) => SOURCE_PAYERS.filter(([v]) =>
+  v !== "insurance" || isFeatureEnabled("insurance_rentals") || current === "insurance");
 const SOURCE_PAYERS = [
   ["insurance",  "Insurance company"],
   ["body_shop",  "Body shop"],
@@ -9298,7 +9350,7 @@ function ListAddRow({ placeholder, label, withType, disabled, onAdd, wide }) {
       value: type, onChange: (e) => setType(e.target.value),
     },
       React.createElement("option", { value: "" }, "Who pays"),
-      SOURCE_PAYERS.map(([v, l]) => React.createElement("option", { key: v, value: v }, l))),
+      sourcePayers(type).map(([v, l]) => React.createElement("option", { key: v, value: v }, l))),
     React.createElement("button", {
       className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled,
       onClick: async () => {
@@ -9972,7 +10024,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
                 onChange: (e) => act("sources", "save_source", {
                   p_id: entry.id, p_name: entry.name, p_billing_type: e.target.value, p_sort: null,
                 }),
-              }, SOURCE_PAYERS.map(([v, l]) => el("option", { key: v, value: v }, l)))),
+              }, sourcePayers(entry.payer).map(([v, l]) => el("option", { key: v, value: v }, l)))),
           })];
           if (isOpen) {
             entry.details.forEach((d) => rows.push(entryRow({
@@ -11087,6 +11139,7 @@ function PlaceholderPage({ title }) {
 // non_drive_intake off. One string, used by the prompt and by both refusals,
 // so the answer is the same whichever of them catches the request.
 const NDI_DISABLED_MESSAGE = "Non-drive intake isn't enabled for this company.";
+const NO_SHOWS_DISABLED_MESSAGE = "No-shows aren't enabled for this company.";
 
 // Pre-rental check has no table of its own: it is the preRentalCheck field on
 // reservations. So with pre_rental_check off, that field is stripped from the
@@ -11204,7 +11257,12 @@ function FleetrCommandBar() {
           : `Non-drive intake: not enabled for this company, so no intake data is provided. ` +
             `If the command asks to view or change non-drive intake (ndi_rows), reply with the message ` +
             `"${NDI_DISABLED_MESSAGE}" and no action.\n\n`) +
-        `No-shows data: ${JSON.stringify(noShows)}\n\n` +
+        // With no_shows off the rows are not sent, as for non-drive intake.
+        (isFeatureEnabled("no_shows")
+          ? `No-shows data: ${JSON.stringify(noShows)}\n\n`
+          : `No-shows: not enabled for this company, so no no-show data is provided. ` +
+            `If the command asks to view or change no-shows (no_shows), reply with the message ` +
+            `"${NO_SHOWS_DISABLED_MESSAGE}" and no action.\n\n`) +
         `Damage claims data: ${JSON.stringify(damageClaims)}\n\n` +
         // Settings are read straight from app_settings rather than a table dump,
         // so the model can answer "what is the fuel rate" without a write.
@@ -11249,6 +11307,11 @@ function FleetrCommandBar() {
         if (hasAction && parsed.action.table === "ndi_rows" && !isFeatureEnabled("non_drive_intake")) {
           console.warn("Fleetr AI proposed an ndi_rows action with non_drive_intake off; dropped.");
           parsed.message = NDI_DISABLED_MESSAGE;
+          hasAction = false;
+        }
+        if (hasAction && parsed.action.table === "no_shows" && !isFeatureEnabled("no_shows")) {
+          console.warn("Fleetr AI proposed a no_shows action with no_shows off; dropped.");
+          parsed.message = NO_SHOWS_DISABLED_MESSAGE;
           hasAction = false;
         }
         if (hasAction && !isFeatureEnabled("pre_rental_check") &&
@@ -11348,6 +11411,7 @@ function FleetrCommandBar() {
     // ndi_rows through here while the company has it off, and the refusal is
     // audited like any other rule that stops an action.
     if (table === "ndi_rows" && !isFeatureEnabled("non_drive_intake")) return fail(NDI_DISABLED_MESSAGE);
+    if (table === "no_shows" && !isFeatureEnabled("no_shows")) return fail(NO_SHOWS_DISABLED_MESSAGE);
     // Checked against the edited payload, so a field typed into the card is
     // caught as well as one the model proposed.
     if (!isFeatureEnabled("pre_rental_check") && isPreRentalCheckEdit(table, operation, data)) {
@@ -11849,6 +11913,8 @@ function FleetrCommandBar() {
 }
 
 function Layout() {
+  // Read so a feature switched in fleetr hq redraws the layout (featuresVersion).
+  React.useContext(AppContext);
   const isMobile = useMobile();
   const [collapsed, setCollapsed] = React.useState(readSidebarCollapsed);
   const toggleCollapsed = () => setCollapsed((c) => {
@@ -16264,6 +16330,9 @@ function ExecNeedsBranch({ children }) {
 }
 
 function AppRoutes() {
+  // Read so a feature switched in fleetr hq redraws the routes (featuresVersion):
+  // a page whose feature goes off while it is open moves to the Dashboard.
+  React.useContext(AppContext);
   return React.createElement(
     Routes,
     null,
@@ -16310,12 +16379,17 @@ function AppRoutes() {
     }),
     React.createElement(Route, {
       path: "/time-of-repair",
-      element: React.createElement(ExecNeedsBranch, null, React.createElement(TORPage)),
+      // Off means unreachable, not only unlisted, as for /arms.
+      element: isFeatureEnabled("unknown_repair_date")
+        ? React.createElement(ExecNeedsBranch, null, React.createElement(TORPage))
+        : React.createElement(Navigate, { to: "/dashboard", replace: true }),
     }),
 
     React.createElement(Route, {
       path: "/no-shows",
-      element: React.createElement(ExecNeedsBranch, null, React.createElement(NoShowsPage)),
+      element: isFeatureEnabled("no_shows")
+        ? React.createElement(ExecNeedsBranch, null, React.createElement(NoShowsPage))
+        : React.createElement(Navigate, { to: "/dashboard", replace: true }),
     }),
     React.createElement(Route, {
       path: "/fleet",
@@ -16339,11 +16413,15 @@ function AppRoutes() {
     }),
     React.createElement(Route, {
       path: "/reports",
-      element: React.createElement(ExecNeedsBranch, null, React.createElement(ReportsPage)),
+      element: isFeatureEnabled("reports")
+        ? React.createElement(ExecNeedsBranch, null, React.createElement(ReportsPage))
+        : React.createElement(Navigate, { to: "/dashboard", replace: true }),
     }),
     React.createElement(Route, {
       path: "/audit-log",
-      element: React.createElement(ExecNeedsBranch, null, React.createElement(AuditLogPage)),
+      element: isFeatureEnabled("audit_log")
+        ? React.createElement(ExecNeedsBranch, null, React.createElement(AuditLogPage))
+        : React.createElement(Navigate, { to: "/dashboard", replace: true }),
     }),
     React.createElement(Route, {
       key:  "staff",
