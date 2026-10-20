@@ -7629,7 +7629,97 @@ function CompanyPage() {
         busy: stepBusy,
         showState: !launched && st.key !== "launch",
       }, stepBody(st.key, parts)))) }),
+    setup && launched && isExec && el(CompanySection, { title: "Billing", style: { marginTop: "24px" } }, el(BillingSection)),
   );
+}
+
+// ─── Billing ─────────────────────────────────────────────────────────────────
+// What fleetr bills the company each month: its share of the vehicle rental
+// revenue on agreements closed that month (my_billing_months and
+// my_billing_statement, revenue_share.sql in fleetr-infra). Exec only, in the
+// database as well as here.
+const billingMoney = (n) => `$${Number(n || 0).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const BILLING_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const billingMonthLabel = (m) => { const [y, mo] = String(m).split("-").map(Number); return y && mo ? `${BILLING_MONTHS[mo - 1]} ${y}` : m; };
+const billingPercents = (list) => (Array.isArray(list) && list.length ? list.map((x) => `${Number(x)}%`).join(", ") : "Not set");
+
+// The month's statement as a PDF: fleetr's name, the company, the month, each
+// agreement, the totals, and HST when fleetr has it switched on. jsPDF is
+// loaded only when a statement is downloaded.
+async function downloadStatement(month) {
+  const { data, error } = await supabase.rpc("my_billing_statement", { p_month: month });
+  if (error || !data || !data.ok) throw new Error(error ? error.message : (data && data.reason) || "refused");
+  const { jsPDF } = await import("https://esm.sh/jspdf@2.5.1");
+  const doc = new jsPDF({ unit: "pt", format: "letter" });
+  const sm = data.summary;
+  const L = 54, R = 558;
+  let y = 64;
+  const line = (text, opts = {}) => {
+    doc.setFont("helvetica", opts.bold ? "bold" : "normal").setFontSize(opts.size || 10);
+    doc.text(String(text), opts.right ? R : (opts.x ?? L), y, opts.right ? { align: "right" } : undefined);
+  };
+  const row = (cells, bold) => {
+    if (y > 730) { doc.addPage(); y = 64; }
+    // Left edges of the first four columns, right edges of the money ones.
+    const xs = [L, 120, 200, 300, 430, 485, R];
+    doc.setFont("helvetica", bold ? "bold" : "normal").setFontSize(9);
+    cells.forEach((c, i) => doc.text(String(c), xs[i], y, i >= 4 ? { align: "right" } : undefined));
+    y += 15;
+  };
+  line(data.issuer, { bold: true, size: 16 }); y += 22;
+  line("Revenue share statement", { size: 12 }); y += 28;
+  line(sm.company, { bold: true, size: 11 }); y += 16;
+  line(billingMonthLabel(sm.month)); y += 14;
+  line(`Due ${sm.dueDate}`); y += 14;
+  line(sm.status === "paid" ? `Paid ${sm.paidOn}` : "Unpaid"); y += 28;
+  row(["Closed", "Reservation", "Branch", "Class", "Revenue", "Share", "Owed"], true);
+  data.agreements.forEach((a) => row([a.closedOn, a.resCode || "", (a.branch || "").slice(0, 18), (a.vehicleClass || "").slice(0, 18),
+    billingMoney(a.revenue), a.percent == null ? "Not set" : `${Number(a.percent)}%`, billingMoney(a.owed)]));
+  if (!data.agreements.length) row(["No agreements closed this month.", "", "", "", "", "", ""]);
+  y += 12;
+  const total = (label, value, bold) => { if (y > 730) { doc.addPage(); y = 64; } line(label, { bold, x: 330 }); line(value, { bold, right: true }); y += 16; };
+  total(`Rentals closed`, String(sm.rentals));
+  total(`Vehicle rental revenue`, billingMoney(sm.revenue));
+  total(`Revenue share (${billingPercents(sm.percents)})`, billingMoney(sm.owed));
+  if (data.hst) total(`HST ${Number(data.hst.rate)}% (${data.hst.number})`, billingMoney(data.hst.amount));
+  total("Total due", billingMoney(data.total), true);
+  doc.save(`fleetr-statement-${sm.month}.pdf`);
+}
+
+function BillingSection() {
+  const [data, setData] = React.useState(undefined);
+  const [busy, setBusy] = React.useState("");
+  const [error, setError] = React.useState("");
+  const el = React.createElement;
+  React.useEffect(() => {
+    supabase.rpc("my_billing_months").then(({ data: d, error: err }) => {
+      setData(err || !d || !d.ok ? { error: err ? "Could not reach the server." : d && d.reason === "exec_only" ? "Only an Exec can see billing." : "Billing could not be loaded." } : d);
+    });
+  }, []);
+  if (data === undefined) return el("p", { className: "closeRentalHint" }, "Loading…");
+  if (data.error) return el("div", { className: "loginError" }, data.error);
+  const download = async (month) => {
+    setBusy(month); setError("");
+    try { await downloadStatement(month); } catch (e) { console.warn("statement:", e.message); setError("The statement could not be made. Try again."); }
+    setBusy("");
+  };
+  return el(React.Fragment, null,
+    el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+      `fleetr bills ${data.percent == null ? "a share" : `${Number(data.percent)}%`} of the vehicle rental revenue on agreements closed each month, before tax. Each month is due on the 15th of the month after.`),
+    error && el("div", { className: "loginError" }, error),
+    data.months.length === 0
+      ? el("p", { className: "closeRentalHint" }, "Nothing billed yet. A month shows here once an agreement closes in it.")
+      : el("div", { style: { overflowX: "auto" } },
+          el("table", { className: "dashboardTable" },
+            el("thead", null, el("tr", null, ["Month", "Rentals", "Revenue", "Share", "Amount owed", "Status", ""].map((x) => el("th", { key: x }, x)))),
+            el("tbody", null, data.months.map((m) => el("tr", { key: m.month },
+              el("td", null, billingMonthLabel(m.month)), el("td", null, m.rentals), el("td", null, billingMoney(m.revenue)),
+              el("td", null, billingPercents(m.percents)), el("td", null, billingMoney(m.owed)),
+              el("td", null, m.status === "paid" ? `Paid ${m.paidOn}` : m.ended ? `Unpaid, due ${m.dueDate}` : "Month in progress"),
+              el("td", null, el("button", {
+                type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, disabled: !!busy,
+                onClick: () => download(m.month),
+              }, busy === m.month ? "Making…" : "Statement PDF"))))))));
 }
 
 // ─── Post-pay fuel rate ──────────────────────────────────────────────────────
@@ -12409,6 +12499,8 @@ const SETUP_ITEMS = {
   protection:            { title: "Protection and deductibles", path: null,
                            text: "Every product priced, and an optional one with its decline wording. Can be skipped." },
   contract:              { title: "Contract terms", path: null, text: "What the customer acknowledges at pickup." },
+  revenue_share:         { title: "Revenue share", path: null,
+                           text: "The share of vehicle rental revenue fleetr bills each month, set by fleetr. Contact fleetr to have it set." },
   listing:               { title: "fleetr.ai listing", path: null,
                            text: "Needed only while List on fleetr.ai is on: a branch shows once its listing is complete. Can be skipped otherwise." },
   staff:                 { title: "Staff", path: null, text: "Someone besides you. Can be skipped." },
