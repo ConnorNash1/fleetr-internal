@@ -7628,8 +7628,13 @@ function CompanyPage() {
         onUnskip: () => setSkip(st.key, false),
         busy: stepBusy,
         showState: !launched && st.key !== "launch",
-      }, stepBody(st.key, parts)))) }),
-    setup && launched && isExec && el(CompanySection, { title: "Billing", style: { marginTop: "24px" } }, el(BillingSection)),
+      }, stepBody(st.key, parts))),
+      // After launch, an Exec's Billing, below Status, as one more section.
+      launched && isExec && el(CompanyStep, {
+        key: "billing", id: "company-step-billing", stepKey: "billing", n: null, title: "Billing", state: "done",
+        current: false, open: !!openSteps.billing, onToggle: () => setOpenSteps((o) => ({ ...o, billing: !o.billing })),
+        busy: stepBusy, showState: false,
+      }, el(BillingSection))) }),
   );
 }
 
