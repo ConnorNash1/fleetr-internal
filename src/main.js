@@ -10135,7 +10135,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
                 opts.noteFor && (() => {
                   const note = opts.noteFor(c, x);
                   return note && el("div", { style: { fontSize: "0.75rem", opacity: 0.7, marginTop: "2px", whiteSpace: "nowrap" } }, note);
-                })()))))))));
+                })())))))));
 
   const protectionPrice = (product, c, x) => {
     const row = prices.find((r) =>
