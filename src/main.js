@@ -344,7 +344,7 @@ async function loadCompanyLists(user) {
       own("daily_rates",         "vehicleClassId,sourceId,amount"),
       own("protection_products", "id,name,active,sortOrder,customerWording,declineWording,required"),
       own("rate_seasons",        "id,name,startMonth,startDay,endMonth,endDay,active"),
-      own("season_rates",        "seasonId,vehicleClassId,sourceId,amount"),
+      own("season_rates",        "seasonId,vehicleClassId,sourceId,period,amount,auto"),
       own("period_rates",        "vehicleClassId,sourceId,period,amount"),
     ]);
     const failed = results.find((r) => r.error);
@@ -374,7 +374,8 @@ async function loadCompanyLists(user) {
       (rates[src] = rates[src] || {})[cls] = amount;
     });
     // Weekly and monthly rates as { source: { class: { week, month } } }, and
-    // each season's daily rates as { source: { class: amount } }, the same way.
+    // each season's as { source: { class: { day, week, month, auto } } }, auto
+    // holding which of week and month were worked out from the normal rates.
     const periodRates = {};
     pr.forEach((r) => {
       const src = sourceNames[r.sourceId];
@@ -393,7 +394,10 @@ async function loadCompanyLists(user) {
           const cls = classNames[r.vehicleClassId];
           const amount = Number(r.amount);
           if (!src || !cls || !Number.isFinite(amount)) return;
-          (seasonRates[src] = seasonRates[src] || {})[cls] = amount;
+          const bySrc = (seasonRates[src] = seasonRates[src] || {});
+          const cell = (bySrc[cls] = bySrc[cls] || { auto: {} });
+          cell[r.period || "day"] = amount;
+          if (r.auto) cell.auto[r.period] = true;
         });
         return { ...x, rates: seasonRates };
       });
@@ -568,6 +572,7 @@ const rateMoney = (n) => `$${Number(n).toFixed(2)}`;
 // One line of a price_rental breakdown, in words.
 function rateLineText(l) {
   const days = `${l.days} day${l.days === 1 ? "" : "s"}`;
+  if (l.kind === "season" && (l.basis === "weekly" || l.basis === "monthly")) return `${days} × ${rateMoney(l.perDay)} ${l.name} ${l.basis} rate`;
   if (l.kind === "season") return `${days} in ${l.name} at ${rateMoney(l.perDay)} a day`;
   if (l.basis === "weekly")  return `${days} × ${rateMoney(l.perDay)} weekly rate`;
   if (l.basis === "monthly") return `${days} × ${rateMoney(l.perDay)} monthly rate`;
@@ -7510,7 +7515,7 @@ function CompanyPage() {
         parts.classes,
         el(CompanySection, { title: "Add vehicles", style: { marginTop: "24px" } }, el(VehiclesStep, { onAdded: changed })));
       // Sources, then the daily rates for each of them, before launch and after.
-      case "rates": return el(React.Fragment, null, parts.sources, parts.rates, parts.periods, parts.seasons);
+      case "rates": return el(React.Fragment, null, parts.sources, parts.seasons, parts.rates);
       case "protection": return el(React.Fragment, null, parts.protection, parts.deductibles);
       case "contract": return only(parts.acknowledgements);
       case "listing": return only(el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "listing", onSaved: refreshAll }));
@@ -9423,7 +9428,9 @@ function CompanySection({ title, style, children, defaultOpen }) {
 // One price in a grid. Keeps its own draft, for the reason GasRow does: a
 // shared draft would let typing in one cell save into another. Saves when the
 // cell is left, and only if it changed. Blank means no price.
-function ListPriceCell({ value, disabled, onSave, suffix }) {
+// muted shows a value worked out rather than typed. onEnter, when given, runs
+// on Enter after the cell is left, to move on. cellKey marks the cell for it.
+function ListPriceCell({ value, disabled, onSave, suffix, muted, onEnter, cellKey, title }) {
   const shown = value == null ? "" : String(value);
   const [draft, setDraft] = React.useState(shown);
   React.useEffect(() => { setDraft(shown); }, [shown]);
@@ -9431,10 +9438,16 @@ function ListPriceCell({ value, disabled, onSave, suffix }) {
     "span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" } },
     React.createElement("span", { style: { opacity: 0.7 } }, "$"),
     React.createElement("input", {
-      className: "resFormInput", style: { width: "62px", padding: "4px 6px" },
-      inputMode: "decimal", value: draft, disabled,
+      className: "resFormInput", style: { width: "62px", padding: "4px 6px", ...(muted ? { opacity: 0.55 } : null) },
+      inputMode: "decimal", value: draft, disabled, title,
+      "data-rate-cell": cellKey,
       onChange: (e) => setDraft(e.target.value),
-      onKeyDown: (e) => { if (e.key === "Enter") e.currentTarget.blur(); },
+      onKeyDown: (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        e.currentTarget.blur();
+        if (onEnter) onEnter();
+      },
       onBlur: async () => {
         const typed = draft.trim();
         if (typed === shown) { setDraft(shown); return; }
@@ -9884,10 +9897,10 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   const [confirming, setConfirming] = React.useState("");
   // The product whose price grid is on screen.
   const [priceProduct, setPriceProduct] = React.useState("");
-  // Which of weekly and monthly is on screen, the season whose daily rates
-  // are, and the season being changed.
-  const [period, setPeriod] = React.useState("week");
-  const [priceSeason, setPriceSeason] = React.useState("");
+  // The rate table on screen: Normal or a season's id, and a source's id.
+  // And the season being changed.
+  const [rateView, setRateView] = React.useState("normal");
+  const [rateSource, setRateSource] = React.useState("");
   const [editSeason, setEditSeason] = React.useState("");
   // { listKey, from, over } while a row is being dragged.
   const [drag, setDrag] = React.useState(null);
@@ -10090,7 +10103,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         "The company's lists could not be loaded, so they cannot be edited right now. Reload the page to try again.");
   if (notice) {
     if (layout) {
-      return layout(Object.fromEntries(["pickup", "classes", "sources", "rates", "periods", "seasons", "protection", "deductibles", "acknowledgements"]
+      return layout(Object.fromEntries(["pickup", "classes", "sources", "rates", "seasons", "protection", "deductibles", "acknowledgements"]
         .map((k) => [k, el(React.Fragment, { key: k }, notice)])));
     }
     return el("div", { className: "dashboardSection", style: { marginTop: "24px" } }, el("h2", null, "Lists and prices"), notice);
@@ -10258,68 +10271,100 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         }),
       })),
 
-    // ── Daily rates ──
-    rates: section("Normal daily rates",
-      "One column per source, one row per vehicle class. Setup needs one source with a rate for every vehicle class, and that has to be fleetr.ai while List on fleetr.ai is on. fleetr.ai rates are whole dollars; every other source takes cents. The rate is filled in when a source and a vehicle class are chosen on a customer's file. A cell saves when you leave it. Blank means no rate, and staff type one in. Outside any season, these are the rates.",
-      "rates",
-      priceGrid("rates",
-        (c, x) => (rates[x.name] && rates[x.name][c.name] != null ? rates[x.name][c.name] : null),
-        (c, x, amount) => act("rates", "set_daily_rate", {
-          p_class_id: c.id, p_source_id: x.id, p_amount: amount,
-        }))),
-
-    // ── Weekly and monthly rates ──
-    periods: section("Weekly and monthly rates",
-      "Optional daily rates for longer rentals: weekly for 7 to 27 days, monthly for 28 days or more. Each day outside a season costs that rate; a blank cell falls back to the rate below it.",
-      "periods",
-      el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", margin: "4px 0 8px" } },
-        el("span", { style: { fontWeight: 600 } }, "Rates for"),
-        el("select", {
-          className: "resFormInput", style: { width: "auto" }, value: period,
-          onChange: (e) => setPeriod(e.target.value),
-        }, el("option", { value: "week" }, "Weekly (7 to 27 days)"), el("option", { value: "month" }, "Monthly (28 days or more)"))),
-      el("div", { key: period },
-        priceGrid("periods",
-          (c, x) => { const v = periodRates[x.name] && periodRates[x.name][c.name]; return v && v[period] != null ? v[period] : null; },
-          (c, x, amount) => act("periods", "set_period_rate", {
-            p_period: period, p_class_id: c.id, p_source_id: x.id, p_amount: amount,
-          }),
-          {
-            suffix: "/day",
-            // What the daily rate comes to, and how much less it is than the
-            // cell's normal daily rate: "= $315 per week, 25% off".
-            noteFor: (c, x) => {
-              const v = periodRates[x.name] && periodRates[x.name][c.name] && periodRates[x.name][c.name][period];
-              if (v == null) return null;
-              const day = rates[x.name] && rates[x.name][c.name];
-              const n = period === "week" ? 7 : 30;
-              const amount = Math.round(v * n * 100) / 100;
-              const shown = amount.toLocaleString("en-CA", Number.isInteger(amount)
-                ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-              const off = day ? Math.round((1 - v / day) * 100) : 0;
-              return `= $${shown} per ${period === "week" ? "week" : "30 days"}${off > 0 ? `, ${off}% off` : ""}`;
-            },
-          })),
-      (() => {
-        // A longer rental that costs more a day than a shorter one.
-        const warn = [];
-        activeClasses.forEach((c) => activeSources.forEach((x) => {
-          const day = rates[x.name] && rates[x.name][c.name];
-          const p = (periodRates[x.name] && periodRates[x.name][c.name]) || {};
-          if (day != null && p.week != null && p.week > day) {
-            warn.push(`${c.name}, ${x.name}: the weekly daily rate is higher than the normal daily rate.`);
-          }
-          if (p.week != null && p.month != null && p.month > p.week) {
-            warn.push(`${c.name}, ${x.name}: the monthly daily rate is higher than the weekly daily rate.`);
-          }
-        }));
-        return warn.length > 0 && el("div", { className: "loginError", style: { marginTop: "10px" } },
-          warn.map((w) => el("div", { key: w }, w)));
-      })()),
+    // ── Rates ──
+    // One table: a period (Normal or a season) and a source, a row per vehicle
+    // class, and the daily, weekly and monthly rate, each a rate a day.
+    rates: (() => {
+      const rateSources = [...activeSources].sort((a, b) =>
+        (b.standardKey === "fleetr_ai") - (a.standardKey === "fleetr_ai"));
+      const src = rateSources.find((x) => x.id === rateSource) || rateSources[0] || null;
+      const season = rateView === "normal" ? null : seasons.find((x) => x.id === rateView) || null;
+      const label = season ? season.name : "normal";
+      const whole = !!src && src.standardKey === "fleetr_ai";
+      const COLS = [["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]];
+      const cellOf = (c, col) => {
+        if (!src) return { value: null, auto: false };
+        if (season) {
+          const v = season.rates[src.name] && season.rates[src.name][c.name];
+          return { value: v && v[col] != null ? v[col] : null, auto: !!(v && v.auto && v.auto[col]) };
+        }
+        if (col === "day") return { value: rates[src.name] && rates[src.name][c.name] != null ? rates[src.name][c.name] : null, auto: false };
+        const p = periodRates[src.name] && periodRates[src.name][c.name];
+        return { value: p && p[col] != null ? p[col] : null, auto: false };
+      };
+      const save = (c, col, amount) => (season
+        ? act("rates", "set_season_rate", { p_season_id: season.id, p_class_id: c.id, p_source_id: src.id, p_amount: amount, p_period: col })
+        : col === "day"
+          ? act("rates", "set_daily_rate", { p_class_id: c.id, p_source_id: src.id, p_amount: amount })
+          : act("rates", "set_period_rate", { p_period: col, p_class_id: c.id, p_source_id: src.id, p_amount: amount }));
+      // What a weekly or monthly rate comes to, and how much less it is than
+      // the row's daily rate: "= $315 per week, 25% off".
+      const noteFor = (c, col) => {
+        const v = cellOf(c, col).value;
+        if (col === "day" || v == null) return null;
+        const day = cellOf(c, "day").value;
+        const n = col === "week" ? 7 : 30;
+        const amount = Math.round(v * n * 100) / 100;
+        const shown = amount.toLocaleString("en-CA", Number.isInteger(amount)
+          ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const off = day ? Math.round((1 - v / day) * 100) : 0;
+        return `= $${shown} per ${col === "week" ? "week" : "30 days"}${off > 0 ? `, ${off}% off` : ""}`;
+      };
+      // Enter saves and moves to the same column in the next row.
+      const nextDown = (row, col) => () => {
+        const next = document.querySelector(`[data-rate-cell="${row + 1}:${col}"]`);
+        if (next) next.focus();
+      };
+      const warn = [];
+      activeClasses.forEach((c) => {
+        const d = cellOf(c, "day").value, w = cellOf(c, "week").value, m = cellOf(c, "month").value;
+        if (d != null && w != null && w > d) warn.push(`${c.name}: the weekly daily rate is higher than the ${label} daily rate.`);
+        if (w != null && m != null && m > w) warn.push(`${c.name}: the monthly daily rate is higher than the weekly daily rate.`);
+      });
+      const picker = (text, value, onChange, options) => el("label", { style: { display: "inline-flex", gap: "6px", alignItems: "center" } },
+        el("span", { style: { fontWeight: 600 } }, text),
+        el("select", { className: "resFormInput", style: { width: "auto" }, value, onChange: (e) => onChange(e.target.value) },
+          options.map(([v, l]) => el("option", { key: v, value: v }, l))));
+      return section("Rates",
+        "Pick Normal or a season, and a source. Every cell is a daily rate: Weekly for rentals of 7 to 27 days, Monthly for 28 days or more. A blank weekly or monthly cell uses the rate to its left, and a season with no daily rate uses the normal rates. Setup needs one source with a daily rate for every vehicle class, and that has to be fleetr.ai while List on fleetr.ai is on. fleetr.ai rates are whole dollars. A season's weekly and monthly fill in from the normal rates when its daily is entered, shown faded, until you type your own. A cell saves when you leave it; Enter moves down and Tab across.",
+        "rates",
+        el("div", { style: { display: "flex", gap: "16px", alignItems: "center", flexWrap: "wrap", margin: "4px 0 10px" } },
+          picker("Period", season ? season.id : "normal", setRateView,
+            [["normal", "Normal"], ...seasons.map((x) => [x.id, `${x.name}, ${seasonRange(x)}${x.active ? "" : " (off)"}`])]),
+          src && picker("Source", src.id, setRateSource, rateSources.map((x) => [x.id, x.name]))),
+        (!activeClasses.length || !src)
+          ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Rates need at least one vehicle class and one source switched on.")
+          // Keyed by period and source, so a cell's draft never carries from
+          // one table into another.
+          : el("div", { key: `${rateView}:${src.id}`, style: { overflow: "auto", maxHeight: "70vh" } },
+              el("table", { className: "dashboardTable", style: { minWidth: "480px" } },
+                el("thead", null, el("tr", null,
+                  el("th", { style: { ...held, top: 0, left: 0, zIndex: 3, padding: "6px 10px" } }, "Vehicle class"),
+                  COLS.map(([col, head]) => el("th", { key: col, style: { ...held, top: 0, zIndex: 2, padding: "6px 8px" } }, head)))),
+                el("tbody", null, activeClasses.map((c, row) => el("tr", { key: c.id },
+                  el("td", { style: { ...held, left: 0, zIndex: 1, padding: "4px 10px", fontWeight: 600 } }, c.name),
+                  COLS.map(([col]) => {
+                    const cell = cellOf(c, col);
+                    const note = noteFor(c, col);
+                    return el("td", { key: col, style: { padding: "4px 8px", verticalAlign: "top" } },
+                      el(ListPriceCell, {
+                        value: cell.value, suffix: "/day", muted: cell.auto, cellKey: `${row}:${col}`,
+                        title: cell.auto ? "Worked out from the normal rates. Type a value to set your own." : undefined,
+                        onEnter: nextDown(row, col),
+                        onSave: (typed) => {
+                          const parsed = parsePrice("rates", typed, whole);
+                          return parsed.ok ? save(c, col, parsed.amount) : Promise.resolve(false);
+                        },
+                      }),
+                      note && el("div", { style: { fontSize: "0.75rem", opacity: 0.7, marginTop: "2px", whiteSpace: "nowrap" } }, note));
+                  })))))),
+        warn.length > 0 && el("div", { className: "loginError", style: { marginTop: "10px" } },
+          warn.map((w) => el("div", { key: w }, w))));
+    })(),
 
     // ── Seasons ──
     seasons: section("Seasons",
-      "Optional. A season has a name and dates that repeat every year, like Summer, Jun 15 to Sep 15, and its own daily rates. A rental is priced day by day, so one that runs into a season pays the season's rate only for those days. Seasons cannot overlap. A blank cell means the normal daily rate on those days. A booking keeps the rates it was made at.",
+      "Optional. A season has a name and dates that repeat every year, like Summer, Jun 15 to Sep 15, and its own rates, set in Rates. A rental is priced day by day, so one that runs into a season pays the season's rate only for those days. Seasons cannot overlap. A booking keeps the rates it was made at.",
       "seasons",
       seasons.length > 0 && table("520px", ["Season", "Dates", "On", ""],
         seasons.map((x) => el("tr", { key: x.id, style: x.active ? null : { opacity: 0.5 } },
@@ -10353,27 +10398,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         onSave: (f) => act("seasons", "save_rate_season", {
           p_id: null, p_name: f.name, p_start_month: f.sm, p_start_day: f.sd, p_end_month: f.em, p_end_day: f.ed,
         }),
-      }),
-      (() => {
-        const shown = seasons.filter((x) => x.active);
-        const season = shown.find((x) => x.id === priceSeason) || shown[0];
-        if (!season) return null;
-        return el("div", null,
-          el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", margin: "18px 0 8px" } },
-            el("span", { style: { fontWeight: 600 } }, "Daily rates for"),
-            el("select", {
-              className: "resFormInput", style: { width: "auto" }, value: season.id,
-              onChange: (e) => setPriceSeason(e.target.value),
-            }, shown.map((x) => el("option", { key: x.id, value: x.id }, `${x.name}, ${seasonRange(x)}`)))),
-          // Keyed by season, so a cell's draft never carries from one
-          // season's grid into another's.
-          el("div", { key: season.id },
-            priceGrid("seasons",
-              (c, x) => (season.rates[x.name] && season.rates[x.name][c.name] != null ? season.rates[x.name][c.name] : null),
-              (c, x, amount) => act("seasons", "set_season_rate", {
-                p_season_id: season.id, p_class_id: c.id, p_source_id: x.id, p_amount: amount,
-              }))));
-      })()),
+      })),
 
     // ── Protection products ──
     protection: section("Protection products",
@@ -10459,8 +10484,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
       })),
   };
   if (layout) return layout(parts);
-  return el(React.Fragment, null, parts.pickup, parts.classes, parts.sources, parts.rates,
-    parts.periods, parts.seasons, parts.protection, parts.deductibles, parts.acknowledgements);
+  return el(React.Fragment, null, parts.pickup, parts.classes, parts.sources, parts.seasons,
+    parts.rates, parts.protection, parts.deductibles, parts.acknowledgements);
 }
 
 // embedded draws only the join code and the sign-ups waiting for approval, for
@@ -15639,7 +15664,7 @@ function CustomerPage() {
         const exact = Math.round(l.perDay * l.days * 100) === Math.round(l.amount * 100);
         return {
           key: i === 0 ? "vehicle" : `vehicle:${i}`,
-          label: l.kind === "season" ? `Vehicle, ${l.name}`
+          label: l.kind === "season" ? `Vehicle, ${l.name}${l.basis === "weekly" || l.basis === "monthly" ? ` ${l.basis} rate` : ""}`
             : l.basis === "weekly" ? "Vehicle, weekly rate"
             : l.basis === "monthly" ? "Vehicle, monthly rate" : "Vehicle Cost",
           applies, qty: String(l.days), qtyPlaceholder: "Days",
