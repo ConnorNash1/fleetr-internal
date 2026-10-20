@@ -343,6 +343,9 @@ async function loadCompanyLists(user) {
       own("source_details",      "id,sourceId,name,active"),
       own("daily_rates",         "vehicleClassId,sourceId,amount"),
       own("protection_products", "id,name,active,sortOrder,customerWording,declineWording,required"),
+      own("rate_seasons",        "id,name,startMonth,startDay,endMonth,endDay,active"),
+      own("season_rates",        "seasonId,vehicleClassId,sourceId,amount"),
+      own("period_rates",        "vehicleClassId,sourceId,period,amount"),
     ]);
     const failed = results.find((r) => r.error);
     if (failed) {
@@ -350,7 +353,7 @@ async function loadCompanyLists(user) {
       console.warn("Fleetr: company lists could not be loaded:", failed.error.message);
       return;
     }
-    const [pl, vc, so, sd, dr, pp] = results.map((r) => r.data || []);
+    const [pl, vc, so, sd, dr, pp, rs, sr, pr] = results.map((r) => r.data || []);
 
     // The branch a new reservation belongs to: the one an Exec is acting in,
     // or the staff member's own.
@@ -370,6 +373,30 @@ async function loadCompanyLists(user) {
       if (!src || !cls || !Number.isFinite(amount)) return;
       (rates[src] = rates[src] || {})[cls] = amount;
     });
+    // Weekly and monthly rates as { source: { class: { week, month } } }, and
+    // each season's daily rates as { source: { class: amount } }, the same way.
+    const periodRates = {};
+    pr.forEach((r) => {
+      const src = sourceNames[r.sourceId];
+      const cls = classNames[r.vehicleClassId];
+      const amount = Number(r.amount);
+      if (!src || !cls || !Number.isFinite(amount)) return;
+      const bySrc = (periodRates[src] = periodRates[src] || {});
+      (bySrc[cls] = bySrc[cls] || {})[r.period] = amount;
+    });
+    const seasons = [...rs]
+      .sort((a, b) => (a.startMonth - b.startMonth) || (a.startDay - b.startDay) || String(a.name).localeCompare(String(b.name)))
+      .map((x) => {
+        const seasonRates = {};
+        sr.filter((r) => r.seasonId === x.id).forEach((r) => {
+          const src = sourceNames[r.sourceId];
+          const cls = classNames[r.vehicleClassId];
+          const amount = Number(r.amount);
+          if (!src || !cls || !Number.isFinite(amount)) return;
+          (seasonRates[src] = seasonRates[src] || {})[cls] = amount;
+        });
+        return { ...x, rates: seasonRates };
+      });
 
     companyLists = {
       branchId,
@@ -381,6 +408,8 @@ async function loadCompanyLists(user) {
           .sort((a, b) => String(a.name).localeCompare(String(b.name))),
       })),
       rates,
+      periodRates,
+      seasons,
       protectionProducts: [...pp].sort(byListOrder),
     };
   } catch (e) {
@@ -495,6 +524,113 @@ function withDailyRate(form) {
   if (!form.source || !form.vehicleClass) return form;
   const rate = dailyRateFor(form.source, form.vehicleClass);
   return { ...form, dailyRate: rate !== undefined ? String(rate) : "" };
+}
+
+// ─── Seasonal, weekly and monthly rates ──────────────────────────────────────
+// A reservation keeps the rates it was made at, as rateSnapshot, which the
+// database works out (seasonal_rates_staff.sql in fleetr-infra) and prices
+// with price_rental (seasonal_rates.sql). These show that price to staff.
+
+const SEASON_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const seasonRange = (s) =>
+  `${SEASON_MONTHS[s.startMonth - 1]} ${s.startDay} to ${SEASON_MONTHS[s.endMonth - 1]} ${s.endDay}`;
+
+// The class and source ids for a reservation's vehicle class and source, as
+// stored, or null when the company has no such pair.
+function rateIdsFor(source, vehicleClass) {
+  if (!companyLists) return null;
+  const parts = splitList(vehicleClass);
+  const className = (parts.length > 1 ? `${parts[1]} ${parts[0]}` : String(vehicleClass || "")).toLowerCase();
+  const sourceName = String(splitList(source)[0] || "").toLowerCase();
+  const c = companyLists.vehicleClasses.find((x) => String(x.name).toLowerCase() === className);
+  const x = companyLists.sources.find((y) => String(y.name).toLowerCase() === sourceName);
+  return c && x ? { classId: c.id, sourceId: x.id } : null;
+}
+
+// A date and time as stored on a reservation, as the "YYYY-MM-DD HH:MM" that
+// price_rental takes, read the way booking_local_ts reads it: with no time, a
+// pickup is the start of its day and a return the end of it.
+function rateStamp(date, time, meridiem, isReturn) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ""))) return null;
+  const m = /^(\d{1,2}):?(\d{2})?\s*(AM|PM)?$/i.exec(String(time || "").trim());
+  if (!m) return `${date} ${isReturn ? "23:59" : "00:00"}`;
+  let h = Number(m[1]);
+  const mi = Number(m[2] || 0);
+  const mer = (m[3] || (h <= 12 ? meridiem : "") || "").toUpperCase();
+  if (mer === "PM" && h < 12) h += 12;
+  if (mer === "AM" && h === 12) h = 0;
+  if (h > 23 || mi > 59) return null;
+  return `${date} ${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}`;
+}
+
+const rateMoney = (n) => `$${Number(n).toFixed(2)}`;
+
+// One line of a price_rental breakdown, in words.
+function rateLineText(l) {
+  const days = `${l.days} day${l.days === 1 ? "" : "s"}`;
+  if (l.kind === "season") return `${days} in ${l.name} at ${rateMoney(l.perDay)} a day`;
+  if (l.basis === "weekly")  return `${days} at the weekly rate (${rateMoney(l.periodRate)} a week)`;
+  if (l.basis === "monthly") return `${days} at the monthly rate (${rateMoney(l.periodRate)} a month)`;
+  return `${days} at ${rateMoney(l.perDay)} a day`;
+}
+const rateCapText = (cap) => `Capped at the ${cap.days} day price`;
+
+// Whether a breakdown says more than the daily rate times the days.
+const rateBreakdownShows = (p) =>
+  !!p && (!!p.cap || p.lines.length > 1 || (p.lines[0] && (p.lines[0].kind === "season" || p.lines[0].basis !== "daily")));
+
+// The price of a reservation's rental from its rates, or null when it is
+// priced at the daily rate times the days. The stored snapshot is used while
+// the class, source and rate are the ones it was saved with; after a change
+// not yet saved, the company's rates as they stand now, as the save will.
+function useRentalPrice({ source, vehicleClass, dailyRate, pickup, ret, saved }) {
+  const [price, setPrice] = React.useState(null);
+  const savedSnap = saved && saved.rateSnapshot;
+  const unchanged = !!saved
+    && String(saved.source || "") === String(splitList(source)[0] || "")
+    && String(saved.vehicleClass || "") === String(vehicleClass || "")
+    && Number(saved.dailyRate) === Number(dailyRate);
+  const snapKey = unchanged ? JSON.stringify(savedSnap || null) : "";
+  React.useEffect(() => {
+    let live = true;
+    const rate = Number(dailyRate);
+    if (!pickup || !ret || ret <= pickup || String(dailyRate ?? "").trim() === "" || !Number.isFinite(rate)) {
+      setPrice(null);
+      return undefined;
+    }
+    const timer = setTimeout(async () => {
+      let snap = null;
+      if (unchanged) {
+        snap = savedSnap || null;
+      } else {
+        const ids = rateIdsFor(source, vehicleClass);
+        if (ids) {
+          const { data } = await supabase.rpc("rate_snapshot_for", { p_class_id: ids.classId, p_source_id: ids.sourceId });
+          if (data && Number(data.daily) === rate) snap = data;
+        }
+      }
+      if (!snap) { if (live) setPrice(null); return; }
+      const { data, error } = await supabase.rpc("price_rental", { p_snap: snap, p_pickup: pickup, p_return: ret });
+      if (live) setPrice(!error && data ? data : null);
+    }, 300);
+    return () => { live = false; clearTimeout(timer); };
+  }, [source, vehicleClass, dailyRate, pickup, ret, unchanged, snapKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  return price;
+}
+
+// The breakdown under a daily rate, when there is more to it than the rate
+// times the days.
+function RateBreakdownNote({ price }) {
+  if (!rateBreakdownShows(price)) return null;
+  const el = React.createElement;
+  const row = (label, amount, key) => el("div", {
+    key, style: { display: "flex", justifyContent: "space-between", gap: "12px" },
+  }, el("span", null, label), el("span", null, amount));
+  return el("div", { style: { fontSize: "0.85rem", opacity: 0.85, margin: "-4px 0 10px", maxWidth: "420px" } },
+    el("div", { style: { fontWeight: 600, marginBottom: "2px" } }, `Rental price, ${price.days} day${price.days === 1 ? "" : "s"}`),
+    price.lines.map((l, i) => row(rateLineText(l), rateMoney(l.amount), i)),
+    price.cap && row(rateCapText(price.cap), `-${rateMoney(-price.cap.amount)}`, "cap"),
+    row(el("b", null, "Total before coverages and tax"), el("b", null, rateMoney(price.total)), "total"));
 }
 
 // Non-Drive Intake offers who the work came from: the insurance sources by
@@ -2592,6 +2728,10 @@ function ReservationsPage() {
   const [showResErrors, setShowResErrors] = React.useState(false);
   React.useEffect(() => { if (!showModal) setShowResErrors(false); }, [showModal]);
   const [form, setForm] = React.useState(emptyResForm);
+  const formPrice = useRentalPrice({
+    source: form.source, vehicleClass: form.vehicleClass, dailyRate: form.dailyRate,
+    pickup: rateStamp(form.date, form.time, "", false), ret: rateStamp(form.returnDate, form.returnTime, "", true),
+  });
   const [srchFirst, setSrchFirst] = React.useState("");
   const [srchLast,  setSrchLast]  = React.useState("");
   const [srchPhone, setSrchPhone] = React.useState("");
@@ -2982,6 +3122,7 @@ function ReservationsPage() {
             React.createElement("div", { className: "resFormRow" },
               tf("Daily Rate ($)", "dailyRate", "0.00")
             ),
+            React.createElement(RateBreakdownNote, { price: formPrice }),
             ...(() => {
               if (sourceBillingType(form.source) === "insurance") return [
                 React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Adjuster Name", "adjusterName", "Adjuster name"), tf("Claim Number", "claimNumber", "Claim #")),
@@ -3572,6 +3713,10 @@ function DashboardPage() {
   const [showResErrors, setShowResErrors] = React.useState(false);
   React.useEffect(() => { if (!showModal) setShowResErrors(false); }, [showModal]);
   const [form, setForm] = React.useState(emptyResForm);
+  const formPrice = useRentalPrice({
+    source: form.source, vehicleClass: form.vehicleClass, dailyRate: form.dailyRate,
+    pickup: rateStamp(form.date, form.time, "", false), ret: rateStamp(form.returnDate, form.returnTime, "", true),
+  });
   const updateForm = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
 
   const toggleSection = (sectionKey) => {
@@ -4065,6 +4210,7 @@ function DashboardPage() {
             React.createElement("div", { className: "resFormRow" },
               tf("Daily Rate ($)", "dailyRate", "0.00")
             ),
+            React.createElement(RateBreakdownNote, { price: formPrice }),
             ...(() => {
               if (sourceBillingType(form.source) === "insurance") return [
                 React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Adjuster Name", "adjusterName", "Adjuster name"), tf("Claim Number", "claimNumber", "Claim #")),
@@ -7364,7 +7510,7 @@ function CompanyPage() {
         parts.classes,
         el(CompanySection, { title: "Add vehicles", style: { marginTop: "24px" } }, el(VehiclesStep, { onAdded: changed })));
       // Sources, then the daily rates for each of them, before launch and after.
-      case "rates": return el(React.Fragment, null, parts.sources, parts.rates);
+      case "rates": return el(React.Fragment, null, parts.sources, parts.rates, parts.periods, parts.seasons);
       case "protection": return el(React.Fragment, null, parts.protection, parts.deductibles);
       case "contract": return only(parts.acknowledgements);
       case "listing": return only(el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "listing", onSaved: refreshAll }));
@@ -9208,7 +9354,11 @@ const LIST_REASONS = {
   bad_name:         "Give it a name of 1 to 60 characters.",
   use_standard_list: "Pick that one from the standard list.",
   name_fixed:       "It keeps the name it has in the standard list.",
-  whole_dollars:    "A fleetr.ai daily rate is whole dollars only, for example 55.",
+  whole_dollars:    "A fleetr.ai rate is whole dollars only, for example 55.",
+  bad_dates:        "Pick a start and an end date that every year has. Feb 29 cannot be used.",
+  name_taken:       "There is already a season with that name.",
+  bad_season:       "That season is not part of this company.",
+  bad_period:       "Choose weekly or monthly.",
   fleetr_ai_source: "The fleetr.ai source is what the website books at, so it cannot be deleted. Turn off List on fleetr.ai instead.",
   nothing_picked:   "Tick at least one vehicle class.",
   not_standard:     "That vehicle class is not on the list.",
@@ -9332,6 +9482,48 @@ function ListInlineName({ name, disabled, onSave }) {
     React.createElement("button", { className: "loginBtn", style: small, disabled, onClick: save }, "Save"),
     React.createElement("button", { className: "loginBtn", style: small, disabled, onClick: () => setEditing(false) }, "Cancel")
   );
+}
+
+// A season's name and dates, for adding one or changing one. Months and days
+// are picked from lists, and a day every year has: no Feb 29.
+const SEASON_MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+function SeasonForm({ season, label, disabled, onSave, onCancel }) {
+  const [name, setName] = React.useState(season ? season.name : "");
+  const [d, setD] = React.useState(season
+    ? { sm: season.startMonth, sd: season.startDay, em: season.endMonth, ed: season.endDay }
+    : { sm: 6, sd: 15, em: 9, ed: 15 });
+  const el = React.createElement;
+  const pick = (mKey, dKey, text) => el("span", { style: { display: "inline-flex", gap: "4px", alignItems: "center" } },
+    el("span", { style: { opacity: 0.8 } }, text),
+    el("select", {
+      className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, value: d[mKey], disabled,
+      "aria-label": `${text} month`,
+      onChange: (e) => {
+        const m = Number(e.target.value);
+        setD((p) => ({ ...p, [mKey]: m, [dKey]: Math.min(p[dKey], SEASON_MONTH_DAYS[m - 1]) }));
+      },
+    }, SEASON_MONTHS.map((m, i) => el("option", { key: m, value: i + 1 }, m))),
+    el("select", {
+      className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, value: d[dKey], disabled,
+      "aria-label": `${text} day`,
+      onChange: (e) => setD((p) => ({ ...p, [dKey]: Number(e.target.value) })),
+    }, Array.from({ length: SEASON_MONTH_DAYS[d[mKey] - 1] }, (_, i) => el("option", { key: i + 1, value: i + 1 }, i + 1))));
+  return el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px", alignItems: "center" } },
+    el("input", {
+      className: "resFormInput", style: { width: "200px", maxWidth: "100%" }, placeholder: "Name, like Summer", maxLength: 40,
+      value: name, disabled, onChange: (e) => setName(e.target.value),
+    }),
+    pick("sm", "sd", "From"),
+    pick("em", "ed", "to"),
+    el("button", {
+      className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled,
+      onClick: async () => {
+        if (await onSave({ name, ...d }) && !season) setName("");
+      },
+    }, label),
+    onCancel && el("button", {
+      className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled, onClick: onCancel,
+    }, "Cancel"));
 }
 
 // The "add one" row under a list. Its own component so each list, and each
@@ -9691,6 +9883,11 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   const [confirming, setConfirming] = React.useState("");
   // The product whose price grid is on screen.
   const [priceProduct, setPriceProduct] = React.useState("");
+  // Which of weekly and monthly is on screen, the season whose daily rates
+  // are, and the season being changed.
+  const [period, setPeriod] = React.useState("week");
+  const [priceSeason, setPriceSeason] = React.useState("");
+  const [editSeason, setEditSeason] = React.useState("");
   // { listKey, from, over } while a row is being dragged.
   const [drag, setDrag] = React.useState(null);
   const dragRef = React.useRef(null);
@@ -9716,7 +9913,10 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   React.useEffect(() => { reload(); }, [reload]);
 
   const refusal = (data, err) =>
-    err ? LIST_REASONS.network : (LIST_REASONS[data && data.reason] || "That did not work.");
+    err ? LIST_REASONS.network
+    : data && data.reason === "overlaps" && data.season
+      ? `It shares days with ${data.season}. Seasons cannot overlap; change or switch off ${data.season} first.`
+      : (LIST_REASONS[data && data.reason] || "That did not work.");
 
   const act = async (at, fn, args) => {
     setBusy(true); setError(null);
@@ -9889,13 +10089,13 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         "The company's lists could not be loaded, so they cannot be edited right now. Reload the page to try again.");
   if (notice) {
     if (layout) {
-      return layout(Object.fromEntries(["pickup", "classes", "sources", "rates", "protection", "deductibles", "acknowledgements"]
+      return layout(Object.fromEntries(["pickup", "classes", "sources", "rates", "periods", "seasons", "protection", "deductibles", "acknowledgements"]
         .map((k) => [k, el(React.Fragment, { key: k }, notice)])));
     }
     return el("div", { className: "dashboardSection", style: { marginTop: "24px" } }, el("h2", null, "Lists and prices"), notice);
   }
 
-  const { pickupLocations, vehicleClasses, sources, protectionProducts, rates } = companyLists;
+  const { pickupLocations, vehicleClasses, sources, protectionProducts, rates, periodRates, seasons } = companyLists;
   const activeClasses  = vehicleClasses.filter((c) => c.active);
   const activeSources  = sources.filter((x) => x.active);
   const activeProducts = protectionProducts.filter((pr) => pr.active);
@@ -9926,7 +10126,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
                 el(ListPriceCell, {
                   value: valueFor(c, x), disabled: busy,
                   onSave: (typed) => {
-                    const parsed = parsePrice(at, typed, at === "rates" && x.standardKey === "fleetr_ai");
+                    const parsed = parsePrice(at, typed, ["rates", "periods", "seasons"].includes(at) && x.standardKey === "fleetr_ai");
                     return parsed.ok ? saveFor(c, x, parsed.amount) : Promise.resolve(false);
                   },
                 }))))))));
@@ -10053,14 +10253,106 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
       })),
 
     // ── Daily rates ──
-    rates: section("Daily rates",
-      "One column per source, one row per vehicle class. Setup needs one source with a rate for every vehicle class, and that has to be fleetr.ai while List on fleetr.ai is on. fleetr.ai rates are whole dollars; every other source takes cents. The rate is filled in when a source and a vehicle class are chosen on a customer's file. A cell saves when you leave it. Blank means no rate, and staff type one in.",
+    rates: section("Normal daily rates",
+      "One column per source, one row per vehicle class. Setup needs one source with a rate for every vehicle class, and that has to be fleetr.ai while List on fleetr.ai is on. fleetr.ai rates are whole dollars; every other source takes cents. The rate is filled in when a source and a vehicle class are chosen on a customer's file. A cell saves when you leave it. Blank means no rate, and staff type one in. Outside any season, these are the rates.",
       "rates",
       priceGrid("rates",
         (c, x) => (rates[x.name] && rates[x.name][c.name] != null ? rates[x.name][c.name] : null),
         (c, x, amount) => act("rates", "set_daily_rate", {
           p_class_id: c.id, p_source_id: x.id, p_amount: amount,
         }))),
+
+    // ── Weekly and monthly rates ──
+    periods: section("Weekly and monthly rates",
+      "Optional. Rentals of 7 days or more are charged the weekly rate and 28 days or more the monthly rate, pro-rated by the day (weekly / 7, monthly / 30). A rental never costs more than 7 or 28 days would from the same pickup. Season days always cost the season's daily rate. Blank means none: the rate below it applies. A booking keeps the rates it was made at.",
+      "periods",
+      el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", margin: "4px 0 8px" } },
+        el("span", { style: { fontWeight: 600 } }, "Rates for"),
+        el("select", {
+          className: "resFormInput", style: { width: "auto" }, value: period,
+          onChange: (e) => setPeriod(e.target.value),
+        }, el("option", { value: "week" }, "A week"), el("option", { value: "month" }, "A month"))),
+      el("div", { key: period },
+        priceGrid("periods",
+          (c, x) => { const v = periodRates[x.name] && periodRates[x.name][c.name]; return v && v[period] != null ? v[period] : null; },
+          (c, x, amount) => act("periods", "set_period_rate", {
+            p_period: period, p_class_id: c.id, p_source_id: x.id, p_amount: amount,
+          }))),
+      (() => {
+        // A longer rental that costs more a day than a shorter one.
+        const warn = [];
+        activeClasses.forEach((c) => activeSources.forEach((x) => {
+          const day = rates[x.name] && rates[x.name][c.name];
+          const p = (periodRates[x.name] && periodRates[x.name][c.name]) || {};
+          if (day != null && p.week != null && p.week / 7 > day) {
+            warn.push(`${c.name}, ${x.name}: the weekly rate is more a day than the daily rate.`);
+          }
+          const below = p.week != null ? p.week / 7 : day;
+          if (below != null && p.month != null && p.month / 30 > below) {
+            warn.push(`${c.name}, ${x.name}: the monthly rate is more a day than the ${p.week != null ? "weekly" : "daily"} rate.`);
+          }
+        }));
+        return warn.length > 0 && el("div", { className: "loginError", style: { marginTop: "10px" } },
+          warn.map((w) => el("div", { key: w }, w)));
+      })()),
+
+    // ── Seasons ──
+    seasons: section("Seasons",
+      "Optional. A season has a name and dates that repeat every year, like Summer, Jun 15 to Sep 15, and its own daily rates. A rental is priced day by day, so one that runs into a season pays the season's rate only for those days. Seasons cannot overlap. A blank cell means the normal daily rate on those days. A booking keeps the rates it was made at.",
+      "seasons",
+      seasons.length > 0 && table("520px", ["Season", "Dates", "On", ""],
+        seasons.map((x) => el("tr", { key: x.id, style: x.active ? null : { opacity: 0.5 } },
+          editSeason === x.id
+            ? el("td", { colSpan: 4 }, el(SeasonForm, {
+                season: x, label: "Save", disabled: busy,
+                onCancel: () => setEditSeason(""),
+                onSave: async (f) => {
+                  const ok = await act("seasons", "save_rate_season", {
+                    p_id: x.id, p_name: f.name, p_start_month: f.sm, p_start_day: f.sd, p_end_month: f.em, p_end_day: f.ed,
+                  });
+                  if (ok) setEditSeason("");
+                  return ok;
+                },
+              }))
+            : [
+                el("td", { key: "n", style: { fontWeight: 600 } }, x.name),
+                el("td", { key: "d" }, seasonRange(x)),
+                el("td", { key: "o" },
+                  el("label", { style: { display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer" } },
+                    el("input", {
+                      type: "checkbox", checked: !!x.active, disabled: busy,
+                      onChange: () => act("seasons", "set_rate_season_active", { p_id: x.id, p_active: !x.active }),
+                    }),
+                    x.active ? "On" : "Off")),
+                el("td", { key: "e" }, btn("Change", () => setEditSeason(x.id))),
+              ]))),
+      subHeading("Add a season"),
+      el(SeasonForm, {
+        label: "Add season", disabled: busy,
+        onSave: (f) => act("seasons", "save_rate_season", {
+          p_id: null, p_name: f.name, p_start_month: f.sm, p_start_day: f.sd, p_end_month: f.em, p_end_day: f.ed,
+        }),
+      }),
+      (() => {
+        const shown = seasons.filter((x) => x.active);
+        const season = shown.find((x) => x.id === priceSeason) || shown[0];
+        if (!season) return null;
+        return el("div", null,
+          el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", margin: "18px 0 8px" } },
+            el("span", { style: { fontWeight: 600 } }, "Daily rates for"),
+            el("select", {
+              className: "resFormInput", style: { width: "auto" }, value: season.id,
+              onChange: (e) => setPriceSeason(e.target.value),
+            }, shown.map((x) => el("option", { key: x.id, value: x.id }, `${x.name}, ${seasonRange(x)}`)))),
+          // Keyed by season, so a cell's draft never carries from one
+          // season's grid into another's.
+          el("div", { key: season.id },
+            priceGrid("seasons",
+              (c, x) => (season.rates[x.name] && season.rates[x.name][c.name] != null ? season.rates[x.name][c.name] : null),
+              (c, x, amount) => act("seasons", "set_season_rate", {
+                p_season_id: season.id, p_class_id: c.id, p_source_id: x.id, p_amount: amount,
+              }))));
+      })()),
 
     // ── Protection products ──
     protection: section("Protection products",
@@ -10147,7 +10439,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   };
   if (layout) return layout(parts);
   return el(React.Fragment, null, parts.pickup, parts.classes, parts.sources, parts.rates,
-    parts.protection, parts.deductibles, parts.acknowledgements);
+    parts.periods, parts.seasons, parts.protection, parts.deductibles, parts.acknowledgements);
 }
 
 // embedded draws only the join code and the sign-ups waiting for approval, for
@@ -14995,7 +15287,8 @@ function withAcceptedProtection(items, choices, days) {
 // the saved line, so a line saved before the units changed shows the unit the
 // company uses now.
 const chargeQtyUnit = (item) =>
-  item.key === "gas" ? (fuelUnit() || "units not set")
+  item.key === "vehicle:cap" ? ""
+  : item.key === "gas" ? (fuelUnit() || "units not set")
   : item.key === "mileage" ? (distanceUnit() || "units not set") : "days";
 const chargeQtyPlaceholder = (item) =>
   item.key === "gas"     ? (!fuelUnit() ? "Set units" : fuelUnit() === "gal" ? "Gallons" : "Litres")
@@ -15290,6 +15583,55 @@ function CustomerPage() {
       item.key === "vehicle" ? { ...item, amount: billToForm.dailyRate } : item
     ));
   }, [billToForm.dailyRate]);
+
+  // A reservation with rates kept from when it was made (seasons, weekly or
+  // monthly rates) has its vehicle charged by price_rental: a line for each
+  // group of days, and the cap when it applies, in place of the days times
+  // the daily rate. Days are counted as fleetr.ai counts them.
+  const rentalPrice = useRentalPrice({
+    source: ratesForm.source, vehicleClass: ratesForm.vehicleClass, dailyRate: billToForm.dailyRate,
+    pickup: rateStamp(resInfoForm.pickupDate, toDisplayTime(resInfoForm.pickupTime), resInfoForm.pickupMeridiem, false),
+    ret: rateStamp(billEndDate, toDisplayTime(resInfoForm.returnTime), resInfoForm.returnMeridiem, true),
+    saved: localRecord,
+  });
+  React.useEffect(() => {
+    const isVehicle = (it) => it.key === "vehicle" || String(it.key).startsWith("vehicle:");
+    if (!rentalPrice) {
+      // Back to one line: the days times the daily rate.
+      setLineItems((prev) => {
+        if (!prev.some((it) => String(it.key).startsWith("vehicle:")) && !prev.some((it) => it.key === "vehicle" && it.label !== "Vehicle Cost")) return prev;
+        const d1 = resInfoForm.pickupDate ? new Date(`${resInfoForm.pickupDate}T00:00:00`) : null;
+        const d2 = billEndDate ? new Date(`${billEndDate}T00:00:00`) : null;
+        const diff = d1 && d2 ? Math.round((d2 - d1) / (1000 * 60 * 60 * 24)) : 0;
+        return prev.filter((it) => !String(it.key).startsWith("vehicle:")).map((it) => it.key === "vehicle"
+          ? { ...it, label: "Vehicle Cost", qty: String(diff > 0 ? diff : 0), amount: billToForm.dailyRate } : it);
+      });
+      return;
+    }
+    setLineItems((prev) => {
+      const at = Math.max(0, prev.findIndex(isVehicle));
+      const was = prev.find((it) => it.key === "vehicle");
+      const applies = was ? was.applies : true;
+      const lines = rentalPrice.lines.map((l, i) => {
+        // A rate in whole cents shows as it is; a pro-rated one carries enough
+        // places that the days times it come to the line's amount.
+        const exact = Math.round(l.perDay * l.days * 100) === Math.round(l.amount * 100);
+        return {
+          key: i === 0 ? "vehicle" : `vehicle:${i}`,
+          label: l.kind === "season" ? `Vehicle, ${l.name}`
+            : l.basis === "weekly" ? "Vehicle, weekly rate"
+            : l.basis === "monthly" ? "Vehicle, monthly rate" : "Vehicle Cost",
+          applies, qty: String(l.days), qtyPlaceholder: "Days",
+          amount: String(exact ? l.perDay : Math.round((l.amount / l.days) * 1e6) / 1e6),
+        };
+      });
+      if (rentalPrice.cap) {
+        lines.push({ key: "vehicle:cap", label: rateCapText(rentalPrice.cap), applies, qty: "1", qtyPlaceholder: "", amount: String(rentalPrice.cap.amount) });
+      }
+      const rest = prev.filter((it) => !isVehicle(it));
+      return [...rest.slice(0, at), ...lines, ...rest.slice(at)];
+    });
+  }, [rentalPrice]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [saveStatus, setSaveStatus] = React.useState("idle"); // "idle" | "saving" | "error"
 
@@ -15822,6 +16164,7 @@ function CustomerPage() {
     React.createElement("div", { className: "resFormRow" },
       btDollar("Daily Rate", "dailyRate")
     ),
+    React.createElement(RateBreakdownNote, { price: rentalPrice }),
     ...dynamicBillingRows
   );
 
