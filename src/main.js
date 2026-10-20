@@ -2245,6 +2245,81 @@ function AppSkeleton() {
             bar("skel--line", { width: "35%" }), bar("skel--block"))))));
 }
 
+// The Reservations list's notes: a small note icon, outlined with no note
+// and filled with one. Hovering a filled one shows the notes; clicking opens
+// a field to add the first note, or to change the latest one. Kept in the
+// reservation's notesLog, as NotesCell keeps them.
+function NoteIconCell({ noteId, notesLog: notesLogRaw, onSave }) {
+  const notesLog = parseNotesLog(notesLogRaw);
+  const { openNotesId, setOpenNotesId, currentUser } = React.useContext(AppContext);
+  const [hover, setHover] = React.useState(null);
+  const [edit, setEdit] = React.useState(null);
+  const [text, setText] = React.useState("");
+  const latest = notesLog.length ? notesLog[notesLog.length - 1] : null;
+
+  React.useEffect(() => { if (openNotesId !== noteId) setEdit(null); }, [openNotesId, noteId]);
+  React.useEffect(() => {
+    if (!edit) return undefined;
+    const close = () => setEdit(null);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [edit]);
+
+  const anchor = (el, w, h) => {
+    const rect = el.getBoundingClientRect();
+    let x = rect.left, y = rect.bottom + 4;
+    if (x + w > window.innerWidth - 8) x = Math.max(8, window.innerWidth - w - 8);
+    if (y + h > window.innerHeight - 8) y = Math.max(8, rect.top - h - 4);
+    return { x, y };
+  };
+  const open = (e) => {
+    e.stopPropagation();
+    setHover(null);
+    setText(latest ? latest.text : "");
+    setOpenNotesId(noteId);
+    setEdit(edit ? null : anchor(e.currentTarget, 280, 110));
+  };
+  const submit = (e) => {
+    e.preventDefault();
+    const t = text.trim();
+    if (!t || (latest && t === latest.text)) { setEdit(null); return; }
+    const note = { author: actorName(currentUser), text: t };
+    onSave(latest ? [...notesLog.slice(0, -1), note] : [note]);
+    setEdit(null);
+  };
+
+  const el = React.createElement;
+  const icon = el("svg", { width: 16, height: 16, viewBox: "0 0 16 16", "aria-hidden": "true" },
+    el("path", {
+      d: "M3 1.5h7l3 3v10H3z", fill: latest ? "currentColor" : "none",
+      stroke: "currentColor", strokeWidth: 1.3, strokeLinejoin: "round",
+    }),
+    latest && el("path", { d: "M5.5 8h5M5.5 10.5h5", stroke: "#fff", strokeWidth: 1.2, strokeLinecap: "round" }));
+  return el("span", { style: { display: "inline-flex" } },
+    el("button", {
+      type: "button", onClick: open,
+      "aria-label": latest ? "Change the note" : "Add a note",
+      style: { background: "none", border: "none", padding: "2px", cursor: "pointer", color: "inherit", opacity: latest ? 0.9 : 0.55, lineHeight: 0 },
+      onMouseEnter: (e) => { if (latest && !edit) setHover(anchor(e.currentTarget, 320, 60 + Math.min(notesLog.length, 5) * 28)); },
+      onMouseLeave: () => setHover(null),
+    }, icon),
+    hover && el("div", { className: "notesDropdown", style: { left: `${hover.x}px`, top: `${hover.y}px`, width: "320px", pointerEvents: "none" } },
+      el("div", { className: "notesList" },
+        notesLog.slice(-5).map((n, i) => el("div", { key: i, className: "notesRow" },
+          el("span", { className: "notesAuthor" }, formatAuthor(n.author)),
+          el("span", { className: "notesText" }, n.text))))),
+    edit && el("form", {
+      className: "notesDropdown", style: { left: `${edit.x}px`, top: `${edit.y}px`, width: "280px" },
+      onClick: (e) => e.stopPropagation(), onSubmit: submit,
+    },
+      el("input", {
+        className: "notesSearch", placeholder: "Add a note\u2026", value: text, autoFocus: true,
+        onChange: (e) => setText(e.target.value),
+      }),
+      el("div", { style: { padding: "8px 12px" } },
+        el("button", { type: "submit", className: "aiCallButton", style: { width: "100%" } }, latest ? "Save note" : "Add note"))));
+}
+
 function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote }) {
   const notesLog = parseNotesLog(notesLogRaw);
   const { openNotesId, setOpenNotesId, currentUser } = React.useContext(AppContext);
@@ -2918,7 +2993,7 @@ function ReservationsPage() {
     fieldErr(key)
   );
 
-  const cols = ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Notes"];
+  const cols = ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Source", "Notes"];
 
   return React.createElement(
     "div",
@@ -3025,17 +3100,15 @@ function ReservationsPage() {
                     React.createElement("td", { key: `${row.resCode}-res` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
                     React.createElement("td", { key: `${row.resCode}-cust` },
                       React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer }),
-                      row.bookingChannel === "fleetr.ai" && React.createElement(BookedOnFleetrTag),
                       row.customerChangedAt && React.createElement(ChangedByCustomerTag)
                     ),
                     React.createElement("td", { key: `${row.resCode}-vc` }, row.vehicleClass),
+                    React.createElement("td", { key: `${row.resCode}-src` }, row.source || ""),
                     React.createElement("td", { key: `${row.resCode}-notes` },
-                      React.createElement(NotesCell, {
+                      React.createElement(NoteIconCell, {
                         noteId: row.resCode,
-                        preRentalCheck: row.preRentalCheck,
                         notesLog: parseNotesLog(row.notesLog),
-                        onAddNote: (note) => {
-                          const newLog = [...parseNotesLog(row.notesLog), note];
+                        onSave: (newLog) => {
                           setReservations((prev) =>
                             prev.map((r) => r.resCode === row.resCode ? { ...r, notesLog: newLog } : r)
                           );
