@@ -570,15 +570,24 @@ function rateStamp(date, time, meridiem, isReturn) {
 const rateMoney = (n) => `$${Number(n).toFixed(2)}`;
 
 // One line of a price_rental breakdown, in words.
-function rateLineText(l) {
-  const days = `${l.days} day${l.days === 1 ? "" : "s"}`;
-  if (l.kind === "season" && (l.basis === "weekly" || l.basis === "monthly")) return `${days} × ${rateMoney(l.perDay)} ${l.name} ${l.basis} rate`;
-  if (l.kind === "season") return `${days} in ${l.name} at ${rateMoney(l.perDay)} a day`;
-  if (l.basis === "weekly")  return `${days} × ${rateMoney(l.perDay)} weekly rate`;
-  if (l.basis === "monthly") return `${days} × ${rateMoney(l.perDay)} monthly rate`;
-  return `${days} at ${rateMoney(l.perDay)} a day`;
+// A breakdown's lines put together by rate: one { days, perDay, amount } for
+// each rate the days cost, whatever season or tier it came from.
+function rateGroups(price) {
+  const out = [];
+  price.lines.forEach((l) => {
+    const perDay = Number(l.perDay);
+    const g = out.find((x) => x.perDay === perDay);
+    if (g) { g.days += l.days; g.amount += Number(l.amount); }
+    else out.push({ days: l.days, perDay, amount: Number(l.amount) });
+  });
+  out.forEach((g) => { g.amount = Math.round(g.amount * 100) / 100; });
+  return out;
 }
-const rateCapText = (cap) => `Capped at the ${cap.days} day price`;
+
+// One group in words: "31 days × $69".
+const rateDayMoney = (n) => (Number.isInteger(Number(n)) ? `$${Number(n)}` : rateMoney(n));
+const rateLineText = (g) => `${g.days} day${g.days === 1 ? "" : "s"} × ${rateDayMoney(g.perDay)}`;
+const rateCapText = (cap) => `Capped at the ${cap.days >= 28 ? "monthly" : "weekly"} price`;
 
 // Whether a breakdown says more than the daily rate times the days.
 const rateBreakdownShows = (p) =>
@@ -633,7 +642,7 @@ function RateBreakdownNote({ price }) {
   }, el("span", null, label), el("span", null, amount));
   return el("div", { style: { fontSize: "0.85rem", opacity: 0.85, margin: "-4px 0 10px", maxWidth: "420px" } },
     el("div", { style: { fontWeight: 600, marginBottom: "2px" } }, `Rental price, ${price.days} day${price.days === 1 ? "" : "s"}`),
-    price.lines.map((l, i) => row(rateLineText(l), rateMoney(l.amount), i)),
+    rateGroups(price).map((g, i) => row(rateLineText(g), rateMoney(g.amount), i)),
     price.cap && row(rateCapText(price.cap), `-${rateMoney(-price.cap.amount)}`, "cap"),
     row(el("b", null, "Total before coverages and tax"), el("b", null, rateMoney(price.total)), "total"));
 }
@@ -15658,15 +15667,13 @@ function CustomerPage() {
       const at = Math.max(0, prev.findIndex(isVehicle));
       const was = prev.find((it) => it.key === "vehicle");
       const applies = was ? was.applies : true;
-      const lines = rentalPrice.lines.map((l, i) => {
+      const lines = rateGroups(rentalPrice).map((l, i) => {
         // A rate in whole cents shows as it is; a pro-rated one carries enough
         // places that the days times it come to the line's amount.
         const exact = Math.round(l.perDay * l.days * 100) === Math.round(l.amount * 100);
         return {
           key: i === 0 ? "vehicle" : `vehicle:${i}`,
-          label: l.kind === "season" ? `Vehicle, ${l.name}${l.basis === "weekly" || l.basis === "monthly" ? ` ${l.basis} rate` : ""}`
-            : l.basis === "weekly" ? "Vehicle, weekly rate"
-            : l.basis === "monthly" ? "Vehicle, monthly rate" : "Vehicle Cost",
+          label: "Vehicle",
           applies, qty: String(l.days), qtyPlaceholder: "Days",
           amount: String(exact ? l.perDay : Math.round((l.amount / l.days) * 1e6) / 1e6),
         };
