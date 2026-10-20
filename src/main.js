@@ -569,8 +569,8 @@ const rateMoney = (n) => `$${Number(n).toFixed(2)}`;
 function rateLineText(l) {
   const days = `${l.days} day${l.days === 1 ? "" : "s"}`;
   if (l.kind === "season") return `${days} in ${l.name} at ${rateMoney(l.perDay)} a day`;
-  if (l.basis === "weekly")  return `${days} at the weekly rate (${rateMoney(l.periodRate)} a week)`;
-  if (l.basis === "monthly") return `${days} at the monthly rate (${rateMoney(l.periodRate)} a month)`;
+  if (l.basis === "weekly")  return `${days} × ${rateMoney(l.perDay)} weekly rate`;
+  if (l.basis === "monthly") return `${days} × ${rateMoney(l.perDay)} monthly rate`;
   return `${days} at ${rateMoney(l.perDay)} a day`;
 }
 const rateCapText = (cap) => `Capped at the ${cap.days} day price`;
@@ -9423,7 +9423,7 @@ function CompanySection({ title, style, children, defaultOpen }) {
 // One price in a grid. Keeps its own draft, for the reason GasRow does: a
 // shared draft would let typing in one cell save into another. Saves when the
 // cell is left, and only if it changed. Blank means no price.
-function ListPriceCell({ value, disabled, onSave }) {
+function ListPriceCell({ value, disabled, onSave, suffix }) {
   const shown = value == null ? "" : String(value);
   const [draft, setDraft] = React.useState(shown);
   React.useEffect(() => { setDraft(shown); }, [shown]);
@@ -9440,7 +9440,8 @@ function ListPriceCell({ value, disabled, onSave }) {
         if (typed === shown) { setDraft(shown); return; }
         if (!(await onSave(typed))) setDraft(shown);
       },
-    })
+    }),
+    suffix && React.createElement("span", { style: { opacity: 0.7 } }, suffix)
   );
 }
 
@@ -10109,7 +10110,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   // while the rest scrolls. The background on the held cells is the table's
   // own, so what scrolls underneath does not show through.
   const held = { position: "sticky", background: "#F9F9F7" };
-  const priceGrid = (at, valueFor, saveFor) =>
+  // opts.suffix follows each amount; opts.noteFor(c, x) is a line under a cell.
+  const priceGrid = (at, valueFor, saveFor, opts = {}) =>
     (!activeClasses.length || !activeSources.length)
       ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
           "Prices need at least one vehicle class and one source switched on.")
@@ -10124,12 +10126,16 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
               el("td", { style: { ...held, left: 0, zIndex: 1, padding: "4px 10px", fontWeight: 600 } }, c.name),
               activeSources.map((x) => el("td", { key: x.id, style: { padding: "4px 8px" } },
                 el(ListPriceCell, {
-                  value: valueFor(c, x), disabled: busy,
+                  value: valueFor(c, x), disabled: busy, suffix: opts.suffix,
                   onSave: (typed) => {
                     const parsed = parsePrice(at, typed, ["rates", "periods", "seasons"].includes(at) && x.standardKey === "fleetr_ai");
                     return parsed.ok ? saveFor(c, x, parsed.amount) : Promise.resolve(false);
                   },
-                }))))))));
+                }),
+                opts.noteFor && (() => {
+                  const note = opts.noteFor(c, x);
+                  return note && el("div", { style: { fontSize: "0.75rem", opacity: 0.7, marginTop: "2px", whiteSpace: "nowrap" } }, note);
+                })()))))))));
 
   const protectionPrice = (product, c, x) => {
     const row = prices.find((r) =>
@@ -10264,32 +10270,47 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
 
     // ── Weekly and monthly rates ──
     periods: section("Weekly and monthly rates",
-      "Optional. Rentals of 7 days or more are charged the weekly rate and 28 days or more the monthly rate, pro-rated by the day (weekly / 7, monthly / 30). A rental never costs more than 7 or 28 days would from the same pickup. Season days always cost the season's daily rate. Blank means none: the rate below it applies. A booking keeps the rates it was made at.",
+      "Optional daily rates for longer rentals: weekly for 7 to 27 days, monthly for 28 days or more. Each day outside a season costs that rate; a blank cell falls back to the rate below it.",
       "periods",
       el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", margin: "4px 0 8px" } },
         el("span", { style: { fontWeight: 600 } }, "Rates for"),
         el("select", {
           className: "resFormInput", style: { width: "auto" }, value: period,
           onChange: (e) => setPeriod(e.target.value),
-        }, el("option", { value: "week" }, "A week"), el("option", { value: "month" }, "A month"))),
+        }, el("option", { value: "week" }, "Weekly (7 to 27 days)"), el("option", { value: "month" }, "Monthly (28 days or more)"))),
       el("div", { key: period },
         priceGrid("periods",
           (c, x) => { const v = periodRates[x.name] && periodRates[x.name][c.name]; return v && v[period] != null ? v[period] : null; },
           (c, x, amount) => act("periods", "set_period_rate", {
             p_period: period, p_class_id: c.id, p_source_id: x.id, p_amount: amount,
-          }))),
+          }),
+          {
+            suffix: "/day",
+            // What the daily rate comes to, and how much less it is than the
+            // cell's normal daily rate: "= $315 per week, 25% off".
+            noteFor: (c, x) => {
+              const v = periodRates[x.name] && periodRates[x.name][c.name] && periodRates[x.name][c.name][period];
+              if (v == null) return null;
+              const day = rates[x.name] && rates[x.name][c.name];
+              const n = period === "week" ? 7 : 30;
+              const amount = Math.round(v * n * 100) / 100;
+              const shown = amount.toLocaleString("en-CA", Number.isInteger(amount)
+                ? { maximumFractionDigits: 0 } : { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+              const off = day ? Math.round((1 - v / day) * 100) : 0;
+              return `= $${shown} per ${period === "week" ? "week" : "30 days"}${off > 0 ? `, ${off}% off` : ""}`;
+            },
+          })),
       (() => {
         // A longer rental that costs more a day than a shorter one.
         const warn = [];
         activeClasses.forEach((c) => activeSources.forEach((x) => {
           const day = rates[x.name] && rates[x.name][c.name];
           const p = (periodRates[x.name] && periodRates[x.name][c.name]) || {};
-          if (day != null && p.week != null && p.week / 7 > day) {
-            warn.push(`${c.name}, ${x.name}: the weekly rate is more a day than the daily rate.`);
+          if (day != null && p.week != null && p.week > day) {
+            warn.push(`${c.name}, ${x.name}: the weekly daily rate is higher than the normal daily rate.`);
           }
-          const below = p.week != null ? p.week / 7 : day;
-          if (below != null && p.month != null && p.month / 30 > below) {
-            warn.push(`${c.name}, ${x.name}: the monthly rate is more a day than the ${p.week != null ? "weekly" : "daily"} rate.`);
+          if (p.week != null && p.month != null && p.month > p.week) {
+            warn.push(`${c.name}, ${x.name}: the monthly daily rate is higher than the weekly daily rate.`);
           }
         }));
         return warn.length > 0 && el("div", { className: "loginError", style: { marginTop: "10px" } },
