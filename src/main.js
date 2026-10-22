@@ -1750,7 +1750,23 @@ function fieldInView(el) {
   }
   return true;
 }
+// Only one date picker, time picker or dropdown open at a time, anywhere in
+// the app: opening one closes whichever was open.
+let closeOpenPicker = null;
+function useSinglePicker(open, close) {
+  const closeRef = React.useRef(close);
+  closeRef.current = close;
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const mine = () => closeRef.current();
+    if (closeOpenPicker && closeOpenPicker !== mine) closeOpenPicker();
+    closeOpenPicker = mine;
+    return () => { if (closeOpenPicker === mine) closeOpenPicker = null; };
+  }, [open]);
+}
+
 function useAnchorFollow(open, anchor, setAnchor, close) {
+  useSinglePicker(open, close);
   const closeRef = React.useRef(close);
   closeRef.current = close;
   const el = anchor && anchor.el;
@@ -2956,6 +2972,50 @@ async function generateUniqueResCode() {
 
 // ─── ReservationsPage ─────────────────────────────────────────────────────────
 
+// The reservations table, on the Reservations page and on Home: one
+// component, so the two show the same columns, source, notes and links.
+function ReservationsTable({ rows }) {
+  const { setReservations } = React.useContext(AppContext);
+  const cols = ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Source", "Notes"];
+  return rows.length === 0
+    ? React.createElement("div", { className: "resvEmpty" }, "No reservations found.")
+    : React.createElement(
+      "table",
+      { className: "dashboardTable" },
+      React.createElement("thead", null,
+        React.createElement("tr", null, cols.map((col) => React.createElement("th", { key: col }, col)))
+      ),
+      React.createElement("tbody", null,
+        rows.map((row) =>
+          React.createElement("tr", { key: row.resCode, className: row.fromNonDrive ? "dashboardRow--fromNonDrive" : "" },
+            React.createElement("td", { key: `${row.resCode}-date` }, fmtDate(row.date)),
+            React.createElement("td", { key: `${row.resCode}-time` }, fmt12h(row.time)),
+            React.createElement("td", { key: `${row.resCode}-loc` }, row.location),
+            React.createElement("td", { key: `${row.resCode}-res` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
+            React.createElement("td", { key: `${row.resCode}-cust` },
+              React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer }),
+              row.customerChangedAt && React.createElement(ChangedByCustomerTag)
+            ),
+            React.createElement("td", { key: `${row.resCode}-vc` }, row.vehicleClass),
+            React.createElement("td", { key: `${row.resCode}-src` }, row.source || ""),
+            React.createElement("td", { key: `${row.resCode}-notes` },
+              React.createElement(NoteIconCell, {
+                noteId: row.resCode,
+                notesLog: parseNotesLog(row.notesLog),
+                onSave: (newLog) => {
+                  setReservations((prev) =>
+                    prev.map((r) => r.resCode === row.resCode ? { ...r, notesLog: newLog } : r)
+                  );
+                  runWrite(supabase.from("reservations").update({ notesLog: newLog }).eq("resCode", row.resCode), "notes sync");
+                },
+              })
+            )
+          )
+        )
+      )
+            );
+}
+
 function ReservationsPage() {
   const { reservations, setReservations, noShows, setNoShows, currentUser } = React.useContext(AppContext);
   const navigate = useNavigate();
@@ -3169,7 +3229,6 @@ function ReservationsPage() {
     fieldErr(key)
   );
 
-  const cols = ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Source", "Notes"];
 
   return React.createElement(
     "div",
@@ -3261,43 +3320,7 @@ function ReservationsPage() {
       React.createElement(
         "div",
         { className: "dashboardSection__body" },
-        filtered.length === 0
-          ? React.createElement("div", { className: "resvEmpty" }, "No reservations found.")
-          : React.createElement(
-              "table",
-              { className: "dashboardTable" },
-              React.createElement("thead", null,
-                React.createElement("tr", null, cols.map((col) => React.createElement("th", { key: col }, col)))
-              ),
-              React.createElement("tbody", null,
-                filtered.map((row) =>
-                  React.createElement("tr", { key: row.resCode, className: row.fromNonDrive ? "dashboardRow--fromNonDrive" : "" },
-                    React.createElement("td", { key: `${row.resCode}-date` }, fmtDate(row.date)),
-                    React.createElement("td", { key: `${row.resCode}-time` }, fmt12h(row.time)),
-                    React.createElement("td", { key: `${row.resCode}-loc` }, row.location),
-                    React.createElement("td", { key: `${row.resCode}-res` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
-                    React.createElement("td", { key: `${row.resCode}-cust` },
-                      React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer }),
-                      row.customerChangedAt && React.createElement(ChangedByCustomerTag)
-                    ),
-                    React.createElement("td", { key: `${row.resCode}-vc` }, row.vehicleClass),
-                    React.createElement("td", { key: `${row.resCode}-src` }, row.source || ""),
-                    React.createElement("td", { key: `${row.resCode}-notes` },
-                      React.createElement(NoteIconCell, {
-                        noteId: row.resCode,
-                        notesLog: parseNotesLog(row.notesLog),
-                        onSave: (newLog) => {
-                          setReservations((prev) =>
-                            prev.map((r) => r.resCode === row.resCode ? { ...r, notesLog: newLog } : r)
-                          );
-                          runWrite(supabase.from("reservations").update({ notesLog: newLog }).eq("resCode", row.resCode), "notes sync");
-                        },
-                      })
-                    )
-                  )
-                )
-              )
-            )
+        React.createElement(ReservationsTable, { rows: filtered })
       )
     ),
     showModal && React.createElement(
@@ -4172,60 +4195,7 @@ function DashboardPage() {
               React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Phone number", value: srchPhone, onChange: (e) => setSrchPhone(e.target.value) }),
               React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Res Code",     value: srchRes,   onChange: (e) => setSrchRes(e.target.value)   })
             ),
-            resFiltered.length === 0
-              ? React.createElement("div", { className: "resvEmpty" }, "No reservations found.")
-              : isMobile
-                ? resFiltered.map((row) =>
-                    React.createElement("div", { key: row.resCode, className: "dashCard" },
-                      React.createElement("div", { className: "dashCard__header" },
-                        React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer }),
-                        React.createElement("span", { className: "dashCard__resCode" }, row.resCode)
-                      ),
-                      React.createElement("div", { className: "dashCard__meta" },
-                        React.createElement("span", { className: "dashCard__chip" }, fmtDate(row.date)),
-                        React.createElement("span", { className: "dashCard__chip" }, fmt12h(row.time)),
-                        React.createElement("span", { className: "dashCard__chip" }, row.location)
-                      ),
-                      React.createElement("div", { className: "dashCard__meta" },
-                        React.createElement("span", { className: "dashCard__chip" }, row.vehicleClass)
-                      )
-                    )
-                  )
-                : React.createElement("table", { className: "dashboardTable" },
-                  React.createElement("thead", null,
-                    React.createElement("tr", null,
-                      ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Notes"].map((col) =>
-                        React.createElement("th", { key: col }, col)
-                      )
-                    )
-                  ),
-                  React.createElement("tbody", null,
-                    resFiltered.map((row) =>
-                      React.createElement("tr", { key: row.resCode, className: row.fromNonDrive ? "dashboardRow--fromNonDrive" : "" },
-                        React.createElement("td", { key: `${row.resCode}-date`  }, fmtDate(row.date)),
-                        React.createElement("td", { key: `${row.resCode}-time`  }, fmt12h(row.time)),
-                        React.createElement("td", { key: `${row.resCode}-loc`   }, row.location),
-                        React.createElement("td", { key: `${row.resCode}-res`   }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
-                        React.createElement("td", { key: `${row.resCode}-cust`  }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })),
-                        React.createElement("td", { key: `${row.resCode}-vc`    }, row.vehicleClass),
-                        React.createElement("td", { key: `${row.resCode}-notes` },
-                          React.createElement(NotesCell, {
-                            noteId: row.resCode,
-                            preRentalCheck: row.preRentalCheck,
-                            notesLog: parseNotesLog(row.notesLog),
-                            onAddNote: (note) => {
-                              const newLog = [...parseNotesLog(row.notesLog), note];
-                              setReservations((prev) =>
-                                prev.map((r) => r.resCode === row.resCode ? { ...r, notesLog: newLog } : r)
-                              );
-                              runWrite(supabase.from("reservations").update({ notesLog: newLog }).eq("resCode", row.resCode), "notes sync");
-                            },
-                          })
-                        )
-                      )
-                    )
-                  )
-                )
+            React.createElement(ReservationsTable, { rows: resFiltered })
           )
       ),
       // ── Section 2: Vehicle Status ────────────────────────────────
@@ -7038,6 +7008,27 @@ function FleetDamageClaimsPage() {
 
 // ─── GasCollectionsPage ───────────────────────────────────────────────────────
 
+// The amount owed, saved when the field is left or Enter is pressed: one PIN
+// for the new amount, not one for each digit typed. A cancelled PIN leaves
+// the amount as it was.
+function GasOwedInput({ value, onCommit }) {
+  const saved = value == null ? "" : String(value);
+  const [draft, setDraft] = React.useState(saved);
+  React.useEffect(() => { setDraft(saved); }, [saved]);
+  const commit = () => {
+    const t = draft.trim();
+    setDraft(saved);
+    if (t === saved || t === "") return;
+    onCommit(t);
+  };
+  return React.createElement("input", {
+    type: "number", className: "gasOwedInput", value: draft, min: "0", step: "0.01", "aria-label": "Gas owed",
+    onChange: (e) => setDraft(e.target.value),
+    onBlur: commit,
+    onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
+  });
+}
+
 function GasCollectionsPage() {
   // Note: gas balances live on rental_agreements (gasOwed, gasCollected), not
   // reservations. reservations has no gas fields at all, and rental_agreements
@@ -7077,16 +7068,22 @@ function GasCollectionsPage() {
   };
 
   return React.createElement("div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Gas Collections"),
+    React.createElement("h1", { className: "page__title" }, "Gas collections"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement("section", { className: "dashboardSection" },
+      React.createElement("div", { className: "dashboardSection__header" },
+        React.createElement("div", { className: "dashboardSection__headerRow" },
+          React.createElement("span", null, "Outstanding balances"),
+          React.createElement("span", { className: "aiTabDesc", style: { marginBottom: 0, marginLeft: 8 } }, `${rows.length} outstanding`)
+        )
+      ),
       React.createElement("div", { className: "dashboardSection__body" },
         rows.length === 0
           ? React.createElement("div", { className: "resvEmpty" }, "No outstanding gas balances.")
           : React.createElement("table", { className: "dashboardTable" },
               React.createElement("thead", null,
                 React.createElement("tr", null,
-                  ["Customer", "Res Code", "Plate", "Gas Owed", "Payment Status"].map((col) =>
+                  ["Customer", "Res code", "Plate", "Gas owed", "Payment status"].map((col) =>
                     React.createElement("th", { key: col }, col)
                   )
                 )
@@ -7108,14 +7105,7 @@ function GasCollectionsPage() {
                     React.createElement("td", null,
                       React.createElement("div", { className: "gasOwedWrap" },
                         React.createElement("span", { className: "gasOwedDollar" }, "$"),
-                        React.createElement("input", {
-                          type: "number",
-                          className: "gasOwedInput",
-                          value: a.gasOwed || "",
-                          min: "0",
-                          step: "0.01",
-                          onChange: (e) => handleGasChange(a.id, e.target.value),
-                        })
+                        React.createElement(GasOwedInput, { value: a.gasOwed, onCommit: (v) => handleGasChange(a.id, v) })
                       )
                     ),
                     React.createElement("td", null,
@@ -7176,9 +7166,10 @@ function ReportsPage() {
 // The old label was `role === "Admin" ? "Make Agent" : "Make Admin"`, written
 // when Admin was the top. With Exec above it, an Exec's row offered "Make
 // Admin", which is a demotion described as a promotion.
-// A join code is stored as ten characters and shown as two groups of five.
-const fmtJoinCode = (code) =>
-  /^[A-Z0-9]{10}$/.test(code || "") ? `${code.slice(0, 5)}-${code.slice(5)}` : (code || "");
+// A join code is stored and shown as ten characters, with no dash. A code
+// typed with the old dash still works: the database reads letters and digits
+// only (normalize_join_code, fleetr-infra join_approval.sql).
+const fmtJoinCode = (code) => code || "";
 
 const roleToggleLabel = (role) =>
   role === "Exec"  ? "Make Admin" :
@@ -11116,7 +11107,7 @@ function StaffPage({ embedded, onChanged } = {}) {
         "div", { style: { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" } },
         React.createElement("code", {
           style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px", background: "rgba(244, 132, 95,0.12)" },
-        }, codeShown && code ? fmtJoinCode(code) : "•••••-•••••"),
+        }, codeShown && code ? fmtJoinCode(code) : "••••••••••"),
         React.createElement("button", {
           className: "loginBtn",
           style: { width: "auto", padding: "8px 14px" },
@@ -17528,7 +17519,8 @@ function SignupScreen({ onDone, onCancel }) {
       React.createElement("div", { className: "loginSubtitle" }, "Create your account."),
       React.createElement(
         "form", { className: "loginForm", onSubmit: submit },
-        field({ type: "text", placeholder: "Join code (XXXXX-XXXXX)", maxLength: 11, autoCapitalize: "characters",
+        // Ten letters and digits. The old dash is still accepted, so one more.
+        field({ type: "text", placeholder: "Join code", maxLength: 11, autoCapitalize: "characters",
                 value: joinCode, onChange: (e) => { setJoinCode(e.target.value.toUpperCase()); setMessage(""); } }),
         field({ type: "text", placeholder: "Full name", maxLength: 60, autoComplete: "name",
                 value: name, onChange: (e) => { setName(e.target.value); setMessage(""); } }),
@@ -17936,7 +17928,12 @@ body, * {
     bottom: 0;
     width: 290px;
     overflow-y: auto;
+    /* Scrolls by wheel, trackpad and touch, with no scrollbar drawn and no
+       gutter kept for one, so the menu sits flush against the page. */
+    scrollbar-width: none;
+    -ms-overflow-style: none;
   }
+  .sidebar::-webkit-scrollbar{ display: none; width: 0; height: 0; }
   .main{ grid-column: 2; }
 }
 @media (min-width: 768px) and (max-width: 900px){
@@ -21065,10 +21062,10 @@ body, * {
   line-height: 1;
 }
 .gasOwedInput {
-  width: 72px;
-  padding: 4px 6px;
-  border: 1.5px solid #E3E2DE;
-  border-radius: 6px;
+  width: 80px;
+  padding: 6px 8px;
+  border: 1px solid #E3E2DE;
+  border-radius: 7px;
   font-size: 13px;
   font-family: inherit;
   color: #1F1E1D;
@@ -21082,16 +21079,13 @@ body, * {
   margin: 0;
 }
 .gasOwedInput:focus {
-  outline: none;
-  border-color: #F4845F;
-}
-.gasOwedInput:hover {
-  border-color: #F4845F;
+  outline: 2px solid #F4845F;
+  outline-offset: -1px;
 }
 .gasStatusSelect {
-  padding: 4px 6px;
-  border: 1.5px solid #E3E2DE;
-  border-radius: 6px;
+  padding: 6px 8px;
+  border: 1px solid #E3E2DE;
+  border-radius: 7px;
   font-size: 13px;
   font-family: inherit;
   color: #1F1E1D;
@@ -21100,11 +21094,8 @@ body, * {
   transition: border-color 0.15s;
 }
 .gasStatusSelect:focus {
-  outline: none;
-  border-color: #F4845F;
-}
-.gasStatusSelect:hover {
-  border-color: #F4845F;
+  outline: 2px solid #F4845F;
+  outline-offset: -1px;
 }
 /* ── Dashboard numbers ─────────────────────────────────────────────────── */
 .dashStats{ display: grid; gap: 14px; margin-bottom: 20px; }
@@ -21660,36 +21651,14 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
   from{ opacity: 0; transform: translateY(-4px) scale(0.98); }
   to{ opacity: 1; transform: none; }
 }
-.dateFieldPanel__presets{
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 96px;
-  padding-right: 10px;
-  border-right: 1px solid rgba(31, 30, 29, 0.08);
+.dateFieldWrap{ position: relative; display: block; }
+.dateFieldWrap .dateField{ padding-right: 36px; }
+.dateFieldClear{
+  position: absolute; top: 50%; right: 30px; transform: translateY(-50%);
+  border: 0; background: none; cursor: pointer; padding: 2px 4px;
+  font-size: 16px; line-height: 1; color: #6B6A66;
 }
-.dateFieldPanel__heading{
-  padding: 4px 8px 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #8A8984;
-}
-.dateFieldPanel__preset{
-  border: 0;
-  background: none;
-  border-radius: 8px;
-  padding: 7px 8px;
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-  color: #5C5B57;
-  cursor: pointer;
-}
-.dateFieldPanel__preset:hover{ background: rgba(31, 30, 29, 0.05); color: #1F1E1D; }
-.dateFieldPanel__preset--on{ background: rgba(244, 132, 95, 0.16); color: #1F1E1D; font-weight: 600; }
-.dateFieldPanel__clear{ margin-top: auto; color: #B5533A; }
+.dateFieldClear:hover{ color: #1F1E1D; }
 .dateFieldPanel__head{
   display: flex;
   align-items: center;
@@ -21736,19 +21705,6 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
 .dateFieldPanel__day--today{ box-shadow: inset 0 0 0 1px #F4845F; font-weight: 600; }
 .dateFieldPanel__day--on, .dateFieldPanel__day--on:hover{ background: #F4845F; box-shadow: none; font-weight: 600; }
 .dateFieldPanel button:focus-visible{ outline: 2px solid rgba(244, 132, 95, 0.6); outline-offset: 1px; }
-@media (max-width: 480px){
-  .dateFieldPanel{ flex-direction: column; }
-  .dateFieldPanel__presets{
-    flex-direction: row;
-    flex-wrap: wrap;
-    width: auto;
-    padding: 0 0 8px;
-    border-right: 0;
-    border-bottom: 1px solid rgba(31, 30, 29, 0.08);
-  }
-  .dateFieldPanel__heading{ display: none; }
-  .dateFieldPanel__clear{ margin-top: 0; }
-}
 
 /* ── The month calendars already on the page take the same look ─────────────── */
 .calendarPopover{
@@ -22092,8 +22048,8 @@ document.head.appendChild(style);
 
 // ─── DateField: the date picker ──────────────────────────────────────────────
 // In place of the browser's own date box. A button that reads the date in
-// words, and a calendar under it with quick picks beside the month: Today,
-// Tomorrow and In a week, and Clear where a date is optional. The value is a
+// words, and a calendar under it. Where a date is optional, an × beside the
+// button clears it. The value is a
 // "YYYY-MM-DD" string, as the date box gave, and onChange gets that string ("" when
 // cleared). Dates are the device's own calendar days, never UTC ones.
 // Adapted from Magic MCP's Date Picker Preset.
@@ -22114,6 +22070,7 @@ function DateField({ value, onChange, className, placeholder, clearable, disable
   const triggerRef = React.useRef(null);
   const panelRef = React.useRef(null);
   const todayIso = localIso(new Date());
+  useSinglePicker(open, () => setOpen(false));
 
   // Below the button, or above it when there is no room; kept on screen.
   // Closed once the button is scrolled out of view.
@@ -22164,13 +22121,10 @@ function DateField({ value, onChange, className, placeholder, clearable, disable
   const lead = new Date(y, m, 1).getDay();
   const days = new Date(y, m + 1, 0).getDate();
   const cells = [...Array(lead).fill(null), ...Array.from({ length: days }, (_, i) => localIso(new Date(y, m, i + 1)))];
-  const shift = (n) => localIso(new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + n));
-  const presets = [["Today", shift(0)], ["Tomorrow", shift(1)], ["In a week", shift(7)]];
   const chevron = (dir) => el("svg", { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
     el("path", { d: DATE_FIELD_CHEVRON[dir] }));
 
-  return el(React.Fragment, null,
-    el("button", {
+  const trigger = el("button", {
       type: "button", ref: triggerRef, disabled,
       className: `${className || "resFormInput"} dateField${picked ? "" : " dateField--empty"}${open ? " dateField--open" : ""}`,
       "aria-haspopup": "dialog", "aria-expanded": open, "aria-label": ariaLabel,
@@ -22180,20 +22134,17 @@ function DateField({ value, onChange, className, placeholder, clearable, disable
         ? picked.toLocaleDateString("en-CA", { weekday: "short", month: "short", day: "numeric", year: "numeric" })
         : (placeholder || "Pick a date")),
       el("svg", { className: "dateField__icon", width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
-        el("rect", { x: 3, y: 4, width: 18, height: 18, rx: 2 }), el("path", { d: "M16 2v4M8 2v4M3 10h18" }))),
+        el("rect", { x: 3, y: 4, width: 18, height: 18, rx: 2 }), el("path", { d: "M16 2v4M8 2v4M3 10h18" })));
+  return el(React.Fragment, null,
+    clearable
+      ? el("span", { className: "dateFieldWrap" }, trigger,
+          value && !disabled && el("button", { type: "button", className: "dateFieldClear", "aria-label": "Clear the date", onClick: () => onChange("") }, "\u00d7"))
+      : trigger,
     open && createPortal(
       el("div", {
         ref: panelRef, role: "dialog", "aria-label": ariaLabel || "Pick a date", className: "dateFieldPanel",
         style: pos ? { left: `${pos.left}px`, top: `${pos.top}px` } : { visibility: "hidden" },
       },
-        el("div", { className: "dateFieldPanel__presets", role: "group", "aria-label": "Quick picks" },
-          el("div", { className: "dateFieldPanel__heading" }, "Quick"),
-          presets.map(([label, iso]) => el("button", {
-            key: label, type: "button",
-            className: `dateFieldPanel__preset${iso === value ? " dateFieldPanel__preset--on" : ""}`,
-            onClick: () => commit(iso),
-          }, label)),
-          clearable && value && el("button", { type: "button", className: "dateFieldPanel__preset dateFieldPanel__clear", onClick: () => commit("") }, "Clear")),
         el("div", { className: "dateFieldPanel__cal" },
           el("div", { className: "dateFieldPanel__head" },
             el("button", { type: "button", className: "dateFieldPanel__nav", "aria-label": "Previous month", onClick: () => setMonth(new Date(y, m - 1, 1)) }, chevron("prev")),
