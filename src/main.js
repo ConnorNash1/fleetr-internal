@@ -17535,9 +17535,7 @@ function SignupScreen({ onDone, onCancel }) {
         field({ type: "password", placeholder: "4-digit PIN", inputMode: "numeric", maxLength: 4,
                 autoComplete: "new-password",
                 value: pin, onChange: (e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setMessage(""); } }),
-        React.createElement("div", { style: { opacity: 0.6, fontSize: "0.78rem", marginTop: "-4px" } },
-          "The PIN confirms actions that are hard to undo. Keep it different from your password."),
-        React.createElement("button", { type: "submit", className: "loginBtn", disabled: loading },
+        React.createElement("button", { type: "submit", className: "loginBtn authBtn", disabled: loading },
           loading ? "Creating\u2026" : "Create Account"),
         message && React.createElement("div", { className: "loginError" }, message),
         React.createElement("button", {
@@ -17633,7 +17631,7 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
           onChange: (e) => { setPin(e.target.value); setError(""); },
           onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); handleSubmit(e); } },
         }),
-        React.createElement("button", { type: "submit", className: "loginBtn", disabled: loading },
+        React.createElement("button", { type: "submit", className: "loginBtn authBtn", disabled: loading },
           loading ? "Signing in…" : "Sign In"),
         error && React.createElement("div", { className: "loginError" }, error),
         notice && React.createElement("div", { className: "loginNotice", style: { color: "#3fbf7f", fontSize: "0.85rem", textAlign: "center" } }, notice),
@@ -21408,6 +21406,16 @@ body, * {
 .loginForm--signIn{ margin: 0; }
 .loginForm--signIn .loginInput{ padding: 12px 14px; font-size: 14.5px; }
 .loginForm--signIn .loginBtn{ margin-top: 8px; }
+/* Sign In and Create Account: a terracotta pill with light text, the old
+   Sign In button's look without its shadow or moving spark. */
+.loginBtn.authBtn{
+  display: flex; align-items: center; justify-content: center;
+  padding: 13px 16px; border-radius: 999px;
+  background: #F4845F; color: #F9F9F7;
+  font-size: 15px; font-weight: 700; letter-spacing: 0.01em;
+  box-shadow: none;
+}
+.loginBtn.authBtn:hover:not(:disabled){ background: #E06D47; }
 .loginLinks{ display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 8px; }
 .loginLink{
   background: none; border: none; padding: 2px 4px; border-radius: 4px;
