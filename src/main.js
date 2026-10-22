@@ -18,10 +18,15 @@ import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 // backgrounds. The horizontal lockup is 1113 by 260, so a height above about
 // 23px keeps it over the 96px minimum width; the CSS that places each one keeps
 // its clear space, one bar of the mark (about a quarter of its height).
-const FLEETR_LOGO = { light: "/fleetr-horizontal-light.svg", dark: "/fleetr-horizontal-dark.svg" };
-const fleetrLogo = (tone, height, className) => React.createElement("img", {
-  src: FLEETR_LOGO[tone], alt: "fleetr", className,
-  height, width: Math.round((height * 1113.03) / 260.48), style: { display: "block", height: `${height}px`, width: "auto" },
+// The fleetr wordmark (wordmark.svg, "fleetr" in Inter SemiBold as outlines),
+// drawn as a mask so its colour follows the background: tone "light" is for a
+// light background (terracotta), "dark" for a dark one, and "terracotta" for
+// a terracotta one (both #F9F9F7). The width follows the wordmark's shape.
+const WORDMARK_RATIO = 240.37 / 77.29;
+const fleetrLogo = (tone, height, className) => React.createElement("span", {
+  role: "img", "aria-label": "fleetr", className: `fleetrWordmark${className ? ` ${className}` : ""}`,
+  style: { height: `${height}px`, width: `${(height * WORDMARK_RATIO).toFixed(2)}px`,
+           backgroundColor: tone === "light" ? "#F4845F" : "#F9F9F7" },
 });
 
 // ─── Supabase client ──────────────────────────────────────────────────────────
@@ -17599,11 +17604,11 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
     React.createElement(
       "div",
       { className: "loginCard" },
-      // The sign-in card's logo: the off-white logo on its terracotta tile
-      // (fleetr-horizontal-on-terracotta.svg, 1324 by 472), 64px tall so the
-      // logo in it stays over the guide's 32px minimum on terracotta.
+      // The sign-in card's logo: the #F9F9F7 wordmark on its terracotta tile,
+      // the tile 180 by 64 as before and the wordmark the height the logo
+      // had in it, centred.
       React.createElement("div", { className: "loginBrand", style: { marginBottom: "28px" } },
-        React.createElement("img", { src: "/fleetr-horizontal-on-terracotta.svg", alt: "fleetr", className: "loginBrand__tile", width: 180, height: 64 })),
+        React.createElement("div", { className: "loginBrand__tile" }, fleetrLogo("terracotta", 35))),
       React.createElement(
         "form",
         { className: "loginForm loginForm--signIn", onSubmit: handleSubmit },
@@ -17763,7 +17768,12 @@ body, * {
 /* The logo on the sign-in, sign-up and reset cards: centred, with its clear
    space above and below. */
 .loginBrand{ display: flex; justify-content: center; padding: 8px 0; }
-.loginBrand__tile{ display: block; height: 64px; width: auto; border-radius: 12px; }
+.loginBrand__tile{ display: flex; align-items: center; justify-content: center; height: 64px; width: 180px; border-radius: 12px; background: #F4845F; }
+.fleetrWordmark{
+  display: block; flex: none;
+  -webkit-mask: url(/wordmark.svg) center / contain no-repeat;
+  mask: url(/wordmark.svg) center / contain no-repeat;
+}
 .loginLogo{
   display: block;
   width: 100%;
