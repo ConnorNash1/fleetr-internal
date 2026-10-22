@@ -17604,11 +17604,10 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
     React.createElement(
       "div",
       { className: "loginCard" },
-      // The sign-in card's logo: the #F9F9F7 wordmark on its terracotta tile,
-      // the tile 180 by 64 as before and the wordmark the height the logo
-      // had in it, centred.
+      // The sign-in card's logo: the terracotta wordmark on the light card,
+      // centred.
       React.createElement("div", { className: "loginBrand", style: { marginBottom: "28px" } },
-        React.createElement("div", { className: "loginBrand__tile" }, fleetrLogo("terracotta", 35))),
+        fleetrLogo("light", 35)),
       React.createElement(
         "form",
         { className: "loginForm loginForm--signIn", onSubmit: handleSubmit },
@@ -17768,7 +17767,6 @@ body, * {
 /* The logo on the sign-in, sign-up and reset cards: centred, with its clear
    space above and below. */
 .loginBrand{ display: flex; justify-content: center; padding: 8px 0; }
-.loginBrand__tile{ display: flex; align-items: center; justify-content: center; height: 64px; width: 180px; border-radius: 12px; background: #F4845F; }
 .fleetrWordmark{
   display: block; flex: none;
   -webkit-mask: url(/wordmark.svg) center / contain no-repeat;
