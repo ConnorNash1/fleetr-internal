@@ -2976,6 +2976,12 @@ async function generateUniqueResCode() {
 // component, so the two show the same columns, source, notes and links.
 function ReservationsTable({ rows }) {
   const { setReservations } = React.useContext(AppContext);
+  // "Oct 22, 2026", as both pages wrote it with their own fmtDate.
+  const fmtDate = (iso) => {
+    const d = new Date(`${iso}T00:00:00`);
+    return Number.isNaN(d.getTime()) ? iso
+      : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
+  };
   const cols = ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Source", "Notes"];
   return rows.length === 0
     ? React.createElement("div", { className: "resvEmpty" }, "No reservations found.")
