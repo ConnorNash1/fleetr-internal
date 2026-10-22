@@ -694,8 +694,10 @@ const quotedList = (names) => names.map((n) => `"${n}"`).join(", ");
 // index.html and version.json both carry the build time, stamped into them by
 // GitHub Pages' Jekyll build on every push. The page keeps the value it loaded
 // with, and App's once-a-minute check fetches version.json past every cache
-// and compares. Nothing reloads by itself: someone half way through a form
-// would lose it. They are told, and they choose when.
+// and compares. A new version is applied on the next page switch, when
+// nothing open would be lost (useUpdateOnPageSwitch); until then, and only
+// while something unsaved or a dialog is on screen, a small card offers
+// Refresh.
 //
 // Read on first use rather than as the file loads: the tag never changes, and
 // nothing here should touch the page before the app itself does.
@@ -11771,7 +11773,7 @@ function Topbar() {
 
 // One line icon per nav item, drawn on a 24 by 24 grid with a 2px stroke.
 const NAV_ICONS = {
-  "/dashboard":            ["M3 3h7v9H3z", "M14 3h7v5h-7z", "M14 12h7v9h-7z", "M3 16h7v5H3z"],
+  "/dashboard":            ["M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z", "M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"],
   "/reservations":         ["M8 2v4", "M16 2v4", "M3 10h18", "M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"],
   "/rental-agreements":    ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6", "M8 13h8", "M8 17h5"],
   "/fleet/vehicles":       ["M5 17H3v-5l2-5h11l3 5h2v5h-2", "M9 17h6", "M7 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4z", "M17 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4z", "M5 12h14"],
@@ -17661,6 +17663,7 @@ function App() {
   // dismissal holds for the life of the tab rather than returning a minute
   // later, which would make the banner a nag.
   const [update, setUpdate] = React.useState("none");
+  const updateBusy = useUpdateOnPageSwitch(update === "ready");
 
   // Enforces the cap during a long-running session, not only at load. Checked
   // once a minute, which is precise enough for a 12 hour limit and costs
@@ -17724,23 +17727,60 @@ function App() {
       { currentUser, signOut },
       React.createElement(HashRouter, null, React.createElement(Layout))
     ),
-    update === "ready" && React.createElement(UpdateBanner, { onDismiss: () => setUpdate("dismissed") })
+    update === "ready" && updateBusy && React.createElement(UpdateBanner)
   );
 }
 
-// Fixed and small, over the page rather than in its flow, so it moves nothing
-// and blocks nothing. Refresh is the person's choice; see checkForNewVersion.
-function UpdateBanner({ onDismiss }) {
+// What would be lost by reloading: a dialog, modal or picker open, or
+// something typed or changed since the last page switch (a form not yet
+// saved, or the command bar). The update card ignores itself.
+const OPEN_DIALOG_SELECTOR = '.resModalBackdrop, .appDialogBackdrop, .faiCropBackdrop, .damagePhotoViewer, .dateFieldPanel, [aria-modal="true"]';
+function useUpdateOnPageSwitch(ready) {
+  const editedRef = React.useRef(false);
+  const [busy, setBusy] = React.useState(false);
+  React.useEffect(() => {
+    const onEdit = (e) => { if (!e.target.closest || !e.target.closest(".updateCard")) editedRef.current = true; };
+    document.addEventListener("input", onEdit, true);
+    document.addEventListener("change", onEdit, true);
+    return () => {
+      document.removeEventListener("input", onEdit, true);
+      document.removeEventListener("change", onEdit, true);
+    };
+  }, []);
+  React.useEffect(() => {
+    // A page switch: whatever was typed on the old page went with it, so
+    // the update is applied unless the new screen opens with a dialog.
+    const onSwitch = () => {
+      editedRef.current = false;
+      if (!ready) return;
+      setTimeout(() => {
+        if (!document.querySelector(OPEN_DIALOG_SELECTOR)) window.location.reload();
+      }, 0);
+    };
+    window.addEventListener("hashchange", onSwitch);
+    return () => window.removeEventListener("hashchange", onSwitch);
+  }, [ready]);
+  React.useEffect(() => {
+    if (!ready) { setBusy(false); return undefined; }
+    const check = () => setBusy(editedRef.current || !!document.querySelector(OPEN_DIALOG_SELECTOR));
+    check();
+    const iv = setInterval(check, 1000);
+    return () => clearInterval(iv);
+  }, [ready]);
+  return busy;
+}
+
+// Shown only while an update waits behind unsaved work or a dialog: a small
+// card in the bottom right, over the page so it moves nothing. It stays until
+// Refresh, or until the update applies on the next page switch.
+function UpdateBanner() {
   return React.createElement(
     "div",
-    { className: "updateBanner", role: "status" },
-    React.createElement("span", null, "A new version of fleetr is available."),
+    { className: "updateCard", role: "status" },
+    React.createElement("span", { className: "updateCard__text" }, "Update available"),
     React.createElement("button", {
-      type: "button", className: "updateBanner__refresh", onClick: () => window.location.reload(),
-    }, "Refresh"),
-    React.createElement("button", {
-      type: "button", className: "updateBanner__dismiss", "aria-label": "Dismiss", onClick: onDismiss,
-    }, "×")
+      type: "button", className: "updateCard__refresh", onClick: () => window.location.reload(),
+    }, "Refresh")
   );
 }
 
@@ -18375,56 +18415,47 @@ body, * {
   opacity: 0.65;
 }
 
-/* ── New-version banner ────────────────────────────────────────────────────── */
-/* Bottom centre, clear of the mobile command bar where there is one. The bar's
-   height is only defined in the mobile block, so desktop falls back to 0. */
-.updateBanner{
+/* ── Update available ───────────────────────────────────────────────────────── */
+/* Bottom right, clear of the mobile command bar where there is one. The bar's
+   height is only defined in the mobile block, so desktop falls back to 0. On a
+   phone it spans the bottom with 16px either side. */
+.updateCard{
   position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 16px;
   bottom: calc(var(--mobileBottomBarH, 0px) + 16px + env(safe-area-inset-bottom, 0px));
   z-index: 400;
   display: flex;
   align-items: center;
-  gap: 12px;
-  /* left: 50% alone would cap its natural width at half the screen and wrap
-     the message into a column on a phone. */
-  width: max-content;
-  max-width: calc(100% - 32px);
+  justify-content: space-between;
+  gap: 16px;
   box-sizing: border-box;
-  padding: 8px 8px 8px 16px;
-  border-radius: 999px;
-  background: #1F1E1D;
-  color: #F9F9F7;
-  font-size: 0.85rem;
-  font-weight: 500;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+  padding: 10px 12px 10px 16px;
+  background: #F9F9F7;
+  border: 1px solid rgba(31, 30, 29, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(31, 30, 29, 0.10);
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
 }
-/* The banner is the app's sibling, not its child, so it cannot see the zeroed
+/* The card is the app's sibling, not its child, so it cannot see the zeroed
    bar height app--noCommandBar sets. With no bar to clear, sit at the edge. */
-.app--noCommandBar ~ .updateBanner{
+.app--noCommandBar ~ .updateCard{
   bottom: calc(16px + env(safe-area-inset-bottom, 0px));
 }
-.updateBanner__refresh{
+.updateCard__text{ color: #1F1E1D; font-weight: 500; }
+.updateCard__refresh{
   font: inherit;
-  font-weight: 600;
-  color: #1F1E1D;
-  background: #F4845F;
+  font-weight: 700;
+  color: #F4845F;
+  background: none;
   border: 0;
-  border-radius: 999px;
-  padding: 6px 14px;
+  padding: 4px 4px;
   cursor: pointer;
   white-space: nowrap;
 }
-.updateBanner__dismiss{
-  font: inherit;
-  font-size: 1.1rem;
-  line-height: 1;
-  color: rgba(255, 255, 255, 0.6);
-  background: none;
-  border: 0;
-  padding: 4px 8px;
-  cursor: pointer;
+.updateCard__refresh:hover{ text-decoration: underline; text-underline-offset: 3px; }
+@media (max-width: 767px){
+  .updateCard{ left: 16px; right: 16px; }
 }
 
 /* ── Fleetr AI Command Bar ─────────────────────────────────────────────────── */
