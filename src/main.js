@@ -11298,47 +11298,40 @@ function AuditLogPage() {
     : o === "cancelled" ? "auditOutcome auditOutcome--cancelled"
     : "auditOutcome auditOutcome--refused";
 
-  const select = (label, value, onChange, options) =>
-    React.createElement("div", { className: "auditFilter" },
-      React.createElement("label", { className: "auditFilterLabel" }, label),
-      React.createElement("select",
-        { className: "auditFilterInput", value, onChange: (e) => onChange(e.target.value) },
-        options.map((o) => React.createElement("option", { key: o, value: o }, o))
-      )
+  // The filters as the Reservations page draws its own: one row of the same
+  // boxes, each saying what it filters by when nothing is chosen.
+  // options are [value, text]; "All" is every one.
+  const select = (label, value, onChange, allText, options) =>
+    React.createElement("select",
+      { className: "resvSearchInput auditFilterSelect", value, "aria-label": label, onChange: (e) => onChange(e.target.value) },
+      React.createElement("option", { value: "All" }, allText),
+      options.map(([v, text]) => React.createElement("option", { key: v, value: v }, text))
     );
+  const sentence = (t) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
 
   const dateInput = (label, value, onChange) =>
-    React.createElement("div", { className: "auditFilter" },
-      React.createElement("label", { className: "auditFilterLabel" }, label),
-      React.createElement(DateField, {
-        className: "auditFilterInput", value, clearable: true, placeholder: "Any date", ariaLabel: label,
-        onChange: (v) => onChange(v),
-      })
-    );
+    React.createElement(DateField, {
+      className: "resvSearchInput auditFilterDate", value, clearable: true, placeholder: label, ariaLabel: label,
+      onChange: (v) => onChange(v),
+    });
 
   return React.createElement(
     "div", { className: "page" },
     React.createElement("h1", { className: "page__title" }, "Audit Log"),
     React.createElement("div", { className: "page__titleUnderline" }),
 
-    React.createElement("p", { className: "aiTabDesc", style: { marginBottom: "14px" } },
-      "Every action that changes something, by whom and when, from the app and from fleetr ai alike. ",
-      "Cancelled and refused attempts are recorded too, not just the ones that went through. ",
-      "This view is read only."
-    ),
-
     React.createElement("section", { className: "dashboardSection", style: { marginBottom: "16px" } },
       React.createElement("div", { className: "dashboardSection__body" },
-        React.createElement("div", { className: "auditFilters" },
-          select("Actor",   actorFilt,   setActorFilt,   ["All", ...actors]),
-          select("Action",  actionFilt,  setActionFilt,  ["All", ...actions]),
-          select("Outcome", outcomeFilt, setOutcomeFilt, ["All", "completed", "cancelled", "refused"]),
-          dateInput("From", fromDate, setFromDate),
-          dateInput("To",   toDate,   setToDate),
+        React.createElement("div", { className: "resvSearchBar auditFilterBar" },
+          select("Actor",   actorFilt,   setActorFilt,   "All actors",   actors.map((a) => [a, a])),
+          select("Action",  actionFilt,  setActionFilt,  "All actions",  actions.map((a) => [a, a])),
+          select("Outcome", outcomeFilt, setOutcomeFilt, "All outcomes", ["completed", "cancelled", "refused"].map((o) => [o, sentence(o)])),
+          dateInput("From date", fromDate, setFromDate),
+          dateInput("To date",   toDate,   setToDate),
           React.createElement("button", {
             type: "button", className: "auditClearBtn",
             onClick: () => { setActorFilt("All"); setActionFilt("All"); setOutcomeFilt("All"); setFromDate(""); setToDate(""); },
-          }, "Clear")
+          }, "Clear filters")
         )
       )
     ),
@@ -20318,50 +20311,29 @@ body, * {
 .pmBannerPlates { font-weight: 700; }
 
 /* ─── Audit Log ─────────────────────────────────────────────────────────── */
-.auditFilters {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 12px;
-}
-.auditFilter {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.auditFilterLabel {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: rgba(6,13,12,0.5);
-}
-.auditFilterInput {
-  font-family: inherit;
-  font-size: 13px;
-  padding: 6px 10px;
-  border: 1px solid #E3E2DE;
-  border-radius: 8px;
-  background: #fff;
-  color: #1F1E1D;
-  min-width: 140px;
-}
-.auditFilterInput:focus {
-  outline: none;
-  border-color: #F4845F;
-  box-shadow: 0 0 0 3px rgba(244, 132, 95,0.15);
-}
+/* The Audit Log's filters on the Reservations bar: one row on a wide screen,
+   wrapping on a narrow one, every box and the button the same height. */
+.auditFilterBar{ margin-bottom: 0; }
+.auditFilterSelect, .auditFilterDate, .auditClearBtn{ height: 36px; box-sizing: border-box; }
+.auditFilterSelect{ width: 150px; font-family: inherit; font-size: 13px; }
+.auditFilterDate{ width: 150px; min-width: 0; }
+.auditFilterBar .dateFieldWrap{ display: inline-block; }
 .auditClearBtn {
   font-family: inherit;
   font-size: 13px;
-  padding: 7px 14px;
-  border: 1px solid #E3E2DE;
-  border-radius: 8px;
-  background: #fff;
+  font-weight: 600;
+  padding: 7px 12px;
+  border: 1px solid rgba(31, 30, 29, 0.14);
+  border-radius: 10px;
+  background: #FFFFFF;
   color: #1F1E1D;
   cursor: pointer;
+  white-space: nowrap;
 }
-.auditClearBtn:hover { background: #F1F0EC; }
+.auditClearBtn:hover { border-color: rgba(31, 30, 29, 0.28); }
+@media (max-width: 640px){
+  .auditFilterSelect, .auditFilterDate, .auditFilterBar .dateFieldWrap{ width: 100%; }
+}
 /* The policy key under the human label. Present so an entry traces back to
    ACTION_POLICY without guessing, quiet enough not to compete with the label. */
 .auditActionKey {
