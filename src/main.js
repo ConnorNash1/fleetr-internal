@@ -17633,15 +17633,8 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
           onChange: (e) => { setPin(e.target.value); setError(""); },
           onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); handleSubmit(e); } },
         }),
-        // Ported from Magic UI's Shimmer Button: a spark of light runs round
-        // the edge, behind a backdrop inset by a hair, so only the rim shows it.
-        React.createElement("button", { type: "submit", className: "loginBtn shimmerBtn", disabled: loading },
-          React.createElement("span", { className: "shimmerBtn__sparkWrap", "aria-hidden": "true" },
-            React.createElement("span", { className: "shimmerBtn__spark" },
-              React.createElement("span", { className: "shimmerBtn__sparkBefore" }))),
-          React.createElement("span", { className: "shimmerBtn__label" }, loading ? "Signing in…" : "Sign In"),
-          React.createElement("span", { className: "shimmerBtn__highlight", "aria-hidden": "true" }),
-          React.createElement("span", { className: "shimmerBtn__backdrop", "aria-hidden": "true" })),
+        React.createElement("button", { type: "submit", className: "loginBtn", disabled: loading },
+          loading ? "Signing in…" : "Sign In"),
         error && React.createElement("div", { className: "loginError" }, error),
         notice && React.createElement("div", { className: "loginNotice", style: { color: "#3fbf7f", fontSize: "0.85rem", textAlign: "center" } }, notice),
         React.createElement("div", { className: "loginLinks" },
@@ -17893,7 +17886,8 @@ body, * {
   cursor: pointer;
   margin-top: 4px;
 }
-.loginBtn:hover{ background: #E06D47; }
+.loginBtn:hover:not(:disabled){ background: #E06D47; }
+.loginBtn:disabled{ opacity: 0.6; cursor: default; }
 .loginError{
   font-size: 13px;
   color: #c0392b;
@@ -21413,7 +21407,7 @@ body, * {
    then the two links together under it. */
 .loginForm--signIn{ margin: 0; }
 .loginForm--signIn .loginInput{ padding: 12px 14px; font-size: 14.5px; }
-.loginForm--signIn .shimmerBtn{ margin-top: 8px; }
+.loginForm--signIn .loginBtn{ margin-top: 8px; }
 .loginLinks{ display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 8px; }
 .loginLink{
   background: none; border: none; padding: 2px 4px; border-radius: 4px;
@@ -21421,63 +21415,6 @@ body, * {
 }
 .loginLink:hover{ color: #B4532F; text-decoration: underline; text-underline-offset: 3px; }
 .loginLink:focus-visible{ outline: 2px solid #F4845F; outline-offset: 2px; }
-/* The Sign In button, after Magic UI's Shimmer Button. */
-.shimmerBtn{
-  --spread: 90deg;
-  --shimmer: rgba(255, 255, 255, 0.95);
-  --speed: 3s;
-  --cut: 2px;
-  --bg: #F4845F;
-  position: relative;
-  z-index: 0;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 13px 16px;
-  border-radius: 999px;
-  background: var(--bg);
-  color: #F9F9F7;
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-  box-shadow: 0 8px 22px rgba(244, 132, 95, 0.35), 0 2px 6px rgba(31, 30, 29, 0.10);
-  transition: transform 300ms ease-in-out, box-shadow 300ms ease-in-out;
-}
-.shimmerBtn:hover{ background: var(--bg); box-shadow: 0 12px 28px rgba(244, 132, 95, 0.45), 0 3px 8px rgba(31, 30, 29, 0.12); transform: translateY(-1px); }
-.shimmerBtn:active{ transform: translateY(1px); }
-.shimmerBtn:focus-visible{ outline: 2px solid #1F1E1D; outline-offset: 3px; }
-.shimmerBtn:disabled{ cursor: default; opacity: 0.8; transform: none; }
-.shimmerBtn__sparkWrap{ position: absolute; inset: 0; z-index: -30; overflow: visible; filter: blur(2px); container-type: size; }
-.shimmerBtn__spark{
-  position: absolute; inset: 0; height: 100cqh; aspect-ratio: 1;
-  animation: shimmerSlide var(--speed) ease-in-out infinite alternate;
-}
-.shimmerBtn__sparkBefore{
-  position: absolute; inset: -100%; width: auto;
-  background: conic-gradient(from calc(270deg - (var(--spread) * 0.5)), transparent 0, var(--shimmer) var(--spread), transparent var(--spread));
-  animation: shimmerSpin calc(var(--speed) * 2) infinite linear;
-}
-.shimmerBtn__label{ position: relative; }
-.shimmerBtn__highlight{
-  position: absolute; inset: 0; border-radius: inherit;
-  box-shadow: inset 0 -8px 10px rgba(255, 255, 255, 0.12);
-  transition: box-shadow 300ms ease-in-out;
-}
-.shimmerBtn:hover .shimmerBtn__highlight{ box-shadow: inset 0 -6px 10px rgba(255, 255, 255, 0.25); }
-.shimmerBtn:active .shimmerBtn__highlight{ box-shadow: inset 0 -10px 10px rgba(255, 255, 255, 0.25); }
-.shimmerBtn__backdrop{ position: absolute; inset: var(--cut); z-index: -20; border-radius: inherit; background: var(--bg); }
-@keyframes shimmerSlide{ to{ transform: translate(calc(100cqw - 100%), 0); } }
-@keyframes shimmerSpin{
-  0%{ transform: translateZ(0) rotate(0); }
-  15%, 35%{ transform: translateZ(0) rotate(90deg); }
-  65%, 85%{ transform: translateZ(0) rotate(270deg); }
-  100%{ transform: translateZ(0) rotate(360deg); }
-}
-@media (prefers-reduced-motion: reduce){
-  .shimmerBtn__spark, .shimmerBtn__sparkBefore{ animation: none; }
-  .shimmerBtn, .shimmerBtn__highlight{ transition: none; }
-}
 /* ── Loading skeleton ── */
 .appSkel{ position: fixed; inset: 0; display: grid; grid-template-columns: 290px 1fr; background: #F9F9F7; overflow: hidden; }
 .appSkel__sr{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
