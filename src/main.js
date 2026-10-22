@@ -338,7 +338,7 @@ async function loadCompanyLists(user) {
     const own = (table, cols) => supabase.from(table).select(cols).eq("operatorId", operatorId);
     const results = await Promise.all([
       own("pickup_locations",    "id,locationId,name,active,sortOrder"),
-      own("vehicle_classes",     "id,name,active,sortOrder,category,electric,luxury,seats,bags,exampleModels"),
+      own("vehicle_classes",     "id,name,active,sortOrder,category,electric,luxury,seats,bags,exampleModels,lowWarnBelow"),
       own("sources",             "id,name,billingType,payer,active,sortOrder,standardKey"),
       own("source_details",      "id,sourceId,name,active"),
       own("daily_rates",         "vehicleClassId,sourceId,amount"),
@@ -1490,7 +1490,7 @@ const pinFailureMessage = (result) => {
 
 // Reusable modal that gates any write operation behind the signed-in user's PIN.
 // Rendered by AppProvider; shown via requirePin(fn) from anywhere in the tree.
-function PinConfirmModal({ onConfirm, onCancel }) {
+function PinConfirmModal({ onConfirm, onCancel, warning, danger }) {
   const [pin,     setPin]     = React.useState("");
   const [error,   setError]   = React.useState("");
   const [loading, setLoading] = React.useState(false);
@@ -1581,6 +1581,8 @@ function PinConfirmModal({ onConfirm, onCancel }) {
         "form", { className: "resModalForm", onSubmit: handleSubmit },
         React.createElement(
           "div", { className: "resModalBody" },
+          // What is about to happen, so the PIN prompt is the one confirmation.
+          warning && React.createElement("p", { className: "pinWarning" }, warning),
           React.createElement("p", { style: { color: "#666", fontSize: "14px", marginBottom: "16px" } },
             notice || "Enter your PIN to confirm this action."
           ),
@@ -1648,13 +1650,131 @@ function PinConfirmModal({ onConfirm, onCancel }) {
           React.createElement("button", { type: "button", className: "resModalCancel", onClick: onCancel }, "Cancel"),
           React.createElement("button", {
             type: "submit",
-            className: "resModalSubmit",
+            className: `resModalSubmit${danger ? " resModalSubmit--danger" : ""}`,
             disabled: loading || pin.length === 0,
           }, loading ? "Checking…" : "Confirm")
         )
       )
     )
   );
+}
+
+// ─── In-app dialog ───────────────────────────────────────────────────────────
+// Every message, question and text box the app used to raise with the
+// browser's alert, confirm and prompt. One host, rendered by AppProvider,
+// shows them one at a time; each helper returns a promise for the answer.
+//   appAlert(message, { title })          resolves when OK is pressed
+//   appConfirm({ title, message, confirmLabel, danger })  resolves true or false
+//   appPrompt({ title, message, label, value, confirmLabel })  the text, or null
+// danger gives the main button the dark red that destructive actions use.
+let showDialogInHost = null;
+const dialogQueue = [];
+function showDialog(opts) {
+  return new Promise((resolve) => {
+    dialogQueue.push({ ...opts, resolve });
+    if (showDialogInHost) showDialogInHost();
+  });
+}
+const appAlert = (message, { title } = {}) => showDialog({ kind: "alert", title: title || "Heads up", message, confirmLabel: "OK" });
+const appConfirm = ({ title, message, confirmLabel, danger }) =>
+  showDialog({ kind: "confirm", title, message, confirmLabel: confirmLabel || "Continue", danger });
+const appPrompt = ({ title, message, label, value, confirmLabel }) =>
+  showDialog({ kind: "prompt", title, message, label, value: value || "", confirmLabel: confirmLabel || "Save" });
+
+function AppDialogHost() {
+  const [current, setCurrent] = React.useState(null);
+  const [text, setText] = React.useState("");
+  const inputRef = React.useRef(null);
+  const mainRef = React.useRef(null);
+  React.useEffect(() => {
+    showDialogInHost = () => setCurrent((c) => {
+      if (c || !dialogQueue.length) return c;
+      const next = dialogQueue.shift();
+      setText(next.value || "");
+      return next;
+    });
+    showDialogInHost();
+    return () => { showDialogInHost = null; };
+  }, []);
+  React.useEffect(() => {
+    if (!current) return;
+    (current.kind === "prompt" ? inputRef.current : mainRef.current)?.focus();
+  }, [current]);
+  if (!current) return null;
+  const close = (answer) => {
+    current.resolve(answer);
+    setCurrent(null);
+    setTimeout(() => showDialogInHost && showDialogInHost(), 0);
+  };
+  const cancel = () => close(current.kind === "confirm" ? false : current.kind === "prompt" ? null : undefined);
+  const ok = () => close(current.kind === "confirm" ? true : current.kind === "prompt" ? text : undefined);
+  const el = React.createElement;
+  return el("div", { className: "appDialogBackdrop", onClick: cancel },
+    el("form", {
+      className: "appDialog", role: current.kind === "alert" ? "alertdialog" : "dialog", "aria-modal": "true",
+      "aria-labelledby": "appDialogTitle",
+      onClick: (e) => e.stopPropagation(),
+      onKeyDown: (e) => { if (e.key === "Escape") { e.stopPropagation(); cancel(); } },
+      onSubmit: (e) => { e.preventDefault(); ok(); },
+    },
+      el("h2", { id: "appDialogTitle", className: "appDialog__title" }, current.title),
+      current.message && el("p", { className: "appDialog__message" }, current.message),
+      current.kind === "prompt" && el("label", { className: "appDialog__field" },
+        current.label && el("span", { className: "appDialog__label" }, current.label),
+        el("input", { ref: inputRef, className: "appDialog__input", value: text, onChange: (e) => setText(e.target.value) })),
+      el("div", { className: "appDialog__actions" },
+        current.kind !== "alert" && el("button", { type: "button", className: "appDialog__cancel", onClick: cancel }, "Cancel"),
+        el("button", { ref: mainRef, type: "submit", className: `appDialog__main${current.danger ? " appDialog__main--danger" : ""}` },
+          current.confirmLabel))));
+}
+
+// ─── Popovers that stay with their field ─────────────────────────────────────
+// Date pickers, time pickers and dropdowns are drawn fixed on the page, so on
+// their own they stay where they opened while the page or a panel scrolls.
+// anchorAt(el, place) remembers the field and how the popover is placed from
+// it (below it by default); useAnchorFollow moves the popover with the field
+// on any scroll or resize, and closes it once the field is out of view.
+const belowField = (rect) => ({ x: rect.left, y: rect.bottom + 4 });
+function anchorAt(el, place = belowField) {
+  return { ...place(el.getBoundingClientRect()), el, place };
+}
+// The field is on screen and inside every scrolling panel around it.
+function fieldInView(el) {
+  const r = el.getBoundingClientRect();
+  if (r.bottom <= 0 || r.top >= window.innerHeight || r.right <= 0 || r.left >= window.innerWidth) return false;
+  for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+    const cs = window.getComputedStyle(p);
+    if (!/(auto|scroll|hidden)/.test(`${cs.overflowX} ${cs.overflowY}`)) continue;
+    const pr = p.getBoundingClientRect();
+    if (r.bottom <= pr.top || r.top >= pr.bottom || r.right <= pr.left || r.left >= pr.right) return false;
+  }
+  return true;
+}
+function useAnchorFollow(open, anchor, setAnchor, close) {
+  const closeRef = React.useRef(close);
+  closeRef.current = close;
+  const el = anchor && anchor.el;
+  React.useEffect(() => {
+    if (!open || !el) return undefined;
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      if (!el.isConnected || !fieldInView(el)) { closeRef.current(); return; }
+      setAnchor((a) => {
+        if (!a || a.el !== el) return a;
+        const next = a.place(el.getBoundingClientRect());
+        return Object.keys(next).every((k) => next[k] === a[k]) ? a : { ...a, ...next };
+      });
+    };
+    const queue = () => { if (!frame) frame = window.requestAnimationFrame(update); };
+    window.addEventListener("scroll", queue, true);
+    window.addEventListener("resize", queue);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", queue, true);
+      window.removeEventListener("resize", queue);
+    };
+  }, [open, el]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 function AppProvider({ children, currentUser, signOut }) {
@@ -1718,8 +1838,38 @@ function AppProvider({ children, currentUser, signOut }) {
   }, []);
   React.useEffect(() => { if (currentUser) refreshSetup(); }, [currentUser, refreshSetup]);
 
+  // ── Fleet notifications follow the bookings and the fleet ─────────────────
+  // After a change here to a reservation, a rental or a vehicle (a booking
+  // added, moved or cancelled, a vehicle added, retired or out of service),
+  // the company's shortage notifications are worked out again, a moment later
+  // so a run of edits is one refresh (refresh_my_fleet_notifications,
+  // fleetr-infra fleet_shortages.sql). The first load sets the baseline.
+  const fleetSignature = React.useMemo(() => JSON.stringify([
+    reservations.map((r) => [r.resCode, r.locationId, r.vehicleClass, r.date, r.time, r.returnDate, r.returnTime, r.rentalAgreementStatus, r.pickupStatus]),
+    fleet.map((v) => [v.id, v.locationId, v.vehicleClass, v.status]),
+    rentalAgreements.map((a) => [a.id, a.rentalAgreementStatus, a.returnDate, a.vehicleClass]),
+  ]), [reservations, fleet, rentalAgreements]);
+  const fleetSignatureRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!dbReady) return undefined;
+    if (fleetSignatureRef.current === null || fleetSignatureRef.current === fleetSignature) {
+      fleetSignatureRef.current = fleetSignature;
+      return undefined;
+    }
+    fleetSignatureRef.current = fleetSignature;
+    if (!isFeatureEnabled("fleet_notifications")) return undefined;
+    const t = setTimeout(() => {
+      supabase.rpc("refresh_my_fleet_notifications")
+        .then(({ error }) => { if (error) console.warn("refresh_my_fleet_notifications failed:", error); })
+        .catch((e) => console.warn("refresh_my_fleet_notifications:", e));
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [fleetSignature, dbReady]);
+
   // ── PIN confirmation modal ────────────────────────────────────────────────
   const [pinModalOpen, setPinModalOpen] = React.useState(false);
+  // The warning shown inside the PIN prompt, and whether it is destructive.
+  const [pinPrompt, setPinPrompt] = React.useState({ warning: "", danger: false });
   const pendingFnRef = React.useRef(null);
   // What the pending action was, so dismissing the gate can be logged as a
   // cancellation rather than vanishing.
@@ -1758,9 +1908,10 @@ function AppProvider({ children, currentUser, signOut }) {
   // Call requirePin(fn) to show the PIN gate; fn runs only if PIN matches.
   // Private to this provider: everything goes through guardAction so that no
   // action can reach the PIN without also being logged and tiered by policy.
-  const requirePin = (fn, auditEntry) => {
+  const requirePin = (fn, auditEntry, prompt) => {
     pendingFnRef.current = fn;
     pendingAuditRef.current = auditEntry || null;
+    setPinPrompt({ warning: prompt?.warning || "", danger: !!prompt?.danger });
     setPinModalOpen(true);
   };
 
@@ -1774,9 +1925,14 @@ function AppProvider({ children, currentUser, signOut }) {
   // one place both the UI and the command bar pass through, so a log hooked here
   // cannot be forgotten by a new handler the way a per-handler log would be.
   // `meta` carries what the entry cannot infer: which record, and a description.
+  // It can also carry `warning`, the sentence the PIN prompt shows, such as
+  // "Delete reservation NEZ 657 115? This cannot be undone.", and `danger`
+  // for a destructive action. With the warning in the PIN prompt, a PIN-tier
+  // action asks nothing else before or after: entering the PIN confirms it.
   const guardAction = (actionKey, fn, meta) => {
     const tier  = actionTier(actionKey);
-    const entry = { actionType: actionKey, tier, ...(meta || {}) };
+    const { warning, danger, ...auditMeta } = meta || {};
+    const entry = { actionType: actionKey, tier, ...auditMeta };
     const run = async () => {
       try {
         await fn();
@@ -1787,7 +1943,7 @@ function AppProvider({ children, currentUser, signOut }) {
         throw e;
       }
     };
-    if (tier === "pin") { requirePin(run, entry); return; }
+    if (tier === "pin") { requirePin(run, entry, { warning: warning || `${actionLabel(actionKey)}?`, danger }); return; }
     run();
   };
 
@@ -2196,7 +2352,8 @@ function AppProvider({ children, currentUser, signOut }) {
     AppContext.Provider,
     { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, archivedVehicles, setArchivedVehicles, readyReturns, setReadyReturns, appSettings, guardAction, logAudit, currentUser, signOut, setup, refreshSetup, featuresVersion } },
     children,
-    pinModalOpen && React.createElement(PinConfirmModal, { onConfirm: confirmPin, onCancel: dismissPinModal })
+    pinModalOpen && React.createElement(PinConfirmModal, { onConfirm: confirmPin, onCancel: dismissPinModal, warning: pinPrompt.warning, danger: pinPrompt.danger }),
+    React.createElement(AppDialogHost)
   );
 }
 
@@ -2265,13 +2422,13 @@ function NoteIconCell({ noteId, notesLog: notesLogRaw, onSave }) {
     return () => document.removeEventListener("click", close);
   }, [edit]);
 
-  const anchor = (el, w, h) => {
-    const rect = el.getBoundingClientRect();
+  useAnchorFollow(!!edit, edit, setEdit, () => setEdit(null));
+  const anchor = (el, w, h) => anchorAt(el, (rect) => {
     let x = rect.left, y = rect.bottom + 4;
     if (x + w > window.innerWidth - 8) x = Math.max(8, window.innerWidth - w - 8);
     if (y + h > window.innerHeight - 8) y = Math.max(8, rect.top - h - 4);
     return { x, y };
-  };
+  });
   const open = (e) => {
     e.stopPropagation();
     setHover(null);
@@ -2330,6 +2487,8 @@ function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote })
   const [page, setPage] = React.useState(1);
   const [addOpen, setAddOpen] = React.useState(false);
   const [addAnchor, setAddAnchor] = React.useState({ x: 0, y: 0 });
+  useAnchorFollow(viewOpen, viewAnchor, setViewAnchor, () => setViewOpen(false));
+  useAnchorFollow(addOpen, addAnchor, setAddAnchor, () => setAddOpen(false));
   const [addText, setAddText] = React.useState("");
 
   // Close when another NotesCell opens
@@ -2383,8 +2542,7 @@ function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote })
 
   const handleViewClick = (e) => {
     e.stopPropagation();
-    const rect = e.currentTarget.getBoundingClientRect();
-    setViewAnchor(calcAnchor(rect, 380, 300));
+    setViewAnchor(anchorAt(e.currentTarget, (rect) => calcAnchor(rect, 380, 300)));
     setSearchInput("");
     setSearchQuery("");
     setPage(1);
@@ -2395,8 +2553,7 @@ function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote })
 
   const handleAddClick = (e) => {
     e.stopPropagation();
-    const rect = e.currentTarget.getBoundingClientRect();
-    setAddAnchor(calcAnchor(rect, 280, 110));
+    setAddAnchor(anchorAt(e.currentTarget, (rect) => calcAnchor(rect, 280, 110)));
     setAddText("");
     setViewOpen(false);
     setOpenNotesId(noteId);
@@ -2663,14 +2820,6 @@ function TestTag() {
   }, "Test");
 }
 
-// A reservation the customer booked themselves on fleetr.ai.
-function BookedOnFleetrTag({ meta }) {
-  return React.createElement("span", {
-    className: `rentalAgreementBadge rentalAgreementBadge--neutral${meta ? " rentalAgreementBadge--meta" : ""}`,
-    style: meta ? null : { marginLeft: "6px" },
-  }, "Booked on fleetr.ai");
-}
-
 // Shown on a reservation whose customer changed its times in the customer
 // app (customer_reschedule.sql, fleetr-infra).
 function ChangedByCustomerTag({ meta }) {
@@ -2826,8 +2975,25 @@ function ReservationsPage() {
   const [srchPhone, setSrchPhone] = React.useState("");
   const [srchRes,   setSrchRes]   = React.useState("");
   const [srchDate,  setSrchDate]  = React.useState(todayIso);
+  // Opened from a fleet notification: the reservations in one class over a
+  // run of days (#/reservations?class=Medium%20SUV&from=2026-11-01&to=2026-11-30).
+  const location = useLocation();
+  const [linkFilter, setLinkFilter] = React.useState(null);
+  React.useEffect(() => {
+    const q = new URLSearchParams(location.search);
+    const from = q.get("from") || "", to = q.get("to") || from, cls = q.get("class") || "";
+    if (!from && !cls) return;
+    setLinkFilter({ vehicleClass: cls, from, to });
+    setSrchDate("");
+  }, [location.search]);
+  const clearLinkFilter = () => {
+    setLinkFilter(null);
+    setSrchDate(todayIso);
+    navigate("/reservations", { replace: true });
+  };
   const [datePickerOpen, setDatePickerOpen]   = React.useState(false);
   const [datePickerAnchor, setDatePickerAnchor] = React.useState({ x: 0, y: 0 });
+  useAnchorFollow(datePickerOpen, datePickerAnchor, setDatePickerAnchor, () => setDatePickerOpen(false));
   const [filterPickerMonth, setFilterPickerMonth] = React.useState(null);
 
   // ── Sweep: move past-due "Pending arrival" reservations into No Shows ────────
@@ -2915,8 +3081,18 @@ function ReservationsPage() {
     if (srchPhone && !(r.phone || "").includes(srchPhone))                    return false;
     if (srchRes   && !r.resCode.toLowerCase().includes(srchRes.toLowerCase())) return false;
     if (srchDate  && r.date !== srchDate)                                     return false;
+    if (linkFilter) {
+      if (linkFilter.vehicleClass && String(r.vehicleClass || "").trim().toLowerCase() !== linkFilter.vehicleClass.trim().toLowerCase()) return false;
+      if (linkFilter.from && (r.returnDate || r.date || "") < linkFilter.from) return false;
+      if (linkFilter.to && (r.date || "") > linkFilter.to) return false;
+    }
     return true;
   });
+  const linkFilterLabel = linkFilter && (() => {
+    const day = (iso) => (isoToDate(iso) || new Date(NaN)).toLocaleDateString("en-CA", { month: "short", day: "numeric" });
+    const dates = !linkFilter.from ? "" : linkFilter.from === linkFilter.to ? day(linkFilter.from) : `${day(linkFilter.from)} to ${day(linkFilter.to)}`;
+    return [linkFilter.vehicleClass, dates].filter(Boolean).join(", ");
+  })();
 
   const updateForm = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
 
@@ -2969,7 +3145,7 @@ function ReservationsPage() {
     }
     if (insertError) {
       console.warn("Reservation Supabase write error:", insertError);
-      window.alert("The reservation could not be saved, so nothing was added. Check your connection and try again.");
+      appAlert("The reservation could not be saved, so nothing was added. Check your connection and try again.", { title: "Not saved" });
       return;
     }
     requestReservationConfirmation(resCode);
@@ -3004,6 +3180,9 @@ function ReservationsPage() {
       "div",
       { className: "resvSearchBar" },
       React.createElement("button", { type: "button", className: "resvInlineBtn", onClick: () => setShowModal(true) }, "+ New Reservation"),
+      linkFilter && React.createElement("span", { className: "resvLinkFilter" },
+        linkFilterLabel,
+        React.createElement("button", { type: "button", className: "resvDateClear", "aria-label": "Clear this filter", onClick: clearLinkFilter }, "×")),
       React.createElement(
         "div",
         { className: "resvDatePickerWrap" },
@@ -3013,8 +3192,7 @@ function ReservationsPage() {
             type: "button",
             className: srchDate ? "resvSearchInput resvDateBtn resvDateBtn--active" : "resvSearchInput resvDateBtn",
             onClick: (e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              setDatePickerAnchor({ x: rect.left, y: rect.bottom + 4 });
+              setDatePickerAnchor(anchorAt(e.currentTarget));
               setDatePickerOpen((o) => !o);
             },
           },
@@ -3258,6 +3436,7 @@ function NonDriveIntakeSection({ standalone }) {
   const [now, setNow] = React.useState(Date.now());
   const [openDatePickerId, setOpenDatePickerId] = React.useState(null);
   const [datePickerAnchor, setDatePickerAnchor] = React.useState({ x: 0, y: 0 });
+  useAnchorFollow(openDatePickerId != null, datePickerAnchor, setDatePickerAnchor, () => setOpenDatePickerId(null));
   const [pickerMonthByRow, setPickerMonthByRow] = React.useState({});
   const [collapsed, setCollapsed] = React.useState(true);
 
@@ -3351,7 +3530,7 @@ function NonDriveIntakeSection({ standalone }) {
       notesLog: [{ author: actorName(currentUser), text: `From red car intake (${target.aiDate})` }],
     };
     const check = validateReservation(newRes);
-    if (!check.ok) { window.alert(`This intake row cannot be booked yet. ${check.error}`); return; }
+    if (!check.ok) { appAlert(`This intake row cannot be booked yet. ${check.error}`, { title: "Not ready to book" }); return; }
     // Deletes the intake row, so it takes the PIN.
     guardAction("noShow.confirmPickup", () => {
       setReservations((prev) => {
@@ -3452,8 +3631,7 @@ function NonDriveIntakeSection({ standalone }) {
                               type: "button",
                               className: "aiControl aiControl--dateButton",
                               onClick: (e) => {
-                                const rect = e.currentTarget.getBoundingClientRect();
-                                setDatePickerAnchor({ x: rect.left, y: rect.bottom + 4 });
+                                setDatePickerAnchor(anchorAt(e.currentTarget));
                                 setOpenDatePickerId((prev) => prev === row.id ? null : row.id);
                               },
                             },
@@ -3899,7 +4077,7 @@ function DashboardPage() {
     }
     if (insertError) {
       console.warn("Reservation Supabase write error:", insertError);
-      window.alert("The reservation could not be saved, so nothing was added. Check your connection and try again.");
+      appAlert("The reservation could not be saved, so nothing was added. Check your connection and try again.", { title: "Not saved" });
       return;
     }
     requestReservationConfirmation(resCode);
@@ -3952,8 +4130,7 @@ function DashboardPage() {
                   type: "button",
                   className: srchDate ? "resvSearchInput resvDateBtn resvDateBtn--active" : "resvSearchInput resvDateBtn",
                   onClick: (e) => {
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    setDatePickerAnchor({ x: rect.left, y: rect.bottom + 4 });
+                    setDatePickerAnchor(anchorAt(e.currentTarget));
                     setDatePickerOpen((o) => !o);
                   },
                 }, filterDateLabel),
@@ -4809,6 +4986,7 @@ function VehicleDetailPage() {
     // schedule, so both sit in the PIN tier. Cancelling the PIN restores the
     // displayed value rather than leaving the field showing an unsaved number.
     const key = column === "tankSizeLiters" ? "vehicle.tankSize" : "vehicle.pmInterval";
+    const what = column === "tankSizeLiters" ? "tank size" : "PM interval";
     guardAction(key, () => {
       setFleet((prev) => prev.map((v) => v.plate === plate ? { ...v, [column]: parsed } : v));
       if (vehicle.id) {
@@ -4816,7 +4994,7 @@ function VehicleDetailPage() {
           .then(({ error }) => { if (error) console.warn(`fleet ${column} update failed:`, error); })
           .catch((err) => console.warn(`fleet ${column} update:`, err));
       }
-    });
+    }, { warning: trimmed === "" ? `Clear the ${what} for ${plate}?` : `Set the ${what} for ${plate} to ${trimmed} ${canonicalUnit}?` });
   };
 
   const saveTankSize = () =>
@@ -4840,7 +5018,7 @@ function VehicleDetailPage() {
     // the same way this button does.
     const { ok, patch, error } = resolvePmComplete(vehicle);
     if (!ok) {
-      window.alert(error);
+      appAlert(error, { title: "Preventative maintenance" });
       return;
     }
     guardAction("vehicle.pmComplete", () => {
@@ -5018,7 +5196,7 @@ function VehicleDetailPage() {
                   if (vehicle.id) {
                     runWrite(supabase.from("fleet").update({ status: newStatus }).eq("id", vehicle.id), "fleet update");
                   }
-                  if (forced) window.alert(message);
+                  if (forced) appAlert(message, { title: "Due for maintenance" });
                 });
               },
             },
@@ -5199,14 +5377,18 @@ function useVehicleStatusDrag() {
     });
   };
 
-  const drop = (id, to) => {
+  const drop = async (id, to) => {
     const v = (live.current.fleet || []).find((x) => x.id === id);
     if (!v || !to || to === v.status) return;
     const bad = refusal(to);
     if (bad) { showToast({ text: bad, error: true }); return; }
     const claim = v.status === "Damaged" && (live.current.damageClaims || [])
       .some((c) => (c.plate || "") === v.plate && c.status !== "resolved");
-    if (claim && !window.confirm(`${v.plate} has an open damage claim. Move it out of Damaged to ${to} anyway?`)) {
+    if (claim && !(await appConfirm({
+      title: "Open damage claim",
+      message: `${v.plate} has an open damage claim. Move it out of Damaged to ${to} anyway?`,
+      confirmLabel: `Move to ${to}`,
+    }))) {
       logAudit({ actionType: "vehicle.status", tableName: "fleet", recordId: v.plate, outcome: "cancelled",
         description: `Did not move ${v.plate} out of Damaged to ${to}: it has an open damage claim.` });
       return;
@@ -6190,7 +6372,7 @@ function FleetVehiclesPage() {
     guardAction("vehicle.status", () => {
       setFleet((prev) => prev.map((fv) => fv.id === vehicle.id ? { ...fv, status: finalStatus } : fv));
       runWrite(supabase.from("fleet").update({ status: finalStatus }).eq("id", vehicle.id), "fleet status update");
-      if (forced) window.alert(message);
+      if (forced) appAlert(message, { title: "Due for maintenance" });
     });
   };
 
@@ -6502,7 +6684,9 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
       runWrite(supabase.from("fleet").delete().eq("id", retireForm.plateId), "fleet delete");
       setRetireForm(BLANK_RETIRE);
     }, { tableName: "fleet", recordId: v.plate,
-         description: `Retired ${v.make} ${v.model}. Disposal ${retireForm.disposalDate}${reason ? `, reason: ${reason}` : ""}.` });
+         description: `Retired ${v.make} ${v.model}. Disposal ${retireForm.disposalDate}${reason ? `, reason: ${reason}` : ""}.`,
+         warning: `Retire ${v.plate}, the ${[v.year, v.make, v.model].filter(Boolean).join(" ")}? It leaves the fleet and moves to archived vehicles. This cannot be undone.`,
+         danger: true });
   };
 
   const fmtDate = (iso) => {
@@ -6847,7 +7031,7 @@ function GasCollectionsPage() {
 
   // Every write on this page moves money, so both the amount field and the
   // paid toggle funnel through here and take the PIN.
-  const updateRow = (id, patch, actionKey) => {
+  const updateRow = (id, patch, actionKey, warning) => {
     guardAction(actionKey, () => {
       setRentalAgreements((prev) =>
         prev.map((a) => a.id === id ? { ...a, ...patch } : a)
@@ -6855,11 +7039,12 @@ function GasCollectionsPage() {
       supabase.from("rental_agreements").update(patch).eq("id", id).then(({ error }) => {
         if (error) console.warn("rental_agreements update failed:", id, error);
       }).catch((e) => console.warn("rental_agreements update:", e));
-    });
+    }, { warning });
   };
+  const codeOf = (id) => (rows.find((a) => a.id === id) || {}).resCode || "this rental";
 
   const handleGasChange = (id, value) => {
-    updateRow(id, { gasOwed: value }, "gas.amount");
+    updateRow(id, { gasOwed: value }, "gas.amount", `Change the gas owed on ${codeOf(id)} to $${value || 0}?`);
   };
 
   const handleStatusChange = (id, value) => {
@@ -6867,7 +7052,9 @@ function GasCollectionsPage() {
     updateRow(id, value === "Paid"
       ? { gasCollected: true, gasOwed: "0" }
       : { gasCollected: false }
-    , "gas.collected");
+    , "gas.collected", value === "Paid"
+      ? `Mark the gas on ${codeOf(id)} as paid? The amount owed is written off to $0.`
+      : `Mark the gas on ${codeOf(id)} as unpaid?`);
   };
 
   return React.createElement("div", { className: "page" },
@@ -7377,7 +7564,6 @@ function LaunchStep() {
   const left = setup.items.filter((i) => i.required && !i.done).length;
 
   const launch = () => {
-    if (!window.confirm("Launch the company?\n\nYour branches that are switched on show on fleetr.ai and take bookings, texts start going to customers, and every test record made in setup mode is deleted. This cannot be undone, though the company can be paused afterwards.")) return;
     setError("");
     guardAction("company.launch", async () => {
       setBusy(true);
@@ -7392,7 +7578,10 @@ function LaunchStep() {
       // from every screen at once.
       window.location.hash = "/dashboard";
       window.location.reload();
-    }, { description: "Launched the company.", tableName: "operators" });
+    }, {
+      description: "Launched the company.", tableName: "operators", danger: true,
+      warning: "Launch the company? Your branches that are switched on show on fleetr.ai and take bookings, texts start going to customers, and every test record made in setup mode is deleted. This cannot be undone, though the company can be paused afterwards.",
+    });
   };
 
   return el(React.Fragment, null,
@@ -7552,8 +7741,8 @@ function CompanyPage() {
                   React.createElement("td", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
                     React.createElement("button", {
                       className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
-                      onClick: () => {
-                        const name = window.prompt("New name for this branch", b.name);
+                      onClick: async () => {
+                        const name = await appPrompt({ title: "Rename branch", label: "New name for this branch", value: b.name, confirmLabel: "Rename" });
                         if (name == null) return;
                         run("rename", "rename_location", { location_id: b.id, new_name: name });
                       },
@@ -9836,6 +10025,36 @@ const vehicleClassType = (c) =>
 // from the standard list and stay: the example models are matched up on
 // fleetr.ai. Seats and bags can be changed. Keeps its own drafts, for the
 // reason GasRow does.
+// One class's low availability warning: fewer than this many free at a
+// branch, or blank for none (set_class_low_warning, fleetr-infra
+// fleet_shortages.sql).
+function LowWarningRow({ entry, busy, onSave, onError }) {
+  const shown = entry.lowWarnBelow == null ? "" : String(entry.lowWarnBelow);
+  const [draft, setDraft] = React.useState(shown);
+  React.useEffect(() => { setDraft(shown); }, [shown]);
+  const el = React.createElement;
+  const save = () => {
+    const t = draft.trim();
+    if (t === "") { onSave(null); return; }
+    const n = Number(t);
+    if (!Number.isInteger(n) || n < 1 || n > 99) { onError("A warning has to be a whole number from 1 to 99, or blank for none."); return; }
+    onSave(n);
+  };
+  return el("div", { className: "lowWarn__row" },
+    el("span", { className: "lowWarn__name" }, entry.name),
+    el("span", { className: "closeRentalHint", style: { margin: 0 } }, "Fewer than"),
+    el("input", {
+      className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric", placeholder: "Off",
+      value: draft, disabled: busy, "aria-label": `${entry.name}: warn when fewer than this many are free`,
+      onChange: (e) => setDraft(e.target.value.replace(/\D/g, "").slice(0, 2)),
+    }),
+    el("span", { className: "closeRentalHint", style: { margin: 0 } }, "free"),
+    el("button", {
+      className: "loginBtn", style: { width: "auto", padding: "5px 9px" },
+      disabled: busy || draft.trim() === shown, onClick: save,
+    }, "Save"));
+}
+
 function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
   const shown = () => ({
     seats:  entry.seats == null ? "" : String(entry.seats),
@@ -10385,7 +10604,16 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
             }),
           }),
         }))),
-      el(VehicleClassPicker, { disabled: busy, onAdded: async () => { await reload(); if (onChanged) await onChanged(); } })),
+      el(VehicleClassPicker, { disabled: busy, onAdded: async () => { await reload(); if (onChanged) await onChanged(); } }),
+      isFeatureEnabled("fleet_notifications") && roleAtLeast(currentUser?.role, "Exec") && el("div", { className: "lowWarn" },
+        el("h3", { className: "lowWarn__title" }, "Low availability warnings"),
+        el("p", { className: "closeRentalHint", style: { margin: "0 0 10px" } },
+          "Get a notification when fewer than this many of a class are free at a branch. Leave it blank for no warning."),
+        activeClasses.map((entry) => el(LowWarningRow, {
+          key: entry.id, entry, busy,
+          onError: (text) => setError({ at: "classes", text }),
+          onSave: (below) => act("classes", "set_class_low_warning", { p_class_id: entry.id, p_below: below }),
+        })))),
 
     // ── Sources ──
     sources: section("Sources",
@@ -10754,7 +10982,7 @@ function StaffPage({ embedded, onChanged } = {}) {
   // Both mutations go through guardAction, so they are PIN gated and land in
   // the audit log with the target named. A role change nobody can point at
   // afterwards is the kind of thing this log exists for.
-  const runStaffAction = (row, actionKey, rpc, args, describe) => {
+  const runStaffAction = (row, actionKey, rpc, args, describe, prompt) => {
     guardAction(actionKey, async () => {
       setBusyId(row.id);
       try {
@@ -10769,8 +10997,10 @@ function StaffPage({ embedded, onChanged } = {}) {
       tableName:   "users",
       recordId:    row.username,
       description: describe,
+      ...prompt,
     });
   };
+  const who = (row) => row.name || row.username;
 
   const changeRole = (row) => {
     const next = row.role === "Admin" ? "Agent" : "Admin";
@@ -10783,13 +11013,17 @@ function StaffPage({ embedded, onChanged } = {}) {
       if (!args.new_location_id) { setError(STAFF_REASONS.location_required); return; }
     }
     runStaffAction(row, "staff.role", "set_staff_role", args,
-      `${row.username}: ${row.role} to ${next}`);
+      `${row.username}: ${row.role} to ${next}`,
+      { warning: `Change ${who(row)} from ${row.role} to ${next}?` });
   };
 
   const toggleActive = (row) => runStaffAction(
     row, "staff.active", "set_staff_active",
     { target_id: row.id, is_active: !row.active },
-    `${row.username}: ${row.active ? "deactivated" : "reactivated"}`);
+    `${row.username}: ${row.active ? "deactivated" : "reactivated"}`,
+    row.active
+      ? { warning: `Deactivate ${who(row)}? They can no longer sign in.`, danger: true }
+      : { warning: `Reactivate ${who(row)}? They can sign in again.` });
 
   // Approving is activating: the database clears the pending mark when a
   // pending account is switched on. Both are logged as staff.active, the same
@@ -10797,15 +11031,12 @@ function StaffPage({ embedded, onChanged } = {}) {
   const approve = (row) => runStaffAction(
     row, "staff.active", "set_staff_active",
     { target_id: row.id, is_active: true },
-    `${row.username}: approved`);
+    `${row.username}: approved`,
+    { warning: `Approve ${who(row)}? They can sign in and use the app.` });
 
-  const decline = (row) => {
-    if (!window.confirm(
-      `Decline ${row.name || row.username}?\n\n` +
-      `Their account is removed and they cannot sign in. If they should be here, they can sign up again with the join code.`)) return;
-    runStaffAction(row, "staff.active", "decline_staff",
-      { target_id: row.id }, `${row.username}: declined`);
-  };
+  const decline = (row) => runStaffAction(row, "staff.active", "decline_staff",
+    { target_id: row.id }, `${row.username}: declined`,
+    { warning: `Decline ${who(row)}? Their account is removed and they cannot sign in. If they should be here, they can sign up again with the join code.`, danger: true });
 
   const reassign = (row) => {
     const dest = moveTo[row.id] || homeBranch || "";
@@ -10813,17 +11044,13 @@ function StaffPage({ embedded, onChanged } = {}) {
     const name = (branches.find((b) => b.id === dest) || {}).name || dest;
     runStaffAction(row, "staff.reassign", "reassign_staff",
       { target_id: row.id, location_id: dest },
-      `${row.username} moved to ${name}.`);
+      `${row.username} moved to ${name}.`,
+      { warning: `Move ${who(row)} to ${name}?` });
   };
 
-  const resetPin = (row) => {
-    if (!window.confirm(
-      `Clear ${row.username}'s PIN?\n\n` +
-      `They will be asked to set a new one the next time they confirm an action. ` +
-      `You will not see it, and you cannot choose it for them.`)) return;
-    runStaffAction(row, "staff.resetPin", "reset_staff_pin",
-      { target_id: row.id }, `${row.username}: PIN cleared.`);
-  };
+  const resetPin = (row) => runStaffAction(row, "staff.resetPin", "reset_staff_pin",
+    { target_id: row.id }, `${row.username}: PIN cleared.`,
+    { warning: `Clear ${row.username}'s PIN? They will be asked to set a new one the next time they confirm an action. You will not see it, and you cannot choose it for them.`, danger: true });
 
   const branchName = (id) =>
     (branches.find((b) => b.id === id) || {}).name || (id ? "another branch" : "\u00b7");
@@ -11314,6 +11541,7 @@ function NotificationBell() {
   const [error,  setError]  = React.useState("");
   const btnRef  = React.useRef(null);
   const listRef = React.useRef(null);
+  useAnchorFollow(open, pos, setPos, () => setOpen(false));
 
   const load = React.useCallback(async () => {
     const [list, count] = await Promise.all([
@@ -11348,9 +11576,10 @@ function NotificationBell() {
 
   const toggle = () => {
     if (open) { setOpen(false); return; }
-    const r = btnRef.current.getBoundingClientRect();
-    const width = Math.min(380, window.innerWidth - 16);
-    setPos({ top: r.bottom + 8, left: Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8)), width });
+    setPos(anchorAt(btnRef.current, (r) => {
+      const width = Math.min(380, window.innerWidth - 16);
+      return { top: r.bottom + 8, left: Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8)), width };
+    }));
     setOpen(true);
     load();
   };
@@ -11369,7 +11598,12 @@ function NotificationBell() {
     if (!n.readAt) await markRead([n.id]);
     setOpen(false);
     const link = n.link || {};
-    const path = link.page === "customer" ? "/customer" : (link.path || "/dashboard");
+    // A fleet notification's class and dates go along as the Reservations
+    // page's filter.
+    const filter = link.path === "/reservations"
+      ? new URLSearchParams(Object.entries({ class: link.vehicleClass, from: link.from, to: link.to }).filter(([, v]) => v)).toString()
+      : "";
+    const path = link.page === "customer" ? "/customer" : `${link.path || "/dashboard"}${filter ? `?${filter}` : ""}`;
     const { data: acting } = await supabase.rpc("my_acting_location");
     const here = acting && acting.ok ? acting.locationId : null;
     if (n.locationId && here !== n.locationId) {
@@ -11464,7 +11698,7 @@ function BranchSwitcher() {
     const { data, error } = await supabase.rpc("set_acting_location", { location_id: id });
     if (error || !data || !data.ok) {
       setBusy(false);
-      window.alert("Could not switch to that branch. Try again.");
+      appAlert("Could not switch to that branch. Try again.", { title: "Branch not switched" });
       return;
     }
     window.location.reload();
@@ -12028,7 +12262,7 @@ function FleetrCommandBar() {
       const { status: finalStatus, forced, message } = resolvePmStatus(target, data.status);
       if (forced) {
         data = { ...data, status: finalStatus };
-        window.alert(message);
+        appAlert(message, { title: "Due for maintenance" });
       }
     }
 
@@ -12550,7 +12784,6 @@ function CompanyStatusSection({ bare } = {}) {
   if (!setup) return null;
 
   const act = (key, fn, description, question) => {
-    if (!window.confirm(question)) return;
     setError("");
     guardAction(key, async () => {
       setBusy(true);
@@ -12564,7 +12797,7 @@ function CompanyStatusSection({ bare } = {}) {
           : (LAUNCH_REASONS[reason] || "That did not work."));
         throw new Error(err ? "network" : reason || "refused");
       }
-    }, { description, tableName: "operators" });
+    }, { description, tableName: "operators", warning: question });
   };
 
   const state = !setup.launched ? "In setup. Not live yet."
@@ -12579,13 +12812,13 @@ function CompanyStatusSection({ bare } = {}) {
       setup.launched && !setup.paused && React.createElement("button", {
         type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy,
         onClick: () => act("company.pause", "pause_company", "Paused the company.",
-          "Pause the company?\n\nYour branches leave fleetr.ai and take no online bookings until you resume. Staff keep working, and texts for existing reservations and rentals keep going."),
+          "Pause the company? Your branches leave fleetr.ai and take no online bookings until you resume. Staff keep working, and texts for existing reservations and rentals keep going."),
       }, "Pause"),
       setup.launched && setup.paused && React.createElement("button", {
         type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px" },
         disabled: busy || setup.suspended,
         onClick: () => act("company.resume", "resume_company", "Resumed the company.",
-          "Resume the company?\n\nBranches switched on show on fleetr.ai again and take online bookings."),
+          "Resume the company? Branches switched on show on fleetr.ai again and take online bookings."),
       }, "Resume")),
   ];
   return bare
@@ -13390,6 +13623,8 @@ function RentalAgreementsPage() {
   const [srchReturn,      setSrchReturn]      = React.useState("");
   const [returnOpen,      setReturnOpen]      = React.useState(false);
   const [returnAnchor,    setReturnAnchor]    = React.useState({ x: 0, y: 0 });
+  useAnchorFollow(pickupOpen, pickupAnchor, setPickupAnchor, () => setPickupOpen(false));
+  useAnchorFollow(returnOpen, returnAnchor, setReturnAnchor, () => setReturnOpen(false));
   const [returnMonth,     setReturnMonth]     = React.useState(null);
 
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -13486,8 +13721,7 @@ function RentalAgreementsPage() {
         type: "button",
         className: srchVal ? "resvSearchInput resvDateBtn resvDateBtn--active" : "resvSearchInput resvDateBtn",
         onClick: (e) => {
-          const rect = e.currentTarget.getBoundingClientRect();
-          setAnchor({ x: rect.left, y: rect.bottom + 4 });
+          setAnchor(anchorAt(e.currentTarget));
           setOpen((o) => !o);
         },
       }, srchVal ? fmtDate(srchVal) : label),
@@ -14832,6 +15066,7 @@ function CloseRentalPage() {
     }, {
       tableName: "rental_agreements",
       recordId: ra.resCode || ra.id,
+      warning: `Close the rental agreement for ${ra.resCode || ra.id}${row?.plate ? ` on ${row.plate}` : ""}?`,
       description: `Closed rental agreement ${ra.resCode || ra.id}: ${row?.plate || "vehicle"} back at ` +
         `${fmtDistance(final.closingMileage)}, gas ${final.closingGasLevel}, ` +
         (final.newDamageFound ? `new damage reported (${final.newDamageNote})` : "no new damage") +
@@ -15572,12 +15807,12 @@ function CustomerPage() {
 
   const [openCal,  setOpenCal]  = React.useState(null);
   const [calAnchor, setCalAnchor] = React.useState({ x: 0, y: 0 });
+  useAnchorFollow(openCal != null, calAnchor, setCalAnchor, () => setOpenCal(null));
   const [calMonths, setCalMonths] = React.useState({});
   const todayIso = new Date().toISOString().slice(0, 10);
 
   const openCalFor = (key, e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    setCalAnchor({ x: rect.left, y: rect.bottom + 4 });
+    setCalAnchor(anchorAt(e.currentTarget));
     setOpenCal((prev) => (prev === key ? null : key));
   };
   const moveCalMonth = (key, delta) => {
@@ -15642,6 +15877,7 @@ function CustomerPage() {
   };
   const [openRatesPicker, setOpenRatesPicker] = React.useState(null);
   const [ratesPickerAnchor, setRatesPickerAnchor] = React.useState({ x: 0, y: 0 });
+  useAnchorFollow(openRatesPicker != null, ratesPickerAnchor, setRatesPickerAnchor, () => setOpenRatesPicker(null));
   const [ratesHoverCat, setRatesHoverCat] = React.useState(null);
 
   const [billToForm, setBillToForm] = React.useState({
@@ -15957,7 +16193,7 @@ function CustomerPage() {
     // rule, so it says so rather than writing and being wrong quietly.
     const allowed = manualRaTransition(rentalAgreementStatus, status);
     if (!allowed.ok) {
-      window.alert(allowed.error);
+      appAlert(allowed.error, { title: "Status not changed" });
       logAudit({
         actionType: "ra.advance", tableName: "reservations", recordId: resCode,
         outcome: "refused",
@@ -15971,15 +16207,12 @@ function CustomerPage() {
         prev.map((r) => r.resCode === resCode ? { ...r, rentalAgreementStatus: status } : r)
       );
       syncRAStatus(resCode, status);
-    }, { tableName: "reservations", recordId: resCode, description: `Rental agreement status ${rentalAgreementStatus} -> ${status}.` });
+    }, { tableName: "reservations", recordId: resCode, description: `Rental agreement status ${rentalAgreementStatus} -> ${status}.`,
+         warning: `Change ${resCode} from ${statusLabel(rentalAgreementStatus)} to ${statusLabel(status)}?` });
   };
 
-  const handleDeleteReservation = async () => {
+  const handleDeleteReservation = () => {
     if (!resCode) return;
-    const confirmed = window.confirm(
-      `Delete reservation ${resCode} for ${name}? This cannot be undone.`
-    );
-    if (!confirmed) return;
     guardAction("reservation.delete", async () => {
       setReservations((prev) => prev.filter((r) => r.resCode !== resCode));
       try {
@@ -15988,7 +16221,8 @@ function CustomerPage() {
         console.warn("Delete reservation error:", e);
       }
       navigate(-1);
-    }, { tableName: "reservations", recordId: resCode, description: `Deleted reservation ${resCode}.` });
+    }, { tableName: "reservations", recordId: resCode, description: `Deleted reservation ${resCode}.`,
+         warning: `Delete reservation ${resCode}? This cannot be undone.`, danger: true });
   };
 
   const deleteBtn = React.createElement("button", {
@@ -16005,9 +16239,11 @@ function CustomerPage() {
       ? "customerRentalAgreementBtn customerRentalAgreementBtn--damage customerRentalAgreementBtn--damage-active"
       : "customerRentalAgreementBtn customerRentalAgreementBtn--damage",
     disabled: isDamaged,
-    onClick: () => {
+    onClick: async () => {
       if (!resCode || isDamaged) return;
-      const description = window.prompt("Describe the damage:") || "";
+      const typed = await appPrompt({ title: "Flag damage", label: "Describe the damage", confirmLabel: "Flag damage" });
+      if (typed == null) return;
+      const description = typed.trim();
       // Opens a claim that a customer can be billed against, so it takes the PIN.
       guardAction("damage.flag", () => {
         setLocalRecord((prev) => prev ? { ...prev, hasDamage: true } : prev);
@@ -16160,8 +16396,7 @@ function CustomerPage() {
           type: "button",
           className: "aiControl readyFleetTrigger",
           onClick: (e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            setRatesPickerAnchor({ x: rect.left, y: rect.bottom + 4 });
+            setRatesPickerAnchor(anchorAt(e.currentTarget));
             setOpenRatesPicker(isOpen ? null : valueKey);
             setRatesHoverCat(null);
           },
@@ -16792,14 +17027,18 @@ function CustomerPage() {
     resCode && React.createElement(
       "div",
       { className: "customerPageMeta" },
-      React.createElement("span", { className: "customerPageMetaCode" }, resCode),
+      // The source as plain text after the code: "NEZ 657 115 · fleetr.ai".
+      React.createElement("span", { className: "customerPageMetaCode" }, (() => {
+        const raw = String(localRecord?.source || "").trim();
+        const src = /^fleetr\.ai( bookings)?$/i.test(raw) || (!raw && localRecord?.bookingChannel === "fleetr.ai") ? "fleetr.ai" : raw;
+        return src ? `${resCode} \u00b7 ${src}` : resCode;
+      })()),
       (() => {
         const raStatus = rentalAgreementStatus;
         if (!raStatus || raStatus === "reservation") return null;
         const cls = raBadgeClass(raStatus, { meta: true });
         return React.createElement("span", { className: cls }, statusLabel(raStatus));
       })(),
-      localRecord?.bookingChannel === "fleetr.ai" && React.createElement(BookedOnFleetrTag, { meta: true }),
       localRecord?.customerChangedAt && React.createElement(ChangedByCustomerTag, { meta: true }),
       ra?.customerExtendedAt && React.createElement(ExtendedByCustomerTag, { meta: true })
     ),
@@ -21772,6 +22011,50 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .faiCrop__zoom input{ flex: 1; accent-color: #F4845F; }
 .faiCrop__actions{ display: flex; justify-content: flex-end; gap: 8px; }
 @media (prefers-reduced-motion: reduce){ .faiEditable, .faiEditTag{ transition: none; } }
+
+/* The in-app dialog, in place of the browser's alert, confirm and prompt. */
+.appDialogBackdrop{
+  position: fixed; inset: 0; z-index: 10050;
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+  background: rgba(31, 30, 29, 0.45);
+}
+.appDialog{
+  width: 100%; max-width: 420px; padding: 24px;
+  background: #F9F9F7; color: #1F1E1D; font-family: 'Inter', sans-serif;
+  border-radius: 16px; box-shadow: 0 20px 60px rgba(31, 30, 29, 0.25);
+}
+.appDialog__title{ margin: 0 0 8px; font-size: 18px; font-weight: 700; line-height: 1.3; }
+.appDialog__message{ margin: 0; font-size: 15px; line-height: 1.55; color: #3B3A37; white-space: pre-line; }
+.appDialog__field{ display: flex; flex-direction: column; gap: 6px; margin-top: 16px; }
+.appDialog__label{ font-size: 13px; font-weight: 600; color: #5C5B57; }
+.appDialog__input{
+  border: 1px solid #E3E2DE; border-radius: 10px; padding: 11px 12px;
+  font-size: 15px; font-family: inherit; color: #1F1E1D; background: #FFFFFF;
+}
+.appDialog__input:focus{ outline: 2px solid #F4845F; outline-offset: -1px; }
+.appDialog__actions{ display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.appDialog__cancel, .appDialog__main{
+  border-radius: 10px; padding: 11px 18px; font-size: 14px; font-weight: 700; font-family: inherit; cursor: pointer;
+}
+.appDialog__cancel{ border: 1px solid #E3E2DE; background: transparent; color: #1F1E1D; }
+.appDialog__cancel:hover{ background: rgba(244, 132, 95, 0.14); border-color: #F4845F; }
+.appDialog__main{ border: none; background: #F4845F; color: #1F1E1D; }
+.appDialog__main:hover{ background: #E06D47; }
+.appDialog__main--danger, .resModalSubmit--danger{ background: #A3271B; color: #F9F9F7; }
+.appDialog__main--danger:hover, .resModalSubmit--danger:hover{ background: #8A2016; }
+/* The class and dates a fleet notification opened Reservations with. */
+.resvLinkFilter{
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 6px 5px 12px;
+  border-radius: 999px; background: rgba(244, 132, 95, 0.14); border: 1px solid #F4845F;
+  font-size: 13px; font-weight: 600; color: #1F1E1D;
+}
+/* Low availability warnings, under Vehicle classes. */
+.lowWarn{ margin-top: 18px; padding-top: 14px; border-top: 1px solid #EEEDE9; }
+.lowWarn__title{ margin: 0 0 4px; font-size: 14px; font-weight: 700; }
+.lowWarn__row{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; }
+.lowWarn__name{ min-width: 160px; font-size: 14px; font-weight: 600; }
+/* The warning inside the PIN prompt: what entering the PIN will do. */
+.pinWarning{ margin: 0 0 10px; font-size: 15px; font-weight: 600; line-height: 1.5; color: #1F1E1D; }
 `;
 document.head.appendChild(style);
 
@@ -21801,9 +22084,11 @@ function DateField({ value, onChange, className, placeholder, clearable, disable
   const todayIso = localIso(new Date());
 
   // Below the button, or above it when there is no room; kept on screen.
+  // Closed once the button is scrolled out of view.
   const place = React.useCallback(() => {
     const t = triggerRef.current, p = panelRef.current;
     if (!t) return;
+    if (!fieldInView(t)) { setOpen(false); return; }
     const r = t.getBoundingClientRect();
     const w = p ? p.offsetWidth : 336, h = p ? p.offsetHeight : 320;
     const left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
