@@ -14615,16 +14615,13 @@ function useOpenRentalRows({ includeSelfReturns = false } = {}) {
   }, [reservations, rentalAgreements, fleet, includeSelfReturns]);
 }
 
-// Plate and province, or customer last name. Nothing is listed until something
-// is typed, so the screen never opens on a wall of every open rental. A vehicle
-// with no province on file still matches a chosen province: it cannot be ruled
-// out, and hiding it would leave that rental impossible to find here.
+// One box: plate or last name, searched together. Nothing is listed until two
+// characters are typed, so the screen never opens on a wall of every open
+// rental. Plates match ignoring case, spaces and dashes; last names ignoring
+// case. A plate typed in full puts its rental first.
 function OpenRentalSearch({ rows, onSelect }) {
   const isMobile = useMobile();
-  const [mode,     setMode]     = React.useState("plate");
-  const [plate,    setPlate]    = React.useState("");
-  const [province, setProvince] = React.useState("All");
-  const [lastName, setLastName] = React.useState("");
+  const [text, setText] = React.useState("");
 
   const fmtDate = (iso) => {
     if (!iso) return "-";
@@ -14632,31 +14629,21 @@ function OpenRentalSearch({ rows, onSelect }) {
     return Number.isNaN(d.getTime()) ? iso
       : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
   };
+  const plateText = (row) => [row.plate || "-", row.province].filter(Boolean).join(" \u00b7 ");
 
-  const plateQuery = normalizePlate(plate);
-  const nameQuery  = lastName.trim().toLowerCase();
-  const query      = mode === "plate" ? plateQuery : nameQuery;
-  const matches = !query ? [] : rows.filter((row) => {
-    if (mode === "plate") {
-      if (!normalizePlate(row.plate).includes(plateQuery)) return false;
-      if (province !== "All" && row.province && row.province !== province) return false;
-      return true;
-    }
-    return row.lastName.toLowerCase().includes(nameQuery);
-  });
+  const typed      = text.trim();
+  const plateQuery = normalizePlate(typed);
+  const nameQuery  = typed.toLowerCase().replace(/\s+/g, " ");
+  const matches = typed.length < 2 ? [] : rows
+    .filter((row) =>
+      (plateQuery !== "" && normalizePlate(row.plate).includes(plateQuery))
+      || String(row.lastName || "").toLowerCase().includes(nameQuery))
+    .sort((x, y) =>
+      (normalizePlate(y.plate) === plateQuery) - (normalizePlate(x.plate) === plateQuery));
 
-  const modeTab = (value, label) =>
-    React.createElement("button", {
-      key: value, type: "button",
-      className: mode === value ? "resvPageTab resvPageTab--active" : "resvPageTab",
-      onClick: () => setMode(value),
-    }, label);
-
-  const results = !query
-    ? React.createElement("div", { className: "resvEmpty" },
-        mode === "plate" ? "Type a plate number to find the open rental." : "Type the customer's last name to find the open rental.")
+  const results = typed.length < 2 ? null
     : matches.length === 0
-      ? React.createElement("div", { className: "resvEmpty" }, "No open rental agreements match.")
+      ? React.createElement("div", { className: "resvEmpty" }, "No open rentals found.")
       : isMobile
         ? matches.map((row) =>
             React.createElement("button", {
@@ -14665,7 +14652,7 @@ function OpenRentalSearch({ rows, onSelect }) {
             },
               React.createElement("div", { className: "dashCard__header" },
                 React.createElement("span", null, row.customer),
-                React.createElement("span", { className: "dashCard__resCode" }, row.plate || "-")
+                React.createElement("span", { className: "dashCard__resCode" }, plateText(row))
               ),
               React.createElement("div", { className: "dashCard__meta" },
                 React.createElement("span", { className: "dashCard__chip" }, row.vehicle),
@@ -14678,7 +14665,7 @@ function OpenRentalSearch({ rows, onSelect }) {
               React.createElement("table", { className: "dashboardTable" },
                 React.createElement("thead", null,
                   React.createElement("tr", null,
-                    ["Vehicle", "Customer", "Plate", "Pickup Date"].map((col) => React.createElement("th", { key: col }, col))
+                    ["Plate", "Customer", "Vehicle", "Pickup Date"].map((col) => React.createElement("th", { key: col }, col))
                   )
                 ),
                 React.createElement("tbody", null,
@@ -14688,9 +14675,9 @@ function OpenRentalSearch({ rows, onSelect }) {
                       onClick: () => onSelect(row.id),
                       onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(row.id); } },
                     },
-                      React.createElement("td", null, row.vehicle),
+                      React.createElement("td", null, plateText(row)),
                       React.createElement("td", null, row.customer),
-                      React.createElement("td", null, row.plate || "-"),
+                      React.createElement("td", null, row.vehicle),
                       React.createElement("td", null, fmtDate(row.pickupDate))
                     )
                   )
@@ -14700,28 +14687,14 @@ function OpenRentalSearch({ rows, onSelect }) {
           );
 
   return React.createElement(React.Fragment, null,
-    React.createElement("div", { className: "resvPageTabs" },
-      modeTab("plate", "Plate & province"),
-      modeTab("lastName", "Customer last name")
+    React.createElement("div", { className: "resvSearchBar" },
+      React.createElement("input", {
+        className: "resvSearchInput", type: "text", placeholder: "Plate or last name",
+        "aria-label": "Plate or last name",
+        autoFocus: true, autoComplete: "off", spellCheck: false,
+        value: text, onChange: (e) => setText(e.target.value),
+      })
     ),
-    mode === "plate"
-      ? React.createElement("div", { className: "resvSearchBar" },
-          React.createElement("input", {
-            className: "resvSearchInput", type: "text", placeholder: "Plate number",
-            autoFocus: true, autoCapitalize: "characters", autoComplete: "off",
-            value: plate, onChange: (e) => setPlate(e.target.value),
-          }),
-          React.createElement("select", {
-            className: "resvSearchInput", value: province, onChange: (e) => setProvince(e.target.value),
-          }, PROV_STATE_LIST.map((p) => React.createElement("option", { key: p.value, value: p.value }, p.label)))
-        )
-      : React.createElement("div", { className: "resvSearchBar" },
-          React.createElement("input", {
-            className: "resvSearchInput", type: "text", placeholder: "Last name",
-            autoFocus: true, autoComplete: "off",
-            value: lastName, onChange: (e) => setLastName(e.target.value),
-          })
-        ),
     results
   );
 }
@@ -15143,7 +15116,7 @@ function CloseRentalPage() {
         `${done.photosFailed} photo${done.photosFailed === 1 ? "" : "s"} could not be uploaded. Photograph the damage again from the vehicle's page.`),
       React.createElement("div", { className: "closeRentalActions" },
         React.createElement("button", { type: "button", className: "resModalCancel", onClick: () => { setDone(null); resetFlow(); } }, "Close another rental"),
-        React.createElement("button", { type: "button", className: "resModalSubmit", onClick: () => navigate("/dashboard") }, "Back to Dashboard")
+        React.createElement("button", { type: "button", className: "resModalSubmit", onClick: () => navigate("/dashboard") }, "Back to Home")
       )
     );
   }
@@ -15245,7 +15218,7 @@ function CloseRentalPage() {
   }
 
   return React.createElement("div", { className: "page" },
-    React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate("/dashboard") }, "\u2190 Dashboard"),
+    React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate("/dashboard") }, "\u2190 Home"),
     React.createElement("h1", { className: "page__title" }, "Close Rental"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement(OpenRentalSearch, { rows: openRows, onSelect: setSelectedId })
@@ -15735,7 +15708,7 @@ function SwitchOutPage() {
 
   // Step 1: find the open rental.
   return React.createElement("div", { className: "page" },
-    React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate("/dashboard") }, "\u2190 Dashboard"),
+    React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate("/dashboard") }, "\u2190 Home"),
     React.createElement("h1", { className: "page__title" }, "Switch Out"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement(OpenRentalSearch, { rows: openRows, onSelect: setSelectedId })
