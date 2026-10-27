@@ -4615,7 +4615,7 @@ function NoShowsPage() {
       React.createElement("td", null, fmtBranchStamp(row.cancelledAt),
         React.createElement("div", { style: { opacity: 0.7 } }, HOW[row.cancelledHow] || "")),
       React.createElement("td", null, !row.canRestore
-        ? React.createElement("span", { style: { opacity: 0.7 } }, "Cannot be restored")
+        ? null
         : picking === row.id
           ? React.createElement(NewPickupPicker, {
               initial: row.defaultPickup, label: "Restore", busy: working,
@@ -11195,23 +11195,25 @@ function AuditLogPage() {
   const actors  = React.useMemo(() => [...new Set(rows.map((r) => r.actor).filter(Boolean))].sort(), [rows]);
   const actions = React.useMemo(() => [...new Set(rows.map((r) => r.actionType).filter(Boolean))].sort(), [rows]);
 
-  const filtered = rows.filter((r) => {
+  // Everything but the outcome, which the tabs choose.
+  const matches = (r) => {
     if (actorFilt   !== "All" && r.actor      !== actorFilt)   return false;
     if (actionFilt  !== "All" && r.actionType !== actionFilt)  return false;
-    if (outcomeFilt !== "All" && r.outcome    !== outcomeFilt) return false;
     // Compared on the local calendar day, so "today" means the staff member's
     // today rather than UTC's.
     const day = r.timestamp ? new Date(r.timestamp).toLocaleDateString("en-CA") : "";
     if (fromDate && day < fromDate) return false;
     if (toDate   && day > toDate)   return false;
     return true;
-  });
+  };
+  const searched = rows.filter(matches);
+  const filtered = searched.filter((r) => outcomeFilt === "All" || r.outcome === outcomeFilt);
 
   const fmtWhen = (iso) => {
-    if (!iso) return "·";
+    if (!iso) return "\u00b7";
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? iso
-      : d.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      : d.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   };
 
   const outcomeClass = (o) =>
@@ -11219,9 +11221,9 @@ function AuditLogPage() {
     : o === "cancelled" ? "auditOutcome auditOutcome--cancelled"
     : "auditOutcome auditOutcome--refused";
 
-  // The filters as the Reservations page draws its own: one row of the same
-  // boxes, each saying what it filters by when nothing is chosen.
-  // options are [value, text]; "All" is every one.
+  // The filters on the bar every list page has: the same boxes, each saying
+  // what it filters by when nothing is chosen. options are [value, text];
+  // "All" is every one.
   const select = (label, value, onChange, allText, options) =>
     React.createElement("select",
       { className: "resvSearchInput auditFilterSelect", value, "aria-label": label, onChange: (e) => onChange(e.target.value) },
@@ -11236,27 +11238,49 @@ function AuditLogPage() {
       onChange: (v) => onChange(v),
     });
 
+  // What the entry was about, in words: the kind of record and its code.
+  const RECORD_KINDS = {
+    reservations: "Reservation", rental_agreements: "Rental agreement", fleet: "Vehicle", users: "Staff",
+    damage_claims: "Damage claim", no_shows: "No-show", operators: "Company", locations: "Branch",
+    app_settings: "Setting", ndi_rows: "Non-drive", tor_rows: "Repair date", archived_vehicles: "Archived vehicle",
+  };
+  const recordText = (r) => [RECORD_KINDS[r.tableName] || r.tableName, r.recordId].filter(Boolean).join(" ");
+  const TIER_TEXT = { pin: "PIN", confirm: "Confirmed" };
+
+  const entry = (r) => React.createElement("li", { key: r.id, className: "auditEntry" },
+    React.createElement("div", { className: "auditEntry__top" },
+      React.createElement("div", { className: "auditEntry__what" },
+        React.createElement("span", { className: "auditEntry__action", title: r.actionType || "" }, r.actionLabel || r.actionType || "\u00b7"),
+        recordText(r) && React.createElement("span", { className: "auditEntry__record" }, recordText(r))
+      ),
+      React.createElement("span", { className: outcomeClass(r.outcome) }, r.outcome || "\u00b7")
+    ),
+    r.description && React.createElement("p", { className: "auditEntry__details" }, r.description),
+    React.createElement("div", { className: "auditEntry__meta" },
+      [fmtWhen(r.timestamp), r.actor || "\u00b7", TIER_TEXT[r.tier] || r.tier, r.actionType]
+        .filter(Boolean).map((t, i) => React.createElement("span", { key: i, className: i === 3 ? "auditActionKey" : null }, t)))
+  );
+
   return React.createElement(
     "div", { className: "page" },
     React.createElement("h1", { className: "page__title" }, "Audit Log"),
     React.createElement("div", { className: "page__titleUnderline" }),
-
-    React.createElement("section", { className: "dashboardSection", style: { marginBottom: "16px" } },
-      React.createElement("div", { className: "dashboardSection__body" },
-        React.createElement("div", { className: "resvSearchBar auditFilterBar" },
-          select("Actor",   actorFilt,   setActorFilt,   "All actors",   actors.map((a) => [a, a])),
-          select("Action",  actionFilt,  setActionFilt,  "All actions",  actions.map((a) => [a, a])),
-          select("Outcome", outcomeFilt, setOutcomeFilt, "All outcomes", ["completed", "cancelled", "refused"].map((o) => [o, sentence(o)])),
-          dateInput("From date", fromDate, setFromDate),
-          dateInput("To date",   toDate,   setToDate),
-          React.createElement("button", {
-            type: "button", className: "auditClearBtn",
-            onClick: () => { setActorFilt("All"); setActionFilt("All"); setOutcomeFilt("All"); setFromDate(""); setToDate(""); },
-          }, "Clear filters")
-        )
-      )
+    React.createElement("div", { className: "resvSearchBar auditFilterBar" },
+      select("Actor",  actorFilt,  setActorFilt,  "All actors",  actors.map((a) => [a, a])),
+      select("Action", actionFilt, setActionFilt, "All actions", actions.map((a) => [a, a])),
+      dateInput("From date", fromDate, setFromDate),
+      dateInput("To date",   toDate,   setToDate),
+      React.createElement("button", {
+        type: "button", className: "auditClearBtn",
+        onClick: () => { setActorFilt("All"); setActionFilt("All"); setOutcomeFilt("All"); setFromDate(""); setToDate(""); },
+      }, "Clear filters")
     ),
-
+    React.createElement(StatusTabs, {
+      label: "Outcome", value: outcomeFilt, onChange: setOutcomeFilt,
+      tabs: [["All", "All"], ["completed", "Completed"], ["cancelled", "Cancelled"], ["refused", "Refused"]].map(([value, label]) => ({
+        value, label, count: value === "All" ? searched.length : searched.filter((r) => r.outcome === value).length,
+      })),
+    }),
     React.createElement("section", { className: "dashboardSection" },
       React.createElement("div", { className: "dashboardSection__header" },
         React.createElement("div", { className: "dashboardSection__headerRow" },
@@ -11267,38 +11291,11 @@ function AuditLogPage() {
         error
           ? React.createElement("div", { className: "addVehicleError" }, error)
         : loading
-          ? React.createElement("div", { className: "resvEmpty" }, "Loading…")
+          ? React.createElement("div", { className: "resvEmpty" }, "Loading\u2026")
         : filtered.length === 0
           ? React.createElement("div", { className: "resvEmpty" },
               rows.length === 0 ? "Nothing recorded yet." : "No entries match these filters.")
-          : React.createElement("table", { className: "dashboardTable" },
-              React.createElement("thead", null,
-                React.createElement("tr", null,
-                  ["When", "Actor", "Action", "Record", "Tier", "Outcome", "Details"].map((c) =>
-                    React.createElement("th", { key: c }, c))
-                )
-              ),
-              React.createElement("tbody", null,
-                filtered.map((r) =>
-                  React.createElement("tr", { key: r.id },
-                    React.createElement("td", { style: { whiteSpace: "nowrap" } }, fmtWhen(r.timestamp)),
-                    React.createElement("td", null, r.actor || "·"),
-                    React.createElement("td", null,
-                      React.createElement("div", null, r.actionLabel || r.actionType),
-                      React.createElement("div", { className: "auditActionKey" }, r.actionType)
-                    ),
-                    React.createElement("td", null,
-                      r.recordId || "·",
-                      r.tableName && React.createElement("div", { className: "auditActionKey" }, r.tableName)
-                    ),
-                    React.createElement("td", null, r.tier || "·"),
-                    React.createElement("td", null,
-                      React.createElement("span", { className: outcomeClass(r.outcome) }, r.outcome || "·")),
-                    React.createElement("td", { className: "auditDescription" }, r.description || "·")
-                  )
-                )
-              )
-            )
+          : React.createElement("ul", { className: "auditList" }, filtered.map(entry))
       )
     )
   );
@@ -18593,7 +18590,6 @@ body, * {
 .dashboardTable{
   width: 100%;
   border-collapse: collapse;
-  min-width: 760px;
 }
 .resDayNav{
   display: flex;
@@ -19942,12 +19938,6 @@ body, * {
     text-overflow: ellipsis;
   }
 
-  /* Make remaining tables scrollable rather than overflowing */
-  .dashboardSection .dashboardTable{
-    display: block;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-  }
 
   /* Mobile browsers zoom in on any field whose text is under 16px when it is
      tapped. 16px on every field stops that without touching the viewport, so
@@ -20269,11 +20259,24 @@ body, * {
 /* ─── Audit Log ─────────────────────────────────────────────────────────── */
 /* The Audit Log's filters on the Reservations bar: one row on a wide screen,
    wrapping on a narrow one, every box and the button the same height. */
-.auditFilterBar{ margin-bottom: 0; }
+.auditFilterBar{ margin-bottom: 14px; }
 .auditFilterSelect, .auditFilterDate, .auditClearBtn{ height: 36px; box-sizing: border-box; }
-.auditFilterSelect{ width: 150px; font-family: inherit; font-size: 13px; }
-.auditFilterDate{ width: 150px; min-width: 0; }
-.auditFilterBar .dateFieldWrap{ display: inline-block; }
+.auditFilterSelect{ width: 160px; font-family: inherit; font-size: 13px; }
+.auditFilterDate{ width: 160px; min-width: 0; }
+.auditFilterBar .dateFieldWrap{ display: inline-flex; align-items: center; height: 36px; }
+/* The entries: the action first, then what it was done to, the details, and
+   when and by whom, smaller and muted. */
+.auditList{ list-style: none; margin: 0; padding: 0; }
+.auditEntry{ padding: 14px 18px; border-bottom: 1px solid rgba(31, 30, 29, 0.08); }
+.auditEntry:last-child{ border-bottom: none; }
+.auditEntry__top{ display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.auditEntry__what{ display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+.auditEntry__action{ font-size: 15px; font-weight: 600; color: #1F1E1D; }
+.auditEntry__record{ font-size: 13px; font-weight: 500; color: #1F1E1D; padding: 1px 8px; border-radius: 6px; background: #F1EFEA; overflow-wrap: anywhere; }
+.auditEntry__details{ margin: 6px 0 0; font-size: 13.5px; line-height: 1.5; color: rgba(31, 30, 29, 0.8); overflow-wrap: anywhere; }
+.auditEntry__meta{ display: flex; flex-wrap: wrap; gap: 4px 0; margin-top: 8px; font-size: 12px; color: rgba(31, 30, 29, 0.55); }
+.auditEntry__meta > span + span::before{ content: "\u00b7"; margin: 0 8px; }
+.auditEntry .auditOutcome{ flex: 0 0 auto; }
 .auditClearBtn {
   font-family: inherit;
   font-size: 13px;
@@ -20287,8 +20290,14 @@ body, * {
   white-space: nowrap;
 }
 .auditClearBtn:hover { border-color: rgba(31, 30, 29, 0.28); }
-@media (max-width: 640px){
+@media (max-width: 767px){
+  /* Two to a row, the button the full width; each entry its own card. */
+  .auditFilterBar{ display: grid; grid-template-columns: 1fr 1fr; }
   .auditFilterSelect, .auditFilterDate, .auditFilterBar .dateFieldWrap{ width: 100%; }
+  .auditFilterBar .auditClearBtn{ grid-column: 1 / -1; }
+  .auditList{ padding: 10px; display: grid; gap: 10px; }
+  .auditEntry{ border: 1px solid rgba(31, 30, 29, 0.12); border-radius: 12px; background: #FFFFFF; box-shadow: 0 1px 2px rgba(31, 30, 29, 0.05); }
+  .auditEntry:last-child{ border-bottom: 1px solid rgba(31, 30, 29, 0.12); }
 }
 /* The policy key under the human label. Present so an entry traces back to
    ACTION_POLICY without guessing, quiet enough not to compete with the label. */
@@ -20296,11 +20305,6 @@ body, * {
   font-size: 11px;
   color: rgba(6,13,12,0.45);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-.auditDescription {
-  max-width: 420px;
-  font-size: 12px;
-  color: rgba(6,13,12,0.75);
 }
 .auditOutcome {
   display: inline-block;
@@ -21829,6 +21833,8 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .faiAdd svg{ width: 14px; height: 14px; }
 .fai .faiEmptyPerk span{ color: var(--terra-dk); font-weight: 600; }
 .fai .faiMuted{ color: var(--ink-55); font-size: 14.5px; }
+/* The note in place of a price wraps, so a narrow card never runs past its edge. */
+.fai .card-price .faiMuted{ white-space: normal; text-align: right; }
 .fai .faiHint{ color: var(--ink-55); font-size: 13px; margin-top: 10px; }
 .faiImage__hit{ position: absolute; inset: 0; cursor: pointer; }
 .faiImage__hit:hover::after, .faiImage__hit:focus-visible::after{ content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 2px var(--terra); border-radius: inherit; pointer-events: none; }
@@ -21930,8 +21936,78 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .lockboxSwitch input{ width: 18px; height: 18px; accent-color: #F4845F; }
 /* The warning inside the PIN prompt: what entering the PIN will do. */
 .pinWarning{ margin: 0 0 10px; font-size: 15px; font-weight: 600; line-height: 1.5; color: #1F1E1D; }
+
+/* ── Tables fit their box, everywhere ──────────────────────────────────────
+   Nothing scrolls sideways and there is no blank space past the content: a
+   table is as wide as its box, and a cell's text wraps rather than pushing it
+   wider. On a phone each row becomes a card, every value under its column's
+   name (data-label, set by labelTableCells). */
+/* !important over the minimum widths some tables set inline. */
+.dashboardTable{ width: 100%; min-width: 0 !important; table-layout: auto; }
+.dashboardTable th, .dashboardTable td{ white-space: normal; overflow-wrap: anywhere; }
+/* A row of controls in a cell wraps onto a second line rather than widening it. */
+.dashboardTable td *{ flex-wrap: wrap; }
+.dashboardTable td button{ white-space: normal; }
+.dashboardTable th{ overflow-wrap: normal; }
+.dashboardSection__body, .companyStep__body > .dashboardSection__body{ overflow-x: visible; }
+@media (max-width: 767px){
+  .dashboardTable, .dashboardTable tbody, .dashboardTable tr, .dashboardTable td{ display: block; width: 100%; box-sizing: border-box; }
+  .dashboardTable thead{ display: none; }
+  .dashboardTable tbody tr{
+    margin: 10px; width: auto; padding: 6px 14px;
+    border: 1px solid rgba(31, 30, 29, 0.12); border-radius: 12px; background: #FFFFFF;
+    box-shadow: 0 1px 2px rgba(31, 30, 29, 0.05);
+  }
+  .dashboardTable tbody tr:hover{ background: #FFFFFF; }
+  .dashboardTable td{
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+    padding: 8px 0; border-bottom: 1px solid rgba(31, 30, 29, 0.08); text-align: right; min-height: 0;
+  }
+  .dashboardTable td > *{ max-width: 100%; }
+  .dashboardTable tbody tr td:last-child{ border-bottom: none; }
+  .dashboardTable td::before{
+    content: attr(data-label); flex: 0 0 auto; max-width: 45%; text-align: left;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(31, 30, 29, 0.55);
+  }
+  /* A cell with no column name (actions, a full-width note) takes the row. */
+  .dashboardTable td[data-label=""]{ justify-content: flex-start; text-align: left; }
+  .dashboardTable td[data-label=""]::before{ display: none; }
+  .dashboardTable td:empty{ display: none; }
+  /* A vehicle's detail rows: a narrower label, and the value wraps under it
+     rather than running past the edge. */
+  .vehicleDetailRow{ flex-wrap: wrap; row-gap: 4px; }
+  .vehicleDetailLabel{ min-width: 110px; }
+  .vehicleDetailRow select{ max-width: 100%; min-width: 0; }
+}
 `;
 document.head.appendChild(style);
+
+// Every table cell under its column's name, so a phone can show each row as a
+// card. Read from the table's header row, kept up to date as the app renders.
+// A cell spanning the whole row has no single column and gets no name.
+function labelTableCells(root) {
+  root.querySelectorAll("table.dashboardTable").forEach((table) => {
+    const head = table.tHead && table.tHead.rows[0];
+    if (!head) return;
+    const names = [];
+    Array.from(head.cells).forEach((th) => {
+      for (let i = 0; i < (th.colSpan || 1); i++) names.push(th.textContent.trim());
+    });
+    Array.from(table.tBodies).forEach((tb) => Array.from(tb.rows).forEach((tr) => {
+      let col = 0;
+      Array.from(tr.cells).forEach((td) => {
+        const span = td.colSpan || 1;
+        const label = span > 1 ? "" : (names[col] || "");
+        if (td.getAttribute("data-label") !== label) td.setAttribute("data-label", label);
+        col += span;
+      });
+    }));
+  });
+}
+// Run after each batch of changes the app makes. Setting the labels changes
+// no elements, so it does not set itself off again.
+new MutationObserver(() => labelTableCells(document))
+  .observe(document.documentElement, { childList: true, subtree: true });
 
 // ─── DateField: the date picker ──────────────────────────────────────────────
 // In place of the browser's own date box. A button that reads the date in
