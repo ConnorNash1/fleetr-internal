@@ -2071,9 +2071,12 @@ function AppProvider({ children, currentUser, signOut }) {
         const patch = { rentalAgreementStatus: status };
         if (!existing.plate && plate) patch.plate = plate;
 
-        await supabase.from("rental_agreements").update(patch).eq("id", existing.id);
+        // Closing can mark the fuel Paid in the database (gas_paid_at_close.sql),
+        // so the gas fields come back with the write.
+        const { data: gas } = await supabase.from("rental_agreements").update(patch).eq("id", existing.id)
+          .select("gasOwed,gasCollected").maybeSingle();
         const updated = raRef.current.map((ra) =>
-          ra.resCode === resCode ? { ...ra, ...patch } : ra
+          ra.resCode === resCode ? { ...ra, ...patch, ...(gas || {}) } : ra
         );
         raRef.current = updated;
         setRentalAgreementsState(updated);
@@ -7049,8 +7052,9 @@ function GasCollectionsPage() {
   // here is a plain Unpaid/Paid toggle rather than a three-state field.
   const { rentalAgreements, setRentalAgreements, guardAction } = React.useContext(AppContext);
 
-  // Only show files with an outstanding balance (auto-removes when gasOwed hits 0)
-  const rows = rentalAgreements.filter((a) => parseFloat(a.gasOwed || 0) > 0);
+  // Only fuel still owed: an amount left and not marked Paid. Fuel paid on the
+  // closing invoice is marked Paid when the rental closes (gas_paid_at_close.sql).
+  const rows = rentalAgreements.filter((a) => parseFloat(a.gasOwed || 0) > 0 && !a.gasCollected);
 
   // Every write on this page moves money, so both the amount field and the
   // paid toggle funnel through here and take the PIN.
@@ -16165,14 +16169,19 @@ function CustomerPage() {
       }
       // Save lineItems and payments to rental_agreements
       if (ra?.id) {
+        // A payment that clears a closed rental's balance can mark its fuel
+        // Paid in the database (gas_paid_at_close.sql), so the gas fields come
+        // back with the write.
         const raRes = await supabase
           .from("rental_agreements")
           .update({ "lineItems": lineItems, "payments": payments })
-          .eq("id", ra.id);
+          .eq("id", ra.id)
+          .select("gasOwed,gasCollected")
+          .maybeSingle();
         console.log("rental_agreements charges save — response:", raRes);
         if (!raRes.error) {
           setRentalAgreements((prev) =>
-            prev.map((r) => r.id !== ra.id ? r : { ...r, lineItems, payments })
+            prev.map((r) => r.id !== ra.id ? r : { ...r, lineItems, payments, ...(raRes.data || {}) })
           );
         }
       }
