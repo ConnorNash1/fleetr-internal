@@ -6572,7 +6572,7 @@ function FleetVehiclesPage() {
 function FleetAdditionsPage({ embedded, onAdded } = {}) {
   const { fleet, setFleet, guardAction, archivedVehicles, setArchivedVehicles, currentUser } = React.useContext(AppContext);
   const { filtered, filterState } = useFleetFilter(fleet);
-  const [openCards, setOpenCards] = React.useState({ add: true, retire: false, archived: false });
+  const [openCards, setOpenCards] = React.useState({ add: false, retire: false, archived: false });
 
 
   // tankSize / pmInterval are typed in the company's own units, set once on
