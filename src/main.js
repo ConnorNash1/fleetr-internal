@@ -848,14 +848,11 @@ Non-drive intake operation rules:
 - To reschedule a row's pickup date or time, use operation "update" with match on "id" and data containing aiDate, aiTime, and/or aiMeridiem as needed.
 - Use the non-drive intake data passed in the user message to find row ids.
 
-No-shows (no_shows) table fields:
-- id (primary key, do not modify), rescode, customer, date, time, location, vehicleClass, phone (read-only, not editable)
-- called, status, stage (read-only, not editable through this AI)
-
-No-shows operation rules:
-- no_shows only supports "confirmPickup" through this AI. Do not update, insert, or delete no_shows records directly.
-- confirmPickup means the customer showed up after all. Use operation "confirmPickup" with match on "id" and no "data". This moves the row from no-shows back into an active reservation.
-- Use the no-shows data passed in the user message to find row ids.
+No-shows:
+- A missed pickup stays a reservation: one whose pickupStatus is "Pending arrival" more than 2 hours after its pickup time. The No Shows page lists them.
+- The no_shows table holds only records of no-shows already cancelled or dismissed, and rows from before this change (read-only).
+- confirmPickup means the customer is coming after all. Use operation "confirmPickup" on table "reservations" with match on "resCode" and no "data". The reservation is kept as it is and marked Confirmed.
+- Do not update, insert, or delete no_shows records.
 
 Damage claims (damage_claims) table fields:
 - id (primary key, do not modify), plate, rentalAgreementId (id of the matching rental_agreements record), description
@@ -934,6 +931,7 @@ const ACTION_POLICY = {
   // Destroys a record. There is no undo for any of these.
   "reservation.delete": { tier: "pin", label: "Delete reservation" },
   "reservation.noShow": { tier: "pin", label: "Mark reservation as a no-show" },
+  "noShow.cancel":      { tier: "pin", label: "Cancel a no-show reservation" },
   "vehicle.retire":     { tier: "pin", label: "Retire vehicle" },
 
   // Changes a dollar amount.
@@ -989,6 +987,8 @@ const ACTION_POLICY = {
   // Restores a reservation rather than destroying one. The destructive
   // direction, reservation.noShow, keeps its PIN.
   "noShow.confirmPickup": { tier: "confirm", label: "Confirm the customer showed up" },
+  // Takes a missed pickup off No Shows without cancelling anything.
+  "noShow.dismiss":       { tier: "confirm", label: "Dismiss a no-show" },
   // Records that damage exists; it sets no amount. The claim's dollar value is
   // a gas.amount-style write, gated separately.
   "damage.flag":      { tier: "confirm", label: "Flag damage" },
@@ -2254,61 +2254,9 @@ function AppProvider({ children, currentUser, signOut }) {
         }
       }
 
-      // ── 2. Move overdue "Pending arrival" reservations to no_shows ───────────
-      // Note: no_shows.id is a strict UUID column, so newly created rows must use
-      // crypto.randomUUID() rather than a custom string, and the same id must be
-      // reused in local state so later updates/deletes (eq("id", ...)) match the
-      // real row. no_shows.rescode is also lowercase, like ndi_rows.rescode.
-      // Moved once the day after the pickup day has ended too: until then the
-      // customer can still change the pickup time from the next-day no-show
-      // text (customer_reschedule.sql), though the vehicle is already free.
-      const loadYesterdayIso = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-      const existingNsCodes = new Set(nsData.map((ns) => ns.rescode));
-      const overdueRes = resData.filter(
-        (r) => r.date < loadYesterdayIso &&
-               r.pickupStatus === "Pending arrival" &&
-               r.rentalAgreementStatus === "reservation"
-      );
-      const toMove = overdueRes.filter((r) => !existingNsCodes.has(r.resCode));
-      if (toMove.length > 0) {
-        const newNsEntries = toMove.map((r) => ({
-          id:           crypto.randomUUID(),
-          rescode:      r.resCode,
-          customer:     r.customer,
-          time:         r.time || "",
-          vehicleClass: r.vehicleClass || "",
-          location:     r.location || "",
-          date:         r.date,
-          phone:        r.phone || "",
-          called:       false,
-          status:       "",
-          stage:        "2hour",
-        }));
-        try {
-          // Raw fetch bypasses Supabase JS v1 SDK's automatic `columns` URL param
-          const sweepRes = await fetch(`${SUPABASE_URL}/rest/v1/no_shows`, {
-            method: "POST",
-            headers: restHeaders({
-              "Content-Type": "application/json",
-              "Prefer":       "return=minimal",
-            }),
-            body: JSON.stringify(newNsEntries),
-          });
-          if (!sweepRes.ok) {
-            console.warn("No-shows sweep insert failed:", sweepRes.status, await sweepRes.text());
-          } else {
-            for (const r of toMove) {
-              const { error: delError } = await supabase.from("reservations").delete().eq("resCode", r.resCode);
-              if (delError) console.warn("No-shows sweep reservation delete failed:", r.resCode, delError);
-            }
-          }
-        } catch (e) {
-          console.warn("No-shows sweep error:", e);
-        }
-        const moveCodes = new Set(toMove.map((r) => r.resCode));
-        resData = resData.filter((r) => !moveCodes.has(r.resCode));
-        nsData  = [...nsData, ...newNsEntries];
-      }
+      // A missed pickup stays a reservation: No Shows lists it from there
+      // (my_no_shows, no_shows_stay_reservations.sql), so the next-day text
+      // and the customer's change pickup time link keep working.
 
       // Merge rentalAgreementStatus from rental_agreements (authoritative) into
       // reservation objects so all UI reads r.rentalAgreementStatus as before.
@@ -3033,7 +2981,7 @@ function ReservationsTable({ rows }) {
 }
 
 function ReservationsPage() {
-  const { reservations, setReservations, noShows, setNoShows, currentUser } = React.useContext(AppContext);
+  const { reservations, setReservations, currentUser } = React.useContext(AppContext);
   const navigate = useNavigate();
   const todayIso = new Date().toISOString().slice(0, 10);
   const [showModal, setShowModal] = React.useState(false);
@@ -3071,50 +3019,6 @@ function ReservationsPage() {
   const [datePickerAnchor, setDatePickerAnchor] = React.useState({ x: 0, y: 0 });
   useAnchorFollow(datePickerOpen, datePickerAnchor, setDatePickerAnchor, () => setDatePickerOpen(false));
   const [filterPickerMonth, setFilterPickerMonth] = React.useState(null);
-
-  // ── Sweep: move past-due "Pending arrival" reservations into No Shows ────────
-  // Note: no_shows.id is a strict UUID column and no_shows.rescode is lowercase,
-  // same as the AppProvider load-time sweep. Keep both in sync if this changes.
-  React.useEffect(() => {
-    // With No-shows off there is nowhere for them to go, so a missed pickup
-    // stays a reservation rather than vanishing into a hidden page.
-    if (!isFeatureEnabled("no_shows")) return;
-    const overdue = reservations.filter(
-      (r) => r.date < todayIso &&
-             r.pickupStatus === "Pending arrival" &&
-             r.rentalAgreementStatus === "reservation"
-    );
-    if (overdue.length === 0) return;
-    const existingCodes = new Set(noShows.map((ns) => ns.rescode));
-    const toAdd = overdue.filter((r) => !existingCodes.has(r.resCode));
-    if (toAdd.length === 0) return;
-    const newNsRows = toAdd.map((r) => ({
-      id:           crypto.randomUUID(),
-      rescode:      r.resCode,
-      customer:     r.customer,
-      time:         r.time || "",
-      vehicleClass: r.vehicleClass || "",
-      location:     r.location || "",
-      date:         r.date,
-      phone:        r.phone || "",
-      called:       false,
-      status:       "",
-      stage:        "2hour",
-    }));
-    setNoShows((prev) => [...prev, ...newNsRows]);
-    for (const ns of newNsRows) {
-      supabase.from("no_shows").insert(ns).then(({ error }) => {
-        if (error) console.warn("no_shows insert failed:", ns.rescode, error);
-      }).catch((e) => console.warn("no_shows insert:", e));
-    }
-    const overdueCodes = new Set(overdue.map((r) => r.resCode));
-    setReservations((prev) => prev.filter((r) => !overdueCodes.has(r.resCode)));
-    for (const r of overdue) {
-      supabase.from("reservations").delete().eq("resCode", r.resCode).then(({ error }) => {
-        if (error) console.warn("reservations delete failed:", r.resCode, error);
-      }).catch((e) => console.warn("reservations delete:", e));
-    }
-  }, [reservations, noShows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fmtDate = (iso) => {
     const d = new Date(`${iso}T00:00:00`);
@@ -4529,134 +4433,141 @@ function StatusTabs({ tabs, value, onChange, label }) {
 
 // ─── NoShowsPage ──────────────────────────────────────────────────────────────
 
+// How often the page reads the list again while it is open, so a text that
+// has just gone out shows without a reload.
+const NO_SHOWS_POLL_MS = 30000;
+
+// A missed pickup is still a reservation; my_no_shows lists the branch's, in
+// the branch's own time, with the texts the worker has sent
+// (no_shows_stay_reservations.sql). Nothing on this page sends a text, and
+// recording what happened never moves a reservation between sections.
 function NoShowsPage() {
-  const { noShows, setNoShows, setReservations, guardAction } = React.useContext(AppContext);
+  const { setReservations, guardAction } = React.useContext(AppContext);
 
   const TABS = [
-    { key: "2hour",     label: "2-Hour Text",  desc: "Reservations where the customer has not arrived 2 hours past pickup time. Text triggers automatically." },
-    { key: "24hour",    label: "24-Hour Text", desc: "No-shows that received a 2-hour text with no response. Text triggers automatically at the 24-hour mark." },
-    { key: "abandoned", label: "Abandoned",    desc: "No response after 7 days. Requires manual staff follow-up." },
+    { key: "missed",    label: "Missed Pickup", desc: "The customer had not arrived 2 hours after pickup. The 2-hour text goes out automatically." },
+    { key: "day_after", label: "Day After",     desc: "The next-day text has gone out, and the customer has still not arrived." },
+    { key: "follow_up", label: "Follow Up",     desc: "7 days or more after pickup. Call the customer, or cancel the reservation." },
   ];
+  const [activeTab, setActiveTab] = React.useState("missed");
+  const [rows, setRows]   = React.useState([]);
+  const [error, setError] = React.useState("");
+  const [busy, setBusy]   = React.useState("");
 
-  const [activeTab, setActiveTab] = React.useState("2hour");
-
-  // Auto-advance stages based on elapsed time.
-  // 2-Hour tab  → 24-Hour tab : 24 h after the 2-hour text was sent (≈ 26 h from pickup).
-  // 24-Hour tab → Abandoned   : 7 days after moving into the 24-Hour tab
-  //                             (tracked via movedTo24HourAt; falls back to 48 h from pickup
-  //                             for rows that pre-date this field).
-  // Note: movedTo24HourAt has no matching column in Supabase, so it is kept in
-  // local state only and is not sent in the update payload below. It resets to
-  // the fallback estimate on reload, which is an accepted limitation until the
-  // column is added.
+  const load = React.useCallback(async () => {
+    const { data, error: err } = await supabase.rpc("my_no_shows");
+    if (err) { setError("The no-shows could not be loaded. Check your connection and try again."); return; }
+    setError("");
+    setRows(Array.isArray(data) ? data : []);
+  }, []);
   React.useEffect(() => {
-    const now = Date.now();
-    const HOUR = 3600000;
-    const needsAdvance = noShows.filter((r) => {
-      if (r.status === "Reached") return false;
-      const stage = r.stage || "2hour";
-      if (stage === "abandoned") return false;
-      const pickupMs = new Date(`${r.date}T${r.time || "00:00"}`).getTime();
-      if (Number.isNaN(pickupMs)) return false;
-      const elapsed = now - pickupMs;
-      if (stage === "2hour" && elapsed >= 26 * HOUR) return true;
-      if (stage === "24hour") {
-        const since = r.movedTo24HourAt || (pickupMs + 26 * HOUR);
-        if (now - since >= 7 * 24 * HOUR) return true;
+    load();
+    const timer = setInterval(load, NO_SHOWS_POLL_MS);
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
+  }, [load]);
+
+  // Each action is one database call, then the list is read again.
+  const run = async (key, fn, args, after) => {
+    setBusy(key);
+    try {
+      const { data, error: err } = await supabase.rpc(fn, args);
+      if (err || !data || !data.ok) {
+        setError(data && data.reason === "not_found"
+          ? "That reservation has changed since the list was loaded. The list has been refreshed."
+          : "That did not work. Check your connection and try again.");
+        throw new Error(err ? err.message : (data && data.reason) || "refused");
       }
-      return false;
-    });
-    if (needsAdvance.length === 0) return;
-    setNoShows((prev) =>
-      prev.map((r) => {
-        if (r.status === "Reached") return r;
-        const stage = r.stage || "2hour";
-        if (stage === "abandoned") return r;
-        const pickupMs = new Date(`${r.date}T${r.time || "00:00"}`).getTime();
-        if (Number.isNaN(pickupMs)) return r;
-        const elapsed = now - pickupMs;
-        if (stage === "2hour" && elapsed >= 26 * HOUR) {
-          supabase.from("no_shows").update({ stage: "24hour" }).eq("id", r.id).then(({ error }) => {
-            if (error) console.warn("no_shows stage update failed:", r.id, error);
-          }).catch((e) => console.warn("no_shows update:", e));
-          return { ...r, stage: "24hour", movedTo24HourAt: now };
-        }
-        if (stage === "24hour") {
-          const since = r.movedTo24HourAt || (pickupMs + 26 * HOUR);
-          if (now - since >= 7 * 24 * HOUR) {
-            supabase.from("no_shows").update({ stage: "abandoned" }).eq("id", r.id).then(({ error }) => {
-              if (error) console.warn("no_shows stage update failed:", r.id, error);
-            }).catch((e) => console.warn("no_shows update:", e));
-            return { ...r, stage: "abandoned" };
-          }
-        }
-        return r;
-      })
-    );
-  }, [noShows]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const tabRows = noShows.filter((r) => (r.stage || "2hour") === activeTab);
-
-  // Move a confirmed customer from the 2-Hour tab back into Reservations.
-  // Uses pickupStatus "Confirmed" so the AppProvider sweep doesn't re-flag them.
-  const handleConfirmPickup = (row) => {
-    const nameParts = (row.customer || "").trim().split(/\s+/);
-    const newRes = {
-      resCode:               row.resCode,
-      customer:              row.customer || "",
-      firstName:             nameParts[0] || "",
-      lastName:              nameParts.slice(1).join(" ") || "",
-      date:                  row.date || "",
-      time:                  row.time || "",
-      location:              row.location || "",
-      vehicleClass:          row.vehicleClass || "",
-      phone:                 row.phone || "",
-      email:                 "",
-      returnDate:            "",
-      returnTime:            "",
-      winterTires:           "No",
-      source:                "",
-      sourceDetail:          "",
-      ratesVehicleClass:     "",
-      dailyRate:             "",
-      adjusterName:          "",
-      claimNumber:           "",
-      fileNumber:            "",
-      authNumber:            "",
-      poNumber:              "",
-      paymentMethod:         "",
-      preRentalCheck:        "NOT Pre-Rental Check'd",
-      notesLog:              [],
-      rentalAgreementStatus: "reservation",
-      pickupStatus:          "Confirmed",
-    };
-    // Deletes the no-show row, so it takes the PIN.
-    guardAction("noShow.confirmPickup", () => {
-      setReservations((prev) => [...prev, newRes]);
-      runWrite(supabase.from("reservations").insert(newRes).then((res) => console.log("reservations insert response:", res)), "reservations insert");
-      setNoShows((prev) => prev.filter((r) => r.id !== row.id));
-      runWrite(supabase.from("no_shows").delete().eq("id", row.id), "no_shows delete");
-    });
+      if (after) after();
+    } finally {
+      setBusy("");
+      load();
+    }
   };
 
-  // Texting these customers is handled entirely by the Cloudflare cron (see
-  // worker.js, REMINDER.NO_SHOW_2HR and NO_SHOW_24HR). This used to be a
-  // "Text All" button that flipped a coin per customer and wrote the invented
-  // result to Supabase, so the Reached and LM figures on this page were fiction.
-  // Staff now record what actually happened.
-  const recordOutcome = (row, outcome) => {
-    const patch = outcome === "Reached"
-      ? { called: true, status: "Reached" }
-      // No answer moves the row along the escalation ladder, the same
-      // progression the cron uses to decide which reminder to send next.
-      : { called: true, status: "LM", stage: (row.stage || "2hour") === "2hour" ? "24hour" : "abandoned" };
-    setNoShows((prev) => prev.map((r) => (r.id === row.id ? { ...r, ...patch } : r)));
-    supabase.from("no_shows").update(patch).eq("id", row.id)
-      .then(({ error }) => { if (error) console.warn("no_shows outcome update failed:", row.id, error); })
-      .catch((e) => console.warn("no_shows outcome update:", e));
-  };
+  const setOutcome = (row, outcome) =>
+    run(`${row.resCode}:outcome`, "set_no_show_outcome", { p_code: row.resCode, p_outcome: outcome }).catch(() => {});
 
+  const confirmComing = (row) =>
+    guardAction("noShow.confirmPickup", () => run(`${row.resCode}:confirm`, "confirm_no_show", { p_code: row.resCode }, () =>
+      setReservations((prev) => prev.map((r) => r.resCode === row.resCode ? { ...r, pickupStatus: "Confirmed" } : r))), {
+      tableName: "reservations", recordId: row.resCode,
+      description: `Marked ${row.resCode} as coming after a missed pickup.`,
+      warning: `Mark ${row.customer || row.resCode} as coming? The reservation stays as it is, Confirmed. Change its pickup time on the reservation if it needs one.`,
+    });
+
+  const cancel = (row) =>
+    guardAction("noShow.cancel", () => run(`${row.resCode}:cancel`, "cancel_no_show", { p_code: row.resCode }, () =>
+      setReservations((prev) => prev.filter((r) => r.resCode !== row.resCode))), {
+      tableName: "reservations", recordId: row.resCode, danger: true,
+      description: `Cancelled ${row.resCode} as a no-show.`,
+      warning: `Cancel ${row.resCode} for ${row.customer || "this customer"}? The reservation is deleted and kept on record as a no-show. This cannot be undone.`,
+    });
+
+  const closeMoved = (row, cancelIt) =>
+    guardAction(cancelIt ? "noShow.cancel" : "noShow.dismiss",
+      () => run(`${row.id}:close`, "close_moved_no_show", { p_id: row.id, p_cancel: cancelIt }), {
+      tableName: "no_shows", recordId: row.resCode, danger: cancelIt,
+      description: cancelIt ? `Cancelled ${row.resCode} as a no-show.` : `Dismissed the no-show ${row.resCode}.`,
+      warning: cancelIt
+        ? `Cancel ${row.resCode} for ${row.customer || "this customer"}? It is kept on record as a no-show. This cannot be undone.`
+        : `Dismiss ${row.resCode}? It leaves No Shows. Nothing is cancelled.`,
+    });
+
+  const fmtDay = (iso) => {
+    if (!iso) return "";
+    const d = new Date(`${String(iso).slice(0, 10)}T00:00:00`);
+    return Number.isNaN(d.getTime()) ? String(iso)
+      : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
+  };
+  const fmtSent = (iso) => new Date(iso).toLocaleString("en-CA",
+    { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const textLine = (label, note) => React.createElement("div", null,
+    `${label}: `, !note ? "Not sent yet" : note.status === "sent" ? `Sent ${fmtSent(note.sentAt)}`
+      : note.status === "failed" ? "Failed" : "Sending");
+
+  const btn = (label, onClick, disabled, title) => React.createElement("button", {
+    type: "button", className: "aiControl", style: { marginRight: "6px" }, disabled, title, onClick,
+  }, label);
+
+  const tabRows = rows.filter((r) => r.section === activeTab);
   const activeTabObj = TABS.find((t) => t.key === activeTab);
+
+  const rowEl = (row) => {
+    const moved = row.kind === "moved";
+    const key = moved ? row.id : row.resCode;
+    const working = busy.startsWith(`${key}:`);
+    const outcome = row.outcome === "reached"
+      ? React.createElement("span", { className: "preRentalCheckDone" }, "Reached")
+      : row.outcome === "no_reply"
+        ? React.createElement("span", { className: "preRentalCheckLm" }, "No reply")
+        : null;
+    return React.createElement("tr", { key },
+      React.createElement("td", null, fmtDay(row.date), React.createElement("div", null, fmt12h(row.time))),
+      React.createElement("td", null, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode || "·" })),
+      React.createElement("td", null, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })),
+      React.createElement("td", null, row.vehicleClass),
+      React.createElement("td", null, row.phone),
+      React.createElement("td", null, moved
+        ? "Moved before this change"
+        : React.createElement(React.Fragment, null, textLine("2-hour", row.twoHourText), textLine("Next-day", row.dayAfterText))),
+      React.createElement("td", null, moved
+        ? outcome
+        : React.createElement("div", { className: "readyStatusWrap" },
+            outcome,
+            !outcome && btn("Reached", () => setOutcome(row, "reached"), working, "The customer replied or we spoke to them"),
+            !outcome && btn("No Reply", () => setOutcome(row, "no_reply"), working, "We tried and could not reach them. Nothing moves."),
+            outcome && btn("Change", () => setOutcome(row, null), working, "Clear what was recorded"))),
+      React.createElement("td", null, moved
+        ? React.createElement(React.Fragment, null,
+            btn("Cancel", () => closeMoved(row, true), working),
+            btn("Dismiss", () => closeMoved(row, false), working))
+        : React.createElement(React.Fragment, null,
+            btn("Customer Is Coming", () => confirmComing(row), working),
+            btn("Cancel", () => cancel(row), working)))
+    );
+  };
 
   return React.createElement(
     "div",
@@ -4664,101 +4575,29 @@ function NoShowsPage() {
     React.createElement("h1", { className: "page__title" }, "No Shows"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement(StatusTabs, {
-      label: "No-show stages", value: activeTab, onChange: setActiveTab,
-      tabs: TABS.map(({ key, label }) => ({
-        value: key, label, count: noShows.filter((r) => (r.stage || "2hour") === key).length,
-      })),
+      label: "No-show sections", value: activeTab, onChange: setActiveTab,
+      tabs: TABS.map(({ key, label }) => ({ value: key, label, count: rows.filter((r) => r.section === key).length })),
     }),
     React.createElement("p", { className: "aiTabDesc" }, activeTabObj.desc),
+    error && React.createElement("div", { className: "closeRentalWarning", style: { marginBottom: "12px" } }, error),
     React.createElement(
       "section",
       { className: "dashboardSection" },
-      React.createElement(
-        "div",
-        { className: "dashboardSection__header" },
-        React.createElement(
-          "div",
-          { className: "dashboardSection__headerRow" },
+      React.createElement("div", { className: "dashboardSection__header" },
+        React.createElement("div", { className: "dashboardSection__headerRow" },
           React.createElement("span", null, activeTabObj.label),
           React.createElement("span", { className: "autoTextNote" }, "Reminders are texted automatically")
         )
       ),
-      React.createElement(
-        "div",
-        { className: "dashboardSection__body" },
+      React.createElement("div", { className: "dashboardSection__body" },
         tabRows.length === 0
-          ? React.createElement(
-              "div",
-              { className: "resvEmpty" },
-              activeTab === "abandoned" ? "No abandoned no-shows." : `No entries in ${activeTabObj.label}.`
-            )
-          : React.createElement(
-              "table",
-              { className: "dashboardTable" },
-              React.createElement(
-                "thead",
-                null,
-                React.createElement(
-                  "tr",
-                  null,
-                  ["Time", "Res Code", "Customer", "Vehicle Class", "Location", "Phone", activeTab === "abandoned" ? "Action" : "Status"].map((col) =>
-                    React.createElement("th", { key: col }, col)
-                  )
-                )
-              ),
-              React.createElement(
-                "tbody",
-                null,
-                tabRows.map((row) => {
-                  const statusEl =
-                    activeTab === "abandoned"
-                      ? React.createElement("span", { className: "overdueManual" }, "Manual Follow-Up")
-                      : activeTab === "2hour"
-                        ? React.createElement("div", { className: "readyStatusWrap" },
-                            row.status === "Reached"
-                              ? React.createElement("span", { className: "preRentalCheckDone" }, "Reached")
-                              : row.status === "LM"
-                                ? React.createElement("span", { className: "preRentalCheckLm" }, "LM")
-                                // Nothing recorded yet. The reminder text has gone out
-                                // automatically; these record what the customer actually did.
-                                : React.createElement(React.Fragment, null,
-                                    React.createElement("button", {
-                                      type: "button", className: "aiControl",
-                                      title: "The customer replied or we spoke to them",
-                                      onClick: () => recordOutcome(row, "Reached"),
-                                    }, "Reached"),
-                                    React.createElement("button", {
-                                      type: "button", className: "aiControl",
-                                      style: { marginLeft: "6px" },
-                                      title: "No reply. Moves to the next escalation stage",
-                                      onClick: () => recordOutcome(row, "LM"),
-                                    }, "No Reply")
-                                  ),
-                            React.createElement("button", {
-                              type: "button",
-                              className: "aiControl",
-                              style: { marginLeft: "6px" },
-                              onClick: () => handleConfirmPickup(row),
-                            }, "Confirmed Pickup")
-                          )
-                        : row.status === "Reached"
-                          ? React.createElement("span", { className: "preRentalCheckDone" }, "Reached")
-                          : row.status === "LM"
-                            ? React.createElement("span", { className: "preRentalCheckLm" }, "LM")
-                            : React.createElement("span", null, "");
-                  return React.createElement(
-                    "tr",
-                    { key: row.id },
-                    React.createElement("td", null, fmt12h(row.time)),
-                    React.createElement("td", null, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode || "·" })),
-                    React.createElement("td", null, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })),
-                    React.createElement("td", null, row.vehicleClass),
-                    React.createElement("td", null, row.location),
-                    React.createElement("td", null, row.phone),
-                    React.createElement("td", null, statusEl)
-                  );
-                })
-              )
+          ? React.createElement("div", { className: "resvEmpty" }, `No reservations in ${activeTabObj.label}.`)
+          : React.createElement("table", { className: "dashboardTable" },
+              React.createElement("thead", null,
+                React.createElement("tr", null,
+                  ["Pickup", "Res Code", "Customer", "Vehicle Class", "Phone", "Texts", "Outcome", ""].map((col, i) =>
+                    React.createElement("th", { key: col || `c${i}` }, col)))),
+              React.createElement("tbody", null, tabRows.map(rowEl))
             )
       )
     )
@@ -12458,49 +12297,17 @@ function FleetrCommandBar() {
             }
           }
         }
-      } else if (operation === "confirmPickup" && table === "no_shows") {
-        const row = noShows.find((r) => String(r.id) === String(match?.id));
-        if (!row) {
-          error = { message: "No-show record not found." };
+      } else if (operation === "confirmPickup") {
+        // The reservation, kept as it is, marked Confirmed (confirm_no_show).
+        const code = match?.resCode;
+        const { data: out, error: rpcError } = isFeatureEnabled("no_shows")
+          ? await supabase.rpc("confirm_no_show", { p_code: code })
+          : { data: null, error: { message: NO_SHOWS_DISABLED_MESSAGE } };
+        if (rpcError || !out || !out.ok) {
+          error = { message: out && out.reason === "not_found"
+            ? "That reservation is not a missed pickup at this branch." : (rpcError?.message || "Refused.") };
         } else {
-          const nameParts = (row.customer || "").trim().split(/\s+/);
-          const newRes = {
-            resCode:               row.rescode,
-            customer:              row.customer || "",
-            firstName:             nameParts[0] || "",
-            lastName:              nameParts.slice(1).join(" ") || "",
-            date:                  row.date || "",
-            time:                  row.time || "",
-            location:              row.location || "",
-            vehicleClass:          row.vehicleClass || "",
-            phone:                 row.phone || "",
-            email:                 "",
-            returnDate:            "",
-            returnTime:            "",
-            winterTires:           "No",
-            source:                "",
-            sourceDetail:          "",
-            ratesVehicleClass:     "",
-            dailyRate:             "",
-            adjusterName:          "",
-            claimNumber:           "",
-            fileNumber:            "",
-            authNumber:            "",
-            poNumber:              "",
-            paymentMethod:         "",
-            preRentalCheck:        "NOT Pre-Rental Check'd",
-            notesLog:              [],
-            rentalAgreementStatus: "reservation",
-            pickupStatus:          "Confirmed",
-          };
-          ({ error } = await supabase.from("reservations").insert(newRes));
-          if (!error) {
-            setReservations((prev) => [...prev, newRes]);
-            ({ error } = await supabase.from("no_shows").delete().eq("id", row.id));
-            if (!error) {
-              setNoShows((prev) => prev.filter((r) => r.id !== row.id));
-            }
-          }
+          setReservations((prev) => prev.map((r) => r.resCode === code ? { ...r, pickupStatus: "Confirmed" } : r));
         }
       }
       if (error) {
