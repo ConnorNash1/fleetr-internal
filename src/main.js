@@ -4507,6 +4507,26 @@ function NonDriveIntakePage() {
   return React.createElement(NonDriveIntakeSection, { standalone: true });
 }
 
+// ─── Status tabs ─────────────────────────────────────────────────────────────
+// The segmented control for a page's status tabs, each with a count of what
+// is in it. One look for every page that has them: Rental Agreements and No
+// Shows. On a phone it becomes a two column grid of equal segments.
+function StatusTabs({ tabs, value, onChange, label }) {
+  return React.createElement("div", { className: "statusTabs", role: "tablist", "aria-label": label },
+    tabs.map((tab) => {
+      const on = tab.value === value;
+      return React.createElement("button", {
+        key: tab.value, type: "button", role: "tab", "aria-selected": on,
+        className: on ? "statusTab statusTab--active" : "statusTab",
+        onClick: () => onChange(tab.value),
+      },
+        React.createElement("span", { className: "statusTab__label" }, tab.label),
+        tab.count != null && React.createElement("span", { className: "statusTab__count" }, tab.count)
+      );
+    })
+  );
+}
+
 // ─── NoShowsPage ──────────────────────────────────────────────────────────────
 
 function NoShowsPage() {
@@ -4643,22 +4663,12 @@ function NoShowsPage() {
     { className: "page" },
     React.createElement("h1", { className: "page__title" }, "No Shows"),
     React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement(
-      "div",
-      { className: "aiSubTabs" },
-      TABS.map(({ key, label }) =>
-        React.createElement(
-          "button",
-          {
-            key,
-            type: "button",
-            className: `aiSubTab${activeTab === key ? " aiSubTab--active" : ""}`,
-            onClick: () => setActiveTab(key),
-          },
-          label
-        )
-      )
-    ),
+    React.createElement(StatusTabs, {
+      label: "No-show stages", value: activeTab, onChange: setActiveTab,
+      tabs: TABS.map(({ key, label }) => ({
+        value: key, label, count: noShows.filter((r) => (r.stage || "2hour") === key).length,
+      })),
+    }),
     React.createElement("p", { className: "aiTabDesc" }, activeTabObj.desc),
     React.createElement(
       "section",
@@ -13762,20 +13772,20 @@ function RentalAgreementsPage() {
       open && renderCalPopover(anchor, srchVal, setSrch, monthState, setMonth, setOpen)
     );
 
-  const filtered = reservations
-    .filter((r) => r.rentalAgreementStatus === activeTab)
-    .filter((r) => {
-      const parts = (r.customer || "").trim().split(/\s+/);
-      const first = parts[0] || "";
-      const last  = parts.length > 1 ? parts[parts.length - 1] : "";
-      if (srchFirst  && !first.toLowerCase().includes(srchFirst.toLowerCase()))  return false;
-      if (srchLast   && !last.toLowerCase().includes(srchLast.toLowerCase()))    return false;
-      if (srchPhone  && !(r.phone || "").includes(srchPhone))                    return false;
-      if (srchRes    && !(r.resCode || "").toLowerCase().includes(srchRes.toLowerCase())) return false;
-      if (srchPickup && r.date !== srchPickup)                                   return false;
-      if (srchReturn && r.returnDate !== srchReturn)                             return false;
-      return true;
-    });
+  // The search above, apart from the status. The tabs count with it too.
+  const matchesSearch = (r) => {
+    const parts = (r.customer || "").trim().split(/\s+/);
+    const first = parts[0] || "";
+    const last  = parts.length > 1 ? parts[parts.length - 1] : "";
+    if (srchFirst  && !first.toLowerCase().includes(srchFirst.toLowerCase()))  return false;
+    if (srchLast   && !last.toLowerCase().includes(srchLast.toLowerCase()))    return false;
+    if (srchPhone  && !(r.phone || "").includes(srchPhone))                    return false;
+    if (srchRes    && !(r.resCode || "").toLowerCase().includes(srchRes.toLowerCase())) return false;
+    if (srchPickup && r.date !== srchPickup)                                   return false;
+    if (srchReturn && r.returnDate !== srchReturn)                             return false;
+    return true;
+  };
+  const filtered = reservations.filter((r) => r.rentalAgreementStatus === activeTab && matchesSearch(r));
 
   return React.createElement("div", { className: "page" },
     React.createElement("h1", { className: "page__title" }, "Rental Agreements"),
@@ -13788,15 +13798,14 @@ function RentalAgreementsPage() {
       React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Phone number", value: srchPhone, onChange: (e) => setSrchPhone(e.target.value) }),
       React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Res Code",   value: srchRes,   onChange: (e) => setSrchRes(e.target.value)   })
     ),
-    React.createElement("div", { className: "resvTabBar" },
-      TABS.map((tab) =>
-        React.createElement("button", {
-          key: tab.value, type: "button",
-          className: tab.value === activeTab ? "resvPageTab resvPageTab--active" : "resvPageTab",
-          onClick: () => { setActiveTab(tab.value); setSelectedId(null); },
-        }, tab.label)
-      )
-    ),
+    React.createElement(StatusTabs, {
+      label: "Rental agreement status", value: activeTab,
+      onChange: (v) => { setActiveTab(v); setSelectedId(null); },
+      tabs: TABS.map((tab) => ({
+        value: tab.value, label: tab.label,
+        count: reservations.filter((r) => r.rentalAgreementStatus === tab.value && matchesSearch(r)).length,
+      })),
+    }),
     React.createElement("section", { className: "dashboardSection" },
       React.createElement("div", { className: "dashboardSection__body" },
         filtered.length === 0
@@ -19242,6 +19251,70 @@ body, * {
 .resvPageTab--active{
   color: #1F1E1D;
   border-bottom-color: #F4845F;
+}
+/* Status tabs: a segmented control, sized to its content */
+.statusTabs{
+  display: inline-flex;
+  gap: 2px;
+  padding: 4px;
+  margin-bottom: 14px;
+  background: #EDEBE6;
+  border-radius: 10px;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.statusTab{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  background: transparent;
+  color: #6B6965;
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+.statusTab:hover{ color: #1F1E1D; }
+.statusTab:focus{ outline: none; }
+.statusTab:focus-visible{ outline: none; box-shadow: 0 0 0 2px #F4845F; }
+.statusTab--active{
+  background: #F9F9F7;
+  color: #1F1E1D;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(31, 30, 29, 0.08);
+}
+.statusTab--active:focus-visible{ box-shadow: 0 1px 2px rgba(31, 30, 29, 0.08), 0 0 0 2px #F4845F; }
+.statusTab__count{
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #E2DFD9;
+  color: #6B6965;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+.statusTab--active .statusTab__count{
+  background: #F4845F;
+  color: #F9F9F7;
+}
+@media (max-width: 599px){
+  .statusTabs{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+  /* A label stays whole on one line; a count that does not fit beside it
+     goes just under it. */
+  .statusTab{ min-width: 0; flex-wrap: wrap; gap: 4px 6px; padding: 8px 6px; }
+  .statusTab:last-child:nth-child(odd){ grid-column: 1 / -1; }
 }
 /* New Reservation button inside the panel header */
 .autoTextNote{
