@@ -11341,16 +11341,20 @@ function MobileNav() {
   const badges = useNavBadges();
   const drawerRef = React.useRef(null);
   const burgerRef = React.useRef(null);
-  // While the menu is open: focus starts on its first item, Escape closes it,
-  // and Tab stays inside it. Focus goes back to the menu button on close.
+  // Whether the menu was last opened or closed from the keyboard.
+  const byKeyboard = React.useRef(false);
+  // While the menu is open: Escape closes it and Tab stays inside it. Opened
+  // from the keyboard, focus starts on its first item and goes back to the
+  // menu button on close; opened with a tap, focus is left alone, so no focus
+  // ring shows on the button afterwards.
   React.useEffect(() => {
     if (!open) return undefined;
     const drawer = drawerRef.current;
     const items = () => Array.from(drawer ? drawer.querySelectorAll("a, button") : []);
     const first = items()[0];
-    if (first) first.focus();
+    if (first && byKeyboard.current) first.focus();
     const onKey = (e) => {
-      if (e.key === "Escape") { e.preventDefault(); setOpen(false); return; }
+      if (e.key === "Escape") { e.preventDefault(); byKeyboard.current = true; setOpen(false); return; }
       if (e.key !== "Tab") return;
       const list = items();
       if (!list.length) return;
@@ -11358,9 +11362,15 @@ function MobileNav() {
       if (e.shiftKey && at <= 0) { e.preventDefault(); list[list.length - 1].focus(); }
       else if (!e.shiftKey && at === list.length - 1) { e.preventDefault(); list[0].focus(); }
     };
+    const onPointer = () => { byKeyboard.current = false; };
     document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onPointer);
     const burger = burgerRef.current;
-    return () => { document.removeEventListener("keydown", onKey); if (burger) burger.focus(); };
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onPointer);
+      if (burger && byKeyboard.current) burger.focus();
+    };
   }, [open]);
   return React.createElement(
     React.Fragment,
@@ -11376,6 +11386,8 @@ function MobileNav() {
           className: "mobileHamburger",
           "aria-label": open ? "Close menu" : "Open menu",
           "aria-expanded": open,
+          onPointerDown: () => { byKeyboard.current = false; },
+          onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") byKeyboard.current = true; },
           onClick: () => setOpen((o) => !o),
         },
         React.createElement(
@@ -19761,6 +19773,7 @@ body, * {
     z-index: 100;
   }
   .mobileHamburger{
+    -webkit-tap-highlight-color: transparent;
     background: none;
     border: none;
     color: rgba(255,255,255,0.84);
@@ -19771,6 +19784,9 @@ body, * {
     padding: 4px;
     flex-shrink: 0;
   }
+  /* A terracotta ring for keyboard focus only, never the browser's blue. */
+  .mobileHamburger:focus{ outline: none; }
+  .mobileHamburger:focus-visible{ outline: 2px solid #F4845F; outline-offset: 2px; border-radius: 6px; }
   .mobileTopbar__logo{
     display: flex;
     align-items: center;
@@ -21260,10 +21276,13 @@ body, * {
 .sidebar--collapsed .sidebar__top{ flex-direction: column; padding: 2px 0 4px; }
 .sidebar--collapsed .sidebar__logo{ display: none; }
 .sidebar--collapsed .sidebar__icon{ display: flex; }
-.sidebar--collapsed .sidebar__section{ padding-left: 10px; }
-.sidebar--collapsed .sidebar__sectionHeader{ font-size: 0; height: 1px; margin: 4px 14px 8px 4px; background: rgba(255, 255, 255, 0.10); }
+/* Folded, each item is a box centred in the rail, the icon centred in it:
+   the right border balances the left one that marks the current page. */
+.sidebar--collapsed .sidebar__section{ padding: 0 10px; }
+.sidebar--collapsed .sidebar__sectionHeader{ font-size: 0; height: 1px; margin: 4px 4px 8px; background: rgba(255, 255, 255, 0.10); }
 .sidebar--collapsed .nav__label{ display: none; }
-.sidebar--collapsed .nav__item{ justify-content: center; padding: 10px 0; }
+.sidebar--collapsed .nav__item{ justify-content: center; padding: 10px 0; border-right: 3px solid transparent; border-radius: 6px; }
+.sidebar--collapsed .nav__marker{ border-radius: 6px; }
 .sidebar--collapsed .nav__badge{ position: absolute; top: 2px; right: 4px; min-width: 16px; height: 16px; font-size: 10px; padding: 0 4px; }
 .sidebar--collapsed .sidebar__foot{ padding: 12px 8px 20px; }
 .sidebar--collapsed .navUser{ justify-content: center; padding: 6px 0; }
@@ -21273,8 +21292,9 @@ body, * {
   .sidebar__top{ justify-content: center; padding: 2px 0 4px; }
   .sidebar__logo{ display: none; }
   .sidebar__icon{ display: flex; }
-  .sidebar__section{ padding-left: 10px; }
-  .nav__item{ justify-content: center; padding: 10px 0; }
+  .sidebar__section{ padding: 0 10px; }
+  .nav__item{ justify-content: center; padding: 10px 0; border-right: 3px solid transparent; border-radius: 6px; }
+  .nav__marker{ border-radius: 6px; }
   .nav__badge{ position: absolute; top: 2px; right: 4px; min-width: 16px; height: 16px; font-size: 10px; padding: 0 4px; }
   .sidebar__foot{ padding: 12px 8px 20px; }
   .navUser{ justify-content: center; padding: 6px 0; }
