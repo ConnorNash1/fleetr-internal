@@ -14,9 +14,9 @@ import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 
 // ─── The fleetr logo ──────────────────────────────────────────────────────────
 // The supplied files (fleetr logo system 1.0.1), never retyped: the car and
-// "fleetr". Tone "light" is the terracotta logo, for light backgrounds
-// (#F9F9F7) and the black sidebar; "dark" the off-white one for other dark
-// backgrounds (#1F1E1D).
+// "fleetr". Tone "light" is the terracotta logo, used everywhere: on light
+// backgrounds (#F9F9F7), the black sidebar and the black phone top bar.
+// "dark" is the off-white one for dark backgrounds (#1F1E1D).
 // fleetrIcon is the car alone, for where space is tight, such as the folded
 // sidebar. Each keeps its shape: the logo is 4059 by 729, the icon 1461 by 716.
 const fleetrLogo = (tone, height, className) => React.createElement("img", {
@@ -11393,7 +11393,7 @@ function MobileNav() {
               )
         )
       ),
-      React.createElement("span", { className: "mobileTopbar__logo" }, fleetrLogo("dark", 24)),
+      React.createElement("span", { className: "mobileTopbar__logo" }, fleetrLogo("light", 24)),
       React.createElement(
         "button",
         {
@@ -21204,6 +21204,9 @@ body, * {
 .app{ transition: grid-template-columns 220ms ease; }
 .sidebar{ gap: 14px; transition: width 220ms ease; }
 .sidebar__top{ display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 14px 4px 28px; min-height: 34px; }
+/* Kept at its full height when the menu is taller than the window, or the
+   folded sidebar's expand button slides under the first menu item. */
+.sidebar__top{ flex: none; }
 .sidebar__logo{ display: flex; align-items: center; padding: 7px 0; }
 /* The car alone, in place of the logo while the sidebar is folded. */
 .sidebar__icon{ display: none; align-items: center; padding: 7px 0; }
