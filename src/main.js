@@ -13,20 +13,20 @@ import {
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@1/+esm";
 
 // ─── The fleetr logo ──────────────────────────────────────────────────────────
-// The supplied files (fleetr logo system), never retyped: "light" is the
-// near-black logo for light backgrounds, "dark" the off-white one for dark
-// backgrounds. The horizontal lockup is 1113 by 260, so a height above about
-// 23px keeps it over the 96px minimum width; the CSS that places each one keeps
-// its clear space, one bar of the mark (about a quarter of its height).
-// The fleetr wordmark (wordmark.svg, "fleetr" in Inter SemiBold as outlines),
-// drawn as a mask so its colour follows the background: tone "light" is for a
-// light background (terracotta), "dark" for a dark one, and "terracotta" for
-// a terracotta one (both #F9F9F7). The width follows the wordmark's shape.
-const WORDMARK_RATIO = 240.37 / 77.29;
-const fleetrLogo = (tone, height, className) => React.createElement("span", {
-  role: "img", "aria-label": "fleetr", className: `fleetrWordmark${className ? ` ${className}` : ""}`,
-  style: { height: `${height}px`, width: `${(height * WORDMARK_RATIO).toFixed(2)}px`,
-           backgroundColor: tone === "light" ? "#F4845F" : "#F9F9F7" },
+// The supplied files (fleetr logo system 1.0.1), never retyped: the car and
+// "fleetr". Tone "light" is the terracotta logo for light backgrounds
+// (#F9F9F7), "dark" the off-white one for dark backgrounds (#1F1E1D).
+// fleetrIcon is the car alone, for where space is tight, such as the folded
+// sidebar. Each keeps its shape: the logo is 4042 by 700, the icon 1444 by 700.
+const fleetrLogo = (tone, height, className) => React.createElement("img", {
+  src: tone === "light" ? "/fleetr-logo-terracotta-on-white.svg" : "/fleetr-logo-white-on-black.svg",
+  alt: "fleetr", draggable: false, className: `fleetrLogo${className ? ` ${className}` : ""}`,
+  style: { height: `${height}px`, width: `${(height * 4042 / 700).toFixed(2)}px` },
+});
+const fleetrIcon = (tone, height, className) => React.createElement("img", {
+  src: tone === "light" ? "/fleetr-icon-terracotta-on-white.svg" : "/fleetr-icon-white-on-black.svg",
+  alt: "fleetr", draggable: false, className: `fleetrLogo${className ? ` ${className}` : ""}`,
+  style: { height: `${height}px`, width: `${(height * 1444 / 700).toFixed(2)}px` },
 });
 
 // ─── Supabase client ──────────────────────────────────────────────────────────
@@ -2343,13 +2343,14 @@ function AppSkeleton() {
   return el("div", { className: "appSkel", role: "status", "aria-live": "polite", "aria-busy": "true" },
     el("span", { className: "appSkel__sr" }, "Loading fleetr"),
     el("aside", { className: "appSkel__side", "aria-hidden": "true" },
-      el("span", { className: "appSkel__wordmark" }, fleetrLogo("light", 26)),
+      el("span", { className: "appSkel__logo" }, fleetrLogo("light", 26)),
+      el("span", { className: "appSkel__icon" }, fleetrIcon("light", 22)),
       [5, 3, 4, 4].map((n, i) => el("div", { key: i, className: "appSkel__group" },
         bar("skel--label"),
         Array.from({ length: n }, (_, j) => bar("skel--nav", { width: `${62 + ((i * 3 + j * 7) % 5) * 7}%` }, j)))),
       el("div", { className: "appSkel__user" }, bar("skel--avatar"), el("div", { className: "appSkel__userText" }, bar("skel--line", { width: "70%" }), bar("skel--line skel--thin", { width: "40%" })))),
     el("div", { className: "appSkel__main", "aria-hidden": "true" },
-      el("div", { className: "appSkel__top" }, el("span", { className: "appSkel__topWord" }, fleetrLogo("light", 24)), bar("skel--pill"), bar("skel--search"), bar("skel--pill skel--pill--sm")),
+      el("div", { className: "appSkel__top" }, el("span", { className: "appSkel__topLogo" }, fleetrLogo("light", 24)), bar("skel--pill"), bar("skel--search"), bar("skel--pill skel--pill--sm")),
       // Home as it loads: the title, Close Rental and Switch Out, the
       // Reservations and Vehicle Status sections, then the numbers.
       el("div", { className: "appSkel__page" },
@@ -11391,7 +11392,7 @@ function MobileNav() {
               )
         )
       ),
-      React.createElement("span", { className: "mobileTopbar__wordmark" }, fleetrLogo("dark", 24)),
+      React.createElement("span", { className: "mobileTopbar__logo" }, fleetrLogo("dark", 24)),
       React.createElement(
         "button",
         {
@@ -11790,7 +11791,8 @@ function Sidebar({ collapsed, onToggle }) {
   }, [location.pathname, collapsed]);
   return el("aside", { className: collapsed ? "sidebar sidebar--collapsed" : "sidebar", ref: asideRef },
     el("div", { className: "sidebar__top" },
-      el("span", { className: "sidebar__wordmark" }, fleetrLogo("dark", 26)),
+      el("span", { className: "sidebar__logo" }, fleetrLogo("dark", 26)),
+      el("span", { className: "sidebar__icon" }, fleetrIcon("dark", 22)),
       el("button", {
         type: "button", className: "sidebar__collapse", onClick: onToggle,
         "aria-label": collapsed ? "Expand sidebar" : "Collapse sidebar", title: collapsed ? "Expand sidebar" : "Collapse sidebar",
@@ -17480,7 +17482,7 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
     React.createElement(
       "div",
       { className: "loginCard" },
-      // The sign-in card's logo: the terracotta wordmark on the light card,
+      // The sign-in card's logo: the terracotta logo on the light card,
       // centred.
       React.createElement("div", { className: "loginBrand", style: { marginBottom: "28px" } },
         fleetrLogo("light", 35)),
@@ -17681,17 +17683,7 @@ body, * {
 /* The logo on the sign-in, sign-up and reset cards: centred, with its clear
    space above and below. */
 .loginBrand{ display: flex; justify-content: center; padding: 8px 0; }
-.fleetrWordmark{
-  display: block; flex: none;
-  -webkit-mask: url(/wordmark.svg) center / contain no-repeat;
-  mask: url(/wordmark.svg) center / contain no-repeat;
-}
-.loginLogo{
-  display: block;
-  width: 100%;
-  height: auto;
-  margin-bottom: 12px;
-}
+.fleetrLogo{ display: block; flex: none; }
 .loginSubtitle{
   font-size: 14px;
   color: #6B6A66;
@@ -19778,7 +19770,7 @@ body, * {
     padding: 4px;
     flex-shrink: 0;
   }
-  .mobileTopbar__wordmark{
+  .mobileTopbar__logo{
     display: flex;
     align-items: center;
     padding: 6px 0;
@@ -21211,7 +21203,9 @@ body, * {
 .app{ transition: grid-template-columns 220ms ease; }
 .sidebar{ gap: 14px; transition: width 220ms ease; }
 .sidebar__top{ display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 14px 4px 28px; min-height: 34px; }
-.sidebar__wordmark{ display: flex; align-items: center; padding: 7px 0; }
+.sidebar__logo{ display: flex; align-items: center; padding: 7px 0; }
+/* The car alone, in place of the logo while the sidebar is folded. */
+.sidebar__icon{ display: none; align-items: center; padding: 7px 0; }
 .sidebar__collapse{
   width: 30px; height: 30px; flex: none; display: grid; place-items: center;
   border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.14); background: transparent;
@@ -21260,7 +21254,8 @@ body, * {
   .app--rail .sidebar{ width: 76px; }
 }
 .sidebar--collapsed .sidebar__top{ flex-direction: column; padding: 2px 0 4px; }
-.sidebar--collapsed .sidebar__wordmark{ display: none; }
+.sidebar--collapsed .sidebar__logo{ display: none; }
+.sidebar--collapsed .sidebar__icon{ display: flex; }
 .sidebar--collapsed .sidebar__section{ padding-left: 10px; }
 .sidebar--collapsed .sidebar__sectionHeader{ font-size: 0; height: 1px; margin: 4px 14px 8px 4px; background: rgba(255, 255, 255, 0.10); }
 .sidebar--collapsed .nav__label{ display: none; }
@@ -21271,7 +21266,9 @@ body, * {
 .sidebar--collapsed .navUser__text{ display: none; }
 @media (min-width: 768px) and (max-width: 900px){
   .sidebar__collapse{ display: none; }
-  .sidebar__wordmark{ display: none; }
+  .sidebar__top{ justify-content: center; padding: 2px 0 4px; }
+  .sidebar__logo{ display: none; }
+  .sidebar__icon{ display: flex; }
   .sidebar__section{ padding-left: 10px; }
   .nav__item{ justify-content: center; padding: 10px 0; }
   .nav__badge{ position: absolute; top: 2px; right: 4px; min-width: 16px; height: 16px; font-size: 10px; padding: 0 4px; }
@@ -21418,8 +21415,9 @@ body, * {
 }
 @keyframes skelSheen{ from{ background-position: 150% 0; } to{ background-position: -50% 0; } }
 .appSkel__side{ background: #FFFFFF; border-right: 1px solid rgba(31, 30, 29, 0.08); padding: 18px 20px 20px 28px; display: flex; flex-direction: column; gap: 22px; }
-.appSkel__wordmark, .appSkel__topWord{ display: flex; align-items: center; padding: 7px 0; }
-.appSkel__topWord{ display: none; }
+.appSkel__logo, .appSkel__icon, .appSkel__topLogo{ display: flex; align-items: center; padding: 7px 0; }
+.appSkel__icon{ display: none; }
+.appSkel__topLogo{ display: none; }
 .appSkel__group{ display: flex; flex-direction: column; gap: 12px; }
 .skel--label{ width: 34%; height: 9px; border-radius: 4px; }
 .skel--nav{ height: 14px; border-radius: 6px; }
@@ -21449,12 +21447,12 @@ body, * {
 .appSkel__row:last-child{ border-bottom: none; }
 .skel--chip{ width: 72px; height: 20px; border-radius: 999px; margin-left: auto; }
 @media (max-width: 1100px){ .appSkel__cards{ grid-template-columns: minmax(0, 1fr); } }
-@media (max-width: 900px){ .appSkel{ grid-template-columns: 76px 1fr; } .appSkel__side{ padding: 18px 14px; } .appSkel__wordmark, .skel--label, .appSkel__userText{ display: none; } }
+@media (max-width: 900px){ .appSkel{ grid-template-columns: 76px 1fr; } .appSkel__side{ padding: 18px 14px; } .appSkel__logo, .skel--label, .appSkel__userText{ display: none; } .appSkel__icon{ display: flex; } }
 @media (max-width: 767px){
   .appSkel{ grid-template-columns: minmax(0, 1fr); }
   .appSkel__side{ display: none; }
   .appSkel__top{ height: 56px; padding: 0 16px; }
-  .appSkel__topWord{ display: block; }
+  .appSkel__topLogo{ display: block; }
   .appSkel__top .skel--pill, .appSkel__top .skel--search{ display: none; }
   .appSkel__page{ padding: 18px 16px; }
   .appSkel__tiles{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
