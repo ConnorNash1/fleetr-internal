@@ -134,7 +134,7 @@ const LOGIN_REASONS = {
   load_failed:  "Signed in, but your account could not be loaded. Try again.",
   no_profile:   "Signed in, but no staff profile is linked to this account. Ask an administrator to add you.",
   deactivated:  "This account has been deactivated.",
-  pending:      "Your account is waiting for approval. An Admin at your company needs to approve it in Staff before you can sign in.",
+  pending:      "Your account is waiting for approval. An Admin at your company needs to approve it under Staff on the Company page before you can sign in.",
   network:      "Could not reach the server.",
   // Carries the auth service's own wording when there is one. This entry is the
   // floor for the case where there is not.
@@ -1221,7 +1221,6 @@ const NAV_SECTIONS = [
       { label: "Reports", path: "/reports", feature: "reports" },
       { label: "Audit Log", path: "/audit-log", feature: "audit_log" },
       { label: "Company", path: "/company" },
-      { label: "Staff", path: "/staff" },
       { label: "Your Account", path: "/account" },
     ],
   },
@@ -7542,8 +7541,20 @@ function CompanyPage() {
   const isExec = roleAtLeast(currentUser?.role, "Exec");
   // Suggested sales tax, by branch, for a branch whose tax is not set yet.
   const [taxSuggestions, setTaxSuggestions] = React.useState({});
-  // Which steps are open. None until clicked.
+  // Which steps are open. None until clicked, or the one the address names
+  // (?section=staff, where the old Staff page and its notifications lead).
+  const location = useLocation();
+  const linkedSection = new URLSearchParams(location.search).get("section");
   const [openSteps, setOpenSteps] = React.useState({});
+  React.useEffect(() => {
+    if (!linkedSection) return undefined;
+    setOpenSteps((o) => ({ ...o, [linkedSection]: true }));
+    const timer = setTimeout(() => {
+      const node = document.getElementById(`company-step-${linkedSection}`);
+      if (node) node.scrollIntoView({ block: "start" });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [linkedSection, location.key, !!setup]); // eslint-disable-line react-hooks/exhaustive-deps
   const [stepBusy, setStepBusy] = React.useState(false);
 
   const [branches, setBranches] = React.useState([]);
@@ -7624,12 +7635,20 @@ function CompanyPage() {
     return true;
   };
 
+  // An Admin manages staff at their branch and nothing else here: the
+  // Staff section on its own, open. Anyone else, a note.
   if (!isExec) {
     return React.createElement(
-      "div", { className: "page" },
-      React.createElement("h1", null, "Company"),
-      React.createElement("div", { className: "resvEmpty" },
-        "This screen is for Execs. Your branch is managed from Staff.")
+      "div", { className: "page companySetup" },
+      React.createElement("h1", { className: "companySetup__title" }, "Company"),
+      roleAtLeast(currentUser?.role, "Admin")
+        ? React.createElement(CompanyStep, {
+            id: "company-step-staff", stepKey: "staff", n: null, title: "Staff", state: "done",
+            current: false, open: openSteps.staff !== false, showState: false,
+            onToggle: () => setOpenSteps((o) => ({ ...o, staff: o.staff === false })),
+          }, React.createElement(StaffPage, { embedded: true }))
+        : React.createElement("div", { className: "resvEmpty" },
+            "Company settings are managed by an Exec, and staff by an Admin at your branch.")
     );
   }
 
@@ -11086,12 +11105,8 @@ function StaffPage({ embedded, onChanged } = {}) {
                   disabled: busyId === row.id, onClick: () => decline(row),
                 }, "Decline")))))))),
 
-    embedded && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-      `${staff.filter((r) => r.active).length} ${staff.filter((r) => r.active).length === 1 ? "person has" : "people have"} access. `,
-      React.createElement("a", { href: "#/staff" }, "Manage everyone on the Staff page"), "."),
-
     // ── Staff list ──
-    !embedded && React.createElement(
+    React.createElement(
       "div", { className: "dashboardSection" },
       React.createElement("h2", null,
         isExec ? "People in this company" : "People at this branch"),
@@ -11699,7 +11714,6 @@ const NAV_ICONS = {
   "/reports":              ["M3 3v18h18", "M7 16v-5", "M12 16V8", "M17 16v-8"],
   "/audit-log":            ["M8 6h13", "M8 12h13", "M8 18h13", "M3 6h.01", "M3 12h.01", "M3 18h.01"],
   "/company":              ["M3 21h18", "M5 21V7l7-4 7 4v14", "M9 9h.01", "M15 9h.01", "M9 13h.01", "M15 13h.01", "M10 21v-4h4v4"],
-  "/staff":                ["M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2", "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z", "M23 21v-2a4 4 0 0 0-3-3.9", "M16 3.1a4 4 0 0 1 0 7.8"],
   "/account":              ["M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z", "M12 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6z", "M6.2 19a6 6 0 0 1 11.6 0"],
 };
 const NAV_ICON_FALLBACK = ["M12 12h.01"];
@@ -17112,10 +17126,12 @@ function AppRoutes() {
         ? React.createElement(ExecNeedsBranch, null, React.createElement(AuditLogPage))
         : React.createElement(Navigate, { to: "/dashboard", replace: true }),
     }),
+    // Staff is a section of Company now. The old address, and the
+    // notifications that still carry it, open that section.
     React.createElement(Route, {
       key:  "staff",
       path: "/staff",
-      element: React.createElement(StaffPage),
+      element: React.createElement(Navigate, { to: "/company?section=staff", replace: true }),
     }),
     React.createElement(Route, {
       key:  "company",
