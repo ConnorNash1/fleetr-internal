@@ -17,11 +17,11 @@ import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 // "fleetr". Tone "light" is the terracotta logo for light backgrounds
 // (#F9F9F7), "dark" the off-white one for dark backgrounds (#1F1E1D).
 // fleetrIcon is the car alone, for where space is tight, such as the folded
-// sidebar. Each keeps its shape: the logo is 4042 by 700, the icon 1444 by 700.
+// sidebar. Each keeps its shape: the logo is 4042 by 711, the icon 1444 by 700.
 const fleetrLogo = (tone, height, className) => React.createElement("img", {
   src: tone === "light" ? "/fleetr-logo-terracotta-on-white.svg" : "/fleetr-logo-white-on-black.svg",
   alt: "fleetr", draggable: false, className: `fleetrLogo${className ? ` ${className}` : ""}`,
-  style: { height: `${height}px`, width: `${(height * 4042 / 700).toFixed(2)}px` },
+  style: { height: `${height}px`, width: `${(height * 4042 / 711).toFixed(2)}px` },
 });
 const fleetrIcon = (tone, height, className) => React.createElement("img", {
   src: tone === "light" ? "/fleetr-icon-terracotta-on-white.svg" : "/fleetr-icon-white-on-black.svg",
