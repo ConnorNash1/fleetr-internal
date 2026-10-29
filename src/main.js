@@ -1860,7 +1860,13 @@ function AppProvider({ children, currentUser, signOut }) {
     setSetup(data);
     return data;
   }, []);
-  React.useEffect(() => { if (currentUser) refreshSetup(); }, [currentUser, refreshSetup]);
+  // Whether the first read has answered, either way. The skeleton waits for it
+  // as well as the data, so the setup bar above the page arrives with the page
+  // rather than pushing it down after.
+  const [setupTried, setSetupTried] = React.useState(false);
+  React.useEffect(() => {
+    if (currentUser) refreshSetup().catch(() => null).then(() => setSetupTried(true));
+  }, [currentUser, refreshSetup]);
 
   // ── Fleet notifications follow the bookings and the fleet ─────────────────
   // After a change here to a reservation, a rental or a vehicle (a booking
@@ -2321,11 +2327,13 @@ function AppProvider({ children, currentUser, signOut }) {
   // than this browser's localStorage. See worker.js -> scheduled().
 
   // ── Loading screen ───────────────────────────────────────────────────────
-  if (!dbReady) return React.createElement(AppSkeleton);
+  // The menu and top bar draw straight away; the page under them is its
+  // skeleton until the data is here (AppRoutes).
+  const booting = !dbReady || !setupTried;
 
   return React.createElement(
     AppContext.Provider,
-    { value: { reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, archivedVehicles, setArchivedVehicles, readyReturns, setReadyReturns, appSettings, guardAction, logAudit, currentUser, signOut, setup, refreshSetup, featuresVersion } },
+    { value: { booting, reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, archivedVehicles, setArchivedVehicles, readyReturns, setReadyReturns, appSettings, guardAction, logAudit, currentUser, signOut, setup, refreshSetup, featuresVersion } },
     children,
     pinModalOpen && React.createElement(PinConfirmModal, { onConfirm: confirmPin, onCancel: dismissPinModal, warning: pinPrompt.warning, danger: pinPrompt.danger }),
     React.createElement(AppDialogHost)
@@ -2334,48 +2342,336 @@ function AppProvider({ children, currentUser, signOut }) {
 
 // ─── NotesCell component ──────────────────────────────────────────────────────
 
-// ─── Loading skeleton ────────────────────────────────────────────────────────
-// While the first load runs after sign-in: the app's layout drawn in light
-// placeholder shapes, a sheen passing over them, so the page has its shape
-// before its data. On a phone, the top bar in place of the sidebar.
-function AppSkeleton() {
-  const el = React.createElement;
-  const bar = (cls, style, key) => el("span", { key, className: `skel ${cls || ""}`, style });
-  return el("div", { className: "appSkel", role: "status", "aria-live": "polite", "aria-busy": "true" },
-    el("span", { className: "appSkel__sr" }, "Loading fleetr"),
-    el("aside", { className: "appSkel__side", "aria-hidden": "true" },
-      el("span", { className: "appSkel__logo" }, fleetrLogo("light", 26)),
-      el("span", { className: "appSkel__icon" }, fleetrIcon("light", 22)),
-      [5, 3, 4, 4].map((n, i) => el("div", { key: i, className: "appSkel__group" },
-        bar("skel--label"),
-        Array.from({ length: n }, (_, j) => bar("skel--nav", { width: `${62 + ((i * 3 + j * 7) % 5) * 7}%` }, j)))),
-      el("div", { className: "appSkel__user" }, bar("skel--avatar"), el("div", { className: "appSkel__userText" }, bar("skel--line", { width: "70%" }), bar("skel--line skel--thin", { width: "40%" })))),
-    el("div", { className: "appSkel__main", "aria-hidden": "true" },
-      el("div", { className: "appSkel__top" }, el("span", { className: "appSkel__topLogo" }, fleetrLogo("light", 24)), bar("skel--pill"), bar("skel--search"), bar("skel--pill skel--pill--sm")),
-      // Home as it loads: the title, Close Rental and Switch Out, the
-      // Reservations and Vehicle Status sections, then the numbers.
-      el("div", { className: "appSkel__page" },
-        bar("skel--title"),
-        el("div", { className: "appSkel__ctas" }, bar("skel--cta"), bar("skel--cta")),
-        el("div", { className: "appSkel__section" },
-          el("div", { className: "appSkel__sectionHead" }, bar("skel--line", { width: "120px" }), bar("skel--chev")),
-          el("div", { className: "appSkel__sectionBody" },
-            el("div", { className: "appSkel__search" }, bar("skel--btn"), bar("skel--field"), bar("skel--field"), bar("skel--field"), bar("skel--field")),
-            el("div", { className: "appSkel__list" }, [0, 1, 2, 3].map((i) =>
-              el("div", { key: i, className: "appSkel__row" }, bar("skel--line", { width: "14%" }), bar("skel--line", { width: "10%" }), bar("skel--line", { width: "26%" }), bar("skel--line", { width: "18%" }), bar("skel--chip")))))),
-        el("div", { className: "appSkel__section" },
-          el("div", { className: "appSkel__sectionHead" }, bar("skel--line", { width: "130px" }), bar("skel--chev")),
-          el("div", { className: "appSkel__sectionBody" },
-            el("div", { className: "appSkel__groups" }, [0, 1, 2, 3, 4, 5].map((i) =>
-              el("div", { key: i, className: "appSkel__group2" }, bar("skel--dot"), bar("skel--line", { width: `${90 + (i % 3) * 30}px` }), bar("skel--count"), bar("skel--chev")))))),
-        el("div", { className: "appSkel__tiles" }, [0, 1, 2, 3].map((i) =>
-          el("div", { key: i, className: "appSkel__card" }, bar("skel--num"), bar("skel--line", { width: "60%" }), bar("skel--line skel--thin", { width: "45%" })))),
-        el("div", { className: "appSkel__cards" },
-          el("div", { className: "appSkel__card appSkel__card--chart" },
-            bar("skel--line", { width: "40%" }),
-            el("div", { className: "appSkel__bars" }, [55, 30, 80, 20, 60, 10, 45].map((h, i) => bar("skel--col", { height: `${h}%` }, i)))),
-          el("div", { className: "appSkel__card" },
-            bar("skel--line", { width: "35%" }), bar("skel--block"))))));
+// ─── Loading skeletons ───────────────────────────────────────────────────────
+// What a page shows while its data is on the way: the page itself, built from
+// the same elements and classes, so every box, gap and row sits where the
+// loaded page will put it. Words keep their own size and are drawn as grey
+// bars; controls are their own boxes filled grey; one sheen passes over all of
+// it. The same skeleton serves the first load after sign-in and a page's own
+// load. It stays invisible for its first 150ms (SkeletonFrame), so a quick
+// load goes straight to the page with nothing in between.
+const SKEL_ROWS = 5;
+const skEl = React.createElement;
+const skNoop = () => {};
+// Words, at their own size, as a grey bar.
+const skT = (text, key) => skEl("span", { key, className: "skelText" }, text);
+// The real box (a button, a badge), filled grey.
+const skB = (tag, className, children, key, style) => skEl(tag, { key, style, className: `${className} skelBox`, tabIndex: -1, type: tag === "button" ? "button" : undefined }, children);
+const skSmallBtn = { width: "auto", padding: "6px 10px" };
+const skTitle = (text) => [
+  skEl("h1", { key: "title", className: "page__title" }, skT(text)),
+  skEl("div", { key: "underline", className: "page__titleUnderline" }),
+];
+const skStep = (title, stepKey, open = false, body = null) =>
+  skEl(CompanyStep, { key: title, stepKey, title: skT(title), open, onToggle: skNoop }, body);
+// A section with its header row (an array of spans) and its body.
+const skSection = (head, body, key) => skEl("section", { key, className: "dashboardSection" },
+  head && skEl("div", { className: "dashboardSection__header" }, skEl("div", { className: "dashboardSection__headerRow" }, head)),
+  skEl("div", { className: "dashboardSection__body" }, body));
+const skHead = (title, note, noteClass = "aiTabDesc") => [
+  skEl("span", { key: "t" }, skT(title)),
+  note && skEl("span", { key: "n", className: noteClass, style: noteClass === "aiTabDesc" ? { marginBottom: 0, marginLeft: 8 } : null }, skT(note)),
+];
+// The page's table: its column names, then rows of sample values of a typical
+// length. A cell is a string, a list to vary down the rows, or a node.
+const skTable = (cols, cells, rows = SKEL_ROWS) => skEl("table", { className: "dashboardTable" },
+  skEl("thead", null, skEl("tr", null, cols.map((c, i) => skEl("th", { key: i }, c ? skT(c) : null)))),
+  skEl("tbody", null, Array.from({ length: rows }, (_, r) => skEl("tr", { key: r },
+    cells.map((c, i) => {
+      const v = Array.isArray(c) ? c[r % c.length] : c;
+      return skEl("td", { key: i }, typeof v === "string" ? skT(v) : v);
+    })))));
+const skTabs = (labels) => skEl("div", { className: "statusTabs" }, labels.map((label, i) =>
+  skEl("button", { key: label, type: "button", tabIndex: -1, className: i === 0 ? "statusTab statusTab--active" : "statusTab" },
+    skEl("span", { className: "statusTab__label" }, label),
+    skEl("span", { className: "statusTab__count" }, "0"))));
+const skSearchInputs = (placeholders) => placeholders.map((p) =>
+  skEl("input", { key: p, className: "resvSearchInput", type: "text", placeholder: p, tabIndex: -1, readOnly: true }));
+const skDateBtn = (label, clear) => skEl("div", { key: label, className: "resvDatePickerWrap" },
+  skEl("button", { type: "button", tabIndex: -1, className: clear ? "resvSearchInput resvDateBtn resvDateBtn--active" : "resvSearchInput resvDateBtn" }, label),
+  clear && skEl("button", { type: "button", tabIndex: -1, className: "resvDateClear" }, "×"));
+const skFleetFilter = () => skEl(FleetFilterBar, { filterState: {
+  plateFilt: "", setPlateFilt: skNoop, provinceFilt: "All", setProvinceFilt: skNoop, statusFilt: "All", setStatusFilt: skNoop,
+  makeFilt: "All", setMakeFilt: skNoop, modelFilt: "All", setModelFilt: skNoop, allMakes: [], allModels: [],
+} });
+const skCustomer = ["Jamie Rivers", "Alexandra Fitzgerald", "Sam Lee", "Robin Parker", "Chris O'Brien"];
+const skCode = "ABC 123 456";
+const skPlate = skEl("button", { type: "button", tabIndex: -1, className: "plateLink" }, skT("ABC 123"));
+const skLink = (text) => skEl("span", { className: "customerLinkWrap" }, skEl("button", { type: "button", tabIndex: -1, className: "customerLink" }, skT(text)));
+const skDay = new Date().toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
+
+const skStatTile = (title, note) => skEl("div", { key: title, className: "statTile" },
+  skEl("div", { className: "statTile__value" }, skT("0")),
+  skEl("div", { className: "statTile__title" }, skT(title)),
+  skEl("div", { className: "statTile__foot" }, skEl("span", { className: "statTile__note" }, skT(note))));
+const skCardHead = (title) => skEl("div", { className: "statCard__head" },
+  skEl("span", { className: "statCard__title" }, skT(title)),
+  skEl("span", { className: "statCard__chevron" }, "›"));
+
+// One per page, keyed by its address: the page's opening, as it is laid out.
+const PAGE_SKELETONS = {
+  "/dashboard": () => skEl("div", { className: "page" },
+    skTitle("Home"),
+    skEl("div", { className: "dashboardCtaRow" }, skB("button", "closeRentalCta", "Close Rental", "c"), skB("button", "closeRentalCta", "Switch Out", "s")),
+    skEl("div", { className: "dashboardGrid" },
+      skStep("Reservations"), skStep("Vehicle Status"), isFeatureEnabled("non_drive_intake") && skStep("Non-Drive Intake")),
+    skEl("div", { className: "dashStats" },
+      skEl("div", { className: "dashStats__tiles" },
+        skStatTile("Pickups remaining today", "of 0 booked for today"), skStatTile("Returns due today", "of 0 due back today"),
+        skStatTile("On rent", "0% of 00 vehicles"), skStatTile("Available", "0% of 00 vehicles")),
+      skEl("div", { className: "dashStats__cards" },
+        skEl("div", { className: "statCard statCard--lift" },
+          skCardHead("Pickups, next 7 days"),
+          skEl("div", { className: "statCard__big" }, skT("0")),
+          skEl("p", { className: "statCard__desc" }, skT("pickups booked in the next 7 days")),
+          skEl("div", { className: "weekBars" }, [40, 64, 28, 52, 76, 36, 20].map((h, i) => skEl("div", { key: i, className: "weekBars__col" },
+            skEl("span", { className: "weekBars__count" }, skT("0")),
+            skEl("div", { className: "weekBars__track" }, skEl("div", { className: "weekBars__bar skelBox", style: { height: `${h}%` } })),
+            skEl("span", { className: "weekBars__label" }, skT(i === 0 ? "Today" : "Mon")))))),
+        skEl("div", { className: "statCard statCard--wide statCard--seen" },
+          skEl("div", { className: "statCard__split" },
+            skEl("div", { className: "statCard__chartSide" },
+              skCardHead("Returns due, next 14 days"),
+              skEl("div", { className: "statCard__big" }, skT("0")),
+              skEl("p", { className: "statCard__desc" }, skT("Busiest day: Mon Nov 2, with 0")),
+              skEl("div", { className: "returnsCurve skelBox" }),
+              skEl("div", { className: "returnsCurve__axis" }, skT("Today", 1), skT("Nov 5", 2), skT("Nov 11", 3))),
+            skEl("div", { className: "statCard__listSide" },
+              skEl("div", { className: "statCard__title" }, skT("Next pickups")),
+              skEl("ol", { className: "nextPickups" }, [0, 1, 2].map((i) => skEl("li", { key: i, className: "nextPickups__item" },
+                skEl("span", { className: "nextPickups__dot skelBox" }),
+                skEl("div", { className: "nextPickups__when" }, skT("Today, 10:00 AM")),
+                skEl("div", { className: "nextPickups__who" }, skT(skCustomer[i])),
+                skEl("div", { className: "nextPickups__what" }, skT("Small car"))))))))))),
+
+  "/reservations": () => skEl("div", { className: "page" },
+    skTitle("Reservations"),
+    skEl("div", { className: "resvSearchBar" },
+      skEl("button", { type: "button", tabIndex: -1, className: "resvInlineBtn" }, skT("+ New Reservation")),
+      skDateBtn(skDay, true),
+      skSearchInputs(["First name", "Last name", "Phone number", "Res Code"])),
+    skSection(skHead("Reservations"), skTable(
+      ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Source", "Notes"],
+      [skDay, "10:00 AM", "Airport", skLink(skCode), skCustomer.map(skLink), ["Small car", "Medium SUV"], ["fleetr.ai", "Intact Insurance"], skT("    ")]))),
+
+  "/rental-agreements": () => skEl("div", { className: "page" },
+    skTitle("Rental Agreements"),
+    skEl("div", { className: "resvSearchBar" },
+      skDateBtn("Pickup date"), skDateBtn("Return date"),
+      skSearchInputs(["First name", "Last name", "Phone number", "Res Code"])),
+    skTabs(["Open", "Customer Return", "Close Pending", "Closed"]),
+    skSection(null, skTable(
+      ["Res Code", "Customer", "Vehicle", "Pickup Date", "Status"],
+      [skLink(skCode), skCustomer.map(skLink), skPlate, skDay, skB("span", "rentalAgreementBadge rentalAgreementBadge--open", "Open")]))),
+
+  "/fleet/vehicles": () => skEl("div", { className: "page" },
+    skTitle("Vehicles"),
+    skFleetFilter(),
+    skStep("Vehicle Status", undefined, true, skEl("div", { className: "dashboardSection__body" },
+      ["Available", "Needs Cleaning", "Ready Returns", "Preventative Maintenance", "Damaged", "On Rent"].map((label) =>
+        skEl("div", { key: label, className: "fleetGroup" },
+          skEl("div", { className: "fleetGroupHeader" },
+            skEl("span", { className: "fleetGroupChevron" }, "▸"),
+            skEl("span", null, skT(label)),
+            skEl("span", { className: "fleetGroupCount" }, "0"))))))),
+
+  "/fleet/additions": () => skEl("div", { className: "page companySetup" },
+    skEl("h1", { className: "companySetup__title" }, skT("Additions and Deletions")),
+    skFleetFilter(),
+    skStep("Add Vehicle to Fleet", "add"), skStep("Retire Vehicle", "retire"), skStep("Archived Vehicles", "archived")),
+
+  "/fleet/gas-collections": () => skEl("div", { className: "page" },
+    skTitle("Gas collections"),
+    skSection(skHead("Outstanding balances", "0 outstanding"), skTable(
+      ["Customer", "Res code", "Plate", "Gas owed", "Payment status"],
+      [skCustomer.map(skLink), skLink(skCode), skPlate,
+        skEl("div", { className: "gasOwedWrap" }, skEl("span", { className: "gasOwedDollar" }, skT("$")), skEl("input", { className: "gasOwedInput", type: "number", tabIndex: -1, readOnly: true })),
+        skEl("select", { className: "gasStatusSelect", tabIndex: -1 }, skEl("option", null, "Unpaid"))]))),
+
+  "/fleet/damage-claims": () => skEl("div", { className: "page" },
+    skTitle("Ongoing Damage Claims"),
+    skFleetFilter(),
+    skSection(skHead("Active Claims", "0 active"), skTable(
+      ["Plate", "Vehicle", "Customer", "Res Code", "Damage Description", "Status", "Rentable", "Action"],
+      [skPlate, "Toyota Corolla", skCustomer.map(skLink), skLink(skCode), "Scratch on the rear bumper, passenger side",
+        skB("span", "claimStatus claimStatus--open", "Open"), "Not recorded", skB("button", "aiControl", "Resolve")]))),
+
+  "/arms": () => skEl("div", { className: "page" }, skTitle("Non-Drive Intake"), skStep("Non-Drive Intake")),
+
+  "/pre-rental-check": () => skEl("div", { className: "page" },
+    skTitle("Pre-Rental Check"),
+    skEl("p", { className: "aiTabDesc" }, skT("An automated text is sent to each customer the business day before their pickup. No staff involvement required.")),
+    skSection([skEl("span", { key: "t" }, skT("Tomorrow’s Pickups · Friday, October 30, 2026"))], skTable(
+      ["Time", "Location", "Res Code", "Customer", "Vehicle Class", "Text Status"],
+      ["10:00 AM", "Airport", skLink(skCode), skCustomer.map(skLink), ["Small car", "Medium SUV"], "Not sent yet"]))),
+
+  "/overdue-rentals": () => skEl("div", { className: "page" },
+    skTitle("Overdue Rentals"),
+    skEl("p", { className: "aiTabDesc" }, skT("Rental agreements past their return date. The customer gets a text automatically. Customers with no response are moved to Manual Follow-Up.")),
+    skSection(skHead("Overdue", "Reminders are texted automatically", "autoTextNote"), skTable(
+      ["Res Code", "Customer", "Phone", "Plate", "Due Date", "Status"],
+      [skLink(skCode), skCustomer.map(skLink), "709 555 0110", skPlate, skDay,
+        skEl("div", { className: "readyStatusWrap" }, skB("button", "aiControl", "Reached", 1), skB("button", "aiControl", "No Reply", 2, { marginLeft: "6px" }))]))),
+
+  "/time-of-repair": () => skEl("div", { className: "page" },
+    skTitle("Unknown Repair Date"),
+    skSection(skHead("Awaiting Confirmed Repair Date", "0 reservations pending"), skTable(
+      ["Customer", "Res Code", "Bodyshop / Dealership", "Confirm Repair Date"],
+      [skCustomer.map(skLink), skLink(skCode), "Intact Insurance",
+        skEl(DateField, { className: "torDateInput", value: "", placeholder: "Pick date", ariaLabel: "Repair date", onChange: skNoop })]))),
+
+  "/no-shows": () => skEl("div", { className: "page" },
+    skTitle("No Shows"),
+    skTabs(["Missed Pickup", "Cancelled"]),
+    skEl("p", { className: "aiTabDesc" }, skT("The customer had not arrived 2 hours after pickup. The missed pickup text goes out automatically, with a link to change the pickup time. Not picked up or moved by the cutoff, the reservation is cancelled and the customer is texted.")),
+    skSection(skHead("Missed Pickup", "Texts go out automatically", "autoTextNote"), skTable(
+      ["Customer", "Vehicle Class", "Pickup", "Missed Pickup Text", "Cutoff", "Outcome", ""],
+      [skCustomer.map(skLink), ["Small car", "Medium SUV"], "Oct 29, 10:00 AM", "Oct 29, 12:00 p.m.", "Oct 30, 12:00 AM",
+        skEl("div", { className: "readyStatusWrap" }, skB("button", "aiControl", "Reached", 1, { marginRight: "6px" }), skB("button", "aiControl", "No Reply", 2, { marginRight: "6px" })),
+        skEl(React.Fragment, null, skB("button", "aiControl", "Customer Is Coming", 1, { marginRight: "6px" }), skB("button", "aiControl", "Cancel", 2, { marginRight: "6px" }))]))),
+
+  "/reports": () => skEl("div", { className: "page companySetup" },
+    skTitle("Reports"),
+    [["Daily Summary", "daily"], ["Rental Revenue", "revenue"], ["Fleet Utilization", "util"], ["No-Show Report", "noshow"], ["Overdue Rentals Report", "overdue"]]
+      .map(([title, key]) => skStep(title, key))),
+
+  "/audit-log": () => skEl("div", { className: "page" },
+    skTitle("Audit Log"),
+    skEl("div", { className: "resvSearchBar auditFilterBar" },
+      skEl("select", { className: "resvSearchInput auditFilterSelect", tabIndex: -1 }, skEl("option", null, "All actors")),
+      skEl("select", { className: "resvSearchInput auditFilterSelect", tabIndex: -1 }, skEl("option", null, "All actions")),
+      skEl(DateField, { className: "resvSearchInput auditFilterDate", value: "", clearable: true, placeholder: "From date", ariaLabel: "From date", onChange: skNoop }),
+      skEl(DateField, { className: "resvSearchInput auditFilterDate", value: "", clearable: true, placeholder: "To date", ariaLabel: "To date", onChange: skNoop }),
+      skB("button", "auditClearBtn", "Clear filters")),
+    skTabs(["All", "Completed", "Cancelled", "Refused"]),
+    skSection(skHead("Entries (0)"), skEl("ul", { className: "auditList" }, Array.from({ length: SKEL_ROWS }, (_, i) =>
+      skEl("li", { key: i, className: "auditEntry" },
+        skEl("div", { className: "auditEntry__top" },
+          skEl("div", { className: "auditEntry__what" },
+            skEl("span", { className: "auditEntry__action" }, skT(["Edit reservation", "Change vehicle status", "Advance rental agreement"][i % 3])),
+            skEl("span", { className: "auditEntry__record" }, skT(i % 2 ? `Reservation ${skCode}` : "Vehicle ABC 123"))),
+          skB("span", "auditOutcome auditOutcome--completed", "completed")),
+        skEl("p", { className: "auditEntry__details" }, skT(i % 2 ? "Changed the pickup time from 10:00 AM to 2:30 PM, at the customer's request by phone." : "Status Available -> On Rent.")),
+        skEl("div", { className: "auditEntry__meta" }, ["Oct 29, 2026, 9:00 AM", "Pat Rivers", "Confirmed", "reservation.edit"].map((t, j) =>
+          skEl("span", { key: j, className: j === 3 ? "auditActionKey" : null }, skT(t))))))))),
+
+  "/company": ({ currentUser }) => {
+    if (roleAtLeast(currentUser?.role, "Exec")) {
+      return skEl("div", { className: "page companySetup" },
+        skEl("h1", { className: "companySetup__title" }, skT("Company")),
+        COMPANY_STEPS.map((st) => skStep(st.after || st.title, st.key)),
+        skStep("Billing", "billing"));
+    }
+    return skEl("div", { className: "page companySetup" },
+      skEl("h1", { className: "companySetup__title" }, skT("Company")),
+      roleAtLeast(currentUser?.role, "Admin")
+        ? skStep("Staff", "staff", true, [skJoinCode(), skStaffList()])
+        : skEl("div", { className: "resvEmpty" }, skT("Company settings are managed by an Exec, and staff by an Admin at your branch.")));
+  },
+
+  "/account": () => skEl("div", { className: "page companySetup" },
+    skEl("h1", { className: "companySetup__title" }, skT("Your account")),
+    skStep("Who you are", "who", true, [
+      skEl("div", { key: "who", style: { fontSize: "0.95rem", lineHeight: "1.9" } },
+        skEl("div", null, skT("Username: username")), skEl("div", null, skT("Name: First Last")), skEl("div", null, skT("Role: Agent"))),
+      skEl("p", { key: "hint", className: "closeRentalHint" }, skT("Your username and role are set by your company. Ask an Admin to change them.")),
+    ]),
+    skStep("Password", "password"), skStep("PIN", "pin"), skStep("Recovery email", "recovery")),
+
+  "/close-rental": () => skRentalSearch("Close Rental"),
+  "/switch-out": () => skRentalSearch("Switch Out"),
+
+  "/vehicle": () => skEl("div", { className: "page" },
+    skTitle("Vehicle Detail"),
+    skEl("div", { className: "resvEmpty" }, skT("No vehicle selected."))),
+
+  "/customer": ({ openCustomer, rentalAgreements }) => skCustomerPage(openCustomer, rentalAgreements),
+};
+PAGE_SKELETONS["/"] = PAGE_SKELETONS["/dashboard"];
+PAGE_SKELETONS["/staff"] = PAGE_SKELETONS["/company"];
+PAGE_SKELETONS["/setup"] = PAGE_SKELETONS["/company"];
+PAGE_SKELETONS["/fleet"] = () => skEl("div", { className: "page" }, skTitle("Branch Fleet"), skStep("Vehicle Status", undefined, true,
+  skEl("div", { className: "dashboardSection__body" }, ["Available", "Needs Cleaning", "Ready Returns", "Preventative Maintenance", "Damaged", "On Rent"].map((label) =>
+    skEl("div", { key: label, className: "fleetGroup" }, skEl("div", { className: "fleetGroupHeader" },
+      skEl("span", { className: "fleetGroupChevron" }, "▸"), skEl("span", null, skT(label)), skEl("span", { className: "fleetGroupCount" }, "0")))))));
+
+function skRentalSearch(title) {
+  return skEl("div", { className: "page" },
+    skEl("button", { type: "button", tabIndex: -1, className: "rentalAgreementBackBtn" }, skT("← Home")),
+    skTitle(title),
+    skEl("div", { className: "resvSearchBar" }, skSearchInputs(["Plate or last name"])));
+}
+
+// The agreement is already loaded, so its status badge is known and drawn.
+function skCustomerPage(openCustomer, rentalAgreements) {
+  const status = (rentalAgreements || []).find((r) => r.resCode === openCustomer?.resCode)?.rentalAgreementStatus;
+  return skEl("div", { className: "page" },
+    skEl("div", { className: "customerPageTopBar" },
+      skEl("button", { type: "button", tabIndex: -1, className: "rentalAgreementBackBtn" }, skT("← Back")),
+      skB("button", "customerPageSaveBtn", "Save")),
+    skEl("h1", { className: "page__title" }, skT(openCustomer?.name || "Customer")),
+    skEl("div", { className: "customerPageMeta" },
+      skEl("span", { className: "customerPageMetaCode" }, skT(`${openCustomer?.resCode || skCode} · fleetr.ai`)),
+      status && status !== "reservation" && skB("span", raBadgeClass(status, { meta: true }), statusLabel(status))),
+    skEl("div", { className: "page__titleUnderline" }),
+    ["Reservation Information", "Vehicles", "Rates & Billing", "Charges & Payments", "Notes", "Rental Agreement Options"].map((t) => skStep(t)));
+}
+
+// The join code at the top of Staff, for an Admin: only an Exec makes a new one.
+function skJoinCode() {
+  return skEl("div", { key: "join", className: "dashboardSection", style: { marginBottom: "24px" } },
+    skEl("h2", null, skT("Join code")),
+    skEl("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, skT("New staff enter this code when they create their account. One code for the whole company. Everyone who uses it waits for approval below before they can sign in, so keep it to people you mean to hire.")),
+    skEl("div", { style: { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" } },
+      skEl("code", { className: "skelBox", style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px" } }, "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"),
+      skB("button", "loginBtn", "Show", undefined, { width: "auto", padding: "8px 14px" })),
+    skEl("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } }, skT("Only an Exec can generate a new code, since it covers the whole company.")));
+}
+
+// The staff list while it loads: the section and table it fills.
+function skStaffList(isExec) {
+  return skEl("div", { key: "list", className: "dashboardSection" },
+    skEl("h2", null, skT(isExec ? "People in this company" : "People at this branch")),
+    skStaffTable());
+}
+function skStaffTable() {
+  return skEl("div", { style: { overflowX: "auto" } }, skEl("table", { className: "dashboardTable", style: { minWidth: "760px" } },
+      skEl("thead", null, skEl("tr", null, ["Username", "Name", "Role", "Branch", "Status", ""].map((h) => skEl("th", { key: h }, h ? skT(h) : null)))),
+      skEl("tbody", null, Array.from({ length: 3 }, (_, r) => skEl("tr", { key: r },
+        [["jrivers", "srivers", "rpark"][r], skCustomer[r], ["Agent", "Admin", "Agent"][r], "Airport", "Active"].map((v, i) => skEl("td", { key: i }, skT(v))),
+        skEl("td", { style: { display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" } },
+          skB("button", "loginBtn", "Make Admin", 1, skSmallBtn), skB("button", "loginBtn", "Deactivate", 2, skSmallBtn), skB("button", "loginBtn", "Reset PIN", 3, skSmallBtn)))))));
+}
+
+// The skeleton for an address, in the content area under the menu and top
+// bar. Hidden from screen readers but for one "Loading" they can hear.
+function PageSkeleton({ path }) {
+  const ctx = React.useContext(AppContext);
+  const build = PAGE_SKELETONS[path] || (() => skEl("div", { className: "page" }, skTitle("Loading")));
+  return skEl(SkeletonFrame, null, build(ctx));
+}
+
+// Holds a skeleton (a whole page, or the part of one still loading): unseen
+// for 150ms, then shown with its sheen. Inert, so nothing in it can be used.
+// The space is held from the start, so showing it moves nothing.
+// One that takes over from a skeleton already showing (the branch check, then
+// the page's own read) shows at once, rather than blanking for 150ms between:
+// the new one is drawn while the old one is still counted here.
+const SKEL_DELAY_MS = 150;
+let skelShowing = 0;
+function SkeletonFrame({ children, label = "Loading" }) {
+  const [shown, setShown] = React.useState(() => skelShowing > 0);
+  React.useEffect(() => {
+    if (shown) {
+      skelShowing += 1;
+      return () => { skelShowing -= 1; };
+    }
+    const t = setTimeout(() => setShown(true), SKEL_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [shown]);
+  return skEl("div", { className: shown ? "skelPage skelPage--shown" : "skelPage", role: "status", "aria-busy": "true" },
+    skEl("span", { className: "skelSr" }, label),
+    skEl("div", { className: "skelPage__body", "aria-hidden": "true", inert: "" }, children));
 }
 
 // The Reservations list's notes: a small note icon, outlined with no note
@@ -4494,9 +4790,12 @@ function NoShowsPage() {
   const [error, setError] = React.useState("");
   const [busy, setBusy]   = React.useState("");
   const [picking, setPicking] = React.useState("");
+  // False until the first read answers, the skeleton showing meanwhile.
+  const [loaded, setLoaded] = React.useState(false);
 
   const load = React.useCallback(async () => {
     const { data, error: err } = await supabase.rpc("my_no_shows");
+    setLoaded(true);
     if (err) { setError("The no-shows could not be loaded. Check your connection and try again."); return; }
     setRows(Array.isArray(data) ? data : []);
   }, []);
@@ -4632,6 +4931,7 @@ function NoShowsPage() {
     ? ["Customer", "Vehicle Class", "Pickup", "Missed Pickup Text", "Cutoff", "Outcome", ""]
     : ["Customer", "Vehicle Class", "Pickup", "Cancelled", ""];
 
+  if (!loaded) return React.createElement(PageSkeleton, { path: "/no-shows" });
   return React.createElement(
     "div",
     { className: "page" },
@@ -7248,6 +7548,7 @@ function AccountPage() {
     onToggle: () => setOpen((p) => ({ ...p, [key]: !p[key] })),
   }, ...children);
 
+  if (!account && !loadErr) return React.createElement(PageSkeleton, { path: "/account" });
   return React.createElement(
     "div", { className: "page companySetup" },
     React.createElement("h1", { className: "companySetup__title" }, "Your account"),
@@ -7755,12 +8056,12 @@ function CompanyPage() {
   };
 
 
+  if (!setup) return el(PageSkeleton, { path: "/company" });
   return el("div", { className: "page companySetup" },
     el("h1", { className: "companySetup__title" }, "Company"),
     error  && el("div", { className: "loginError" }, error),
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
-    !setup && el("div", { className: "resvEmpty" }, "Loading…"),
-    setup && el(CompanyListsSections, {
+    el(CompanyListsSections, {
       branches, onChanged: changed, openSections: false,
       layout: (parts) => el(React.Fragment, null, COMPANY_STEPS.map((st, i) => el(CompanyStep, {
         key: st.key, id: `company-step-${st.key}`, stepKey: st.key,
@@ -7848,7 +8149,11 @@ function BillingSection() {
       setData(err || !d || !d.ok ? { error: err ? "Could not reach the server." : d && d.reason === "exec_only" ? "Only an Exec can see billing." : "Billing could not be loaded." } : d);
     });
   }, []);
-  if (data === undefined) return el("p", { className: "closeRentalHint" }, "Loading…");
+  if (data === undefined) return el(SkeletonFrame, null,
+    el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+      skT("fleetr bills 0% of the vehicle rental revenue on agreements closed each month, before tax. Each month is due on the 15th of the month after.")),
+    el("div", { style: { overflowX: "auto" } }, skTable(["Month", "Rentals", "Revenue", "Share", "Amount owed", "Status", ""],
+      ["October 2026", "0", "$0.00", "0%", "$0.00", "Month in progress", skB("button", "loginBtn", "Statement PDF", undefined, skSmallBtn)], 2)));
   if (data.error) return el("div", { className: "loginError" }, data.error);
   const download = async (month) => {
     setBusy(month); setError("");
@@ -8434,7 +8739,18 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
         : "Off: nothing shows on fleetr.ai, and the fleetr.ai source is hidden from Rates and from the source lists."),
       switchError && React.createElement("div", { className: "loginError" }, switchError)),
     loadError && React.createElement("div", { className: "loginError" }, loadError),
-    !listings && !loadError && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Loading…"),
+    !listings && !loadError && React.createElement(SkeletonFrame, null, open.map((b) => part === "listing"
+      ? React.createElement("div", { key: b.id, className: "faiBranch" },
+          React.createElement("div", { className: "gasSettingSubhead" }, skT(b.name)),
+          React.createElement("p", { className: "closeRentalHint", style: { marginTop: 0, marginBottom: "14px" } }, skT("Not on fleetr.ai yet.")),
+          React.createElement("div", { className: "fai" },
+            React.createElement("div", { className: "faiStage" },
+              React.createElement("div", { className: "faiStage__label" }, skT("In search results")),
+              React.createElement("div", { className: "skelBox", style: { height: "320px", borderRadius: "14px" } })),
+            React.createElement("div", { className: "faiStage faiStage--page" },
+              React.createElement("div", { className: "faiStage__label" }, skT("The branch page")),
+              React.createElement("div", { className: "skelBox", style: { height: "560px", borderRadius: "14px" } }))))
+      : React.createElement("div", { key: b.id, className: "dashboardSection" }, React.createElement("h2", null, skT(`\u25b8 ${b.name}`))))),
     // The listing is edited in its live preview; the address in its form.
     listings && open.map((b) => React.createElement(part === "listing" ? ListingPreviewEditor : ListingEditor, {
       key: b.id, branch: b, operatorId: currentUser?.operatorId, company, taxes: taxes[b.id] || [],
@@ -10106,7 +10422,18 @@ function VehicleClassPicker({ disabled, onAdded }) {
     if (onAdded) await onAdded();
   };
 
-  if (!list) return error ? el("div", { className: "loginError" }, error) : el("p", { className: "closeRentalHint" }, "Loading the vehicle classes...");
+  if (!list) return error ? el("div", { className: "loginError" }, error) : el(SkeletonFrame, null,
+    el("div", { style: { marginTop: "12px" } },
+      el("div", { className: "gasSettingSubhead" }, skT("Add vehicle classes")),
+      el("p", { className: "closeRentalHint" }, skT("Tick the ones you rent, then add them.")),
+      el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "6px 16px" } },
+        ["Small car", "Compact car", "Midsize car", "Full-size car", "Small SUV", "Medium SUV"].map((name) =>
+          el("label", { key: name, style: { display: "flex", gap: "8px", alignItems: "flex-start" } },
+            el("input", { type: "checkbox", tabIndex: -1, style: { marginTop: "3px" } }),
+            el("span", null,
+              el("span", { style: { fontWeight: 600 } }, skT(name)), skT(" (Nissan Versa or similar)"),
+              el("span", { className: "closeRentalHint", style: { display: "block", margin: 0 } }, skT("Car \u00b7 5 seats \u00b7 2 bags")))))),
+      skB("button", "loginBtn", "Add", undefined, { width: "auto", padding: "8px 14px", marginTop: "10px" })));
   return el("div", { style: { marginTop: "12px" } },
     el("div", { className: "gasSettingSubhead" }, "Add vehicle classes"),
     el("p", { className: "closeRentalHint" }, "Tick the ones you rent, then add them."),
@@ -10461,8 +10788,15 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
 
   // While loading, or if the lists could not be read, every part is the
   // same notice, so a layout still has something to place.
+  // While loading, each part is its skeleton: the closed dropdown it opens as.
+  const LIST_TITLES = { pickup: "Pickup locations", classes: "Vehicle classes", sources: "Sources", rates: "Rates", seasons: "Seasons",
+    protection: "Protection products", deductibles: "Deductibles", acknowledgements: "Contract acknowledgements" };
+  if (!ready && layout) {
+    return layout(Object.fromEntries(Object.keys(LIST_TITLES).map((k) => [k, el(SkeletonFrame, { key: k },
+      el("div", { className: "dashboardSection", style: { marginTop: "24px" } }, el("h2", null, skT(`\u25b8 ${LIST_TITLES[k]}`))))])));
+  }
   const notice = !ready
-    ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Loading…")
+    ? el(SkeletonFrame, null, el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, skT("Every list the company keeps, and its prices.")))
     : !companyLists && el("div", { className: "loginError" },
         "The company's lists could not be loaded, so they cannot be edited right now. Reload the page to try again.");
   if (notice) {
@@ -11113,7 +11447,7 @@ function StaffPage({ embedded, onChanged } = {}) {
       React.createElement("h2", null,
         isExec ? "People in this company" : "People at this branch"),
       error   && React.createElement("div", { className: "loginError" }, error),
-      loading && React.createElement("div", { className: "resvEmpty" }, "Loading…"),
+      loading && React.createElement(SkeletonFrame, null, skStaffTable()),
       !loading && staff.length === 0 && React.createElement("div", { className: "resvEmpty" }, "Nobody else has joined yet."),
       !loading && staff.length > 0 && React.createElement(
         "div", { style: { overflowX: "auto" } },
@@ -11278,6 +11612,7 @@ function AuditLogPage() {
         .filter(Boolean).map((t, i) => React.createElement("span", { key: i, className: i === 3 ? "auditActionKey" : null }, t)))
   );
 
+  if (loading) return React.createElement(PageSkeleton, { path: "/audit-log" });
   return React.createElement(
     "div", { className: "page" },
     React.createElement("h1", { className: "page__title" }, "Audit Log"),
@@ -11307,8 +11642,6 @@ function AuditLogPage() {
       React.createElement("div", { className: "dashboardSection__body" },
         error
           ? React.createElement("div", { className: "addVehicleError" }, error)
-        : loading
-          ? React.createElement("div", { className: "resvEmpty" }, "Loading\u2026")
         : filtered.length === 0
           ? React.createElement("div", { className: "resvEmpty" },
               rows.length === 0 ? "Nothing recorded yet." : "No entries match these filters.")
@@ -11473,8 +11806,17 @@ function MobileCommandBar() {
   return React.createElement(
     "div",
     { className: "mobileBottomBar" },
-    React.createElement(FleetrCommandBar)
+    React.createElement(CommandBarWhenLoaded)
   );
+}
+
+// The command bar acts on the loaded data, so until it is here the bar is its
+// own skeleton: the same box, grey, taking nothing typed.
+function CommandBarWhenLoaded() {
+  const { booting } = React.useContext(AppContext);
+  if (!booting) return React.createElement(FleetrCommandBar);
+  return React.createElement("div", { className: "skelHold", inert: "", "aria-hidden": "true" },
+    React.createElement(FleetrCommandBar));
 }
 
 // ─── Topbar ──────────────────────────────────────────────────────────────────
@@ -11687,7 +12029,7 @@ function Topbar() {
     React.createElement("div", { className: "topbar__pills" }, React.createElement(BranchSwitcher)),
     // Not rendered at all when the company has it off. Sign Out is pushed
     // right by its own margin-left: auto, so the topbar needs no stand-in.
-    isFeatureEnabled("ai_command_bar") && React.createElement(FleetrCommandBar),
+    isFeatureEnabled("ai_command_bar") && React.createElement(CommandBarWhenLoaded),
     showBell && React.createElement(NotificationBell),
     React.createElement("button", {
       onClick: signOut,
@@ -13014,7 +13356,9 @@ function ContractAcknowledgementRecord({ rentalAgreementId }) {
   const el = React.createElement;
   const sig = /^data:image\/(png|jpeg);base64,/.test(String(ra?.pickupSignature || "")) ? ra.pickupSignature : null;
   return el("div", null,
-    version === undefined && el("div", { className: "customerPlaceholder" }, "Loading\u2026"),
+    version === undefined && el(SkeletonFrame, null,
+      el("p", { className: "closeRentalHint" }, skT("Version 1, agreed to at pickup:")),
+      el("div", { className: "closeRentalSummary" }, skT("The customer acknowledges the vehicle's condition at pickup, the fuel policy, and the terms of the rental agreement, and agrees to return the vehicle on the date shown."))),
     version === null && el("div", { className: "customerPlaceholder" }, "The acknowledgements could not be loaded."),
     version && el(React.Fragment, null,
       el("p", { className: "closeRentalHint" }, `Version ${version.version}, agreed to at pickup:`),
@@ -13189,7 +13533,7 @@ function RentalPhotoTile({ photo, onOpen }) {
     failed
       ? React.createElement("div", { className: "damagePhotoThumb damagePhotoThumb--empty" }, "Photo unavailable")
       : !url
-        ? React.createElement("div", { className: "damagePhotoThumb damagePhotoThumb--empty" }, "Loading...")
+        ? React.createElement("div", { className: "damagePhotoThumb damagePhotoThumb--empty skelBox", role: "status", "aria-label": "Loading" })
         : React.createElement("button", {
             type: "button", className: "damagePhotoThumb", "aria-label": `View ${photo.label} photo full size`,
             onClick: () => onOpen(photo.path),
@@ -13283,7 +13627,14 @@ function RentalPhotosAndSignatures({ rentalAgreementId }) {
 
   return el("div", null,
     state.loading
-      ? note("Loading photos...")
+      ? el(SkeletonFrame, null, sub(skT("Pickup")),
+          el("div", { style: { marginBottom: "12px" } },
+            el("div", { style: { fontSize: "12px", fontWeight: 600, margin: "4px 0 8px" } }, skT("ABC 123 \u00b7 Toyota Corolla")),
+            el("div", { className: "damagePhotoRow" }, [0, 1, 2, 3].map((i) =>
+              el("div", { key: i, style: { display: "flex", flexDirection: "column", gap: "4px", width: "96px" } },
+                el("div", { className: "damagePhotoThumb damagePhotoThumb--empty skelBox" }),
+                el("div", { style: { fontSize: "11px", lineHeight: 1.3 } }, skT("Front")),
+                el("div", { style: { fontSize: "11px", lineHeight: 1.3 } }, skT("Oct 29, 9:00 a.m.")))))))
       : state.error
         ? note("The photos could not be loaded. Reload the page to try again.")
         : grouped.length === 0
@@ -13334,7 +13685,9 @@ function AgreementVehicleHistory({ rentalAgreementId, resCode }) {
   if (!rentalAgreementId) {
     return React.createElement("div", { className: "resvEmpty" }, "No rental agreement yet, so no vehicles to show.");
   }
-  if (state.loading) return React.createElement("div", { className: "resvEmpty" }, "Loading vehicles...");
+  if (state.loading) return React.createElement(SkeletonFrame, null, React.createElement("div", { style: { overflowX: "auto" } },
+    skTable(["Plate", "Vehicle", "Start", "End", "Start mileage", "End mileage", "Start fuel", "End fuel", "Status"],
+      [skPlate, "Toyota Corolla", "Oct 29, 9:00 AM", "-", "12,000 km", "-", "Full", "-", "On rent"], 1)));
   if (state.error) return React.createElement("div", { className: "resvEmpty" }, `The vehicles for ${label} could not be loaded.`);
   if (state.legs.length === 0) return React.createElement("div", { className: "resvEmpty" }, `No vehicles recorded for ${label} yet.`);
 
@@ -13948,7 +14301,7 @@ function useDamagePhotoUrl(value) {
 function DamagePhotoThumb({ value, onOpen }) {
   const { url, failed } = useDamagePhotoUrl(value);
   if (failed) return React.createElement("div", { className: "damagePhotoThumb damagePhotoThumb--empty" }, "Photo unavailable");
-  if (!url)   return React.createElement("div", { className: "damagePhotoThumb damagePhotoThumb--empty" }, "Loading...");
+  if (!url)   return React.createElement("div", { className: "damagePhotoThumb damagePhotoThumb--empty skelBox", role: "status", "aria-label": "Loading" });
   return React.createElement("button", {
     type: "button", className: "damagePhotoThumb", onClick: () => onOpen(url), "aria-label": "View photo full size",
   }, React.createElement("img", { src: url, alt: "Damage photo" }));
@@ -16913,12 +17266,7 @@ function CustomerPage() {
     )
   );
 
-  if (recordLoading && !localRecord) {
-    return React.createElement("div", { className: "page" },
-      React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate(-1), style: { marginBottom: "24px" } }, "\u2190 Back"),
-      React.createElement("p", { style: { color: "#6B6A66", fontStyle: "italic" } }, "Loading\u2026")
-    );
-  }
+  if (recordLoading && !localRecord) return React.createElement(PageSkeleton, { path: "/customer" });
 
   return React.createElement(
     "div",
@@ -17023,6 +17371,7 @@ function StartRedirect() {
 
 function ExecNeedsBranch({ children }) {
   const { currentUser } = React.useContext(AppContext);
+  const location = useLocation();
   const [acting, setActing] = React.useState(undefined);
 
   React.useEffect(() => {
@@ -17034,8 +17383,9 @@ function ExecNeedsBranch({ children }) {
 
   if (!roleAtLeast(currentUser?.role, "Exec")) return children;
   // undefined means the answer has not come back yet. Rendering the warning
-  // during that moment would flash it at an Exec who does have a branch.
-  if (acting === undefined) return null;
+  // during that moment would flash it at an Exec who does have a branch, so
+  // the page's skeleton stands in.
+  if (acting === undefined) return React.createElement(PageSkeleton, { path: location.pathname });
   if (acting) return children;
 
   return React.createElement(
@@ -17050,7 +17400,9 @@ function ExecNeedsBranch({ children }) {
 function AppRoutes() {
   // Read so a feature switched in fleetr hq redraws the routes (featuresVersion):
   // a page whose feature goes off while it is open moves to the Dashboard.
-  React.useContext(AppContext);
+  const { booting } = React.useContext(AppContext);
+  const location = useLocation();
+  if (booting) return React.createElement(PageSkeleton, { path: location.pathname });
   return React.createElement(
     Routes,
     null,
@@ -21428,78 +21780,48 @@ body, * {
 }
 .loginLink:hover{ color: #B4532F; text-decoration: underline; text-underline-offset: 3px; }
 .loginLink:focus-visible{ outline: 2px solid #F4845F; outline-offset: 2px; }
-/* ── Loading skeleton ── */
-.appSkel{ position: fixed; inset: 0; display: grid; grid-template-columns: 290px 1fr; background: #F9F9F7; overflow: hidden; }
-.appSkel__sr{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.skel{
-  display: block; border-radius: 8px;
-  background: #ECEAE5 linear-gradient(100deg, rgba(255, 255, 255, 0) 30%, rgba(255, 255, 255, 0.75) 50%, rgba(255, 255, 255, 0) 70%) no-repeat;
-  background-size: 200% 100%;
-  animation: skelSheen 1.4s ease-in-out infinite;
+/* ── Loading skeletons (PageSkeleton) ──
+   The page's own elements, its words and boxes drawn as blocks in #EDEBE6 on
+   the white, rounded like what they stand for, under one soft sheen. Unseen
+   for the first 150ms, so a fast load never shows it. */
+.skelPage{ visibility: hidden; }
+.skelPage--shown{ visibility: visible; }
+.skelPage__body{ display: contents; }
+.skelSr{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skelText,
+.skelBox,
+.skelPage :is(input, select, textarea, .resvSearchInput, .dateField, .resvDateClear, .statusTabs, .companyStep__chevron, .fleetGroupChevron, .fleetGroupCount, .statCard__chevron),
+.skelPage .dashboardTable td::before,
+.skelHold > .fleetrCommandBar{
+  background: #EDEBE6 linear-gradient(100deg, rgba(249, 249, 247, 0) 30%, rgba(249, 249, 247, 0.75) 50%, rgba(249, 249, 247, 0) 70%) no-repeat !important;
+  background-size: 200% 100% !important;
+  animation: skelSheen 1.6s ease-in-out infinite;
+  color: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 @keyframes skelSheen{ from{ background-position: 150% 0; } to{ background-position: -50% 0; } }
-.appSkel__side{ background: #FFFFFF; border-right: 1px solid rgba(31, 30, 29, 0.08); padding: 18px 20px 20px 28px; display: flex; flex-direction: column; gap: 22px; }
-.appSkel__logo, .appSkel__icon, .appSkel__topLogo{ display: flex; align-items: center; padding: 7px 0; }
-.appSkel__icon{ display: none; }
-.appSkel__topLogo{ display: none; }
-.appSkel__group{ display: flex; flex-direction: column; gap: 12px; }
-.skel--label{ width: 34%; height: 9px; border-radius: 4px; }
-.skel--nav{ height: 14px; border-radius: 6px; }
-.appSkel__user{ margin-top: auto; display: flex; align-items: center; gap: 10px; padding-top: 14px; border-top: 1px solid rgba(31, 30, 29, 0.08); }
-.appSkel__userText{ flex: 1; display: flex; flex-direction: column; gap: 6px; }
-.skel--avatar{ width: 34px; height: 34px; border-radius: 999px; flex: none; }
-.appSkel__main{ display: flex; flex-direction: column; min-width: 0; }
-.appSkel__top{ height: 68px; display: flex; align-items: center; gap: 12px; padding: 0 20px; border-bottom: 1px solid rgba(31, 30, 29, 0.08); background: #FFFFFF; }
-.skel--pill{ width: 130px; height: 30px; border-radius: 999px; }
-.skel--pill--sm{ width: 80px; margin-left: auto; }
-.skel--search{ flex: 0 1 380px; height: 36px; border-radius: 999px; }
-.appSkel__page{ padding: 26px; max-width: 1100px; display: flex; flex-direction: column; gap: 16px; }
-.skel--title{ width: 220px; height: 34px; border-radius: 10px; }
-.appSkel__ctas{ display: flex; gap: 10px; }
-.skel--cta{ width: 130px; height: 44px; border-radius: 10px; }
-.appSkel__tiles{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
-.appSkel__cards{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 14px; }
-.appSkel__card{ background: #FFFFFF; border: 1px solid rgba(31, 30, 29, 0.08); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.skel--num{ width: 56px; height: 36px; border-radius: 8px; }
-.skel--line{ height: 12px; border-radius: 6px; }
-.skel--thin{ height: 9px; }
-.appSkel__bars{ display: flex; align-items: flex-end; gap: 8px; height: 120px; margin-top: 6px; }
-.skel--col{ flex: 1; border-radius: 7px 7px 3px 3px; }
-.skel--block{ flex: 1; min-height: 120px; border-radius: 10px; }
-.appSkel__list{ background: #FFFFFF; border: 1px solid rgba(31, 30, 29, 0.08); border-radius: 14px; overflow: hidden; }
-.appSkel__row{ display: flex; align-items: center; gap: 20px; padding: 15px 18px; border-bottom: 1px solid rgba(31, 30, 29, 0.06); }
-.appSkel__row:last-child{ border-bottom: none; }
-.skel--chip{ width: 72px; height: 20px; border-radius: 999px; margin-left: auto; }
-@media (max-width: 1100px){ .appSkel__cards{ grid-template-columns: minmax(0, 1fr); } }
-@media (max-width: 900px){ .appSkel{ grid-template-columns: 76px 1fr; } .appSkel__side{ padding: 18px 14px; } .appSkel__logo, .skel--label, .appSkel__userText{ display: none; } .appSkel__icon{ display: flex; } }
-@media (max-width: 767px){
-  .appSkel{ grid-template-columns: minmax(0, 1fr); }
-  .appSkel__side{ display: none; }
-  .appSkel__top{ height: 56px; padding: 0 16px; }
-  .appSkel__topLogo{ display: block; }
-  .appSkel__top .skel--pill, .appSkel__top .skel--search{ display: none; }
-  .appSkel__page{ padding: 18px 16px; }
-  .appSkel__tiles{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .appSkel__row .skel--line:nth-child(3){ display: none; }
+.skelText{ border-radius: 6px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.skelBox::before, .skelBox::after{ visibility: hidden; animation: none; }
+.skelPage ::placeholder{ color: transparent; }
+.skelPage .dateField svg{ visibility: hidden; }
+.skelPage :is(.companyStep__chevron, .fleetGroupChevron){ border-radius: 3px; }
+.skelPage :is(.fleetGroupCount, .statCard__chevron){ border-radius: 999px; }
+.skelPage .returnsCurve{ border-radius: 10px; }
+.skelPage .dashboardTable td::before{ border-radius: 4px; }
+/* The tabs: the track grey, the chosen tab white with its words as a bar. */
+.skelPage .statusTab{ color: transparent; }
+.skelPage .statusTab__count{ background: transparent; color: transparent; }
+.skelPage .statusTab--active .statusTab__label{ background: #EDEBE6; border-radius: 6px; }
+/* The command bar, before there is data for it to act on. */
+.skelHold{ display: contents; }
+.skelHold > .fleetrCommandBar > *{ visibility: hidden; }
+@media (prefers-reduced-motion: reduce){
+  .skelText, .skelBox,
+  .skelPage :is(input, select, textarea, .resvSearchInput, .dateField, .resvDateClear, .statusTabs, .companyStep__chevron, .fleetGroupChevron, .fleetGroupCount, .statCard__chevron),
+  .skelPage .dashboardTable td::before,
+  .skelHold > .fleetrCommandBar{ animation: none; }
 }
-.appSkel__page{ overflow: hidden; }
-.appSkel__section{ background: #FFFFFF; border: 1px solid rgba(31, 30, 29, 0.08); border-radius: 14px; overflow: hidden; }
-.appSkel__sectionHead{ display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; }
-.appSkel__sectionBody{ background: #F9F9F7; border-top: 1px solid rgba(31, 30, 29, 0.08); padding: 16px 20px 20px; display: flex; flex-direction: column; gap: 12px; }
-.appSkel__search{ display: flex; gap: 10px; flex-wrap: wrap; }
-.skel--btn{ width: 150px; height: 36px; border-radius: 8px; }
-.skel--field{ flex: 1 1 110px; height: 36px; border-radius: 8px; }
-.skel--chev{ width: 12px; height: 12px; border-radius: 3px; }
-.appSkel__groups{ display: flex; flex-direction: column; gap: 10px; }
-.appSkel__group2{ display: flex; align-items: center; gap: 10px; background: #FFFFFF; border: 1px solid rgba(31, 30, 29, 0.08); border-radius: 12px; padding: 13px 16px; }
-.appSkel__group2 .skel--line{ margin-right: auto; }
-.skel--dot{ width: 8px; height: 8px; border-radius: 999px; }
-.skel--count{ width: 30px; height: 18px; border-radius: 999px; }
-@media (max-width: 767px){
-  .appSkel__search .skel--field:nth-child(n+4){ display: none; }
-  .appSkel__row .skel--line:nth-child(n+3){ display: none; }
-}
-@media (prefers-reduced-motion: reduce){ .skel{ animation: none; } }
 
 /* ── Boxes: every text box, select and date field ─────────────────────────────
    One look for all of them: white, a soft border that darkens on hover, and
