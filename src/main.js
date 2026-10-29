@@ -2572,7 +2572,6 @@ const PAGE_SKELETONS = {
     skStep("Who you are", "who", true, [
       skEl("div", { key: "who", style: { fontSize: "0.95rem", lineHeight: "1.9" } },
         skEl("div", null, skT("Username: username")), skEl("div", null, skT("Name: First Last")), skEl("div", null, skT("Role: Agent"))),
-      skEl("p", { key: "hint", className: "closeRentalHint" }, skT("Your username and role are set by your company. Ask an Admin to change them.")),
     ]),
     skStep("Password", "password"), skStep("PIN", "pin"), skStep("Recovery email", "recovery")),
 
@@ -2619,15 +2618,18 @@ function skCustomerPage(openCustomer, rentalAgreements) {
     ["Reservation Information", "Vehicles", "Rates & Billing", "Charges & Payments", "Notes", "Rental Agreement Options"].map((t) => skStep(t)));
 }
 
-// The join code at the top of Staff, for an Admin: only an Exec makes a new one.
+// The join code at the top of Staff, for an Admin: their own branch's.
 function skJoinCode() {
   return skEl("div", { key: "join", className: "dashboardSection", style: { marginBottom: "24px" } },
     skEl("h2", null, skT("Join code")),
-    skEl("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, skT("New staff enter this code when they create their account. One code for the whole company. Everyone who uses it waits for approval below before they can sign in, so keep it to people you mean to hire.")),
-    skEl("div", { style: { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" } },
-      skEl("code", { className: "skelBox", style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px" } }, "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"),
-      skB("button", "loginBtn", "Show", undefined, { width: "auto", padding: "8px 14px" })),
-    skEl("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } }, skT("Only an Exec can generate a new code, since it covers the whole company.")));
+    skEl("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, skT("Each branch has its own code. New staff enter their branch's code when they create their account, and join that branch. Everyone who uses one waits for approval below before they can sign in, so keep it to people you mean to hire.")),
+    skEl("div", { style: { marginTop: "14px" } },
+      skEl("div", { style: { fontWeight: 600, fontSize: "0.9rem", marginBottom: "6px" } }, skT("Airport")),
+      skEl("div", { style: { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" } },
+        skEl("code", { className: "skelBox", style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px" } }, "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"),
+        skB("button", "loginBtn", "Show", 1, { width: "auto", padding: "8px 14px" }),
+        skB("button", "loginBtn", "Generate new code", 2, { width: "auto", padding: "8px 14px" }))),
+    skEl("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "12px" } }, skT("Generating a new code stops that branch's old code working immediately. Anyone who was given it will need the new one. Every other branch's code stays as it is.")));
 }
 
 // The staff list while it loads: the section and table it fills.
@@ -7574,9 +7576,7 @@ function AccountPage() {
       React.createElement("div", { style: { fontSize: "0.95rem", lineHeight: "1.9" } },
         React.createElement("div", null, `Username: ${account ? account.username : "…"}`),
         React.createElement("div", null, `Name: ${account ? account.name : "…"}`),
-        React.createElement("div", null, `Role: ${account ? account.role : "…"}`)),
-      React.createElement("p", { className: "closeRentalHint" },
-        "Your username and role are set by an Admin. Ask one if either is wrong.")),
+        React.createElement("div", null, `Role: ${account ? account.role : "…"}`))),
 
     card("password", "Password", React.createElement(ChangePassword)),
     card("pin", account && account.hasPin ? "PIN" : "Set a PIN",
@@ -11227,15 +11227,12 @@ function StaffPage({ embedded, onChanged } = {}) {
   // are almost always moving somebody to.
   const [moveTo,  setMoveTo]  = React.useState({});
 
-  const [code,       setCode]       = React.useState("");
-  const [codeSetAt,  setCodeSetAt]  = React.useState("");
-  const [codeShown,  setCodeShown]  = React.useState(false);
+  // Each branch's join code, as my_join_code returns them: every open branch
+  // for an Exec, an Admin's own branch only. The database decides which.
+  const [codes,      setCodes]      = React.useState([]);
+  const [codeShown,  setCodeShown]  = React.useState({});
   const [codeError,  setCodeError]  = React.useState("");
-  const [rotating,   setRotating]   = React.useState(false);
-  const [defaultLocation, setDefaultLocation] = React.useState("");
-  // Reported by my_join_code rather than derived from the role here, so the
-  // rule lives in one place: the database already decides it.
-  const [canRotate,  setCanRotate]  = React.useState(false);
+  const [rotating,   setRotating]   = React.useState("");
   const isExec = roleAtLeast(currentUser?.role, "Exec");
   // Where the person doing the moving currently is. For an Admin that is their
   // own branch; for an Exec it is whichever branch they are acting in, which
@@ -11265,18 +11262,13 @@ function StaffPage({ embedded, onChanged } = {}) {
 
   const loadCode = React.useCallback(async () => {
     const { data, error: err } = await supabase.rpc("my_join_code");
-    if (err || !data || !data.ok) { setCodeError("Could not load the join code."); return; }
-    setCode(data.code);
-    setCodeSetAt(data.setAt || "");
-    setDefaultLocation(data.defaultLocation || "");
-    setCanRotate(data.canRotate === true);
+    if (err || !data || !data.ok) { setCodeError("Could not load the join codes."); return; }
+    setCodes(Array.isArray(data.codes) ? data.codes : []);
     setCodeError("");
   }, []);
 
-  // Fetched on mount, not on Show. canRotate and the default branch are needed
-  // to render the panel honestly: without them an Exec was told only an Exec
-  // could rotate the code. The code arrives in the same response and simply is
-  // not displayed, which is what Show actually controls.
+  // Fetched on mount, not on Show: the codes arrive and are simply not
+  // displayed, which is what Show controls.
   React.useEffect(() => {
     loadStaff(); loadBranches(); loadCode();
     supabase.rpc("my_acting_location").then(({ data }) => {
@@ -11284,17 +11276,17 @@ function StaffPage({ embedded, onChanged } = {}) {
     });
   }, [loadStaff, loadBranches, loadCode]);
 
-  const rotate = () => {
-    setRotating(true);
-    supabase.rpc("regenerate_join_code")
+  // Replaces one branch's code; every other branch's stays as it is.
+  const rotate = (locationId) => {
+    setRotating(locationId);
+    supabase.rpc("regenerate_join_code", { location_id: locationId })
       .then(({ data, error: err }) => {
         if (err || !data || !data.ok) { setCodeError("Could not generate a new code."); return; }
-        setCode(data.code);
-        setCodeSetAt(new Date().toISOString());
-        setCodeShown(true);
+        setCodes((list) => list.map((c) => (c.locationId === locationId ? { ...c, code: data.code, setAt: new Date().toISOString() } : c)));
+        setCodeShown((p) => ({ ...p, [locationId]: true }));
         setCodeError("");
       })
-      .then(() => setRotating(false), () => setRotating(false));
+      .then(() => setRotating(""), () => setRotating(""));
   };
 
   // Both mutations go through guardAction, so they are PIN gated and land in
@@ -11396,36 +11388,34 @@ function StaffPage({ embedded, onChanged } = {}) {
     // ── Join code ──
     React.createElement(
       "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
-      React.createElement("h2", null, "Join code"),
+      React.createElement("h2", null, codes.length > 1 ? "Join codes" : "Join code"),
       React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-        "New staff enter this code when they create their account. One code for the whole company. Everyone who uses it waits for approval below before they can sign in, so keep it to people you mean to hire."),
-      defaultLocation && React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-        `New accounts start at ${defaultLocation}. Move them from the list below if they belong somewhere else.`),
-      React.createElement(
-        "div", { style: { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" } },
-        React.createElement("code", {
-          style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px", background: "rgba(244, 132, 95,0.12)" },
-        }, codeShown && code ? fmtJoinCode(code) : "••••••••••"),
-        React.createElement("button", {
-          className: "loginBtn",
-          style: { width: "auto", padding: "8px 14px" },
-          // Hidden by default because a code on screen is a code on screen while
-          // a customer is standing at the counter.
-          onClick: () => setCodeShown((v) => !v),
-        }, codeShown ? "Hide" : "Show"),
-        canRotate && React.createElement("button", {
-          className: "loginBtn",
-          style: { width: "auto", padding: "8px 14px" },
-          disabled: rotating,
-          onClick: rotate,
-        }, rotating ? "Generating…" : "Generate new code")
-      ),
-      codeSetAt && codeShown && React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } },
-        `Set ${new Date(codeSetAt).toLocaleDateString("en-CA")}`),
-      React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } },
-        canRotate
-          ? "Generating a new code stops the old one working immediately, at every branch. Anyone who was given the old code will need the new one."
-          : "Only an Exec can generate a new code, since it covers the whole company."),
+        "Each branch has its own code. New staff enter their branch's code when they create their account, and join that branch. Everyone who uses one waits for approval below before they can sign in, so keep it to people you mean to hire."),
+      codes.map((c) => React.createElement("div", { key: c.locationId, style: { marginTop: "14px" } },
+        React.createElement("div", { style: { fontWeight: 600, fontSize: "0.9rem", marginBottom: "6px" } }, c.name),
+        React.createElement(
+          "div", { style: { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" } },
+          React.createElement("code", {
+            style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px", background: "rgba(244, 132, 95,0.12)" },
+          }, codeShown[c.locationId] && c.code ? fmtJoinCode(c.code) : "••••••••••"),
+          React.createElement("button", {
+            className: "loginBtn",
+            style: { width: "auto", padding: "8px 14px" },
+            // Hidden by default because a code on screen is a code on screen while
+            // a customer is standing at the counter.
+            onClick: () => setCodeShown((p) => ({ ...p, [c.locationId]: !p[c.locationId] })),
+          }, codeShown[c.locationId] ? "Hide" : "Show"),
+          React.createElement("button", {
+            className: "loginBtn",
+            style: { width: "auto", padding: "8px 14px" },
+            disabled: !!rotating,
+            onClick: () => rotate(c.locationId),
+          }, rotating === c.locationId ? "Generating…" : "Generate new code")
+        ),
+        c.setAt && codeShown[c.locationId] && React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } },
+          `Set ${new Date(c.setAt).toLocaleDateString("en-CA")}`))),
+      React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "12px" } },
+        "Generating a new code stops that branch's old code working immediately. Anyone who was given it will need the new one. Every other branch's code stays as it is."),
       codeError && React.createElement("div", { className: "loginError" }, codeError)
     ),
 
@@ -17640,7 +17630,7 @@ const SIGNUP_FINISH_MESSAGES = {
   bad_pin:             "Your PIN must be 4 digits.",
   bad_email:           "Enter an email address you can actually receive mail at.",
   bad_code:            "That join code is not valid.",
-  no_default_location: "That company is not set up to take new staff yet.",
+  branch_closed:       "That branch is not taking new staff. Ask an admin which branch to join.",
   username_taken:      "That username is taken, pick another.",
   already_redeemed:    "This account already exists. Sign in instead.",
   not_signed_in:       "Signup did not complete. Try again.",
@@ -17716,6 +17706,27 @@ function ForgotScreen({ onCancel }) {
   );
 }
 
+// A sign-up field: its name above it and, for a password or PIN, a button
+// inside it that shows or hides what was typed.
+function SignupField({ label, secret, type, ...props }) {
+  const el = React.createElement;
+  const id = React.useId();
+  const [shown, setShown] = React.useState(false);
+  // "password" in a sentence, but PIN stays PIN.
+  const what = label === label.toUpperCase() ? label : label.toLowerCase();
+  return el("div", { className: "signupField" },
+    el("label", { className: "signupField__label", htmlFor: id }, label),
+    el("div", { className: secret ? "signupField__box signupField__box--secret" : "signupField__box" },
+      el("input", { id, className: "loginInput", spellCheck: false, ...props, type: secret ? (shown ? "text" : "password") : type }),
+      secret && el("button", {
+        type: "button", className: "signupField__eye", onClick: () => setShown((v) => !v),
+        "aria-label": shown ? `Hide ${what}` : `Show ${what}`, "aria-pressed": shown,
+      }, el("svg", { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+        el("path", { d: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" }),
+        el("circle", { cx: 12, cy: 12, r: 3 }),
+        shown && el("path", { d: "M3 3l18 18" })))));
+}
+
 function SignupScreen({ onDone, onCancel }) {
   const [username, setUsername] = React.useState("");
   const [name,     setName]     = React.useState("");
@@ -17787,9 +17798,7 @@ function SignupScreen({ onDone, onCancel }) {
       .finally(() => setLoading(false));
   };
 
-  const field = (props) => React.createElement("input", {
-    className: "loginInput", spellCheck: false, ...props,
-  });
+  const field = (props) => React.createElement(SignupField, props);
 
   return React.createElement(
     "div", { className: "loginWrap" },
@@ -17800,20 +17809,20 @@ function SignupScreen({ onDone, onCancel }) {
       React.createElement(
         "form", { className: "loginForm", onSubmit: submit },
         // Ten letters and digits. The old dash is still accepted, so one more.
-        field({ type: "text", placeholder: "Join code", maxLength: 11, autoCapitalize: "characters",
+        field({ label: "Join code", type: "text", placeholder: "Join code", maxLength: 11, autoCapitalize: "characters",
                 value: joinCode, onChange: (e) => { setJoinCode(e.target.value.toUpperCase()); setMessage(""); } }),
-        field({ type: "text", placeholder: "Full name", maxLength: 60, autoComplete: "name",
+        field({ label: "Name", type: "text", placeholder: "Full name", maxLength: 60, autoComplete: "name",
                 value: name, onChange: (e) => { setName(e.target.value); setMessage(""); } }),
-        field({ type: "text", placeholder: "Username", minLength: USERNAME_MIN, maxLength: USERNAME_MAX, autoComplete: "username",
+        field({ label: "Username", type: "text", placeholder: "Username", minLength: USERNAME_MIN, maxLength: USERNAME_MAX, autoComplete: "username",
                 value: username, onChange: (e) => { setUsername(e.target.value.toLowerCase()); setMessage(""); } }),
-        field({ type: "email", placeholder: "Email", maxLength: 120, autoComplete: "email",
+        field({ label: "Email", type: "email", placeholder: "Email", maxLength: 120, autoComplete: "email",
                 value: email, onChange: (e) => { setEmail(e.target.value); setMessage(""); } }),
-        field({ type: "password", placeholder: "Password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX, autoComplete: "new-password",
+        field({ label: "Password", secret: true, placeholder: "Password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX, autoComplete: "new-password",
                 value: password, onChange: (e) => { setPassword(e.target.value); setMessage(""); } }),
         // Separate from the password on purpose, and the reason is written on
         // the screen: a second secret nobody explains is a second secret people
         // set to the same string as the first.
-        field({ type: "password", placeholder: "4-digit PIN", inputMode: "numeric", maxLength: 4,
+        field({ label: "PIN", secret: true, placeholder: "4-digit PIN", inputMode: "numeric", maxLength: 4,
                 autoComplete: "new-password",
                 value: pin, onChange: (e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setMessage(""); } }),
         React.createElement("button", { type: "submit", className: "loginBtn authBtn", disabled: loading },
@@ -18107,6 +18116,20 @@ body, * {
   border-color: #F4845F;
   box-shadow: 0 0 0 3px rgba(244,132,95,0.18);
 }
+/* Sign-up: each field under its name; the password and PIN with a show and
+   hide button inside. */
+.signupField{ display: flex; flex-direction: column; gap: 5px; }
+.signupField__label{ font-size: 12px; font-weight: 600; color: #5C5B57; }
+.signupField__box{ position: relative; display: flex; }
+.signupField__box .loginInput{ flex: 1; min-width: 0; }
+.signupField__box--secret .loginInput{ padding-right: 44px; }
+.signupField__eye{
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 32px; height: 32px; display: grid; place-items: center; padding: 0;
+  border: 0; border-radius: 6px; background: none; color: #6B6A66; cursor: pointer;
+}
+.signupField__eye:hover{ color: #1F1E1D; }
+.signupField__eye:focus-visible{ outline: 2px solid #F4845F; outline-offset: 0; }
 
 /* ── PIN field ──────────────────────────────────────────────────────────────
    Four fixed slots, so a dot's position never depends on how the browser lays
