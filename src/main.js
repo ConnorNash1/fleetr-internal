@@ -1842,9 +1842,7 @@ function AppProvider({ children, currentUser, signOut }) {
   // ── UI-only state (not persisted) ────────────────────────────────────────
   const [dbReady,      setDbReady]      = React.useState(false);
   const [openNotesId,  setOpenNotesId]  = React.useState(null);
-  const [openRentalAgreementId, setOpenRentalAgreementId] = React.useState(null);
   const [openCustomer, setOpenCustomer] = React.useState(null);
-  const [openVehiclePlate, setOpenVehiclePlate] = React.useState(null);
 
   // ── Company setup ─────────────────────────────────────────────────────────
   // The checklist and the company's state: launched, paused, suspended. Read
@@ -2333,7 +2331,7 @@ function AppProvider({ children, currentUser, signOut }) {
 
   return React.createElement(
     AppContext.Provider,
-    { value: { booting, reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openRentalAgreementId, setOpenRentalAgreementId, openCustomer, setOpenCustomer, openVehiclePlate, setOpenVehiclePlate, damageClaims, setDamageClaims, archivedVehicles, setArchivedVehicles, readyReturns, setReadyReturns, appSettings, guardAction, logAudit, currentUser, signOut, setup, refreshSetup, featuresVersion } },
+    { value: { booting, reservations, setReservations, rentalAgreements, setRentalAgreements, syncRAStatus, ndiRows, setNdiRows, torRows, setTorRows, openNotesId, setOpenNotesId, fleet, setFleet, noShows, setNoShows, openCustomer, setOpenCustomer, damageClaims, setDamageClaims, archivedVehicles, setArchivedVehicles, readyReturns, setReadyReturns, appSettings, guardAction, logAudit, currentUser, signOut, setup, refreshSetup, featuresVersion } },
     children,
     pinModalOpen && React.createElement(PinConfirmModal, { onConfirm: confirmPin, onCancel: dismissPinModal, warning: pinPrompt.warning, danger: pinPrompt.danger }),
     React.createElement(AppDialogHost)
@@ -2585,7 +2583,11 @@ const PAGE_SKELETONS = {
     skTitle("Vehicle Detail"),
     skEl("div", { className: "resvEmpty" }, skT("No vehicle selected."))),
 
-  "/customer": ({ openCustomer, rentalAgreements }) => skCustomerPage(openCustomer, rentalAgreements),
+  "/customer": ({ openCustomer, reservations, rentalAgreements }) => {
+    const code = new URLSearchParams(window.location.hash.split("?")[1] || "").get("code");
+    const name = (openCustomer?.resCode === code && openCustomer?.name) || (reservations || []).find((r) => r.resCode === code)?.customer;
+    return skCustomerPage({ resCode: code, name }, rentalAgreements);
+  },
 };
 PAGE_SKELETONS["/"] = PAGE_SKELETONS["/dashboard"];
 PAGE_SKELETONS["/staff"] = PAGE_SKELETONS["/company"];
@@ -3057,6 +3059,25 @@ function manualRaTransition(from, to) {
     "The only rental agreement status that can be changed by hand is a Close Pending one, which can be closed. Everything else is set by opening a rental or by Close Rental." };
 }
 
+// ─── Pages about one record ───────────────────────────────────────────────────
+// The customer, vehicle or rental agreement a page shows is kept in its
+// address, so a reload, a bookmark or a shared link opens the same one. With
+// nothing to name, the bare page.
+const customerPath  = (resCode) => (resCode ? `/customer?code=${encodeURIComponent(resCode)}` : "/customer");
+const vehiclePath   = (plate) => (plate ? `/vehicle?plate=${encodeURIComponent(plate)}` : "/vehicle");
+const agreementPath = (resCode) => (resCode ? `/rental-agreements?code=${encodeURIComponent(resCode)}` : "/rental-agreements");
+
+// When that record is not there, or not this person's to see: the page's
+// title, the empty state every list uses, and a way back.
+function NotFoundState({ title, text, backTo, backLabel }) {
+  const navigate = useNavigate();
+  return React.createElement("div", { className: "page" },
+    React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate(backTo) }, `\u2190 ${backLabel}`),
+    React.createElement("h1", { className: "page__title" }, title),
+    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement("div", { className: "resvEmpty" }, text));
+}
+
 // ─── CustomerLink ─────────────────────────────────────────────────────────────
 
 function CustomerLink({ name, resCode, label, hideBadge }) {
@@ -3075,7 +3096,7 @@ function CustomerLink({ name, resCode, label, hideBadge }) {
     React.createElement("button", {
       type: "button",
       className: "customerLink",
-      onClick: () => { setOpenCustomer({ name, resCode }); navigate("/customer"); },
+      onClick: () => { setOpenCustomer({ name, resCode }); navigate(customerPath(resCode)); },
     }, displayText),
     showBadge &&
       React.createElement("span", { className: badgeClass }, statusLabel(raStatus)),
@@ -3176,13 +3197,12 @@ function CustomerChangesNote({ resCode }) {
 // ─── PlateLink ────────────────────────────────────────────────────────────────
 
 function PlateLink({ plate, label, style }) {
-  const { setOpenVehiclePlate } = React.useContext(AppContext);
   const navigate = useNavigate();
   return React.createElement("button", {
     type: "button",
     className: "plateLink",
     style,
-    onClick: () => { setOpenVehiclePlate(plate); navigate("/vehicle"); },
+    onClick: () => navigate(vehiclePath(plate)),
   }, label !== undefined ? label.replace(/-/g, "") : plate.replace(/-/g, ""));
 }
 
@@ -3672,7 +3692,7 @@ function ReservationsPage() {
 // ─── NonDriveIntakeSection component ────────────────────────────────────────────────────
 
 function NonDriveIntakeSection({ standalone }) {
-  const { ndiRows, setNdiRows, setReservations, setOpenRentalAgreementId, guardAction, currentUser } = React.useContext(AppContext);
+  const { ndiRows, setNdiRows, setReservations, guardAction, currentUser } = React.useContext(AppContext);
   const navigate = useNavigate();
   const [now, setNow] = React.useState(Date.now());
   const [openDatePickerId, setOpenDatePickerId] = React.useState(null);
@@ -4189,7 +4209,7 @@ function barToggle(onToggle, open) {
 }
 
 function DashboardPage() {
-  const { reservations, setReservations, fleet, setFleet, setOpenRentalAgreementId, rentalAgreements, guardAction, currentUser } = React.useContext(AppContext);
+  const { reservations, setReservations, fleet, setFleet, rentalAgreements, guardAction, currentUser } = React.useContext(AppContext);
   const isMobile = useMobile();
   const readyReturns = fleet.filter((v) => v.status === "Ready Returns");
   const navigate = useNavigate();
@@ -5129,10 +5149,11 @@ function OverdueRentalsPage() {
 // ─── VehicleDetailPage ──────────────────────────────────────────────────────────────────────────────
 
 function VehicleDetailPage() {
-  const { openVehiclePlate, fleet, setFleet, reservations, rentalAgreements, setOpenRentalAgreementId, damageClaims, guardAction } = React.useContext(AppContext);
+  const { fleet, setFleet, reservations, rentalAgreements, damageClaims, guardAction } = React.useContext(AppContext);
   const navigate = useNavigate();
+  const location = useLocation();
 
-  const plate   = openVehiclePlate || "";
+  const plate   = new URLSearchParams(location.search).get("plate") || "";
   const vehicle = fleet.find((v) => v.plate === plate) || {};
 
   // Active RA for this plate (open rental) \u2014 used for currentRenter, resCode, returnDate
@@ -5261,12 +5282,7 @@ function VehicleDetailPage() {
     );
 
   if (!plate) {
-    return React.createElement(
-      "div", { className: "page" },
-      React.createElement("h1", { className: "page__title" }, "Vehicle Detail"),
-      React.createElement("div", { className: "page__titleUnderline" }),
-      React.createElement("div", { className: "resvEmpty" }, "No vehicle selected.")
-    );
+    return React.createElement(NotFoundState, { title: "Vehicle Detail", text: "No vehicle selected.", backTo: "/fleet/vehicles", backLabel: "Vehicles" });
   }
 
   return React.createElement(
@@ -5480,8 +5496,8 @@ function VehicleDetailPage() {
           claims.map((c) => {
             const statusCls = c.claimStatus === "Open" ? "claimStatus claimStatus--open" : "claimStatus claimStatus--inReview";
             return React.createElement("tr", { key: c.id },
-              React.createElement("td", null, React.createElement("button", { type: "button", className: "rentalAgreementLink rentalAgreementLink--dark", onClick: () => { setOpenRentalAgreementId(c.resCode); navigate("/rental-agreements"); } }, c.customer)),
-              React.createElement("td", null, React.createElement("button", { type: "button", className: "rentalAgreementLink rentalAgreementLink--dark", onClick: () => { setOpenRentalAgreementId(c.resCode); navigate("/rental-agreements"); } }, c.resCode)),
+              React.createElement("td", null, React.createElement("button", { type: "button", className: "rentalAgreementLink rentalAgreementLink--dark", onClick: () => navigate(agreementPath(c.resCode)) }, c.customer)),
+              React.createElement("td", null, React.createElement("button", { type: "button", className: "rentalAgreementLink rentalAgreementLink--dark", onClick: () => navigate(agreementPath(c.resCode)) }, c.resCode)),
               React.createElement("td", null, c.description),
               React.createElement("td", null, React.createElement("span", { className: statusCls }, c.claimStatus)),
               React.createElement("td", null, vehicleRentableLabel(c.vehicleRentable))
@@ -7124,7 +7140,7 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
 // ─── FleetDamageClaimsPage ─────────────────────────────────────────────────────
 
 function FleetDamageClaimsPage() {
-  const { fleet, setOpenRentalAgreementId, damageClaims, setDamageClaims, reservations, rentalAgreements, guardAction } = React.useContext(AppContext);
+  const { fleet, damageClaims, setDamageClaims, reservations, rentalAgreements, guardAction } = React.useContext(AppContext);
   const navigate = useNavigate();
   const { filtered, filterState } = useFleetFilter(fleet);
   const filteredPlates = React.useMemo(() => new Set(filtered.map((v) => v.plate)), [filtered]);
@@ -7178,13 +7194,13 @@ function FleetDamageClaimsPage() {
             React.createElement("td", null,
               React.createElement("button", {
                 type: "button", className: "rentalAgreementLink rentalAgreementLink--dark",
-                onClick: () => { setOpenRentalAgreementId(c.resCode); navigate("/rental-agreements"); },
+                onClick: () => navigate(agreementPath(c.resCode)),
               }, c.customer)
             ),
             React.createElement("td", null,
               React.createElement("button", {
                 type: "button", className: "rentalAgreementLink rentalAgreementLink--dark",
-                onClick: () => { setOpenRentalAgreementId(c.resCode); navigate("/rental-agreements"); },
+                onClick: () => navigate(agreementPath(c.resCode)),
               }, c.resCode)
             ),
             React.createElement("td", null, c.description),
@@ -11911,13 +11927,15 @@ function NotificationBell() {
     const filter = link.path === "/reservations"
       ? new URLSearchParams(Object.entries({ class: link.vehicleClass, from: link.from, to: link.to }).filter(([, v]) => v)).toString()
       : "";
-    const path = link.page === "customer" ? "/customer" : `${link.path || "/dashboard"}${filter ? `?${filter}` : ""}`;
+    const path = link.page === "customer" && link.resCode ? customerPath(link.resCode)
+      : link.page === "customer" ? "/reservations"
+      : `${link.path || "/dashboard"}${filter ? `?${filter}` : ""}`;
     const { data: acting } = await supabase.rpc("my_acting_location");
     const here = acting && acting.ok ? acting.locationId : null;
     if (n.locationId && here !== n.locationId) {
       const { data, error: err } = await supabase.rpc("set_acting_location", { location_id: n.locationId });
       if (err || !data || !data.ok) { setError("Could not switch to that branch."); setOpen(true); return; }
-      window.location.hash = `#${link.page === "customer" ? "/reservations" : path}`;
+      window.location.hash = `#${path}`;
       window.location.reload();
       return;
     }
@@ -13889,7 +13907,9 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
 // ─── RentalAgreementsPage ─────────────────────────────────────────────────────────────
 
 function RentalAgreementsPage() {
-  const { openRentalAgreementId, setOpenRentalAgreementId, reservations, rentalAgreements, setRentalAgreements } = React.useContext(AppContext);
+  const { reservations, rentalAgreements, setRentalAgreements } = React.useContext(AppContext);
+  const navigate = useNavigate();
+  const location = useLocation();
   const TABS = [
     { label: "Open",          value: "open_rental_agreement" },
     { label: "Customer Return", value: "customer_return" },
@@ -13897,7 +13917,9 @@ function RentalAgreementsPage() {
     { label: "Closed",        value: "closed" },
   ];
   const [activeTab, setActiveTab]   = React.useState("open_rental_agreement");
-  const [selectedId, setSelectedId] = React.useState(null);
+  // The agreement open in detail, kept in the address (?code=).
+  const selectedId = new URLSearchParams(location.search).get("code");
+  const setSelectedId = (code) => { if (code || selectedId) navigate(code ? agreementPath(code) : "/rental-agreements"); };
 
   const [srchFirst, setSrchFirst] = React.useState("");
   const [srchLast,  setSrchLast]  = React.useState("");
@@ -13918,10 +13940,6 @@ function RentalAgreementsPage() {
 
   const todayIso = new Date().toISOString().slice(0, 10);
 
-  React.useEffect(() => {
-    if (openRentalAgreementId) { setSelectedId(openRentalAgreementId); setOpenRentalAgreementId(null); }
-  }, [openRentalAgreementId]);
-
   const fmtDate = (iso) => {
     if (!iso) return "·";
     const d = new Date(`${iso}T00:00:00`);
@@ -13932,6 +13950,10 @@ function RentalAgreementsPage() {
   const statusBadgeClass = (s) => raBadgeClass(s);
 
   const selectedRes = selectedId ? reservations.find((r) => r.resCode === selectedId) : null;
+  if (selectedId && !selectedRes) {
+    return React.createElement(NotFoundState, { title: "Rental Agreement", text: "This rental agreement could not be found. It may have been removed, or it belongs to another branch.",
+      backTo: "/rental-agreements", backLabel: "Rental Agreements" });
+  }
   if (selectedRes) {
     const matchingRa = rentalAgreements.find((ra) => ra.resCode === selectedRes.resCode);
     const selectedRentalAgreement = {
@@ -16051,12 +16073,18 @@ function sourceCatsFor(current) {
 function CustomerPage() {
   const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, guardAction, logAudit, setDamageClaims, currentUser } = React.useContext(AppContext);
   const navigate = useNavigate();
-  const name   = openCustomer?.name   || "Customer";
-  const resCode = openCustomer?.resCode || null;
+  const location = useLocation();
+  const resCode = new URLSearchParams(location.search).get("code") || null;
+  // The name the link was clicked on, else the reservation's, as on a reload.
+  const name = (openCustomer?.resCode === resCode && openCustomer?.name)
+    || reservations.find((r) => r.resCode === resCode)?.customer || "Customer";
 
   // ── Single source of truth: raw Supabase record ───────────────────────────
   const [localRecord,   setLocalRecord]   = React.useState(null);
-  const [recordLoading, setRecordLoading] = React.useState(true);
+  const [recordLoading, setRecordLoading] = React.useState(!!resCode);
+  // The read answered with no row: no such reservation, or not one this
+  // person can see.
+  const [recordMissing, setRecordMissing] = React.useState(!resCode);
 
   const [resInfoForm, setResInfoForm] = React.useState({
     firstName: "", lastName: "", phone: "", email: "",
@@ -16209,6 +16237,7 @@ function CustomerPage() {
       const { data, error } = await supabase
         .from("reservations").select("*").eq("resCode", resCode).maybeSingle();
       if (!error && data) setLocalRecord(data);
+      if (!error && !data) setRecordMissing(true);
     } catch (e) {
       console.warn("CustomerPage fetchRecord error:", e);
     } finally {
@@ -17266,6 +17295,10 @@ function CustomerPage() {
     )
   );
 
+  if (recordMissing && !localRecord) {
+    return React.createElement(NotFoundState, { title: "Customer", text: "This customer could not be found. The reservation may have been removed, or it belongs to another branch.",
+      backTo: "/reservations", backLabel: "Reservations" });
+  }
   if (recordLoading && !localRecord) return React.createElement(PageSkeleton, { path: "/customer" });
 
   return React.createElement(
@@ -17445,7 +17478,7 @@ function AppRoutes() {
     }),
     React.createElement(Route, {
       path: "/vehicle",
-      element: React.createElement(ExecNeedsBranch, null, React.createElement(VehicleDetailPage)),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(VehicleDetailPage, { key: new URLSearchParams(location.search).get("plate") || "" })),
     }),
     React.createElement(Route, {
       path: "/time-of-repair",
@@ -17519,7 +17552,7 @@ function AppRoutes() {
     }),
     React.createElement(Route, {
       path: "/customer",
-      element: React.createElement(ExecNeedsBranch, null, React.createElement(CustomerPage)),
+      element: React.createElement(ExecNeedsBranch, null, React.createElement(CustomerPage, { key: new URLSearchParams(location.search).get("code") || "" })),
     }),
     // Reached from the Dashboard's Close Rental button, not from the nav.
     React.createElement(Route, {
@@ -18897,6 +18930,9 @@ body, * {
   background: #F9F9F7;
   min-height: 0;
   overflow: auto;
+  /* Room for the scrollbar kept either way, so the page is the same width
+     with it and without it. */
+  scrollbar-gutter: stable;
 }
 .page{
   max-width: 1100px;
