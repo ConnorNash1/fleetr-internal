@@ -1572,12 +1572,12 @@ function PinConfirmModal({ onConfirm, onCancel, warning, danger }) {
             className: "resFormInput",
             type: "password", inputMode: "numeric", maxLength: 4, autoFocus: true,
             placeholder: "New 4-digit PIN",
-            value: newPin,
+            value: newPin, ...invalid(!!error),
             onChange: (e) => { setNewPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setError(""); },
           }),
+          React.createElement(FieldError, { text: error }),
           React.createElement("div", { style: { opacity: 0.65, fontSize: "12px", marginTop: "8px" } },
-            "Nobody else can see or choose this, including whoever cleared it."),
-          error && React.createElement("div", { className: "loginError" }, error)
+            "Nobody else can see or choose this, including whoever cleared it.")
         ),
         React.createElement(
           "div", { className: "resModalFooter" },
@@ -1665,6 +1665,38 @@ function PinConfirmModal({ onConfirm, onCancel, warning, danger }) {
       )
     )
   );
+}
+
+// ─── Form errors ─────────────────────────────────────────────────────────────
+// Every form shows a problem right under the field it is about, in red, with
+// the field itself outlined in red: never as a banner at the top of the page.
+// A problem that is about no one field (the connection, a refusal of the whole
+// record) shows under the form's own button. FieldError draws the message;
+// spreading invalid(bad) onto a field outlines it.
+function FieldError({ text, style }) {
+  return text ? React.createElement("div", { className: "fieldError", role: "alert", style }, text) : null;
+}
+const invalid = (bad) => (bad ? { "aria-invalid": "true" } : {});
+
+// Number fields. What can be typed stops at the field's length: digits only,
+// and one decimal point with at most `decimals` places where a fraction is
+// allowed. The range is checked on save (numberProblem), and anything outside
+// it is not saved.
+function numberTyped(raw, { digits, decimals = 0 } = {}) {
+  let t = String(raw ?? "").replace(decimals ? /[^0-9.]/g : /[^0-9]/g, "");
+  if (!decimals) return t.slice(0, digits);
+  const [whole, ...rest] = t.split(".");
+  return rest.length ? `${whole.slice(0, digits)}.${rest.join("").slice(0, decimals)}` : whole.slice(0, digits);
+}
+// null when the value is fine (or blank where blank is allowed), else what to
+// say under the field.
+function numberProblem(raw, { min, max, label, whole = true, required = false }) {
+  const t = String(raw ?? "").trim();
+  if (t === "") return required ? `${label} is needed.` : null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || (whole && !Number.isInteger(n))) return `${label} has to be ${whole ? "a whole number" : "a number"}.`;
+  if (n < min || n > max) return `${label} has to be from ${min} to ${max}.`;
+  return null;
 }
 
 // ─── In-app dialog ───────────────────────────────────────────────────────────
@@ -4812,13 +4844,15 @@ function NoShowsPage() {
   const [error, setError] = React.useState("");
   const [busy, setBusy]   = React.useState("");
   const [picking, setPicking] = React.useState("");
+  // The row a refused action belongs to, its error shown under that row's buttons.
+  const [errorRow, setErrorRow] = React.useState("");
   // False until the first read answers, the skeleton showing meanwhile.
   const [loaded, setLoaded] = React.useState(false);
 
   const load = React.useCallback(async () => {
     const { data, error: err } = await supabase.rpc("my_no_shows");
     setLoaded(true);
-    if (err) { setError("The no-shows could not be loaded. Check your connection and try again."); return; }
+    if (err) { setErrorRow(""); setError("The no-shows could not be loaded. Check your connection and try again."); return; }
     setRows(Array.isArray(data) ? data : []);
   }, []);
   React.useEffect(() => {
@@ -4842,6 +4876,7 @@ function NoShowsPage() {
       const { data, error: err } = await supabase.rpc(fn, args);
       if (err || !data || !data.ok) {
         const reason = data && data.reason;
+        setErrorRow(key.split(":")[0]);
         setError(reason === "not_available" ? `No ${data.vehicleClass || "vehicle"} available for these dates.`
           : REASONS[reason] || "That did not work. Check your connection and try again.");
         throw new Error(err ? err.message : reason || "refused");
@@ -4923,8 +4958,9 @@ function NoShowsPage() {
             onSave: (pickup) => coming(row, pickup), onClose: () => setPicking(""),
           })
         : React.createElement(React.Fragment, null,
-            btn("Customer Is Coming", () => { setError(""); setPicking(row.resCode); }, working),
-            btn("Cancel", () => cancel(row), working)))
+            btn("Customer Is Coming", () => { setError(""); setErrorRow(""); setPicking(row.resCode); }, working),
+            btn("Cancel", () => cancel(row), working)),
+        errorRow === row.resCode && React.createElement(FieldError, { text: error }))
     );
   };
 
@@ -4943,7 +4979,8 @@ function NoShowsPage() {
               initial: row.defaultPickup, label: "Restore", busy: working,
               onSave: (pickup) => restore(row, pickup), onClose: () => setPicking(""),
             })
-          : btn("Restore", () => { setError(""); setPicking(row.id); }, working))
+          : btn("Restore", () => { setError(""); setErrorRow(""); setPicking(row.id); }, working),
+        errorRow === row.id && React.createElement(FieldError, { text: error }))
     );
   };
 
@@ -4964,7 +5001,7 @@ function NoShowsPage() {
       tabs: TABS.map(({ key, label }) => ({ value: key, label, count: rows.filter((r) => r.section === key).length })),
     }),
     React.createElement("p", { className: "aiTabDesc" }, activeTabObj.desc),
-    error && React.createElement("div", { className: "closeRentalWarning", style: { marginBottom: "12px" } }, error),
+    !errorRow && error && React.createElement("div", { className: "closeRentalWarning", style: { marginBottom: "12px" } }, error),
     React.createElement(
       "section",
       { className: "dashboardSection" },
@@ -5192,13 +5229,16 @@ function VehicleDetailPage() {
 
   // Shared writer: converts from the displayed unit back to canonical before
   // persisting, and restores the previous value if the input is not usable.
+  const [numberErr, setNumberErr] = React.useState({ column: "", text: "" });
   const saveNumericField = (column, rawInput, canonicalUnit, currentCanonical, resetter) => {
+    setNumberErr({ column: "", text: "" });
     const trimmed = String(rawInput).trim();
     const parsed  = trimmed === "" ? null : toCanonicalUnits(trimmed, canonicalUnit);
     // Blank clears the field. Anything else has to pass the same check the
     // command bar runs, so the two paths cannot disagree about a valid number.
-    if (trimmed !== "" && !validateFleetNumerics({ [column]: parsed }).ok) {
-      resetter(toDisplayUnits(currentCanonical, canonicalUnit));
+    const checked = trimmed === "" ? { ok: true } : validateFleetNumerics({ [column]: parsed });
+    if (!checked.ok) {
+      setNumberErr({ column, text: checked.error });
       return;
     }
     if (parsed === (currentCanonical ?? null)) return;
@@ -5314,10 +5354,10 @@ function VehicleDetailPage() {
           React.createElement("span", { className: "vehicleDetailLabel" }, "Tank Size"),
           React.createElement("span", { className: "vehicleDetailControl" },
             React.createElement("input", {
-              type: "number", min: "0", step: "0.1", className: "tankSizeInput",
+              type: "text", inputMode: "decimal", maxLength: 5, className: "tankSizeInput",
               placeholder: "Not set",
-              value: tankInput,
-              onChange: (e) => setTankInput(e.target.value),
+              value: tankInput, ...invalid(numberErr.column === "tankSizeLiters"),
+              onChange: (e) => setTankInput(numberTyped(e.target.value, { digits: 3, decimals: 1 })),
               onBlur: saveTankSize,
               onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
             }),
@@ -5326,6 +5366,7 @@ function VehicleDetailPage() {
               React.createElement("span", { className: "tankSizeMissing", title: "Gas charges cannot be calculated automatically until this is set" }, "Not set")
           )
         ),
+        numberErr.column === "tankSizeLiters" && React.createElement(FieldError, { text: numberErr.text }),
         // In a lockbox, so renters can pick it up outside opening hours when
         // the branch has Lockbox pickup on (fleetr-infra after_hours_access.sql).
         React.createElement(
@@ -5356,10 +5397,10 @@ function VehicleDetailPage() {
           React.createElement("span", { className: "vehicleDetailLabel" }, "Needs PM Every"),
           React.createElement("span", { className: "vehicleDetailControl" },
             React.createElement("input", {
-              type: "number", min: "0", step: "1", className: "tankSizeInput",
+              type: "text", inputMode: "numeric", maxLength: 6, className: "tankSizeInput",
               placeholder: "Not set",
-              value: pmInput,
-              onChange: (e) => setPmInput(e.target.value),
+              value: pmInput, ...invalid(numberErr.column === "pmIntervalKm"),
+              onChange: (e) => setPmInput(numberTyped(e.target.value, { digits: 6 })),
               onBlur: savePmInterval,
               onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
             }),
@@ -5368,6 +5409,7 @@ function VehicleDetailPage() {
               React.createElement("span", { className: "tankSizeMissing", title: "PM cannot be triggered automatically until this is set" }, "Not set")
           )
         ),
+        numberErr.column === "pmIntervalKm" && React.createElement(FieldError, { text: numberErr.text }),
         detailRow("Current Odometer", vehicle.currentOdometer != null
           ? `${Number(toDisplayUnits(vehicle.currentOdometer, pmUnit)).toLocaleString()} ${pmUnit}`
           : "Not recorded yet"),
@@ -6467,7 +6509,7 @@ function resolvePmComplete(vehicle) {
 function validateFuelRate(raw) {
   const n = typeof raw === "number" ? raw : parseFloat(String(raw ?? "").trim());
   if (!Number.isFinite(n) || n <= 0 || n > 100) {
-    return { ok: false, value: null, error: "The post-pay fuel rate has to be a dollar amount more than zero." };
+    return { ok: false, value: null, error: "The post-pay fuel rate has to be a dollar amount more than zero, up to 100." };
   }
   return { ok: true, value: n, error: null };
 }
@@ -6806,12 +6848,21 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
   // a vehicle is retired from the desk it is standing at.
   const BLANK_RETIRE = { plateId: "", disposalDate: isoOffset(0), reason: "" };
   const [addForm,    setAddForm]    = React.useState(BLANK_ADD);
-  const [addError,   setAddError]   = React.useState("");
+  // Each problem under its field, by the form's field name; "" for one about
+  // no field.
+  const [addErrors,  setAddErrors]  = React.useState({});
+  const setAddError = (text, field = "") => setAddErrors(text ? { [field]: text } : {});
   const [addSuccess, setAddSuccess] = React.useState(false);
   const [retireForm, setRetireForm] = React.useState(BLANK_RETIRE);
-  const [retireError,setRetireError]= React.useState("");
+  const [retireError,setRetireError]= React.useState({ field: "", text: "" });
 
-  const onAdd = (field, val) => { setAddForm((p) => ({ ...p, [field]: val })); setAddError(""); setAddSuccess(false); };
+  const onAdd = (field, val) => {
+    setAddForm((p) => ({ ...p, [field]: val }));
+    setAddErrors((p) => { if (!p[field] && !p[""]) return p; const n = { ...p }; delete n[field]; delete n[""]; return n; });
+    setAddSuccess(false);
+  };
+  // The form's field for each of validateVehicle's.
+  const ADD_FIELD_OF = { tankSizeLiters: "tankSize", pmIntervalKm: "pmInterval" };
 
   const handleAddSubmit = (e) => {
     e.preventDefault();
@@ -6837,24 +6888,34 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
       vin:            normalizeVin(addForm.vin),
     };
     const check = validateVehicle(candidate);
-    if (!check.ok) { setAddError(check.error); return; }
+    if (!check.ok) {
+      if (check.missing.length) {
+        setAddErrors(Object.fromEntries(VEHICLE_REQUIRED_FIELDS.filter(([label]) => check.missing.includes(label))
+          .map(([label, key]) => [ADD_FIELD_OF[key] || key, `${label} is required.`])));
+      } else {
+        setAddError(check.error, /^Tank/.test(check.error) ? "tankSize" : /^Needs PM/.test(check.error) ? "pmInterval" : "vin");
+      }
+      return;
+    }
+    const yearProblem = numberProblem(addForm.year, { min: 1980, max: new Date().getFullYear() + 1, label: "Year" });
+    if (yearProblem) { setAddError(yearProblem, "year"); return; }
     // The starting readings. The customer app no longer takes them at pickup,
     // so a vehicle's first rental starts from these. Typed in the company's
     // distance unit, stored in whole kilometres.
     const odoTyped = String(addForm.odometer).trim();
     if (!/^\d+$/.test(odoTyped)) {
-      setAddError(`Enter the current odometer as a whole number of ${distanceUnitWord()}.`);
+      setAddError(`Enter the current odometer as a whole number of ${distanceUnitWord()}.`, "odometer");
       return;
     }
     if (!FUEL_LABELS.includes(addForm.fuelLevel)) {
-      setAddError("Choose the current fuel level.");
+      setAddError("Choose the current fuel level.", "fuelLevel");
       return;
     }
     const odometerKm = distanceToKm(Number(odoTyped));
     // Plate and VIN uniqueness, in the shared rule rather than inline here, so
     // the command bar enforces the same thing.
     const unique = validateVehicleUniqueness(candidate, fleet, null);
-    if (!unique.ok) { setAddError(unique.error); return; }
+    if (!unique.ok) { setAddError(unique.error, unique.field || ""); return; }
 
     guardAction("vehicle.add", () => {
       const newVehicle = {
@@ -6887,10 +6948,10 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
     e.preventDefault();
     // The reason is no longer required. A mandatory free-text field that nobody
     // wants to fill gets filled with noise, and the archive is worse for it.
-    if (!retireForm.plateId)     { setRetireError("Select a vehicle to retire."); return; }
-    if (!retireForm.disposalDate) { setRetireError("A disposal date is required."); return; }
+    if (!retireForm.plateId)     { setRetireError({ field: "plateId", text: "Select a vehicle to retire." }); return; }
+    if (!retireForm.disposalDate) { setRetireError({ field: "disposalDate", text: "A disposal date is required." }); return; }
     const v = fleet.find((x) => x.id === retireForm.plateId);
-    if (!v) { setRetireError("Vehicle not found."); return; }
+    if (!v) { setRetireError({ field: "plateId", text: "Vehicle not found." }); return; }
     const reason = retireForm.reason.trim();
     // Everything the fleet row held, copied out before it is deleted.
     const record = {
@@ -6929,13 +6990,16 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
   };
 
-  const fi = (label, field, type) =>
+  // limit, for a number: { digits, decimals }, where typing stops.
+  const fi = (label, field, limit, props) =>
     React.createElement("div", { className: "addVehicleField" },
       React.createElement("label", { className: "addVehicleLabel" }, label),
       React.createElement("input", {
-        type: type || "text", className: "addVehicleInput", value: addForm[field],
-        onChange: (e) => onAdd(field, e.target.value),
-      })
+        type: "text", className: "addVehicleInput", value: addForm[field], ...invalid(!!addErrors[field]),
+        ...(limit ? { inputMode: limit.decimals ? "decimal" : "numeric" } : null), ...props,
+        onChange: (props && props.onChange) || ((e) => onAdd(field, limit ? numberTyped(e.target.value, limit) : e.target.value)),
+      }),
+      React.createElement(FieldError, { text: addErrors[field] })
     );
 
   // Numeric field in the company's unit, named in the label. setCanonical
@@ -6943,18 +7007,52 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
   // No required marker: every field on this form is required, so singling any
   // one out would be misleading. Matches the Retire Vehicle form, which also
   // requires everything and simply says so on submit.
-  const unitField = (label, field, unit, setCanonical) =>
+  const unitField = (label, field, unit, setCanonical, limit) =>
     React.createElement("div", { className: "addVehicleField" },
       React.createElement("label", { className: "addVehicleLabel" }, `${label} (${unit})`),
       React.createElement("input", {
-        type: "number", min: "0", step: "0.1", className: "addVehicleInput",
-        value: addForm[field],
+        type: "text", inputMode: limit.decimals ? "decimal" : "numeric", className: "addVehicleInput",
+        value: addForm[field], ...invalid(!!addErrors[field]),
         onChange: (e) => {
-          onAdd(field, e.target.value);
-          setCanonical(toCanonicalUnits(e.target.value, unit));
+          const typed = numberTyped(e.target.value, limit);
+          onAdd(field, typed);
+          setCanonical(toCanonicalUnits(typed, unit));
         },
-      })
+      }),
+      React.createElement(FieldError, { text: addErrors[field] })
     );
+  const selectField = (label, field, options) =>
+    React.createElement("div", { className: "addVehicleField" },
+      React.createElement("label", { className: "addVehicleLabel" }, label),
+      React.createElement("select", { className: "addVehicleInput", value: addForm[field], ...invalid(!!addErrors[field]),
+        onChange: (e) => onAdd(field, e.target.value) }, options),
+      React.createElement(FieldError, { text: addErrors[field] })
+    );
+  // The add form's fields, the same on the Company page and here.
+  const addGrid = React.createElement("div", { className: "addVehicleGrid" },
+    fi("Plate Number", "plate", null, { onChange: (e) => onAdd("plate", normalizePlate(e.target.value)) }),
+    selectField("Province / State", "province", [
+      React.createElement("option", { key: "", value: "" }, "Select"),
+      ...PROV_STATE_LIST.filter((p) => p.value !== "All").map((p) => React.createElement("option", { key: p.value, value: p.value }, p.value))]),
+    fi("Year",   "year", { digits: 4 }),
+    fi("Make",   "make"),
+    fi("Model",  "model"),
+    fi("Colour", "colour"),
+    unitField("Tank Size", "tankSize", tankUnit, setTankCanonical, { digits: 3, decimals: 1 }),
+    unitField("Needs PM Every", "pmInterval", pmUnit, setPmCanonical, { digits: 6 }),
+    fi(`Current Odometer (${distanceUnit()})`, "odometer", { digits: 7 }),
+    selectField("Current Fuel Level", "fuelLevel", [
+      React.createElement("option", { key: "", value: "" }, "Choose"),
+      ...FUEL_LABELS.map((f) => React.createElement("option", { key: f, value: f }, f))]),
+    selectField("Vehicle Class", "vehicleClass", vehicleClassOptions(addForm.vehicleClass).map((vc) =>
+      React.createElement("option", { key: vc, value: vc }, vc))),
+    React.createElement("div", { className: "addVehicleField addVehicleField--full" },
+      React.createElement("label", { className: "addVehicleLabel" }, "VIN"),
+      React.createElement("input", {
+        type: "text", className: "addVehicleInput", value: addForm.vin, ...invalid(!!addErrors.vin),
+        onChange: (e) => onAdd("vin", e.target.value),
+      }),
+      React.createElement(FieldError, { text: addErrors.vin })));
 
   // Inside the Company page's Vehicles step: the add form alone, as it was.
   if (embedded) {
@@ -6967,51 +7065,8 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
         ),
         React.createElement("div", { className: "dashboardSection__body" },
           React.createElement("form", { className: "addVehicleForm", onSubmit: handleAddSubmit },
-          React.createElement("div", { className: "addVehicleGrid" },
-            React.createElement("div", { className: "addVehicleField" },
-              React.createElement("label", { className: "addVehicleLabel" }, "Plate Number"),
-              React.createElement("input", {
-                type: "text", className: "addVehicleInput",                 value: addForm.plate,
-                onChange: (e) => onAdd("plate", normalizePlate(e.target.value)),
-              })
-            ),
-            React.createElement("div", { className: "addVehicleField" },
-              React.createElement("label", { className: "addVehicleLabel" }, "Province / State"),
-              React.createElement("select", { className: "addVehicleInput", value: addForm.province, onChange: (e) => onAdd("province", e.target.value) },
-                React.createElement("option", { value: "" }, "Select"),
-                PROV_STATE_LIST.filter((p) => p.value !== "All").map((p) => React.createElement("option", { key: p.value, value: p.value }, p.value))
-              )
-            ),
-            fi("Year",   "year"),
-            fi("Make",   "make"),
-            fi("Model",  "model"),
-            fi("Colour", "colour"),
-            unitField("Tank Size", "tankSize", tankUnit, setTankCanonical),
-            unitField("Needs PM Every", "pmInterval", pmUnit, setPmCanonical),
-            fi(`Current Odometer (${distanceUnit()})`, "odometer"),
-            React.createElement("div", { className: "addVehicleField" },
-              React.createElement("label", { className: "addVehicleLabel" }, "Current Fuel Level"),
-              React.createElement("select", { className: "addVehicleInput", value: addForm.fuelLevel, onChange: (e) => onAdd("fuelLevel", e.target.value) },
-                React.createElement("option", { value: "" }, "Choose"),
-                FUEL_LABELS.map((f) => React.createElement("option", { key: f, value: f }, f))
-              )
-            ),
-            React.createElement("div", { className: "addVehicleField" },
-              React.createElement("label", { className: "addVehicleLabel" }, "Vehicle Class"),
-              React.createElement("select", { className: "addVehicleInput", value: addForm.vehicleClass, onChange: (e) => onAdd("vehicleClass", e.target.value) },
-                vehicleClassOptions(addForm.vehicleClass).map((vc) =>
-                  React.createElement("option", { key: vc, value: vc }, vc)
-                )
-              )
-            ),
-            React.createElement("div", { className: "addVehicleField addVehicleField--full" },
-              React.createElement("label", { className: "addVehicleLabel" }, "VIN"),
-              React.createElement("input", {
-                type: "text", className: "addVehicleInput",                 value: addForm.vin, onChange: (e) => onAdd("vin", e.target.value),
-              })
-            )
-          ),
-          addError   && React.createElement("div", { className: "addVehicleError"   }, addError),
+          addGrid,
+          React.createElement(FieldError, { text: addErrors[""] }),
           addSuccess && React.createElement("div", { className: "addVehicleSuccess" }, "Vehicle added to fleet."),
           React.createElement("button", { type: "submit", className: "addVehicleBtn" }, "Add to Fleet")
         )
@@ -7033,51 +7088,8 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
       !unitsSet()
         ? React.createElement("div", { className: "resvEmpty", style: { textAlign: "left" } }, UNITS_NOT_SET)
         : React.createElement("form", { className: "addVehicleForm", onSubmit: handleAddSubmit },
-          React.createElement("div", { className: "addVehicleGrid" },
-            React.createElement("div", { className: "addVehicleField" },
-              React.createElement("label", { className: "addVehicleLabel" }, "Plate Number"),
-              React.createElement("input", {
-                type: "text", className: "addVehicleInput",                 value: addForm.plate,
-                onChange: (e) => onAdd("plate", normalizePlate(e.target.value)),
-              })
-            ),
-            React.createElement("div", { className: "addVehicleField" },
-              React.createElement("label", { className: "addVehicleLabel" }, "Province / State"),
-              React.createElement("select", { className: "addVehicleInput", value: addForm.province, onChange: (e) => onAdd("province", e.target.value) },
-                React.createElement("option", { value: "" }, "Select"),
-                PROV_STATE_LIST.filter((p) => p.value !== "All").map((p) => React.createElement("option", { key: p.value, value: p.value }, p.value))
-              )
-            ),
-            fi("Year",   "year"),
-            fi("Make",   "make"),
-            fi("Model",  "model"),
-            fi("Colour", "colour"),
-            unitField("Tank Size", "tankSize", tankUnit, setTankCanonical),
-            unitField("Needs PM Every", "pmInterval", pmUnit, setPmCanonical),
-            fi(`Current Odometer (${distanceUnit()})`, "odometer"),
-            React.createElement("div", { className: "addVehicleField" },
-              React.createElement("label", { className: "addVehicleLabel" }, "Current Fuel Level"),
-              React.createElement("select", { className: "addVehicleInput", value: addForm.fuelLevel, onChange: (e) => onAdd("fuelLevel", e.target.value) },
-                React.createElement("option", { value: "" }, "Choose"),
-                FUEL_LABELS.map((f) => React.createElement("option", { key: f, value: f }, f))
-              )
-            ),
-            React.createElement("div", { className: "addVehicleField" },
-              React.createElement("label", { className: "addVehicleLabel" }, "Vehicle Class"),
-              React.createElement("select", { className: "addVehicleInput", value: addForm.vehicleClass, onChange: (e) => onAdd("vehicleClass", e.target.value) },
-                vehicleClassOptions(addForm.vehicleClass).map((vc) =>
-                  React.createElement("option", { key: vc, value: vc }, vc)
-                )
-              )
-            ),
-            React.createElement("div", { className: "addVehicleField addVehicleField--full" },
-              React.createElement("label", { className: "addVehicleLabel" }, "VIN"),
-              React.createElement("input", {
-                type: "text", className: "addVehicleInput",                 value: addForm.vin, onChange: (e) => onAdd("vin", e.target.value),
-              })
-            )
-          ),
-          addError   && React.createElement("div", { className: "addVehicleError"   }, addError),
+          addGrid,
+          React.createElement(FieldError, { text: addErrors[""] }),
           addSuccess && React.createElement("div", { className: "addVehicleSuccess" }, "Vehicle added to fleet."),
           React.createElement("div", { className: "closeRentalActions" },
             React.createElement("button", { type: "submit", className: "resModalSubmit" }, "Add to Fleet"))
@@ -7088,30 +7100,32 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
               React.createElement("div", { className: "addVehicleField" },
                 React.createElement("label", { className: "addVehicleLabel" }, "Vehicle"),
                 React.createElement("select", {
-                  className: "addVehicleInput", value: retireForm.plateId,
-                  onChange: (e) => { setRetireForm((p) => ({ ...p, plateId: e.target.value })); setRetireError(""); },
+                  className: "addVehicleInput", value: retireForm.plateId, ...invalid(retireError.field === "plateId"),
+                  onChange: (e) => { setRetireForm((p) => ({ ...p, plateId: e.target.value })); setRetireError({ field: "", text: "" }); },
                 },
                   React.createElement("option", { value: "" }, filtered.length === fleet.length ? "Select vehicle" : `${filtered.length} of ${fleet.length} shown`),
                   filtered.map((v) => React.createElement("option", { key: v.id, value: v.id }, `${v.plate}, ${v.make} ${v.model}`))
-                )
+                ),
+                retireError.field === "plateId" && React.createElement(FieldError, { text: retireError.text })
               ),
               React.createElement("div", { className: "addVehicleField" },
                 React.createElement("label", { className: "addVehicleLabel" }, "Disposal Date"),
                 React.createElement(DateField, {
                   className: "addVehicleInput", value: retireForm.disposalDate, ariaLabel: "Disposal date",
-                  onChange: (v) => { setRetireForm((p) => ({ ...p, disposalDate: v })); setRetireError(""); },
-                })
+                  invalid: retireError.field === "disposalDate",
+                  onChange: (v) => { setRetireForm((p) => ({ ...p, disposalDate: v })); setRetireError({ field: "", text: "" }); },
+                }),
+                retireError.field === "disposalDate" && React.createElement(FieldError, { text: retireError.text })
               ),
               React.createElement("div", { className: "addVehicleField addVehicleField--full" },
                 React.createElement("label", { className: "addVehicleLabel" }, "Reason for Retirement (optional)"),
                 React.createElement("input", {
                   type: "text", className: "addVehicleInput", placeholder: "e.g. High mileage, Collision write-off",
                   value: retireForm.reason,
-                  onChange: (e) => { setRetireForm((p) => ({ ...p, reason: e.target.value })); setRetireError(""); },
+                  onChange: (e) => { setRetireForm((p) => ({ ...p, reason: e.target.value })); setRetireError({ field: "", text: "" }); },
                 })
               )
             ),
-            retireError && React.createElement("div", { className: "addVehicleError" }, retireError),
             React.createElement("div", { className: "closeRentalActions" },
               React.createElement("button", { type: "submit", className: "resModalSubmit" }, "Retire Vehicle"))
           )),
@@ -7267,8 +7281,8 @@ function GasOwedInput({ value, onCommit }) {
     onCommit(t);
   };
   return React.createElement("input", {
-    type: "number", className: "gasOwedInput", value: draft, min: "0", step: "0.01", "aria-label": "Gas owed",
-    onChange: (e) => setDraft(e.target.value),
+    type: "text", inputMode: "decimal", maxLength: 7, className: "gasOwedInput", value: draft, "aria-label": "Gas owed",
+    onChange: (e) => setDraft(numberTyped(e.target.value, { digits: 4, decimals: 2 })),
     onBlur: commit,
     onKeyDown: (e) => { if (e.key === "Enter") e.target.blur(); },
   });
@@ -7589,26 +7603,29 @@ function ChangePassword() {
   const [current, setCurrent] = React.useState("");
   const [next,    setNext]    = React.useState("");
   const [again,   setAgain]   = React.useState("");
+  // The problem, and the box it is about: current, next, again, or "" for none.
   const [msg,     setMsg]     = React.useState("");
+  const [msgAt,   setMsgAt]   = React.useState("");
   const [ok,      setOk]      = React.useState("");
   const [busy,    setBusy]    = React.useState(false);
+  const fail = (text, at = "") => { setMsg(text); setMsgAt(at); };
 
   const submit = async (e) => {
     e.preventDefault();
-    setMsg(""); setOk("");
-    if (next.length < PASSWORD_MIN) { setMsg(`Your new password must be ${PASSWORD_MIN} to ${PASSWORD_MAX} characters.`); return; }
-    if (next !== again)   { setMsg("The two new passwords do not match."); return; }
-    if (next === current) { setMsg("That is your current password."); return; }
+    fail(""); setOk("");
+    if (next.length < PASSWORD_MIN) { fail(`Your new password must be ${PASSWORD_MIN} to ${PASSWORD_MAX} characters.`, "next"); return; }
+    if (next !== again)   { fail("The two new passwords do not match.", "again"); return; }
+    if (next === current) { fail("That is your current password.", "next"); return; }
     setBusy(true);
     // Re-authenticate first. supabase-js v1's update takes no current password,
     // so without this anyone who walks up to an unlocked terminal can change it.
     // Honest limitation: this is a check at the keyboard, not in the database.
     const who = currentSessionEmail();
     const { error: authErr } = await supabase.auth.signIn({ email: who, password: current });
-    if (authErr) { setBusy(false); setMsg("That is not your current password."); return; }
+    if (authErr) { setBusy(false); fail("That is not your current password.", "current"); return; }
     const { error } = await supabase.auth.update({ password: next });
     setBusy(false);
-    if (error) { setMsg(error.message || "Could not change your password."); return; }
+    if (error) { fail(error.message || "Could not change your password."); return; }
     setCurrent(""); setNext(""); setAgain("");
     setOk("Password changed. It applies the next time you sign in.");
   };
@@ -7618,15 +7635,18 @@ function ChangePassword() {
     React.createElement(
       "form", { onSubmit: submit, style: { display: "flex", flexDirection: "column", gap: "8px", maxWidth: "340px" } },
       React.createElement("input", { className: "resFormInput", type: "password", placeholder: "Current password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX,
-        autoComplete: "current-password", value: current, onChange: (e) => { setCurrent(e.target.value); setMsg(""); } }),
+        autoComplete: "current-password", value: current, ...invalid(msgAt === "current"), onChange: (e) => { setCurrent(e.target.value); fail(""); } }),
+      msgAt === "current" && React.createElement(FieldError, { text: msg }),
       React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX,
-        autoComplete: "new-password", value: next, onChange: (e) => { setNext(e.target.value); setMsg(""); } }),
+        autoComplete: "new-password", value: next, ...invalid(msgAt === "next"), onChange: (e) => { setNext(e.target.value); fail(""); } }),
+      msgAt === "next" && React.createElement(FieldError, { text: msg }),
       React.createElement("input", { className: "resFormInput", type: "password", placeholder: "New password again", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX,
-        autoComplete: "new-password", value: again, onChange: (e) => { setAgain(e.target.value); setMsg(""); } }),
+        autoComplete: "new-password", value: again, ...invalid(msgAt === "again"), onChange: (e) => { setAgain(e.target.value); fail(""); } }),
+      msgAt === "again" && React.createElement(FieldError, { text: msg }),
       React.createElement("div", { className: "closeRentalActions" },
         React.createElement("button", { className: "resModalSubmit", disabled: busy },
           busy ? "Changing…" : "Change password")),
-      msg && React.createElement("div", { className: "loginError" }, msg),
+      msgAt === "" && React.createElement(FieldError, { text: msg }),
       ok  && React.createElement("div", { style: { color: "#3fbf7f", fontSize: "0.85rem" } }, ok)
     )
   );
@@ -7636,13 +7656,15 @@ function ChangePin({ hasPin, onDone }) {
   const [current, setCurrent] = React.useState("");
   const [next,    setNext]    = React.useState("");
   const [msg,     setMsg]     = React.useState("");
+  const [msgAt,   setMsgAt]   = React.useState("");
   const [ok,      setOk]      = React.useState("");
   const [busy,    setBusy]    = React.useState(false);
+  const fail = (text, at = "") => { setMsg(text); setMsgAt(at); };
 
   const submit = async (e) => {
     e.preventDefault();
-    setMsg(""); setOk("");
-    if (!/^[0-9]{4}$/.test(next)) { setMsg("Your PIN must be 4 digits."); return; }
+    fail(""); setOk("");
+    if (!/^[0-9]{4}$/.test(next)) { fail("Your PIN must be 4 digits.", "next"); return; }
     setBusy(true);
     const args = { new_pin: next };
     // Only sent when there is one to send. set_my_pin refuses a supplied
@@ -7652,7 +7674,9 @@ function ChangePin({ hasPin, onDone }) {
     const { data, error } = await supabase.rpc("set_my_pin", args);
     setBusy(false);
     if (error || !data || !data.ok) {
-      setMsg(ACCOUNT_REASONS[data && data.reason] || "Could not change your PIN.");
+      const reason = data && data.reason;
+      fail(ACCOUNT_REASONS[reason] || "Could not change your PIN.",
+        reason === "wrong_current_pin" || reason === "pin_failed" ? "current" : reason === "bad_pin" ? "next" : "");
       return;
     }
     setCurrent(""); setNext("");
@@ -7669,15 +7693,17 @@ function ChangePin({ hasPin, onDone }) {
     React.createElement(
       "form", { onSubmit: submit, style: { display: "flex", flexDirection: "column", gap: "8px", maxWidth: "340px" } },
       hasPin && React.createElement("input", { className: "resFormInput", type: "password", inputMode: "numeric",
-        maxLength: 4, placeholder: "Current PIN", value: current,
-        onChange: (e) => { setCurrent(e.target.value.replace(/\D/g, "").slice(0, 4)); setMsg(""); } }),
+        maxLength: 4, placeholder: "Current PIN", value: current, ...invalid(msgAt === "current"),
+        onChange: (e) => { setCurrent(e.target.value.replace(/\D/g, "").slice(0, 4)); fail(""); } }),
+      msgAt === "current" && React.createElement(FieldError, { text: msg }),
       React.createElement("input", { className: "resFormInput", type: "password", inputMode: "numeric",
-        maxLength: 4, placeholder: hasPin ? "New PIN" : "Choose a 4-digit PIN", value: next,
-        onChange: (e) => { setNext(e.target.value.replace(/\D/g, "").slice(0, 4)); setMsg(""); } }),
+        maxLength: 4, placeholder: hasPin ? "New PIN" : "Choose a 4-digit PIN", value: next, ...invalid(msgAt === "next"),
+        onChange: (e) => { setNext(e.target.value.replace(/\D/g, "").slice(0, 4)); fail(""); } }),
+      msgAt === "next" && React.createElement(FieldError, { text: msg }),
       React.createElement("div", { className: "closeRentalActions" },
         React.createElement("button", { className: "resModalSubmit", disabled: busy },
           busy ? "Saving…" : (hasPin ? "Change PIN" : "Set PIN"))),
-      msg && React.createElement("div", { className: "loginError" }, msg),
+      msgAt === "" && React.createElement(FieldError, { text: msg }),
       ok  && React.createElement("div", { style: { color: "#3fbf7f", fontSize: "0.85rem" } }, ok)
     )
   );
@@ -7687,19 +7713,23 @@ function ChangeRecoveryEmail({ account, onDone }) {
   const [addr, setAddr] = React.useState("");
   const [pin,  setPin]  = React.useState("");
   const [msg,  setMsg]  = React.useState("");
+  const [msgAt, setMsgAt] = React.useState("");
   const [ok,   setOk]   = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const fail = (text, at = "") => { setMsg(text); setMsgAt(at); };
 
   React.useEffect(() => { setAddr((account && account.recoveryEmail) || ""); }, [account && account.recoveryEmail]);
 
   const submit = async (e) => {
     e.preventDefault();
-    setMsg(""); setOk("");
+    fail(""); setOk("");
     setBusy(true);
     const { data, error } = await supabase.rpc("set_my_recovery_email", { new_email: addr, pin: pin });
     setBusy(false);
     if (error || !data || !data.ok) {
-      setMsg(ACCOUNT_REASONS[data && data.reason] || "Could not change your recovery address.");
+      const reason = data && data.reason;
+      fail(ACCOUNT_REASONS[reason] || "Could not change your recovery address.",
+        reason === "bad_email" ? "addr" : ["bad_pin", "pin_failed", "wrong_current_pin"].includes(reason) ? "pin" : "");
       return;
     }
     setPin("");
@@ -7735,16 +7765,18 @@ function ChangeRecoveryEmail({ account, onDone }) {
     React.createElement(
       "form", { onSubmit: submit, style: { display: "flex", flexDirection: "column", gap: "8px", maxWidth: "340px" } },
       React.createElement("input", { className: "resFormInput", type: "email", placeholder: "you@example.com",
-        autoComplete: "email", value: addr, onChange: (e) => { setAddr(e.target.value); setMsg(""); } }),
+        autoComplete: "email", value: addr, ...invalid(msgAt === "addr"), onChange: (e) => { setAddr(e.target.value); fail(""); } }),
+      msgAt === "addr" && React.createElement(FieldError, { text: msg }),
       // PIN-gated because whoever can change this can later ask for a reset and
       // receive it. It is the back door, not a preference.
       React.createElement("input", { className: "resFormInput", type: "password", inputMode: "numeric",
-        maxLength: 4, placeholder: "Your PIN", value: pin,
-        onChange: (e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setMsg(""); } }),
+        maxLength: 4, placeholder: "Your PIN", value: pin, ...invalid(msgAt === "pin"),
+        onChange: (e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); fail(""); } }),
+      msgAt === "pin" && React.createElement(FieldError, { text: msg }),
       React.createElement("div", { className: "closeRentalActions" },
         React.createElement("button", { className: "resModalSubmit", disabled: busy },
           busy ? "Saving…" : "Update address")),
-      msg && React.createElement("div", { className: "loginError" }, msg),
+      msgAt === "" && React.createElement(FieldError, { text: msg }),
       ok  && React.createElement("div", { style: { color: "#3fbf7f", fontSize: "0.85rem" } }, ok)
     )
   );
@@ -7758,20 +7790,33 @@ const COMPANY_STEPS = [
   { key: "business",   title: "Business details",           items: ["branch", "fuel_rate"] },
   { key: "vehicles",   title: "Vehicles",                   items: ["vehicle_classes", "vehicles"] },
   { key: "rates",      title: "Rates",                      items: ["rates"] },
-  { key: "protection", title: "Protection and deductibles", items: ["protection"], skippable: true },
+  { key: "protection", title: "Protections and Deductibles", items: ["protection"], skippable: true },
   { key: "contract",   title: "Contract terms",             items: ["contract"] },
   { key: "listing",    title: "fleetr.ai listing",          items: ["listing"], skippable: true },
   { key: "staff",      title: "Staff",                      items: ["staff"], skippable: true },
   { key: "launch",     title: "Launch", after: "Status" },
 ];
-const STEP_STATE_WORDS = { done: "Done", skipped: "Skipped", todo: "Not started" };
+// Not started until something in a step is saved, In progress after that,
+// Done only once it is complete.
+const STEP_STATE_WORDS = { done: "Done", skipped: "Skipped", progress: "In progress", todo: "Not started" };
+
+// Opens a setup step, and the section or field named inside it, and brings it
+// into view: the links in the launch checklist and in a listing's Missing list.
+const COMPANY_JUMP_EVENT = "fleetr:company-jump";
+// Sections inside a closed step are not on the page yet, so the ones to open
+// wait here until they are. The last one named is the one brought into view.
+const jumpTargets = new Set();
+const jumpTo = (step, ...targets) => {
+  targets.forEach((t) => jumpTargets.add(t));
+  window.dispatchEvent(new CustomEvent(COMPANY_JUMP_EVENT, { detail: { step, target: targets[targets.length - 1] } }));
+};
 
 // Set to true around a section that has only one part, so its one
 // CompanySection shows its content directly instead of as a dropdown inside
 // the section. Only the outermost CompanySection reads it.
 const CompanySectionFlat = React.createContext(false);
 
-function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, busy, showState, children }) {
+function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, onDone, skipError, busy, showState, children }) {
   const el = React.createElement;
   return el("section", { id, className: `companyStep companyStep--${stepKey}${open ? " companyStep--open" : ""}${current ? " companyStep--current" : ""}` },
     el("button", {
@@ -7784,8 +7829,13 @@ function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, sk
       el("span", { className: "companyStep__chevron", "aria-hidden": "true" }, open ? "\u25be" : "\u25b8")),
     open && el("div", { className: "companyStep__body" },
       children,
-      showState && skippable && state === "todo" && el("div", { className: "closeRentalActions" },
+      // Skip only while it is unfinished; once it is complete, Done closes it
+      // and opens the next.
+      showState && skippable && (state === "todo" || state === "progress") && el("div", { className: "closeRentalActions" },
         el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: onSkip }, "Skip for now")),
+      el(FieldError, { text: skipError }),
+      showState && state === "done" && onDone && el("div", { className: "closeRentalActions" },
+        el("button", { type: "button", className: "resModalSubmit", onClick: onDone }, "Done")),
       showState && state === "skipped" && el("p", { className: "closeRentalHint" },
         "Skipped for now. Finish it any time, or ",
         el("button", { type: "button", className: "linkBtn", disabled: busy, onClick: onUnskip,
@@ -7808,15 +7858,22 @@ function VehiclesStep({ onAdded }) {
     el(FleetAdditionsPage, { embedded: true, onAdded }));
 }
 
-// The last step: what is left, and the Launch button.
-function LaunchStep() {
+// The last step: what is left, and the Launch button. The checklist is the
+// setup steps above it, in their order and by their names, each a link to its
+// step. Revenue share is fleetr's to set from fleetr HQ, so it is not listed.
+function LaunchStep({ steps }) {
   const { setup, refreshSetup, currentUser, guardAction } = React.useContext(AppContext);
   const isExec = roleAtLeast(currentUser?.role, "Exec");
   const [busy, setBusy]   = React.useState(false);
   const [error, setError] = React.useState("");
   const el = React.createElement;
   if (!setup) return null;
-  const left = setup.items.filter((i) => i.required && !i.done).length;
+  const required = (st) => st.items.some((i) => i.required);
+  const testRentals = setup.items.find((i) => i.key === "test_rentals_finished");
+  const left = (steps || []).filter((st) => required(st) && st.state !== "done").length + (testRentals && !testRentals.done ? 1 : 0);
+  // Every step here is done but the company is not ready: what is missing is
+  // fleetr's part.
+  const waitingOnFleetr = left === 0 && !setup.ready;
 
   const launch = () => {
     setError("");
@@ -7842,21 +7899,24 @@ function LaunchStep() {
   return el(React.Fragment, null,
     el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
       "Until you launch, fleetr.ai shows none of your branches, no texts go to customers, and anything entered is a test record, removed at launch."),
-    error && el("div", { className: "loginError" }, error),
-    el("ul", { className: "setupList" }, setup.items.map((i) => el(SetupItemRow, { key: i.key, item: i }))),
+    el("ul", { className: "setupList" },
+      (steps || []).map((st) => el(SetupStepRow, { key: st.key, step: st, required: required(st) })),
+      testRentals && el(SetupItemRow, { key: testRentals.key, item: testRentals })),
     el("p", { className: "closeRentalHint" }, setup.suspended
       ? LAUNCH_REASONS.suspended
+      : waitingOnFleetr ? "Every step is done. fleetr is finishing your account, and you can launch once it has."
       : left === 0 ? "Every required step is done." : `${left} required step${left === 1 ? "" : "s"} left.`),
     isExec
       ? el("button", {
           type: "button", className: "loginBtn", style: { width: "auto", padding: "10px 18px" },
           disabled: busy || !setup.ready || setup.suspended, onClick: launch,
         }, busy ? "Launching..." : "Launch")
-      : el("p", { className: "closeRentalHint" }, "An Exec launches the company once every required step is done."));
+      : el("p", { className: "closeRentalHint" }, "An Exec launches the company once every required step is done."),
+    el(FieldError, { text: error }));
 }
 
 function CompanyPage() {
-  const { currentUser, setup, refreshSetup } = React.useContext(AppContext);
+  const { currentUser, setup, refreshSetup, fleet } = React.useContext(AppContext);
   const isExec = roleAtLeast(currentUser?.role, "Exec");
   // Suggested sales tax, by branch, for a branch whose tax is not set yet.
   const [taxSuggestions, setTaxSuggestions] = React.useState({});
@@ -7886,6 +7946,9 @@ function CompanyPage() {
   const [busy,     setBusy]     = React.useState("");
   const [error,    setError]    = React.useState("");
   const [notice,   setNotice]   = React.useState("");
+  // Whether anything of a fleetr.ai listing has been saved yet, beyond the
+  // address the Business details step keeps on the same row.
+  const [listingStarted, setListingStarted] = React.useState(false);
 
   const [newName, setNewName] = React.useState("");
 
@@ -7896,11 +7959,19 @@ function CompanyPage() {
   }, []);
 
   const refresh = React.useCallback(async () => {
-    const [ov, gs, act, tx, bs] = await Promise.all([
+    const [ov, gs, act, tx, bs, bl] = await Promise.all([
       call("company_overview"), call("company_gas_settings"), call("my_acting_location"),
       call("company_sales_taxes"),
       supabase.from("locations").select("id,timeZone,salesTaxesSetAt"),
+      supabase.from("branch_listings").select("*").eq("operatorId", currentUser?.operatorId ?? null),
     ]);
+    if (!bl.error) {
+      const LISTING_FIELDS = ["hours", "citiesServed", "airportCodes", "minimumAge", "deposit", "paymentMethods",
+        "minNoticeHours", "maxRentalDays", "turnaroundHours", "logoPath", "photoPath"];
+      const has = (v) => v != null && v !== "" && !(Array.isArray(v) && v.length === 0)
+        && !(typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0);
+      setListingStarted((bl.data || []).some((row) => LISTING_FIELDS.some((k) => has(row[k]))));
+    }
     if (!bs.error) setBranchSetup(Object.fromEntries((bs.data || []).map((b) => [b.id, b])));
     if (!bs.error) {
       const unset = (bs.data || []).filter((b) => !b.salesTaxesSetAt);
@@ -7912,7 +7983,7 @@ function CompanyPage() {
     if (tx.ok)  setTaxes(tx.branches || []);
     if (act.ok) setActing(act);
     if (!ov.ok) setError(COMPANY_REASONS[ov.reason] || "Could not load the company.");
-  }, [call]);
+  }, [call, currentUser]);
 
   React.useEffect(() => { if (isExec) refresh(); }, [isExec, refresh]);
 
@@ -7924,31 +7995,94 @@ function CompanyPage() {
   const refreshAll = React.useCallback(async () => { await refresh(); await changed(); }, [refresh, changed]);
 
   const launched = !!(setup && setup.launched);
-  // A section is done when every setup item it holds is done, skipped when
-  // one is skipped and the rest are done, and not started otherwise.
+  const itemsOf = (st) => (st.items || []).map((k) => setup && setup.items.find((i) => i.key === k)).filter(Boolean);
+  // Whether anything in a step has been saved yet.
+  const lists = companyLists || {};
+  const started = (st, its) => {
+    if (its.some((it) => it.done)) return true;
+    switch (st.key) {
+      case "business": return unitsSet() || Number(companyFuelRate) > 0
+        || Object.values(branchSetup).some((b) => b.salesTaxesSetAt || b.timeZone);
+      case "vehicles": return (fleet || []).length > 0 || (lists.vehicleClasses || []).some((c) => c.active);
+      case "rates": return Object.keys(lists.rates || {}).length > 0 || (lists.seasons || []).length > 0
+        || (lists.sources || []).some((x) => !x.standardKey);
+      case "protection": return (lists.protectionProducts || []).length > 0;
+      case "listing": return listingStarted;
+      default: return false;
+    }
+  };
+  // Done when every setup item it holds is done, Skipped when one is skipped
+  // and the rest are done, In progress once anything in it is saved, and Not
+  // started before that.
   const stepState = (st) => {
     if (st.key === "launch") return launched ? "done" : "todo";
-    const its = (st.items || []).map((k) => setup && setup.items.find((i) => i.key === k)).filter(Boolean);
+    const its = itemsOf(st);
     if (its.every((it) => it.done)) return "done";
-    return its.every((it) => it.done || it.skipped) ? "skipped" : "todo";
+    if (its.every((it) => it.done || it.skipped)) return "skipped";
+    return started(st, its) ? "progress" : "todo";
   };
-  // The current step: the first not started, else Launch.
+  const unfinished = (st) => ["todo", "progress"].includes(stepState(st));
+  // The current step: the first unfinished one, else Launch.
   const nextKey = !setup || launched ? null
-    : (COMPANY_STEPS.find((st) => st.key !== "launch" && stepState(st) === "todo") || { key: "launch" }).key;
+    : (COMPANY_STEPS.find((st) => st.key !== "launch" && unfinished(st)) || { key: "launch" }).key;
+
+  const scrollToStep = (key) => setTimeout(() => {
+    const node = document.getElementById(`company-step-${key}`);
+    if (node) node.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, 150);
+  // A step finished: it folds, and the next unfinished one opens.
+  const advance = (key) => {
+    const at = COMPANY_STEPS.findIndex((st) => st.key === key);
+    const next = COMPANY_STEPS.slice(at + 1).find((st) => st.key === "launch" || unfinished(st)) || COMPANY_STEPS[COMPANY_STEPS.length - 1];
+    setOpenSteps((o) => ({ ...o, [key]: false, [next.key]: true }));
+    scrollToStep(next.key);
+  };
+  // Saving the last thing a step needed does the same as pressing Done.
+  const stepsBefore = React.useRef(null);
+  React.useEffect(() => {
+    if (!setup || launched) { stepsBefore.current = null; return; }
+    const now = Object.fromEntries(COMPANY_STEPS.map((st) => [st.key, stepState(st)]));
+    const before = stepsBefore.current;
+    stepsBefore.current = now;
+    if (!before) return;
+    const finished = COMPANY_STEPS.find((st) => st.key !== "launch" && openSteps[st.key]
+      && before[st.key] !== "done" && now[st.key] === "done");
+    if (finished) advance(finished.key);
+  });
+  // A link to a step, or to a section or field inside one.
+  React.useEffect(() => {
+    const onJump = (e) => {
+      const { step, target } = e.detail || {};
+      if (!step) return;
+      setOpenSteps((o) => ({ ...o, [step]: true }));
+      setTimeout(() => {
+        const node = document.getElementById(target || `company-step-${step}`) || document.getElementById(`company-step-${step}`);
+        if (!node) return;
+        node.scrollIntoView({ block: "start", behavior: "smooth" });
+        const field = target && node.querySelector("input, select, textarea, [contenteditable]");
+        if (field) field.focus({ preventScroll: true });
+      }, 250);
+    };
+    window.addEventListener(COMPANY_JUMP_EVENT, onJump);
+    return () => window.removeEventListener(COMPANY_JUMP_EVENT, onJump);
+  }, []);
 
   const setSkip = async (step, skipped) => {
     setStepBusy(true);
     const { data, error: err } = await supabase.rpc("set_setup_skip", { p_step: step, p_skipped: skipped });
     setStepBusy(false);
-    if (err || !data || !data.ok) { setError("That did not work. Try again."); return; }
+    if (err || !data || !data.ok) { setFieldError({ at: `skip:${step}`, text: "That did not work. Try again." }); return; }
     await refreshSetup();
   };
 
-  const run = async (label, fn, args) => {
-    setBusy(label); setError(""); setNotice("");
+  // at names the field or row a refusal belongs under (errorFor reads it back).
+  const [fieldError, setFieldError] = React.useState({ at: "", text: "" });
+  const errorFor = (at) => (fieldError.at === at ? fieldError.text : "");
+  const run = async (label, fn, args, at = label) => {
+    setBusy(label); setError(""); setNotice(""); setFieldError({ at: "", text: "" });
     const res = await call(fn, args);
     setBusy("");
-    if (!res.ok) { setError(COMPANY_REASONS[res.reason] || res.message || "That did not work."); return false; }
+    if (!res.ok) { setFieldError({ at, text: COMPANY_REASONS[res.reason] || res.message || "That did not work." }); return false; }
     await refresh();
     await changed();
     return true;
@@ -7981,9 +8115,10 @@ function CompanyPage() {
       case "business": return el(React.Fragment, null,
         el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "address", onSaved: refreshAll }),
         el(CompanyUnitsSection, { key: `${fuelUnit()}-${distanceUnit()}`, onSaved: () => { setNotice("Units saved."); changed(); } }),
-        el(PostPayFuelRateSection, { key: `rate-${fuelUnit()}`, gas, companyRate: companyFuelRate, busy, onSave: run }),
+        el(PostPayFuelRateSection, { key: `rate-${fuelUnit()}`, gas, companyRate: companyFuelRate, busy, onSave: run, errorFor }),
         React.createElement(
-          CompanySection, { title: "Sales tax" },
+          CompanySection, { id: "company-section-tax", title: "Sales tax",
+            done: taxes.some((t) => t.active) && taxes.filter((t) => t.active).every((t) => !!branchSetup[t.locationId]?.salesTaxesSetAt) },
           React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
             "Up to two taxes per branch, each with a name and a rate, for example HST 15%, or GST 5% and PST 7%. They are added to every charge, and locked onto a rental agreement when the customer picks up, so a later change here does not reach rentals already out. A branch with no sales tax still needs Save pressed with both left blank, so it is set on purpose."),
           React.createElement(
@@ -7993,12 +8128,12 @@ function CompanyPage() {
               React.createElement("thead", null, React.createElement("tr", null,
                 ["Branch", "First tax", "Second tax", ""].map((h) => React.createElement("th", { key: h }, h)))),
               React.createElement("tbody", null, taxes.filter((t) => t.active).map((t) =>
-                React.createElement(SalesTaxRow, { key: t.locationId, row: t, busy, onSave: run,
+                React.createElement(SalesTaxRow, { key: t.locationId, row: t, busy, onSave: run, error: errorFor(`tax:${t.locationId}`),
                   isSet: !!branchSetup[t.locationId]?.salesTaxesSetAt, suggestion: taxSuggestions[t.locationId] }))))
           )
         ),
         React.createElement(
-          CompanySection, { title: "Branches", style: { marginBottom: "24px" } },
+          CompanySection, { id: "company-section-branches", title: "Branches", style: { marginBottom: "24px" }, done: branches.some((b) => b.active) },
           React.createElement(
             "div", { style: { overflowX: "auto" } },
             React.createElement(
@@ -8019,12 +8154,12 @@ function CompanyPage() {
                       onClick: async () => {
                         const name = await appPrompt({ title: "Rename branch", label: "New name for this branch", value: b.name, confirmLabel: "Rename" });
                         if (name == null) return;
-                        run("rename", "rename_location", { location_id: b.id, new_name: name });
+                        run("rename", "rename_location", { location_id: b.id, new_name: name }, `branch:${b.id}`);
                       },
                     }, "Rename"),
                     !b.isDefault && b.active && React.createElement("button", {
                       className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
-                      onClick: () => run("default", "set_default_location", { location_id: b.id }),
+                      onClick: () => run("default", "set_default_location", { location_id: b.id }, `branch:${b.id}`),
                     }, "Make default"),
                     b.active
                       ? React.createElement("button", {
@@ -8033,18 +8168,20 @@ function CompanyPage() {
                           // staff, the default, or the last one open. Hiding the
                           // button would mean guessing all three here, and guessing
                           // wrong reads as the feature being broken.
-                          onClick: () => run("close", "set_location_active", { location_id: b.id, is_active: false }),
+                          onClick: () => run("close", "set_location_active", { location_id: b.id, is_active: false }, `branch:${b.id}`),
                         }, "Close")
                       : React.createElement("button", {
                           className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
-                          onClick: () => run("open", "set_location_active", { location_id: b.id, is_active: true }),
-                        }, "Reopen"))))))
+                          onClick: () => run("open", "set_location_active", { location_id: b.id, is_active: true }, `branch:${b.id}`),
+                        }, "Reopen"),
+                    errorFor(`branch:${b.id}`) && React.createElement("div", { style: { flexBasis: "100%" } }, el(FieldError, { text: errorFor(`branch:${b.id}`) })))))))
           ),
           React.createElement(
             "div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "16px", alignItems: "center" } },
             React.createElement("input", {
-              className: "resFormInput", style: { width: "auto" }, placeholder: "New branch name",
-              value: newName, onChange: (e) => setNewName(e.target.value),
+              className: "resFormInput", style: { width: "auto" }, placeholder: "New branch name", maxLength: 60,
+              value: newName, ...invalid(!!errorFor("create")),
+              onChange: (e) => { setNewName(e.target.value); if (errorFor("create")) setFieldError({ at: "", text: "" }); },
             }),
             React.createElement("button", {
               className: "loginBtn", style: { width: "auto", padding: "8px 14px" },
@@ -8054,27 +8191,42 @@ function CompanyPage() {
                 }
               },
             }, "Open a branch")
-          )
+          ),
+          el(FieldError, { text: errorFor("create") })
         ),
         launched && parts.pickup);
       case "vehicles": return el(React.Fragment, null,
         parts.classes,
-        el(CompanySection, { title: "Add vehicles", style: { marginTop: "24px" } }, el(VehiclesStep, { onAdded: changed })));
+        el(CompanySection, { id: "company-section-vehicles", title: "Add vehicles", style: { marginTop: "24px" },
+          done: !!setup.items.find((i) => i.key === "vehicles" && i.done) }, el(VehiclesStep, { onAdded: changed })));
       // Sources, then the daily rates for each of them, before launch and after.
       case "rates": return el(React.Fragment, null, parts.sources, parts.seasons, parts.rates);
       case "protection": return el(React.Fragment, null, parts.protection, parts.deductibles);
       case "contract": return only(parts.acknowledgements);
       case "listing": return only(el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "listing", onSaved: refreshAll }));
       case "staff": return el(StaffPage, { embedded: true, onChanged: refreshSetup });
-      case "launch": return launched ? el(CompanyStatusSection, { bare: true }) : el(LaunchStep);
+      case "launch": return launched ? el(CompanyStatusSection, { bare: true })
+        : el(LaunchStep, { steps: COMPANY_STEPS.filter((st) => st.key !== "launch").map((st) => ({ ...st, state: stepState(st), items: itemsOf(st) })) });
       default: return null;
     }
   };
 
 
   if (!setup) return el(PageSkeleton, { path: "/company" });
+  // Setup's steps, counting signing up as the first, already done.
+  const progress = [{ key: "signup", title: "Sign up", state: "done" },
+    ...COMPANY_STEPS.map((st) => ({ key: st.key, title: st.title, state: stepState(st) }))];
+  const progressDone = progress.filter((p) => p.state === "done").length;
   return el("div", { className: "page companySetup" },
     el("h1", { className: "companySetup__title" }, "Company"),
+    !launched && el("div", { className: "setupProgress" },
+      el("div", { className: "setupProgress__top" },
+        el("span", { className: "setupProgress__count" }, `${progressDone} of ${progress.length} steps done`),
+        el("span", { className: "setupProgress__pct" }, `${Math.round((progressDone / progress.length) * 100)}%`)),
+      el("div", { className: "setupProgress__bar", role: "progressbar", "aria-label": "Setup progress",
+        "aria-valuemin": 0, "aria-valuemax": progress.length, "aria-valuenow": progressDone },
+        progress.map((p, i) => el("span", { key: p.key, title: `${i + 1}. ${p.title}: ${STEP_STATE_WORDS[p.state]}`,
+          className: `setupProgress__seg setupProgress__seg--${p.state}` })))),
     error  && el("div", { className: "loginError" }, error),
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
     el(CompanyListsSections, {
@@ -8090,6 +8242,8 @@ function CompanyPage() {
         skippable: st.skippable,
         onSkip: () => setSkip(st.key, true),
         onUnskip: () => setSkip(st.key, false),
+        skipError: errorFor(`skip:${st.key}`),
+        onDone: () => advance(st.key),
         busy: stepBusy,
         showState: !launched && st.key !== "launch",
       }, stepBody(st.key, parts))),
@@ -8179,7 +8333,6 @@ function BillingSection() {
   return el(React.Fragment, null,
     el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
       `fleetr bills ${data.percent == null ? "a share" : `${Number(data.percent)}%`} of the vehicle rental revenue on agreements closed each month, before tax. Each month is due on the 15th of the month after.`),
-    error && el("div", { className: "loginError" }, error),
     data.months.length === 0
       ? el("p", { className: "closeRentalHint" }, "Nothing billed yet. A month shows here once an agreement closes in it.")
       : el("div", { style: { overflowX: "auto" } },
@@ -8192,7 +8345,8 @@ function BillingSection() {
               el("td", null, el("button", {
                 type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, disabled: !!busy,
                 onClick: () => download(m.month),
-              }, busy === m.month ? "Making…" : "Statement PDF"))))))));
+              }, busy === m.month ? "Making…" : "Statement PDF"))))))),
+    el(FieldError, { text: error }));
 }
 
 // ─── Post-pay fuel rate ──────────────────────────────────────────────────────
@@ -8214,7 +8368,7 @@ const fuelRateText = (perLitre) => {
   return n == null ? null : `$${n.toFixed(2)} per ${fuelRateUnit()}`;
 };
 
-function PostPayFuelRateSection({ gas, companyRate, busy, onSave }) {
+function PostPayFuelRateSection({ gas, companyRate, busy, onSave, errorFor }) {
   const el = React.createElement;
   const shown = (v) => (fuelRateForDisplay(v) != null ? String(fuelRateForDisplay(v)) : "");
   const [rate, setRate] = React.useState(shown(companyRate));
@@ -8225,14 +8379,15 @@ function PostPayFuelRateSection({ gas, companyRate, busy, onSave }) {
   const [showOverrides, setShowOverrides] = React.useState(false);
 
   return el(
-    CompanySection, { title: "Post-pay fuel rate" },
+    CompanySection, { id: "company-section-fuel", title: "Post-pay fuel rate", done: Number(companyRate) > 0 },
     el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
       `What you charge per ${fuelRateUnit()} when a vehicle comes back with less fuel than it went out with. The gas charge at return is this rate times the amount short.`),
     el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", margin: "12px 0" } },
       el("label", { htmlFor: "company-fuel-rate", style: { fontSize: "0.9rem" } }, `Post-pay fuel rate ($ per ${fuelRateUnit()})`),
       el("input", {
-        id: "company-fuel-rate", className: "resFormInput", style: { width: "110px" },
-        inputMode: "decimal", value: rate, onChange: (e) => { setRate(e.target.value); setError(""); },
+        id: "company-fuel-rate", className: "resFormInput", style: { width: "110px" }, maxLength: 7,
+        inputMode: "decimal", value: rate, ...invalid(!!(error || errorFor("gas"))),
+        onChange: (e) => { setRate(numberTyped(e.target.value, { digits: 3, decimals: 3 })); setError(""); },
       }),
       el("button", {
         className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
@@ -8243,7 +8398,7 @@ function PostPayFuelRateSection({ gas, companyRate, busy, onSave }) {
           onSave("gas", "set_company_fuel_rate", { p_rate: fuelRateToLitre(check.value) });
         },
       }, "Save")),
-    error && el("div", { className: "loginError" }, error),
+    el(FieldError, { text: error || errorFor("gas") }),
     rows.length > 0 && el("button", {
       type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px", marginTop: "4px" },
       onClick: () => setShowOverrides((v) => !v),
@@ -8251,17 +8406,18 @@ function PostPayFuelRateSection({ gas, companyRate, busy, onSave }) {
     showOverrides && el("div", { style: { overflowX: "auto", marginTop: "12px" } },
       el("table", { className: "dashboardTable", style: { minWidth: "520px" } },
         el("thead", null, el("tr", null, ["Branch", `Its own rate ($ per ${fuelRateUnit()})`, ""].map((h) => el("th", { key: h }, h)))),
-        el("tbody", null, rows.map((g) => el(GasRow, { key: g.locationId, row: g, busy, onSave, companyRate }))))));
+        el("tbody", null, rows.map((g) => el(GasRow, { key: g.locationId, row: g, busy, onSave, companyRate, error: errorFor(`gas:${g.locationId}`) }))))));
 }
 
 // One branch's own post-pay fuel rate. Its own component so each branch keeps
 // its own draft: one shared draft meant typing in one row and saving another,
 // which for a rate is a real charge to a real customer. Blank uses the
 // company's.
-function GasRow({ row, busy, onSave, companyRate }) {
+function GasRow({ row, busy, onSave, companyRate, error }) {
   const shown = (v) => (fuelRateForDisplay(v) != null ? String(fuelRateForDisplay(v)) : "");
   const [rate, setRate] = React.useState(
     row.postPayFuelRate != null ? shown(row.postPayFuelRate) : "");
+  const [problem, setProblem] = React.useState("");
   React.useEffect(() => { setRate(shown(row.postPayFuelRate)); }, [row.postPayFuelRate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return React.createElement(
@@ -8269,25 +8425,26 @@ function GasRow({ row, busy, onSave, companyRate }) {
     React.createElement("td", null, row.name),
     React.createElement("td", null,
       React.createElement("input", {
-        className: "resFormInput", style: { width: "110px" },
+        className: "resFormInput", style: { width: "110px" }, maxLength: 7,
         placeholder: fuelRateForDisplay(companyRate) != null ? `Company: ${fuelRateForDisplay(companyRate)}` : "Company",
-        inputMode: "decimal", value: rate,
-        onChange: (e) => setRate(e.target.value),
-      })),
+        inputMode: "decimal", value: rate, ...invalid(!!(problem || error)),
+        onChange: (e) => { setRate(numberTyped(e.target.value, { digits: 3, decimals: 3 })); setProblem(""); },
+      }),
+      React.createElement(FieldError, { text: problem || error })),
     React.createElement("td", null,
       React.createElement("button", {
         className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
         disabled: busy === "gas",
         onClick: () => {
           if (rate.trim() === "") {
-            onSave("gas", "set_company_gas_setting", { location_id: row.locationId, setting_key: "postPayFuelRate", setting_value: null });
+            onSave("gas", "set_company_gas_setting", { location_id: row.locationId, setting_key: "postPayFuelRate", setting_value: null }, `gas:${row.locationId}`);
             return;
           }
           const check = validateFuelRate(rate);
-          if (!check.ok) return;
+          if (!check.ok) { setProblem(check.error); return; }
           onSave("gas", "set_company_gas_setting", {
             location_id: row.locationId, setting_key: "postPayFuelRate", setting_value: fuelRateToLitre(check.value),
-          });
+          }, `gas:${row.locationId}`);
         },
       }, "Save"))
   );
@@ -8298,7 +8455,7 @@ function GasRow({ row, busy, onSave, companyRate }) {
 // both blank clears the branch's taxes. The database checks the rest.
 // suggestion, from suggested_sales_tax, fills the boxes of a branch whose tax
 // has never been set. Nothing is saved until Save, which is the confirmation.
-function SalesTaxRow({ row, busy, onSave, isSet, suggestion }) {
+function SalesTaxRow({ row, busy, onSave, isSet, suggestion, error }) {
   const saved = !isSet && Array.isArray(suggestion) && suggestion.length
     ? suggestion : (Array.isArray(row.salesTaxes) ? row.salesTaxes : []);
   const toDraft = (t) => ({ name: t ? String(t.name ?? "") : "", rate: t && t.rate != null ? String(t.rate) : "" });
@@ -8306,21 +8463,28 @@ function SalesTaxRow({ row, busy, onSave, isSet, suggestion }) {
   const savedKey = JSON.stringify(saved);
   React.useEffect(() => { setDrafts([toDraft(saved[0]), toDraft(saved[1])]); }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const update = (i, field, value) =>
+  // { i, field, text }: a problem with one of the boxes, shown under it.
+  const [problem, setProblem] = React.useState(null);
+  const update = (i, field, value) => {
     setDrafts((prev) => prev.map((d, j) => (j === i ? { ...d, [field]: value } : d)));
+    setProblem(null);
+  };
+  const bad = (i, field) => !!problem && problem.i === i && problem.field === field;
 
   const taxCell = (i) =>
     React.createElement("td", null,
       React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: "6px" } },
         React.createElement("input", {
           className: "resFormInput", style: { width: "90px" }, placeholder: "Name", maxLength: 20,
-          value: drafts[i].name, onChange: (e) => update(i, "name", e.target.value),
+          value: drafts[i].name, ...invalid(bad(i, "name")), onChange: (e) => update(i, "name", e.target.value),
         }),
+        // Below 100%, to three decimal places, as Quebec's 9.975 is.
         React.createElement("input", {
-          className: "resFormInput", style: { width: "70px" }, placeholder: "Rate", inputMode: "decimal",
-          value: drafts[i].rate, onChange: (e) => update(i, "rate", e.target.value),
+          className: "resFormInput", style: { width: "70px" }, placeholder: "Rate", inputMode: "decimal", maxLength: 6,
+          value: drafts[i].rate, ...invalid(bad(i, "rate")), onChange: (e) => update(i, "rate", numberTyped(e.target.value, { digits: 2, decimals: 3 })),
         }),
-        React.createElement("span", { style: { opacity: 0.7 } }, "%")));
+        React.createElement("span", { style: { opacity: 0.7 } }, "%")),
+      problem && problem.i === i && React.createElement(FieldError, { text: problem.text }));
 
   return React.createElement(
     "tr", null,
@@ -8334,12 +8498,25 @@ function SalesTaxRow({ row, busy, onSave, isSet, suggestion }) {
         className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
         disabled: busy === "tax",
         onClick: () => {
+          for (let i = 0; i < drafts.length; i++) {
+            const d = drafts[i];
+            if (d.name.trim() === "" && d.rate.trim() === "") continue;
+            if (d.name.trim() === "") { setProblem({ i, field: "name", text: "Give the tax a name." }); return; }
+            const n = Number(d.rate);
+            if (d.rate.trim() === "" || !Number.isFinite(n) || n <= 0 || n >= 100) {
+              setProblem({ i, field: "rate", text: "A tax rate is a percentage above 0 and below 100." }); return;
+            }
+          }
+          if (drafts.every((d) => d.name.trim() !== "") && drafts[0].name.trim().toLowerCase() === drafts[1].name.trim().toLowerCase()) {
+            setProblem({ i: 1, field: "name", text: "The two taxes need different names." }); return;
+          }
           const list = drafts
             .filter((d) => d.name.trim() !== "" || d.rate.trim() !== "")
             .map((d) => ({ name: d.name.trim(), rate: d.rate.trim() === "" ? null : Number(d.rate) }));
-          onSave("tax", "set_branch_sales_taxes", { p_location_id: row.locationId, p_taxes: list });
+          onSave("tax", "set_branch_sales_taxes", { p_location_id: row.locationId, p_taxes: list }, `tax:${row.locationId}`);
         },
-      }, "Save"))
+      }, "Save"),
+      React.createElement(FieldError, { text: error }))
   );
 }
 
@@ -8387,17 +8564,17 @@ function CompanyUnitsSection({ onSaved }) {
         options.map((o) => React.createElement("option", { key: o.value, value: o.value }, o.label))));
 
   return React.createElement(
-    CompanySection, { title: "Units" },
+    CompanySection, { id: "company-section-units", title: "Units", done: unitsSet() },
     React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
       "How every branch reads and enters fuel and distance: tank sizes, fuel prices, odometer readings, PM intervals and charges. Figures already on file are converted for display, never changed."),
-    error && React.createElement("div", { className: "loginError" }, error),
     React.createElement("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "flex-end" } },
       select("Fuel", fuel, setFuel, VOLUME_UNIT_OPTIONS),
       select("Distance", distance, setDistance, DISTANCE_UNIT_OPTIONS),
       React.createElement("button", {
         className: "loginBtn", style: { width: "auto", padding: "8px 14px" },
         disabled: busy || !changed, onClick: save,
-      }, busy ? "Saving…" : "Save"))
+      }, busy ? "Saving…" : "Save")),
+    React.createElement(FieldError, { text: error })
   );
 }
 
@@ -8444,6 +8621,30 @@ const listingNeedsList = (keys) => {
   const words = keys.map((k) => LISTING_NEEDS[k] || k);
   return words.length === 1 ? words[0] : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
 };
+// A listing's Missing list, each item a link to where it is filled in: the
+// address and pin under Business details, the daily rate under Rates, the
+// booking rules below the preview, and the rest in the preview's own editors.
+const LISTING_NEED_EDITORS = { hours: "hours", cities_or_airports: "places", minimum_age: "requirements", payment_methods: "payment" };
+const LISTING_NEED_RULES = { minimum_notice: "minNoticeHours", maximum_length: "maxRentalDays", turnaround: "turnaroundHours" };
+function ListingMissingLinks({ keys, branchId, onEdit }) {
+  const el = React.createElement;
+  const go = (k) => {
+    if (k === "address" || k === "map_pin" || k === "time_zone") {
+      // The Address section opens too: the branch's own dropdown is inside it.
+      jumpTo("business", "company-section-address", `branch-address-${branchId}`);
+      return;
+    }
+    if (k === "retail_rate") { jumpTo("rates", "company-section-rates"); return; }
+    if (LISTING_NEED_EDITORS[k]) { onEdit(LISTING_NEED_EDITORS[k]); return; }
+    const field = LISTING_NEED_RULES[k] && document.getElementById(`listing-rule-${branchId}-${LISTING_NEED_RULES[k]}`);
+    if (field) { field.scrollIntoView({ block: "center", behavior: "smooth" }); field.focus({ preventScroll: true }); }
+  };
+  return el(React.Fragment, null, " Missing: ",
+    keys.map((k, i) => el(React.Fragment, { key: k },
+      i > 0 && (i === keys.length - 1 ? " and " : ", "),
+      el("button", { type: "button", className: "listingMissing__link", onClick: () => go(k) }, LISTING_NEEDS[k] || k))),
+    ".");
+}
 const listingNeedsSentence = (keys) => `Before this branch can show on fleetr.ai, add ${listingNeedsList(keys)}.`;
 
 // A branch's address, in the parts save_branch_listing takes. Every part is
@@ -8742,7 +8943,11 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
 
   const open = (branches || []).filter((b) => b.active);
   return React.createElement(
-    CompanySection, { title: part === "address" ? "Address" : "Listing", style: { marginTop: "24px" }, defaultOpen },
+    CompanySection, { id: `company-section-${part}`, title: part === "address" ? "Address" : "Listing", style: { marginTop: "24px" }, defaultOpen,
+      done: part === "address" && !!listings && open.length > 0 && open.every((b) => {
+        const l = listings.find((x) => x.locationId === b.id);
+        return !!l && branchAddressComplete(l) && l.latitude != null && l.longitude != null;
+      }) },
     React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, part === "address"
       ? "Each branch's full address. It places the map pin, which sets the branch's local time, and shows on fleetr.ai and in customer texts."
       : "What fleetr.ai shows for each branch, and the rules for booking it online. While List on fleetr.ai is on, a branch shows once its listing is complete. Photos and logos are public. The address comes from Branch."),
@@ -8753,7 +8958,7 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
       React.createElement("p", { className: "closeRentalHint" }, fleetrOn
         ? "On: fleetr.ai is a source under Rates, with a whole-dollar rate for every vehicle class, and staff can pick it for walk-in and phone customers too."
         : "Off: nothing shows on fleetr.ai, and the fleetr.ai source is hidden from Rates and from the source lists."),
-      switchError && React.createElement("div", { className: "loginError" }, switchError)),
+      React.createElement(FieldError, { text: switchError })),
     loadError && React.createElement("div", { className: "loginError" }, loadError),
     !listings && !loadError && React.createElement(SkeletonFrame, null, open.map((b) => part === "listing"
       ? React.createElement("div", { key: b.id, className: "faiBranch" },
@@ -9070,9 +9275,11 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
   // Under Address each branch is a dropdown of its own. The draft is kept
   // here, above it, so closing a branch does not lose what was typed.
   const asDropdown = part === "address";
-  return el(asDropdown ? CompanySection : "div", asDropdown ? { title: branch.name } : { style: { marginBottom: "28px" } },
+  return el(asDropdown ? CompanySection : "div", asDropdown
+    ? { id: `branch-address-${branch.id}`, title: branch.name,
+        done: !!listing && branchAddressComplete(listing) && listing.latitude != null && listing.longitude != null }
+    : { style: { marginBottom: "28px" } },
     !asDropdown && el("div", { className: "gasSettingSubhead" }, branch.name),
-    error  && el("div", { className: "loginError" }, error),
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
 
     showListing && el(React.Fragment, null,
@@ -9176,7 +9383,8 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     el("div", { className: "closeRentalActions" },
       el("button", {
         type: "button", className: "resModalSubmit", disabled: !!busy, onClick: saveDetails,
-      }, busy === "details" ? "Saving..." : part === "address" ? "Save address" : "Save listing"))
+      }, busy === "details" ? "Saving..." : part === "address" ? "Save address" : "Save listing")),
+    el(FieldError, { text: error })
   );
 }
 
@@ -9497,11 +9705,11 @@ function ListingCropDialog({ kind, src, cors, start, error, onCancel, onDone }) 
           type: "range", min: zoomMin, max: FAI_ZOOM_MAX, step: 0.01, value: view ? view.zoom : 1, disabled: !view,
           onChange: (e) => zoomAt(Number(e.target.value), box.w / 2, box.h / 2),
         })),
-      error && el("div", { className: "loginError" }, error),
       el("div", { className: "faiCrop__actions" },
         el("button", { type: "button", className: "faiBtn faiBtn--ghost", disabled: saving, onClick: onCancel }, "Cancel"),
         el("button", { type: "button", className: "faiBtn faiBtn--primary", disabled: saving || !view, onClick: done },
-          saving ? "Saving…" : `Save ${spec.label}`))));
+          saving ? "Saving…" : `Save ${spec.label}`)),
+      el(FieldError, { text: error })));
 }
 
 // One branch's listing as the preview.
@@ -9510,6 +9718,9 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   const l = listing || {};
   const [busy, setBusy] = React.useState("");
   const [error, setError] = React.useState("");
+  // Which field the error is about: a draft field, "hours:<day>", a booking
+  // rule, "shown", or "" for one about no field. It is shown under that field.
+  const [errField, setErrField] = React.useState("");
   const [notice, setNotice] = React.useState("");
   const [editing, setEditing] = React.useState("");
   // Where the part being edited was clicked: the cities and the perks show
@@ -9539,10 +9750,11 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   const folder = `${operatorId}/${branch.id}`;
 
   const save = async (label, fields) => {
-    setBusy(label); setError(""); setNotice("");
+    setBusy(label); setError(""); setErrField(""); setNotice("");
     const { data, error: err } = await supabase.rpc("save_branch_listing", { p_location_id: branch.id, p_listing: fields });
     setBusy("");
     if (err || !data || !data.ok) {
+      setErrField(label === "rules" ? "rules" : "");
       setError(err ? LISTING_REASONS.network
         : data && data.reason === "listing_incomplete" ? listingNeedsSentence(data.missing || [])
         : (LISTING_REASONS[data && data.reason] || "That did not work."));
@@ -9552,10 +9764,10 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     return true;
   };
   const toggleShown = async (on) => {
-    setBusy("shown"); setError(""); setNotice("");
+    setBusy("shown"); setError(""); setErrField(""); setNotice("");
     const { data, error: err } = await supabase.rpc("set_branch_shown", { p_location_id: branch.id, p_shown: on });
     setBusy("");
-    if (err || !data || !data.ok) { setError(err ? LISTING_REASONS.network : (LISTING_REASONS[data && data.reason] || "That did not work.")); return; }
+    if (err || !data || !data.ok) { setErrField("shown"); setError(err ? LISTING_REASONS.network : (LISTING_REASONS[data && data.reason] || "That did not work.")); return; }
     await onSaved();
   };
 
@@ -9569,7 +9781,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   };
   const startEdit = (part, where) => {
     if (busy) return;
-    setError(""); setNotice(""); setMenu("");
+    setError(""); setErrField(""); setNotice(""); setMenu("");
     setEditing(part);
     setSpot(where || part);
     setDraft({
@@ -9580,9 +9792,9 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
       payment:      { paymentMethods: l.paymentMethods || [] },
     }[part]);
   };
-  const stopEdit = () => { setEditing(""); setSpot(""); setDraft(null); setError(""); };
+  const stopEdit = () => { setEditing(""); setSpot(""); setDraft(null); setError(""); setErrField(""); };
   const setD = (k, v) => setDraft((p) => ({ ...p, [k]: v }));
-  const fail = (text) => { setError(text); setNotice(""); return null; };
+  const fail = (text, fieldKey = "") => { setError(text); setErrField(fieldKey); setNotice(""); return null; };
   const splitList = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
   const numberIn = (s, min, max, label, whole) => {
     const t = String(s).trim();
@@ -9601,12 +9813,12 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   const fieldsFor = (part, d) => {
     if (part === "places") {
       const airportCodes = airportsOf(d.airportCodes);
-      if (!airportCodes) return fail("Airport codes are 3 or 4 letters, separated by commas, for example YYT.");
+      if (!airportCodes) return fail("Airport codes are 3 or 4 letters, separated by commas, for example YYT.", "airportCodes");
       return { citiesServed: splitList(d.citiesServed), airportCodes };
     }
     if (part === "perks") {
       const airportCodes = airportsOf(d.airportCodes);
-      if (!airportCodes) return fail("Airport codes are 3 or 4 letters, separated by commas, for example YYT.");
+      if (!airportCodes) return fail("Airport codes are 3 or 4 letters, separated by commas, for example YYT.", "airportCodes");
       return { airportPickup: d.airportPickup, delivery: d.delivery, afterHoursDropoff: d.afterHoursDropoff, lockboxPickup: d.lockboxPickup, airportCodes };
     }
     if (part === "hours") {
@@ -9614,17 +9826,17 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
       for (const [k, name] of LISTING_DAYS) {
         const x = d.hours[k];
         if (!x.open && !x.close) continue;
-        if (!x.open || !x.close) return fail(`${name}: enter the opening and closing times.`);
-        if (x.close <= x.open) return fail(`${name}: the closing time has to be after the opening time.`);
+        if (!x.open || !x.close) return fail("Enter the opening and closing times.", `hours:${k}`);
+        if (x.close <= x.open) return fail("The closing time has to be after the opening time.", `hours:${k}`);
         hours[k] = { open: x.open, close: x.close };
       }
       return { hours };
     }
     if (part === "requirements") {
       const age = numberIn(d.minimumAge, 16, 99, "Minimum age", true);
-      if (!age.ok) return fail(age.text);
+      if (!age.ok) return fail(age.text, "minimumAge");
       const dep = numberIn(d.deposit, 0, 99999, "Deposit");
-      if (!dep.ok) return fail(dep.text);
+      if (!dep.ok) return fail(dep.text, "deposit");
       return { minimumAge: age.value, deposit: dep.value };
     }
     if (part === "payment") return { paymentMethods: d.paymentMethods };
@@ -9640,7 +9852,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
       ["minNoticeHours", 0, 720, "Minimum notice"], ["maxRentalDays", 1, 365, "Maximum rental length"], ["turnaroundHours", 0, 72, "Turnaround buffer"],
     ].map(([k, min, max, label]) => [k, String(rules[k]).trim() === "" ? { ok: false, text: `${label} is needed.` } : numberIn(rules[k], min, max, label, true)]);
     const bad = checks.find(([, c]) => !c.ok);
-    if (bad) { setError(bad[1].text); setNotice(""); return; }
+    if (bad) { fail(bad[1].text, bad[0]); return; }
     if (await save("rules", Object.fromEntries(checks.map(([k, c]) => [k, c.value])))) setNotice("Booking rules saved.");
   };
 
@@ -9653,8 +9865,8 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   const choose = (kind) => { setMenu(""); setError(""); setNotice(""); if (files[kind].current) files[kind].current.click(); };
   const picked = (kind, file) => {
     if (!file) return;
-    if (!/^image\//.test(file.type || "")) { setError("Choose a JPEG, PNG or WebP image."); return; }
-    if (!operatorId) { setError(LISTING_REASONS.not_signed_in); return; }
+    if (!/^image\//.test(file.type || "")) { fail("Choose a JPEG, PNG or WebP image."); return; }
+    if (!operatorId) { fail(LISTING_REASONS.not_signed_in); return; }
     setCrop({ kind, src: URL.createObjectURL(file), cors: false, start: null, file });
   };
   // Crop again, from the image as it was chosen, starting where it was cut.
@@ -9685,8 +9897,8 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     .upload(path, out.blob, { contentType: out.type, cacheControl: "3600", upsert: false });
   const cropped = async (out, c) => {
     const kind = crop.kind;
-    if (!out) { setError("The image could not be prepared. Try again."); return false; }
-    if (out.blob.size > LISTING_PHOTO_MAX_BYTES) { setError("That image is still over 5 MB once cropped. Choose a smaller one."); return false; }
+    if (!out) { fail("The image could not be prepared. Try again."); return false; }
+    if (out.blob.size > LISTING_PHOTO_MAX_BYTES) { fail("That image is still over 5 MB once cropped. Choose a smaller one."); return false; }
     setError(""); setBusy(kind);
     const stamp = Date.now();
     const added = [];
@@ -9703,7 +9915,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     setBusy("");
     if (up.error) {
       if (added.length) await supabase.storage.from(LISTING_BUCKET).remove(added);
-      setError("The image could not be uploaded. Try again.");
+      fail("The image could not be uploaded. Try again.");
       return false;
     }
     const before = l[fieldOf(kind)];
@@ -9794,13 +10006,16 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     const d = draft || {};
     const check = (label, checked, onChange) => el("label", { className: "faiCheck" },
       el("input", { type: "checkbox", checked, disabled: !!busy, onChange: (e) => onChange(e.target.checked) }), label);
-    const field = (label, child) => el("label", { className: "faiField" }, el("span", null, label), child);
-    const input = (k, props) => el("input", { className: "faiInput", value: d[k] ?? "", disabled: !!busy, onChange: (e) => setD(k, e.target.value), ...props });
+    const field = (label, child, k) => el("label", { className: "faiField" }, el("span", null, label), child,
+      k && errField === k && el(FieldError, { text: error }));
+    // limit: { digits, decimals } for a number field, which stops at its length.
+    const input = (k, props, limit) => el("input", { className: "faiInput", value: d[k] ?? "", disabled: !!busy, ...invalid(errField === k && !!error),
+      onChange: (e) => { setD(k, limit ? numberTyped(e.target.value, limit) : e.target.value); if (errField === k) { setError(""); setErrField(""); } }, ...props });
     let body = null;
     if (part === "places") {
       body = el(React.Fragment, null,
-        field("Cities served", input("citiesServed", { placeholder: "St. John's, Mount Pearl", autoFocus: true })),
-        field("Airport codes", input("airportCodes", { placeholder: "YYT" })),
+        field("Cities served", input("citiesServed", { placeholder: "St. John's, Mount Pearl", autoFocus: true }), "citiesServed"),
+        field("Airport codes", input("airportCodes", { placeholder: "YYT" }), "airportCodes"),
         el("p", { className: "faiHint" }, "Separate each with a comma. Renters find the branch by searching one of these, and the first shows under its name."));
     } else if (part === "perks") {
       body = el(React.Fragment, null,
@@ -9810,12 +10025,12 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
           check("Lockbox pickup", d.lockboxPickup, (v) => setD("lockboxPickup", v)),
           check("Key drop returns", d.afterHoursDropoff, (v) => setD("afterHoursDropoff", v))),
         el("p", { className: "faiHint" }, AFTER_HOURS_HINT),
-        d.airportPickup && field("Airport codes", input("airportCodes", { placeholder: "YYT" })));
+        d.airportPickup && field("Airport codes", input("airportCodes", { placeholder: "YYT" }), "airportCodes"));
     } else if (part === "hours") {
       const setDay = (k, f, v) => setDraft((p) => ({ ...p, hours: { ...p.hours, [k]: { ...p.hours[k], [f]: v } } }));
       const fill = () => {
-        if (!d.sameOpen || !d.sameClose) { setError("Enter an opening and a closing time to fill every day."); return; }
-        setError("");
+        if (!d.sameOpen || !d.sameClose) { fail("Enter an opening and a closing time to fill every day.", "sameHours"); return; }
+        setError(""); setErrField("");
         setDraft((p) => ({ ...p, hours: Object.fromEntries(LISTING_DAYS.map(([k]) => [k, { open: p.sameOpen, close: p.sameClose }])) }));
       };
       const picker = (value, label, onChange) => el(QuarterTimePicker, { ...time24Parts(value), className: "faiInput faiSelect", disabled: !!busy, label,
@@ -9827,16 +10042,19 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
           el("span", null, "to"),
           picker(d.sameClose, "Closing time for every day", (v) => setD("sameClose", v)),
           el("button", { type: "button", className: "faiBtn faiBtn--ghost", disabled: !!busy, onClick: fill }, "Fill every day")),
-        LISTING_DAYS.map(([k, name]) => el("div", { key: k, className: "faiHoursRow" },
-          el("span", null, name),
-          picker(d.hours[k].open, `${name} opening time`, (v) => setDay(k, "open", v)),
-          el("span", null, "to"),
-          picker(d.hours[k].close, `${name} closing time`, (v) => setDay(k, "close", v)))),
+        errField === "sameHours" && el(FieldError, { text: error }),
+        LISTING_DAYS.map(([k, name]) => el(React.Fragment, { key: k },
+          el("div", { className: "faiHoursRow", ...invalid(errField === `hours:${k}` && !!error) },
+            el("span", null, name),
+            picker(d.hours[k].open, `${name} opening time`, (v) => setDay(k, "open", v)),
+            el("span", null, "to"),
+            picker(d.hours[k].close, `${name} closing time`, (v) => setDay(k, "close", v))),
+          errField === `hours:${k}` && el(FieldError, { text: error }))),
         el("p", { className: "faiHint" }, "Leave a day blank if the branch is closed that day."));
     } else if (part === "requirements") {
       body = el("div", { className: "faiFieldRow" },
-        field("Minimum age", input("minimumAge", { inputMode: "numeric", autoFocus: true, style: { width: "110px" } })),
-        field("Deposit ($)", input("deposit", { inputMode: "decimal", style: { width: "120px" } })));
+        field("Minimum age", input("minimumAge", { inputMode: "numeric", maxLength: 2, autoFocus: true, style: { width: "110px" } }, { digits: 2 }), "minimumAge"),
+        field("Deposit ($)", input("deposit", { inputMode: "decimal", maxLength: 8, style: { width: "120px" } }, { digits: 5, decimals: 2 }), "deposit"));
     } else if (part === "payment") {
       body = el("div", { className: "faiChecks" }, LISTING_PAYMENT_METHODS.map((m) => el("span", { key: m },
         check(m, d.paymentMethods.includes(m), (on) => setD("paymentMethods",
@@ -9844,10 +10062,11 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     }
     return el("div", { className: "faiEditor", onKeyDown: (e) => { if (e.key === "Escape") stopEdit(); } },
       body,
-      error && el("div", { className: "loginError" }, error),
       el("div", { className: "faiEditor__actions" },
         el("button", { type: "button", className: "faiBtn faiBtn--ghost", disabled: !!busy, onClick: stopEdit }, "Cancel"),
-        el("button", { type: "button", className: "faiBtn faiBtn--primary", disabled: !!busy, onClick: saveEdit }, busy === part ? "Saving…" : "Save")));
+        el("button", { type: "button", className: "faiBtn faiBtn--primary", disabled: !!busy, onClick: saveEdit }, busy === part ? "Saving…" : "Save")),
+      // A refusal of the whole part, under its Save.
+      errField === "" && el(FieldError, { text: error }));
   };
 
   // ── The search result: a row with the logo, the company, the price ──
@@ -9960,19 +10179,25 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
           el("div", null, el("b", null, "Select a vehicle"), el("small", null, trip.range)),
           classes.length > 0 && el("div", { className: "btn btn-primary" }, "Choose")));
 
-  return el("div", { className: "faiBranch" },
+  return el("div", { className: "faiBranch", id: `listing-branch-${branch.id}` },
     el("div", { className: "gasSettingSubhead" }, branch.name),
     multi && el("div", { style: { marginBottom: "6px" } },
       el("label", { style: { display: "inline-flex", alignItems: "center", gap: "8px", cursor: "pointer" } },
         el("input", { type: "checkbox", checked: shown, disabled: !!busy, onChange: (e) => toggleShown(e.target.checked) }),
-        busy === "shown" ? "Saving…" : "Show this branch on fleetr.ai")),
+        busy === "shown" ? "Saving…" : "Show this branch on fleetr.ai"),
+      errField === "shown" && el(FieldError, { text: error })),
     el("p", { className: "closeRentalHint", style: { marginTop: 0, marginBottom: "14px" } },
-      [!fleetrOn ? "Not on fleetr.ai: List on fleetr.ai is off."
+      !fleetrOn ? "Not on fleetr.ai: List on fleetr.ai is off."
         : multi && !shown ? "Not on fleetr.ai: Show this branch on fleetr.ai is off."
         : listed ? "Shows on fleetr.ai."
         : "Not on fleetr.ai yet.",
-       missingKeys.length ? `Missing: ${listingNeedsList(missingKeys)}.` : ""].filter(Boolean).join(" ")),
-    error && !editing && !crop && el("div", { className: "loginError" }, error),
+      missingKeys.length > 0 && el(ListingMissingLinks, { keys: missingKeys, branchId: branch.id, onEdit: (part) => {
+        startEdit(part);
+        setTimeout(() => {
+          const node = document.querySelector(`#listing-branch-${branch.id} .faiEditing`);
+          if (node) { node.scrollIntoView({ block: "center", behavior: "smooth" }); const f = node.querySelector("input, select, textarea"); if (f) f.focus({ preventScroll: true }); }
+        }, 120);
+      } })),
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
 
     el("div", { className: "fai" },
@@ -9990,18 +10215,25 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
               !l.address && el("span", { className: "faiMuted" }, `${company ? " \u00b7 " : ""}Add the address under Branch.`)))),
         el("div", { className: "branch-cols" }, content, el("div", null, bookBox)),
         bookBar),
-      el("p", { className: "faiHint faiStage__foot" }, `Prices are shown for a sample ${FAI_SAMPLE_DAYS} day trip, before tax. Click any part to change it.`)),
+      el("p", { className: "faiHint faiStage__foot" }, `Prices are shown for a sample ${FAI_SAMPLE_DAYS} day trip, before tax. Click any part to change it.`),
+      // A logo or photo that could not be used or saved, under the preview it is in.
+      !editing && !crop && errField === "" && el(FieldError, { text: error })),
 
     el("div", { className: "faiRules" },
       el("div", { className: "gasSettingSubhead" }, "Booking rules"),
       el("p", { className: "closeRentalHint", style: { marginTop: 0 } }, "How online bookings are checked. Renters only see these when a search breaks one."),
       el("div", { className: "faiFieldRow" },
-        [["minNoticeHours", "Minimum notice (hours)"], ["maxRentalDays", "Maximum rental length (days)"], ["turnaroundHours", "Turnaround buffer (hours)"]].map(([k, label]) =>
+        // Each stops at its longest allowed value's length: 720 hours, 365
+        // days, 72 hours.
+        [["minNoticeHours", "Minimum notice (hours)", 3], ["maxRentalDays", "Maximum rental length (days)", 3], ["turnaroundHours", "Turnaround buffer (hours)", 2]].map(([k, label, digits]) =>
           el("label", { key: k, className: "faiField" }, el("span", null, label),
-            el("input", { className: "faiInput", inputMode: "numeric", style: { width: "150px" }, value: rules[k], disabled: !!busy,
-              onChange: (e) => { const v = e.target.value; setRules((p) => ({ ...p, [k]: v })); } }))),
+            el("input", { id: `listing-rule-${branch.id}-${k}`, className: "faiInput", inputMode: "numeric", maxLength: digits, style: { width: "150px" }, value: rules[k], disabled: !!busy,
+              ...invalid(errField === k && !!error),
+              onChange: (e) => { const v = numberTyped(e.target.value, { digits }); setRules((p) => ({ ...p, [k]: v })); if (errField === k) { setError(""); setErrField(""); } } }),
+            errField === k && el(FieldError, { text: error }))),
         el("button", { type: "button", className: "faiBtn faiBtn--primary", disabled: !!busy, onClick: saveRules },
-          busy === "rules" ? "Saving…" : "Save booking rules"))),
+          busy === "rules" ? "Saving…" : "Save booking rules")),
+      errField === "rules" && el(FieldError, { text: error })),
 
     ["logo", "photo"].map((kind) => el("input", {
       key: kind, ref: files[kind], type: "file", accept: "image/*", style: { display: "none" },
@@ -10072,21 +10304,36 @@ const SOURCE_PAYERS = [
 // A section of the Company page. Closed until its header is tapped, so the
 // page opens as a short list of headings rather than seven screens of tables.
 // What is inside is only drawn while it is open.
-function CompanySection({ title, style, children, defaultOpen }) {
+function CompanySection({ id, title, style, children, defaultOpen, done }) {
   const flat = React.useContext(CompanySectionFlat);
   const [open, setOpen] = React.useState(!!defaultOpen);
   const toggle = () => setOpen((o) => !o);
+  React.useEffect(() => {
+    if (!id) return undefined;
+    const openIfNamed = () => {
+      if (!jumpTargets.delete(id)) return;
+      setOpen(true);
+      setTimeout(() => {
+        const node = document.getElementById(id);
+        if (node) node.scrollIntoView({ block: "start", behavior: "smooth" });
+      }, 120);
+    };
+    openIfNamed();
+    window.addEventListener(COMPANY_JUMP_EVENT, openIfNamed);
+    return () => window.removeEventListener(COMPANY_JUMP_EVENT, openIfNamed);
+  }, [id]);
   // The only part of its section: its content, without a dropdown of its own.
   // Any section inside it is a dropdown again.
   if (flat) return React.createElement(CompanySectionFlat.Provider, { value: false }, children);
   return React.createElement(
-    "div", { className: "dashboardSection", style },
+    "div", { id, className: "dashboardSection", style },
     React.createElement("h2", {
       role: "button", tabIndex: 0, "aria-expanded": open,
       style: { cursor: "pointer", userSelect: "none" },
       onClick: toggle,
       onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } },
-    }, `${open ? "▾" : "▸"} ${title}`),
+    }, `${open ? "▾" : "▸"} ${title}`,
+      done && React.createElement("span", { className: "companySection__done", role: "img", "aria-label": "Done" }, "\u2713")),
     open && children
   );
 }
@@ -10096,18 +10343,19 @@ function CompanySection({ title, style, children, defaultOpen }) {
 // cell is left, and only if it changed. Blank means no price.
 // muted shows a value worked out rather than typed. onEnter, when given, runs
 // on Enter after the cell is left, to move on. cellKey marks the cell for it.
-function ListPriceCell({ value, disabled, onSave, suffix, muted, onEnter, cellKey, title }) {
+function ListPriceCell({ value, disabled, onSave, suffix, muted, onEnter, cellKey, title, error }) {
   const shown = value == null ? "" : String(value);
   const [draft, setDraft] = React.useState(shown);
   React.useEffect(() => { setDraft(shown); }, [shown]);
-  return React.createElement(
+  return React.createElement(React.Fragment, null, React.createElement(
     "span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" } },
     React.createElement("span", { style: { opacity: 0.7 } }, "$"),
+    // Up to $99,999.99, the most any price here can be.
     React.createElement("input", {
       className: "resFormInput", style: { width: "62px", padding: "4px 6px", ...(muted ? { opacity: 0.55 } : null) },
-      inputMode: "decimal", value: draft, disabled, title,
+      inputMode: "decimal", value: draft, disabled, title, maxLength: 8, ...invalid(!!error),
       "data-rate-cell": cellKey,
-      onChange: (e) => setDraft(e.target.value),
+      onChange: (e) => setDraft(numberTyped(e.target.value, { digits: 5, decimals: 2 })),
       onKeyDown: (e) => {
         if (e.key !== "Enter") return;
         e.preventDefault();
@@ -10121,12 +10369,12 @@ function ListPriceCell({ value, disabled, onSave, suffix, muted, onEnter, cellKe
       },
     }),
     suffix && React.createElement("span", { style: { opacity: 0.7 } }, suffix)
-  );
+  ), React.createElement(FieldError, { text: error, style: { whiteSpace: "normal", minWidth: "140px" } }));
 }
 
 // An entry's name, renamed where it stands: click it, type, Enter or Save.
 // Escape or Cancel puts it back.
-function ListInlineName({ name, disabled, onSave }) {
+function ListInlineName({ name, disabled, onSave, error }) {
   const [editing, setEditing] = React.useState(false);
   const [draft,   setDraft]   = React.useState(name);
 
@@ -10152,22 +10400,22 @@ function ListInlineName({ name, disabled, onSave }) {
     }, name);
   }
   const small = { width: "auto", padding: "5px 9px" };
-  return React.createElement(
+  return React.createElement(React.Fragment, null, React.createElement(
     "span", { style: { display: "inline-flex", gap: "6px", flexWrap: "wrap", alignItems: "center" } },
     React.createElement("input", {
       className: "resFormInput", style: { width: "180px", padding: "5px 8px" }, maxLength: 60,
-      autoFocus: true, value: draft, disabled, onKeyDown,
+      autoFocus: true, value: draft, disabled, onKeyDown, ...invalid(!!error),
       onChange: (e) => setDraft(e.target.value),
     }),
     React.createElement("button", { className: "loginBtn", style: small, disabled, onClick: save }, "Save"),
     React.createElement("button", { className: "loginBtn", style: small, disabled, onClick: () => setEditing(false) }, "Cancel")
-  );
+  ), React.createElement(FieldError, { text: error }));
 }
 
 // A season's name and dates, for adding one or changing one. Months and days
 // are picked from lists, and a day every year has: no Feb 29.
 const SEASON_MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-function SeasonForm({ season, label, disabled, onSave, onCancel }) {
+function SeasonForm({ season, label, disabled, onSave, onCancel, error }) {
   const [name, setName] = React.useState(season ? season.name : "");
   const [d, setD] = React.useState(season
     ? { sm: season.startMonth, sd: season.startDay, em: season.endMonth, ed: season.endDay }
@@ -10191,7 +10439,7 @@ function SeasonForm({ season, label, disabled, onSave, onCancel }) {
   return el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px", alignItems: "center" } },
     el("input", {
       className: "resFormInput", style: { width: "200px", maxWidth: "100%" }, placeholder: "Name, like Summer", maxLength: 40,
-      value: name, disabled, onChange: (e) => setName(e.target.value),
+      value: name, disabled, ...invalid(!!error), onChange: (e) => setName(e.target.value),
     }),
     pick("sm", "sd", "From"),
     pick("em", "ed", "to"),
@@ -10203,19 +10451,20 @@ function SeasonForm({ season, label, disabled, onSave, onCancel }) {
     }, label),
     onCancel && el("button", {
       className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled, onClick: onCancel,
-    }, "Cancel"));
+    }, "Cancel"),
+    error && el("div", { style: { flexBasis: "100%" } }, el(FieldError, { text: error })));
 }
 
 // The "add one" row under a list. Its own component so each list, and each
 // branch and source within one, keeps its own draft.
-function ListAddRow({ placeholder, label, withType, disabled, onAdd, wide }) {
+function ListAddRow({ placeholder, label, withType, disabled, onAdd, wide, error }) {
   const [name, setName] = React.useState("");
   const [type, setType] = React.useState("");
   return React.createElement(
     "div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px", alignItems: "center" } },
     React.createElement("input", {
       className: "resFormInput", style: { width: wide ? "320px" : "auto", maxWidth: "100%" }, placeholder, maxLength: 60,
-      value: name, onChange: (e) => setName(e.target.value),
+      value: name, ...invalid(!!error), onChange: (e) => setName(e.target.value),
     }),
     withType && React.createElement("select", {
       className: "resFormInput", style: { width: "auto" },
@@ -10228,7 +10477,8 @@ function ListAddRow({ placeholder, label, withType, disabled, onAdd, wide }) {
       onClick: async () => {
         if (await onAdd(name, type)) { setName(""); setType(""); }
       },
-    }, label)
+    }, label),
+    error && React.createElement("div", { style: { flexBasis: "100%" } }, React.createElement(FieldError, { text: error }))
   );
 }
 
@@ -10239,7 +10489,7 @@ function ListAddRow({ placeholder, label, withType, disabled, onAdd, wide }) {
 const PROTECTION_WORDING_MAX = 600;
 const PROTECTION_DECLINE_MAX = 300;
 
-function ProtectionDetailsCard({ product, busy, onSave }) {
+function ProtectionDetailsCard({ product, busy, onSave, error }) {
   const savedWording = product.customerWording || "";
   const savedDecline = product.declineWording || "";
   const [editing, setEditing] = React.useState(false);
@@ -10284,22 +10534,20 @@ function ProtectionDetailsCard({ product, busy, onSave }) {
       el("p", { className: "closeRentalHint" }, "What the customer reads. Leave it blank to show only the name and price per day."),
       el("textarea", {
         className: "resFormInput resFormTextarea", rows: 4, value: wording, autoFocus: true,
-        "aria-label": `${product.name} customer wording`,
+        "aria-label": `${product.name} customer wording`, ...invalid(wordingOver),
         onChange: (e) => setWording(e.target.value),
       }),
+      wordingOver && el(FieldError, { text: `The wording is ${w.length - PROTECTION_WORDING_MAX} characters over the ${PROTECTION_WORDING_MAX} allowed and cannot be saved.` }),
       el("p", { className: "closeRentalHint" }, `${w.length} of ${PROTECTION_WORDING_MAX} characters.`),
-      wordingOver && el("div", { className: "closeRentalWarning" },
-        `The wording is ${w.length - PROTECTION_WORDING_MAX} characters over the ${PROTECTION_WORDING_MAX} allowed and cannot be saved.`),
 
       el("p", { className: "closeRentalHint" }, "What the customer ticks to decline. Needed unless the product is required: without it, the product is not offered at pickup."),
       el("textarea", {
         className: "resFormInput resFormTextarea", rows: 2, value: decline,
-        "aria-label": `${product.name} decline wording`,
+        "aria-label": `${product.name} decline wording`, ...invalid(declineOver),
         onChange: (e) => setDecline(e.target.value),
       }),
+      declineOver && el(FieldError, { text: `The decline wording is ${d.length - PROTECTION_DECLINE_MAX} characters over the ${PROTECTION_DECLINE_MAX} allowed and cannot be saved.` }),
       el("p", { className: "closeRentalHint" }, `${d.length} of ${PROTECTION_DECLINE_MAX} characters.`),
-      declineOver && el("div", { className: "closeRentalWarning" },
-        `The decline wording is ${d.length - PROTECTION_DECLINE_MAX} characters over the ${PROTECTION_DECLINE_MAX} allowed and cannot be saved.`),
 
       el("div", { className: "gasSettingSubhead" }, "Preview"),
       el("div", { className: "closeRentalSummary" }, w || "No wording. The customer sees the name and price per day only."),
@@ -10311,7 +10559,8 @@ function ProtectionDetailsCard({ product, busy, onSave }) {
           type: "button", className: "resModalSubmit",
           disabled: busy || unchanged || wordingOver || declineOver || declineMissing,
           onClick: save,
-        }, busy ? "Saving..." : "Save")))
+        }, busy ? "Saving..." : "Save"))),
+    el(FieldError, { text: error })
   );
 }
 
@@ -10328,16 +10577,17 @@ const vehicleClassType = (c) =>
 // One class's low availability warning: fewer than this many free at a
 // branch, or blank for none (set_class_low_warning, fleetr-infra
 // fleet_shortages.sql).
-function LowWarningRow({ entry, busy, onSave, onError }) {
+function LowWarningRow({ entry, busy, onSave, error }) {
   const shown = entry.lowWarnBelow == null ? "" : String(entry.lowWarnBelow);
   const [draft, setDraft] = React.useState(shown);
+  const [problem, setProblem] = React.useState("");
   React.useEffect(() => { setDraft(shown); }, [shown]);
   const el = React.createElement;
   const save = () => {
     const t = draft.trim();
     if (t === "") { onSave(null); return; }
     const n = Number(t);
-    if (!Number.isInteger(n) || n < 1 || n > 99) { onError("A warning has to be a whole number from 1 to 99, or blank for none."); return; }
+    if (!Number.isInteger(n) || n < 1 || n > 99) { setProblem("A warning has to be a whole number from 1 to 99, or blank for none."); return; }
     onSave(n);
   };
   return el("div", { className: "lowWarn__row" },
@@ -10345,17 +10595,20 @@ function LowWarningRow({ entry, busy, onSave, onError }) {
     el("span", { className: "closeRentalHint", style: { margin: 0 } }, "Fewer than"),
     el("input", {
       className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric", placeholder: "Off",
-      value: draft, disabled: busy, "aria-label": `${entry.name}: warn when fewer than this many are free`,
-      onChange: (e) => setDraft(e.target.value.replace(/\D/g, "").slice(0, 2)),
+      value: draft, disabled: busy, "aria-label": `${entry.name}: warn when fewer than this many are free`, maxLength: 2,
+      ...invalid(!!(problem || error)),
+      onChange: (e) => { setDraft(numberTyped(e.target.value, { digits: 2 })); setProblem(""); },
     }),
     el("span", { className: "closeRentalHint", style: { margin: 0 } }, "free"),
     el("button", {
       className: "loginBtn", style: { width: "auto", padding: "5px 9px" },
       disabled: busy || draft.trim() === shown, onClick: save,
-    }, "Save"));
+    }, "Save"),
+    (problem || error) && el("div", { style: { flexBasis: "100%" } }, el(FieldError, { text: problem || error })));
 }
 
-function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
+function VehicleClassDetailsCell({ entry, busy, onSave, error }) {
+  const [problem, setProblem] = React.useState({ key: "", text: "" });
   const shown = () => ({
     seats:  entry.seats == null ? "" : String(entry.seats),
     bags:   entry.bags  == null ? "" : String(entry.bags),
@@ -10373,15 +10626,15 @@ function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
   };
   const save = () => {
     const seats = whole(draft.seats, 1, 20), bags = whole(draft.bags, 0, 20);
-    if (!seats.ok) { onError("Seats has to be a whole number from 1 to 20."); return; }
-    if (!bags.ok)  { onError("Bags has to be a whole number from 0 to 20."); return; }
+    if (!seats.ok) { setProblem({ key: "seats", text: "Seats has to be a whole number from 1 to 20." }); return; }
+    if (!bags.ok)  { setProblem({ key: "bags", text: "Bags has to be a whole number from 0 to 20." }); return; }
     onSave(seats.value, bags.value, entry.exampleModels || null);
   };
   const num = (key, label) => el("td", null, el("input", {
-    className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric",
-    value: draft[key], disabled: busy, "aria-label": `${entry.name} ${label}`,
-    onChange: (e) => setDraft((p) => ({ ...p, [key]: e.target.value })),
-  }));
+    className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric", maxLength: 2,
+    value: draft[key], disabled: busy, "aria-label": `${entry.name} ${label}`, ...invalid(problem.key === key),
+    onChange: (e) => { setDraft((p) => ({ ...p, [key]: numberTyped(e.target.value, { digits: 2 }) })); setProblem({ key: "", text: "" }); },
+  }), problem.key === key && el(FieldError, { text: problem.text }));
   return el(React.Fragment, null,
     el("td", null, el("span", { className: "closeRentalHint", style: { margin: 0 } }, vehicleClassType(entry))),
     num("seats", "seats"),
@@ -10390,7 +10643,7 @@ function VehicleClassDetailsCell({ entry, busy, onSave, onError }) {
     el("td", null, el("button", {
       className: "loginBtn", style: { width: "auto", padding: "5px 9px" },
       disabled: busy || unchanged, onClick: save,
-    }, "Save")));
+    }, "Save"), el(FieldError, { text: error })));
 }
 
 // The standard vehicle classes (standard_vehicle_classes in the database),
@@ -10468,32 +10721,41 @@ function VehicleClassPicker({ disabled, onAdded }) {
             c.exampleModels && el("span", null, ` (${c.exampleModels} or similar)`),
             el("span", { className: "closeRentalHint", style: { display: "block", margin: 0 } }, added ? `${facts} \u00b7 added` : facts)));
       })),
-    error && el("div", { className: "loginError" }, error),
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginTop: "8px" } }, notice),
     el("button", {
       type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px", marginTop: "10px" },
       disabled: disabled || busy || chosen.length === 0, onClick: add,
-    }, busy ? "Adding..." : chosen.length ? `Add ${chosen.length} vehicle class${chosen.length === 1 ? "" : "es"}` : "Add"));
+    }, busy ? "Adding..." : chosen.length ? `Add ${chosen.length} vehicle class${chosen.length === 1 ? "" : "es"}` : "Add"),
+    el(FieldError, { text: error }));
 }
 
 // One row of deductibles: the company default, or one vehicle class's own.
 // Keeps its own drafts, for the reason GasRow does. A blank amount clears it;
 // on a class that means the company default applies.
-function DeductibleRow({ label, collision, comprehensive, placeholder, busy, onSave }) {
+function DeductibleRow({ label, collision, comprehensive, placeholder, busy, onSave, error }) {
   const shown = (v) => (v == null ? "" : String(Number(v)));
   const [coll, setColl] = React.useState(shown(collision));
   const [comp, setComp] = React.useState(shown(comprehensive));
+  const [problem, setProblem] = React.useState({ name: "", text: "" });
   React.useEffect(() => { setColl(shown(collision)); setComp(shown(comprehensive)); }, [collision, comprehensive]); // eslint-disable-line react-hooks/exhaustive-deps
   const unchanged = coll.trim() === shown(collision) && comp.trim() === shown(comprehensive);
   const el = React.createElement;
-  const money = (value, setValue, ph, name) =>
+  const money = (value, setValue, ph, name) => el(React.Fragment, null,
     el("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" } },
       el("span", { style: { opacity: 0.7 } }, "$"),
       el("input", {
-        className: "resFormInput", style: { width: "100px" }, inputMode: "decimal",
-        placeholder: ph, value, disabled: busy, "aria-label": `${label} ${name}`,
-        onChange: (e) => setValue(e.target.value),
-      }));
+        className: "resFormInput", style: { width: "100px" }, inputMode: "decimal", maxLength: 8,
+        placeholder: ph, value, disabled: busy, "aria-label": `${label} ${name}`, ...invalid(problem.name === name),
+        onChange: (e) => { setValue(numberTyped(e.target.value, { digits: 5, decimals: 2 })); setProblem({ name: "", text: "" }); },
+      })),
+    problem.name === name && el(FieldError, { text: problem.text }));
+  const save = () => {
+    for (const [name, v] of [["collision", coll], ["comprehensive", comp]]) {
+      const p = numberProblem(v, { min: 0, max: 99999, label: "A deductible", whole: false });
+      if (p) { setProblem({ name, text: p }); return; }
+    }
+    onSave(coll.trim(), comp.trim());
+  };
   return el("tr", null,
     el("td", { style: { fontWeight: 600 } }, label),
     el("td", null, money(coll, setColl, placeholder.collision, "collision")),
@@ -10501,14 +10763,15 @@ function DeductibleRow({ label, collision, comprehensive, placeholder, busy, onS
     el("td", null,
       el("button", {
         className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
-        disabled: busy || unchanged, onClick: () => onSave(coll.trim(), comp.trim()),
-      }, "Save")));
+        disabled: busy || unchanged, onClick: save,
+      }, "Save"),
+      el(FieldError, { text: error })));
 }
 
 // The contract acknowledgements: the current version as the customer will
 // read it, an Edit that saves a new version, and every earlier version.
 const CONTRACT_ACK_MAX = 4000;
-function ContractAcknowledgementsCard({ versions, busy, onSave }) {
+function ContractAcknowledgementsCard({ versions, busy, onSave, error }) {
   const current = versions[0] || null;
   const [startError, setStartError] = React.useState("");
   const [editing, setEditing] = React.useState(false);
@@ -10540,10 +10803,10 @@ function ContractAcknowledgementsCard({ versions, busy, onSave }) {
     !editing && !current && el(React.Fragment, null,
       el("p", { className: "closeRentalHint" }, "No contract terms yet. Start from fleetr's standard terms, or paste your own. Either way you review them before saving."),
       insurerNote,
-      startError && el("div", { className: "loginError" }, startError),
       el("div", { className: "closeRentalActions" },
         el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: startOwn }, "Paste your own"),
-        el("button", { type: "button", className: "resModalSubmit", disabled: busy, onClick: startStandard }, "Use fleetr's standard terms"))),
+        el("button", { type: "button", className: "resModalSubmit", disabled: busy, onClick: startStandard }, "Use fleetr's standard terms")),
+      el(FieldError, { text: startError })),
 
     !editing && current && el(React.Fragment, null,
       el("p", { className: "closeRentalHint" },
@@ -10558,11 +10821,10 @@ function ContractAcknowledgementsCard({ versions, busy, onSave }) {
       !current && insurerNote,
       el("textarea", {
         className: "resFormInput resFormTextarea", rows: 10, value: draft, autoFocus: true,
-        "aria-label": "Contract acknowledgements", onChange: (e) => setDraft(e.target.value),
+        "aria-label": "Contract acknowledgements", ...invalid(over), onChange: (e) => setDraft(e.target.value),
       }),
+      over && el(FieldError, { text: `This is ${d.length - CONTRACT_ACK_MAX} characters over the ${CONTRACT_ACK_MAX.toLocaleString("en-CA")} allowed and cannot be saved.` }),
       el("p", { className: "closeRentalHint" }, `${d.length} of ${CONTRACT_ACK_MAX.toLocaleString("en-CA")} characters.`),
-      over && el("div", { className: "closeRentalWarning" },
-        `This is ${d.length - CONTRACT_ACK_MAX} characters over the ${CONTRACT_ACK_MAX.toLocaleString("en-CA")} allowed and cannot be saved.`),
       el("div", { className: "gasSettingSubhead" }, "Preview"),
       body(d || "Nothing yet."),
       el("div", { className: "closeRentalActions" },
@@ -10571,7 +10833,8 @@ function ContractAcknowledgementsCard({ versions, busy, onSave }) {
           type: "button", className: "resModalSubmit",
           disabled: busy || !d || over || (current && d === current.body),
           onClick: save,
-        }, busy ? "Saving..." : "Save as a new version"))),
+        }, busy ? "Saving..." : "Save as a new version")),
+      el(FieldError, { text: error })),
 
     versions.length > 1 && el(React.Fragment, null,
       el("div", { className: "gasSettingSubhead", style: { marginTop: "18px" } }, "Version history"),
@@ -10588,7 +10851,7 @@ function ContractAcknowledgementsCard({ versions, busy, onSave }) {
 // deductibles, acknowledgements) to place where it belongs.
 // onChanged runs after every change that saved. openSections opens them all.
 function CompanyListsSections({ branches, layout, onChanged, openSections }) {
-  const { currentUser } = React.useContext(AppContext);
+  const { currentUser, setup } = React.useContext(AppContext);
   const [ready,  setReady]  = React.useState(false);
   const [busy,   setBusy]   = React.useState(false);
   // { at, text }: a refusal is shown in the section it happened in.
@@ -10720,12 +10983,16 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
     className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
     disabled: busy || !!off, onClick,
   }, label);
-  const errorLine = (at) => error && error.at === at && el("div", { className: "loginError" }, error.text);
+  // A refusal is kept with where it belongs: a section, or one field in it
+  // ("<section>:<field>:<id>"), and shown under that field.
+  const errAt = (at) => (error && error.at === at ? error.text : "");
+  const errorLine = (at) => el(FieldError, { text: errAt(at) });
   const section = (title, intro, at, ...children) => el(
-    CompanySection, { title, style: { marginTop: "24px" }, defaultOpen: openSections },
+    CompanySection, { id: `company-section-${at}`, title, style: { marginTop: "24px" }, defaultOpen: openSections, done: !!doneAt[at] },
     el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, intro),
-    errorLine(at),
-    ...children
+    ...children,
+    // One about no single field, under the section's own controls.
+    errorLine(at)
   );
   const subHeading = (text, faded) => el("div", {
     style: { fontWeight: 600, margin: "18px 0 8px", opacity: faded ? 0.5 : 1 },
@@ -10773,10 +11040,11 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         // standard list does.
         rename
           ? el(ListInlineName, {
-              name: entry.name, disabled: busy,
-              onSave: (name) => { const [fn, args] = rename(name); return act(at, fn, args); },
+              name: entry.name, disabled: busy, error: errAt(`${at}:name:${entry.id}`),
+              onSave: (name) => { const [fn, args] = rename(name); return act(`${at}:name:${entry.id}`, fn, args); },
             })
-          : entry.name),
+          : entry.name,
+        errAt(`${at}:row:${entry.id}`) && el(FieldError, { text: errAt(`${at}:row:${entry.id}`) })),
       extra || el("td", null),
       // An entry switched on and off elsewhere, as the fleetr.ai source is by
       // List on fleetr.ai, has no switch here, and no Delete.
@@ -10784,7 +11052,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         el("label", { style: { display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer" } },
           el("input", {
             type: "checkbox", checked: !!entry.active, disabled: busy,
-            onChange: () => act(at, "set_reference_active", { p_kind: kind, p_id: entry.id, p_active: !entry.active }),
+            onChange: () => act(`${at}:row:${entry.id}`, "set_reference_active", { p_kind: kind, p_id: entry.id, p_active: !entry.active }),
           }),
           entry.active ? "On" : "Off")),
       confirming === key
@@ -10793,7 +11061,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
               `Delete ${entry.name}? ${goesWith ? goesWith + " " : ""}Old records keep the name.`),
             el("div", { style: { display: "flex", gap: "6px", flexWrap: "wrap" } },
               btn("Delete", async () => {
-                await act(at, "delete_reference", { p_kind: kind, p_id: entry.id });
+                await act(`${at}:row:${entry.id}`, "delete_reference", { p_kind: kind, p_id: entry.id });
                 setConfirming("");
               }),
               btn("Cancel", () => setConfirming(""))))
@@ -10833,6 +11101,21 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   const pickupBranches = (branches || []).filter((b) =>
     b.active || pickupLocations.some((p) => p.locationId === b.id));
 
+  // Which parts are done, for each one's own check. Seasons are optional, so
+  // theirs shows once there is one.
+  const itemDone = (key) => !!(setup && setup.items.find((i) => i.key === key && i.done));
+  const doneAt = {
+    pickup:      pickupBranches.filter((b) => b.active).length > 0
+                 && pickupBranches.filter((b) => b.active).every((b) => pickupLocations.some((p) => p.locationId === b.id && p.active)),
+    classes:     activeClasses.length > 0,
+    sources:     activeSources.length > 0,
+    rates:       itemDone("rates"),
+    seasons:     (seasons || []).length > 0,
+    protection:  itemDone("protection"),
+    deductibles: !!deductibles,
+    acknowledgements: itemDone("contract"),
+  };
+
   // Compact, with the vehicle class column and the header row held in place
   // while the rest scrolls. The background on the held cells is the table's
   // own, so what scrolls underneath does not show through.
@@ -10853,9 +11136,9 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
               el("td", { style: { ...held, left: 0, zIndex: 1, padding: "4px 10px", fontWeight: 600 } }, c.name),
               activeSources.map((x) => el("td", { key: x.id, style: { padding: "4px 8px" } },
                 el(ListPriceCell, {
-                  value: valueFor(c, x), disabled: busy, suffix: opts.suffix,
+                  value: valueFor(c, x), disabled: busy, suffix: opts.suffix, error: errAt(`${at}:${c.id}:${x.id}`),
                   onSave: (typed) => {
-                    const parsed = parsePrice(at, typed, ["rates", "periods", "seasons"].includes(at) && x.standardKey === "fleetr_ai");
+                    const parsed = parsePrice(`${at}:${c.id}:${x.id}`, typed, ["rates", "periods", "seasons"].includes(at) && x.standardKey === "fleetr_ai");
                     return parsed.ok ? saveFor(c, x, parsed.amount) : Promise.resolve(false);
                   },
                 }),
@@ -10898,8 +11181,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
               }],
             }))),
           b.active && el(ListAddRow, {
-            placeholder: "New pickup location", label: "Add", disabled: busy,
-            onAdd: (name) => act("pickup", "save_pickup_location", {
+            placeholder: "New pickup location", label: "Add", disabled: busy, error: errAt(`pickup:add:${b.id}`),
+            onAdd: (name) => act(`pickup:add:${b.id}`, "save_pickup_location", {
               p_id: null, p_location_id: b.id, p_name: name, p_sort: null,
             }),
           }));
@@ -10915,9 +11198,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
           reorder: { listKey: "classes", list: vehicleClasses, index: i, saveCall: saveClass },
           goesWith: "Its daily rates and protection prices go with it.",
           extra: el(VehicleClassDetailsCell, {
-            entry, busy,
-            onError: (text) => setError({ at: "classes", text }),
-            onSave: (seats, bags, models) => act("classes", "save_vehicle_class_details", {
+            entry, busy, error: errAt(`classes:details:${entry.id}`),
+            onSave: (seats, bags, models) => act(`classes:details:${entry.id}`, "save_vehicle_class_details", {
               p_id: entry.id, p_seats: seats, p_bags: bags, p_example_models: models,
             }),
           }),
@@ -10928,9 +11210,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         el("p", { className: "closeRentalHint", style: { margin: "0 0 10px" } },
           "Get a notification when fewer than this many of a class are free at a branch. Leave it blank for no warning."),
         activeClasses.map((entry) => el(LowWarningRow, {
-          key: entry.id, entry, busy,
-          onError: (text) => setError({ at: "classes", text }),
-          onSave: (below) => act("classes", "set_class_low_warning", { p_class_id: entry.id, p_below: below }),
+          key: entry.id, entry, busy, error: errAt(`classes:low:${entry.id}`),
+          onSave: (below) => act(`classes:low:${entry.id}`, "set_class_low_warning", { p_class_id: entry.id, p_below: below }),
         })))),
 
     // ── Sources ──
@@ -10962,11 +11243,12 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
               ? "The customer"
               : el("select", {
                 className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, disabled: busy,
-                value: entry.payer || "other", "aria-label": `Who pays for ${entry.name}`,
-                onChange: (e) => act("sources", "save_source", {
+                value: entry.payer || "other", "aria-label": `Who pays for ${entry.name}`, ...invalid(!!errAt(`sources:payer:${entry.id}`)),
+                onChange: (e) => act(`sources:payer:${entry.id}`, "save_source", {
                   p_id: entry.id, p_name: entry.name, p_billing_type: e.target.value, p_sort: null,
                 }),
-              }, sourcePayers(entry.payer).map(([v, l]) => el("option", { key: v, value: v }, l)))),
+              }, sourcePayers(entry.payer).map(([v, l]) => el("option", { key: v, value: v }, l))),
+              el(FieldError, { text: errAt(`sources:payer:${entry.id}`) })),
           })];
           if (isOpen) {
             entry.details.forEach((d) => rows.push(entryRow({
@@ -10978,8 +11260,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
               el("td", null),
               el("td", { colSpan: 4, style: { paddingLeft: "28px" } },
                 el(ListAddRow, {
-                  placeholder: `New specific source under ${entry.name}`, label: "Add", disabled: busy,
-                  onAdd: (name) => act("sources", "save_source_detail", {
+                  placeholder: `New specific source under ${entry.name}`, label: "Add", disabled: busy, error: errAt(`sources:detail:${entry.id}`),
+                  onAdd: (name) => act(`sources:detail:${entry.id}`, "save_source_detail", {
                     p_id: null, p_source_id: entry.id, p_name: name,
                   }),
                 }))));
@@ -10989,7 +11271,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
       subHeading("Add a source"),
       el(ListAddRow, {
         placeholder: "Name, like Smith's Body Shop or Intact Insurance", label: "Add source", withType: true, wide: true, disabled: busy,
-        onAdd: (name, type) => act("sources", "save_source", {
+        error: errAt("sources:add"),
+        onAdd: (name, type) => act("sources:add", "save_source", {
           p_id: null, p_name: name, p_billing_type: type, p_sort: null,
         }),
       })),
@@ -11015,11 +11298,12 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         const p = periodRates[src.name] && periodRates[src.name][c.name];
         return { value: p && p[col] != null ? p[col] : null, auto: false };
       };
+      const cellAt = (c, col) => `rates:${c.id}:${col}`;
       const save = (c, col, amount) => (season
-        ? act("rates", "set_season_rate", { p_season_id: season.id, p_class_id: c.id, p_source_id: src.id, p_amount: amount, p_period: col })
+        ? act(cellAt(c, col), "set_season_rate", { p_season_id: season.id, p_class_id: c.id, p_source_id: src.id, p_amount: amount, p_period: col })
         : col === "day"
-          ? act("rates", "set_daily_rate", { p_class_id: c.id, p_source_id: src.id, p_amount: amount })
-          : act("rates", "set_period_rate", { p_period: col, p_class_id: c.id, p_source_id: src.id, p_amount: amount }));
+          ? act(cellAt(c, col), "set_daily_rate", { p_class_id: c.id, p_source_id: src.id, p_amount: amount })
+          : act(cellAt(c, col), "set_period_rate", { p_period: col, p_class_id: c.id, p_source_id: src.id, p_amount: amount }));
       // What a weekly or monthly rate comes to, and how much less it is than
       // the row's daily rate: "= $315 per week, 25% off".
       const noteFor = (c, col) => {
@@ -11071,11 +11355,11 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
                     const note = noteFor(c, col);
                     return el("td", { key: col, style: { padding: "4px 8px", verticalAlign: "top" } },
                       el(ListPriceCell, {
-                        value: cell.value, suffix: "/day", muted: cell.auto, cellKey: `${row}:${col}`,
+                        value: cell.value, suffix: "/day", muted: cell.auto, cellKey: `${row}:${col}`, error: errAt(cellAt(c, col)),
                         title: cell.auto ? "Worked out from the normal rates. Type a value to set your own." : undefined,
                         onEnter: nextDown(row, col),
                         onSave: (typed) => {
-                          const parsed = parsePrice("rates", typed, whole);
+                          const parsed = parsePrice(cellAt(c, col), typed, whole);
                           return parsed.ok ? save(c, col, parsed.amount) : Promise.resolve(false);
                         },
                       }),
@@ -11093,10 +11377,10 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         seasons.map((x) => el("tr", { key: x.id, style: x.active ? null : { opacity: 0.5 } },
           editSeason === x.id
             ? el("td", { colSpan: 4 }, el(SeasonForm, {
-                season: x, label: "Save", disabled: busy,
+                season: x, label: "Save", disabled: busy, error: errAt(`seasons:edit:${x.id}`),
                 onCancel: () => setEditSeason(""),
                 onSave: async (f) => {
-                  const ok = await act("seasons", "save_rate_season", {
+                  const ok = await act(`seasons:edit:${x.id}`, "save_rate_season", {
                     p_id: x.id, p_name: f.name, p_start_month: f.sm, p_start_day: f.sd, p_end_month: f.em, p_end_day: f.ed,
                   });
                   if (ok) setEditSeason("");
@@ -11104,21 +11388,21 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
                 },
               }))
             : [
-                el("td", { key: "n", style: { fontWeight: 600 } }, x.name),
+                el("td", { key: "n", style: { fontWeight: 600 } }, x.name, el(FieldError, { text: errAt(`seasons:row:${x.id}`) })),
                 el("td", { key: "d" }, seasonRange(x)),
                 el("td", { key: "o" },
                   el("label", { style: { display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer" } },
                     el("input", {
                       type: "checkbox", checked: !!x.active, disabled: busy,
-                      onChange: () => act("seasons", "set_rate_season_active", { p_id: x.id, p_active: !x.active }),
+                      onChange: () => act(`seasons:row:${x.id}`, "set_rate_season_active", { p_id: x.id, p_active: !x.active }),
                     }),
                     x.active ? "On" : "Off")),
                 el("td", { key: "e" }, btn("Change", () => setEditSeason(x.id))),
               ]))),
       subHeading("Add a season"),
       el(SeasonForm, {
-        label: "Add season", disabled: busy,
-        onSave: (f) => act("seasons", "save_rate_season", {
+        label: "Add season", disabled: busy, error: errAt("seasons:add"),
+        onSave: (f) => act("seasons:add", "save_rate_season", {
           p_id: null, p_name: f.name, p_start_month: f.sm, p_start_day: f.sd, p_end_month: f.em, p_end_day: f.ed,
         }),
       })),
@@ -11135,13 +11419,13 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
           goesWith: "Its protection prices go with it.",
         }))),
       el(ListAddRow, {
-        placeholder: "New protection product", label: "Add", disabled: busy,
-        onAdd: (name) => act("protection", "save_protection_product", { p_id: null, p_name: name, p_sort: null }),
+        placeholder: "New protection product", label: "Add", disabled: busy, error: errAt("protection:add"),
+        onAdd: (name) => act("protection:add", "save_protection_product", { p_id: null, p_name: name, p_sort: null }),
       }),
       protectionProducts.length > 0 && subHeading("What the customer sees at pickup"),
       protectionProducts.map((pr) => el(ProtectionDetailsCard, {
-        key: pr.id, product: pr, busy,
-        onSave: (wording, decline, required) => act("protection", "set_protection_details", {
+        key: pr.id, product: pr, busy, error: errAt(`protection:details:${pr.id}`),
+        onSave: (wording, decline, required) => act(`protection:details:${pr.id}`, "set_protection_details", {
           p_id: pr.id, p_wording: wording, p_decline_wording: decline, p_required: required,
         }),
       })),
@@ -11158,7 +11442,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
             el("div", { key: shownProduct.id },
               priceGrid("protection",
                 (c, x) => protectionPrice(shownProduct, c, x),
-                (c, x, amount) => act("protection", "set_protection_price", {
+                (c, x, amount) => act(`protection:${c.id}:${x.id}`, "set_protection_price", {
                   p_product_id: shownProduct.id, p_class_id: c.id, p_source_id: x.id, p_amount: amount,
                 }))))
         : el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
@@ -11170,26 +11454,26 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
       "deductibles",
       table("560px", ["", "Collision", "Comprehensive", ""], [
         el(DeductibleRow, {
-          key: "company", label: "Company default", busy,
+          key: "company", label: "Company default", busy, error: errAt("deductibles:company"),
           collision: deductibles?.collision ?? null, comprehensive: deductibles?.comprehensive ?? null,
           placeholder: { collision: "Not set", comprehensive: "Not set" },
           onSave: (coll, comp) => {
-            const a = parsePrice("deductibles", coll), b = parsePrice("deductibles", comp);
+            const a = parsePrice("deductibles:company", coll), b = parsePrice("deductibles:company", comp);
             if (!a.ok || !b.ok) return Promise.resolve(false);
-            return act("deductibles", "set_company_deductibles", { p_collision: a.amount, p_comprehensive: b.amount });
+            return act("deductibles:company", "set_company_deductibles", { p_collision: a.amount, p_comprehensive: b.amount });
           },
         }),
         ...activeClasses.map((c) => {
           const o = overrides.find((r) => r.vehicleClassId === c.id);
           const dflt = (v) => (v == null ? "Company default" : `Default ${Number(v)}`);
           return el(DeductibleRow, {
-            key: c.id, label: c.name, busy,
+            key: c.id, label: c.name, busy, error: errAt(`deductibles:${c.id}`),
             collision: o?.collision ?? null, comprehensive: o?.comprehensive ?? null,
             placeholder: { collision: dflt(deductibles?.collision), comprehensive: dflt(deductibles?.comprehensive) },
             onSave: (coll, comp) => {
-              const a = parsePrice("deductibles", coll), b = parsePrice("deductibles", comp);
+              const a = parsePrice(`deductibles:${c.id}`, coll), b = parsePrice(`deductibles:${c.id}`, comp);
               if (!a.ok || !b.ok) return Promise.resolve(false);
-              return act("deductibles", "set_deductible_override", {
+              return act(`deductibles:${c.id}`, "set_deductible_override", {
                 p_class_id: c.id, p_collision: a.amount, p_comprehensive: b.amount,
               });
             },
@@ -11202,8 +11486,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
       "What the customer acknowledges on the rental contract. Every save is a new version, and earlier versions are kept unchanged.",
       "acknowledgements",
       el(ContractAcknowledgementsCard, {
-        versions: ackVersions, busy,
-        onSave: (text) => act("acknowledgements", "save_contract_acknowledgements", { p_body: text }),
+        versions: ackVersions, busy, error: errAt("acknowledgements:save"),
+        onSave: (text) => act("acknowledgements:save", "save_contract_acknowledgements", { p_body: text }),
       })),
   };
   if (layout) return layout(parts);
@@ -11416,7 +11700,7 @@ function StaffPage({ embedded, onChanged } = {}) {
           `Set ${new Date(c.setAt).toLocaleDateString("en-CA")}`))),
       React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "12px" } },
         "Generating a new code stops that branch's old code working immediately. Anyone who was given it will need the new one. Every other branch's code stays as it is."),
-      codeError && React.createElement("div", { className: "loginError" }, codeError)
+      React.createElement(FieldError, { text: codeError })
     ),
 
     // ── Waiting for approval ──
@@ -13021,7 +13305,7 @@ const SETUP_ITEMS = {
   rates:                 { title: "Rates", path: null,
                            text: "One source with a daily rate for every vehicle class: fleetr.ai while List on fleetr.ai is on." },
   vehicles:              { title: "Vehicles", path: null, text: "At least one at the default branch, of one of your vehicle classes." },
-  protection:            { title: "Protection and deductibles", path: null,
+  protection:            { title: "Protections and Deductibles", path: null,
                            text: "Every product priced, and an optional one with its decline wording. Can be skipped." },
   contract:              { title: "Contract terms", path: null, text: "What the customer acknowledges at pickup." },
   revenue_share:         { title: "Revenue share", path: null,
@@ -13044,6 +13328,23 @@ const LAUNCH_REASONS = {
   not_paused:       "The company is not paused.",
   network:          "Could not reach the server.",
 };
+
+// One setup step in the launch checklist: a link to it, where it stands, and
+// what is still missing.
+function SetupStepRow({ step, required }) {
+  const el = React.createElement;
+  const done = step.state === "done";
+  const missing = step.items.filter((i) => !i.done && Array.isArray(i.detail) && i.detail.length > 0)
+    .map((i) => `${(SETUP_ITEMS[i.key] || {}).title || i.key}: ${i.detail.join(", ")}`);
+  return el("li", { className: `setupItem${done ? " setupItem--done" : ""}` },
+    el("span", { className: "setupItem__mark", "aria-hidden": "true" }, done ? "\u2713" : ""),
+    el("div", null,
+      el("div", { className: "setupItem__title" },
+        el("button", { type: "button", className: "setupItem__link", onClick: () => jumpTo(step.key) }, step.title),
+        el("span", { className: "setupItem__state" },
+          step.state === "todo" && !required ? "Optional" : STEP_STATE_WORDS[step.state])),
+      !done && missing.length > 0 && el("div", { className: "closeRentalHint", style: { margin: 0 } }, `Still missing: ${missing.join("; ")}`)));
+}
 
 function SetupItemRow({ item, children }) {
   const meta = SETUP_ITEMS[item.key] || { title: item.key, path: null, text: "" };
@@ -13093,7 +13394,6 @@ function CompanyStatusSection({ bare } = {}) {
 
   const content = [
     React.createElement("p", { key: "state", style: { opacity: 0.8, fontSize: "0.9rem" } }, state),
-    error && React.createElement("div", { key: "error", className: "loginError" }, error),
     React.createElement("div", { key: "actions", style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" } },
       setup.launched && !setup.paused && React.createElement("button", {
         type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy,
@@ -13106,6 +13406,7 @@ function CompanyStatusSection({ bare } = {}) {
         onClick: () => act("company.resume", "resume_company", "Resumed the company.",
           "Resume the company? Branches switched on show on fleetr.ai again and take online bookings."),
       }, "Resume")),
+    React.createElement(FieldError, { key: "error", text: error }),
   ];
   return bare
     ? React.createElement(React.Fragment, null, ...content)
@@ -13420,11 +13721,11 @@ function NameMismatchWarning({ rentalAgreementId }) {
     el("div", null, `Reservation last name: ${flag.reservationLastName}`),
     el("div", { style: { margin: "6px 0 8px" } },
       "Check the customer's identity before the rental goes further, then mark it reviewed."),
-    error && el("div", { className: "loginError" }, error),
     el("button", {
       type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
       disabled: busy, onClick: review,
-    }, busy ? "Saving\u2026" : "Mark reviewed"));
+    }, busy ? "Saving\u2026" : "Mark reviewed"),
+    el(FieldError, { text: error }));
 }
 
 // ─── Photos & Signatures ──────────────────────────────────────────────────────
@@ -14225,10 +14526,10 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
       React.createElement("label", { className: "resFormGroup" },
         React.createElement("span", { className: "resFormLabel" }, `${L.mileageLabel} (${unit})`),
         React.createElement("input", {
-          className: "resFormInput closeRentalMileage", type: "number", inputMode: "numeric",
-          min: 0, step: 1, placeholder: "e.g. 42500", autoComplete: "off",
-          value: mileage,
-          onChange: (e) => setReadings((prev) => ({ ...prev, mileage: e.target.value, lowConfirmed: false })),
+          className: "resFormInput closeRentalMileage", type: "text", inputMode: "numeric", maxLength: 7,
+          placeholder: "e.g. 42500", autoComplete: "off",
+          value: mileage, ...invalid(attempted && !!(mileageError || lowError)),
+          onChange: (e) => setReadings((prev) => ({ ...prev, mileage: numberTyped(e.target.value, { digits: 7 }), lowConfirmed: false })),
         }),
         React.createElement("span", { className: "closeRentalHint" },
           lastReading !== null
@@ -14431,7 +14732,7 @@ function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, onBack, onNex
         React.createElement("textarea", {
           className: "resFormInput resFormTextarea closeRentalNote", rows: 4,
           placeholder: "Where it is and what it looks like, e.g. 10 cm scratch on the rear passenger door",
-          value: note,
+          value: note, ...invalid(attempted && !!noteError),
           onChange: (e) => setDamageDraft((prev) => ({ ...prev, note: e.target.value })),
         })
       ),
@@ -16830,9 +17131,9 @@ function CustomerPage() {
       React.createElement("div", { className: "btDollarWrap" },
         React.createElement("span", { className: "btDollarPrefix" }, "$"),
         React.createElement("input", {
-          className: "resFormInput btDollarInput", type: "text", inputMode: "decimal",
+          className: "resFormInput btDollarInput", type: "text", inputMode: "decimal", maxLength: 9,
           value: billToForm[key],
-          onChange: (e) => updateBillTo(key, e.target.value),
+          onChange: (e) => updateBillTo(key, numberTyped(e.target.value, { digits: 6, decimals: 2 })),
         })
       )
     );
@@ -17009,10 +17310,10 @@ function CustomerPage() {
         React.createElement("div", { className: "chargesQtyWrap" },
           React.createElement("input", {
             className: "resFormInput chargesQtyInput",
-            type: "text", inputMode: "decimal",
+            type: "text", inputMode: "decimal", maxLength: 7,
             placeholder: chargeQtyPlaceholder(item),
             value: item.qty,
-            onChange: (e) => updateLineItem(item.key, "qty", e.target.value),
+            onChange: (e) => updateLineItem(item.key, "qty", numberTyped(e.target.value, { digits: 4, decimals: 2 })),
             disabled: !item.applies,
           }),
           React.createElement("span", { className: "unitSuffix" }, chargeQtyUnit(item))
@@ -17023,9 +17324,9 @@ function CustomerPage() {
           React.createElement("span", { className: "btDollarPrefix" }, "$"),
           React.createElement("input", {
             className: "resFormInput btDollarInput chargesAmtInput",
-            type: "text", inputMode: "decimal",
+            type: "text", inputMode: "decimal", maxLength: 9,
             value: item.amount,
-            onChange: (e) => updateLineItem(item.key, "amount", e.target.value),
+            onChange: (e) => updateLineItem(item.key, "amount", numberTyped(e.target.value, { digits: 6, decimals: 2 })),
             disabled: !item.applies,
           })
         )
@@ -17147,7 +17448,7 @@ function CustomerPage() {
                     className: "resFormInput paymentLast4",
                     type: "text", placeholder: "Last 4", maxLength: 4, inputMode: "numeric",
                     value: p.last4,
-                    onChange: (e) => updatePayment(p.id, "last4", e.target.value.slice(0, 4)),
+                    onChange: (e) => updatePayment(p.id, "last4", numberTyped(e.target.value, { digits: 4 })),
                   }),
                   React.createElement("input", {
                     className: "resFormInput paymentName",
@@ -17159,9 +17460,9 @@ function CustomerPage() {
                     React.createElement("span", { className: "btDollarPrefix" }, "$"),
                     React.createElement("input", {
                       className: "resFormInput btDollarInput",
-                      type: "text", inputMode: "decimal", placeholder: "0.00",
+                      type: "text", inputMode: "decimal", placeholder: "0.00", maxLength: 9,
                       value: p.amount,
-                      onChange: (e) => updatePayment(p.id, "amount", e.target.value),
+                      onChange: (e) => updatePayment(p.id, "amount", numberTyped(e.target.value, { digits: 6, decimals: 2 })),
                     })
                   ),
                   // Who paid only matters when someone else is the bill-to.
@@ -17708,7 +18009,7 @@ function ForgotScreen({ onCancel }) {
 
 // A sign-up field: its name above it and, for a password or PIN, a button
 // inside it that shows or hides what was typed.
-function SignupField({ label, secret, type, ...props }) {
+function SignupField({ label, secret, type, error, ...props }) {
   const el = React.createElement;
   const id = React.useId();
   const [shown, setShown] = React.useState(false);
@@ -17717,15 +18018,22 @@ function SignupField({ label, secret, type, ...props }) {
   return el("div", { className: "signupField" },
     el("label", { className: "signupField__label", htmlFor: id }, label),
     el("div", { className: secret ? "signupField__box signupField__box--secret" : "signupField__box" },
-      el("input", { id, className: "loginInput", spellCheck: false, ...props, type: secret ? (shown ? "text" : "password") : type }),
+      el("input", { id, className: "loginInput", spellCheck: false, ...props, ...invalid(!!error), type: secret ? (shown ? "text" : "password") : type }),
       secret && el("button", {
         type: "button", className: "signupField__eye", onClick: () => setShown((v) => !v),
         "aria-label": shown ? `Hide ${what}` : `Show ${what}`, "aria-pressed": shown,
       }, el("svg", { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
         el("path", { d: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" }),
         el("circle", { cx: 12, cy: 12, r: 3 }),
-        shown && el("path", { d: "M3 3l18 18" })))));
+        shown && el("path", { d: "M3 3l18 18" })))),
+    el(FieldError, { text: error }));
 }
+
+// The sign-up field each refusal belongs under.
+const SIGNUP_FIELD_OF = {
+  bad_code: "joinCode", no_location: "joinCode", branch_closed: "joinCode", username_taken: "username", bad_username: "username",
+  bad_email: "email", bad_password: "password", bad_pin: "pin", rate_limited: "joinCode",
+};
 
 function SignupScreen({ onDone, onCancel }) {
   const [username, setUsername] = React.useState("");
@@ -17735,16 +18043,18 @@ function SignupScreen({ onDone, onCancel }) {
   const [password, setPassword] = React.useState("");
   const [pin,      setPin]      = React.useState("");
   const [message,  setMessage]  = React.useState("");
+  const [messageAt, setMessageAt] = React.useState("");
   const [loading,  setLoading]  = React.useState(false);
+  const errorOf = (at) => (messageAt === at ? message : "");
 
   const submit = (e) => {
     e.preventDefault();
     // Checked here as well as in the database, because the database's check
     // runs after the account exists. A four-character rule enforced only at the
     // end costs the person their chosen username.
-    if (!/^[0-9]{4}$/.test(pin)) { setMessage("Your PIN must be 4 digits."); return; }
+    if (!/^[0-9]{4}$/.test(pin)) { setMessage("Your PIN must be 4 digits."); setMessageAt("pin"); return; }
     setLoading(true);
-    setMessage("");
+    setMessage(""); setMessageAt("");
     fetch(SIGNUP_URL, {
       method:  "POST",
       headers: { "Content-Type": "application/json" },
@@ -17761,6 +18071,7 @@ function SignupScreen({ onDone, onCancel }) {
       .then((out) => {
         if (!out || !out.ok) {
           setMessage((out && out.message) || "Signup could not be completed.");
+          setMessageAt(SIGNUP_FIELD_OF[out && out.reason] || "");
           return null;
         }
         // Second leg, straight to the database with the session the worker just
@@ -17792,6 +18103,7 @@ function SignupScreen({ onDone, onCancel }) {
             }
             setMessage(SIGNUP_FINISH_MESSAGES[res && res.reason] ||
                        "Signup could not be completed.");
+            setMessageAt(SIGNUP_FIELD_OF[res && res.reason] || "");
           });
       })
       .catch(() => setMessage("Could not reach the server. Check your connection."))
@@ -17809,25 +18121,25 @@ function SignupScreen({ onDone, onCancel }) {
       React.createElement(
         "form", { className: "loginForm", onSubmit: submit },
         // Ten letters and digits. The old dash is still accepted, so one more.
-        field({ label: "Join code", type: "text", placeholder: "Join code", maxLength: 11, autoCapitalize: "characters",
+        field({ label: "Join code", error: errorOf("joinCode"), type: "text", placeholder: "Join code", maxLength: 11, autoCapitalize: "characters",
                 value: joinCode, onChange: (e) => { setJoinCode(e.target.value.toUpperCase()); setMessage(""); } }),
-        field({ label: "Name", type: "text", placeholder: "Full name", maxLength: 60, autoComplete: "name",
+        field({ label: "Name", error: errorOf("name"), type: "text", placeholder: "Full name", maxLength: 60, autoComplete: "name",
                 value: name, onChange: (e) => { setName(e.target.value); setMessage(""); } }),
-        field({ label: "Username", type: "text", placeholder: "Username", minLength: USERNAME_MIN, maxLength: USERNAME_MAX, autoComplete: "username",
+        field({ label: "Username", error: errorOf("username"), type: "text", placeholder: "Username", minLength: USERNAME_MIN, maxLength: USERNAME_MAX, autoComplete: "username",
                 value: username, onChange: (e) => { setUsername(e.target.value.toLowerCase()); setMessage(""); } }),
-        field({ label: "Email", type: "email", placeholder: "Email", maxLength: 120, autoComplete: "email",
+        field({ label: "Email", error: errorOf("email"), type: "email", placeholder: "Email", maxLength: 120, autoComplete: "email",
                 value: email, onChange: (e) => { setEmail(e.target.value); setMessage(""); } }),
-        field({ label: "Password", secret: true, placeholder: "Password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX, autoComplete: "new-password",
+        field({ label: "Password", error: errorOf("password"), secret: true, placeholder: "Password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX, autoComplete: "new-password",
                 value: password, onChange: (e) => { setPassword(e.target.value); setMessage(""); } }),
         // Separate from the password on purpose, and the reason is written on
         // the screen: a second secret nobody explains is a second secret people
         // set to the same string as the first.
-        field({ label: "PIN", secret: true, placeholder: "4-digit PIN", inputMode: "numeric", maxLength: 4,
+        field({ label: "PIN", error: errorOf("pin"), secret: true, placeholder: "4-digit PIN", inputMode: "numeric", maxLength: 4,
                 autoComplete: "new-password",
                 value: pin, onChange: (e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setMessage(""); } }),
         React.createElement("button", { type: "submit", className: "loginBtn authBtn", disabled: loading },
           loading ? "Creating\u2026" : "Create Account"),
-        message && React.createElement("div", { className: "loginError" }, message),
+        messageAt === "" && message && React.createElement("div", { className: "loginError" }, message),
         React.createElement("button", {
           type: "button", className: "loginLink", onClick: onCancel,
           style: { background: "none", border: "none", color: "#C9603D", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
@@ -17841,6 +18153,8 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
   const [username, setUsername] = React.useState("");
   const [pin,      setPin]      = React.useState("");
   const [error,    setError]    = React.useState("");
+  // The field the error is under: the username, or the password below it.
+  const [errorAt,  setErrorAt]  = React.useState("password");
   const [loading,  setLoading]  = React.useState(false);
   const pinRef  = React.useRef(null);
 
@@ -17858,9 +18172,9 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
     // used to go to the auth service as an email address, and its own
     // "invalid format" error came back. A username that cannot exist reads as
     // a wrong password, so it gives nothing away.
-    if (!u)   { setError("Enter your username."); return; }
-    if (!pin) { setError("Enter your password."); return; }
-    if (!/^[a-z0-9]{6,20}$/.test(u)) { setError(LOGIN_REASONS.credentials); return; }
+    if (!u)   { setError("Enter your username."); setErrorAt("username"); return; }
+    if (!pin) { setError("Enter your password."); setErrorAt("password"); return; }
+    if (!/^[a-z0-9]{6,20}$/.test(u)) { setError(LOGIN_REASONS.credentials); setErrorAt("password"); return; }
 
     // Supabase Auth is the only way in. The hardcoded connor/1234 fallback that
     // stood here during the transition is gone, along with the account whose
@@ -17879,6 +18193,7 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
         // alike, so the one real bug among them looked like a typo for months.
         console.warn("Fleetr sign-in failed:", result.reason, result.error);
         setError(result.message || loginMessage(result.reason));
+        setErrorAt("password");
       })
       .finally(() => setLoading(false));
   };
@@ -17903,10 +18218,11 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
           minLength: USERNAME_MIN,
           maxLength: USERNAME_MAX,
           autoComplete: "username",
-          value: username,
+          value: username, ...invalid(!!error && errorAt === "username"),
           onChange: handleUsernameChange,
           onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); pinRef.current?.focus(); } },
         }),
+        errorAt === "username" && error && React.createElement("div", { className: "loginError" }, error),
         React.createElement("input", {
           ref: pinRef,
           className: "loginInput",
@@ -17919,10 +18235,11 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
           value: pin,
           onChange: (e) => { setPin(e.target.value); setError(""); },
           onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); handleSubmit(e); } },
+          ...invalid(!!error && errorAt === "password"),
         }),
+        errorAt === "password" && error && React.createElement("div", { className: "loginError" }, error),
         React.createElement("button", { type: "submit", className: "loginBtn authBtn", disabled: loading },
           loading ? "Signing in…" : "Sign In"),
-        error && React.createElement("div", { className: "loginError" }, error),
         notice && React.createElement("div", { className: "loginNotice", style: { color: "#3fbf7f", fontSize: "0.85rem", textAlign: "center" } }, notice),
         React.createElement("div", { className: "loginLinks" },
           React.createElement("button", { type: "button", className: "loginLink", onClick: onSignup }, "I have a join code"),
@@ -20105,6 +20422,36 @@ body, * {
   font-size: 12px;
   color: #c0392b;
   font-weight: 500;
+}
+/* A form's problem, right under the field it is about, and the field outlined
+   in red (FieldError, invalid). */
+.fieldError{ display: block; margin-top: 5px; font-size: 12.5px; line-height: 1.4; font-weight: 500; color: #c0392b; }
+input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="true"], button[aria-invalid="true"],
+.pinField[aria-invalid="true"]{
+  border-color: #c0392b !important; box-shadow: 0 0 0 1px #c0392b !important;
+}
+.resFormGroup:has(> .resFormError) .resFormInput{ border-color: #c0392b !important; box-shadow: 0 0 0 1px #c0392b !important; }
+/* Setup: the bar across the top, one piece per step, and a sub-section's own
+   check once it is done. */
+.setupProgress{ margin: 0 0 18px; }
+.setupProgress__top{ display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; color: #5C5B57; margin-bottom: 8px; }
+.setupProgress__bar{ display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 4px; }
+.setupProgress__seg{ height: 8px; border-radius: 999px; background: #E3E2DE; }
+.setupProgress__seg--done{ background: #F4845F; }
+.setupProgress__seg--progress{ background: rgba(244, 132, 95, 0.45); }
+.setupProgress__seg--skipped{ background: repeating-linear-gradient(90deg, #E3E2DE 0 4px, rgba(244, 132, 95, 0.45) 4px 8px); }
+.companySection__done{
+  display: inline-grid; place-items: center; width: 18px; height: 18px; margin-left: 8px; vertical-align: 2px;
+  border-radius: 999px; background: #1F1E1D; color: #F9F9F7; font-size: 11px; font-weight: 700;
+}
+.setupItem__link{
+  background: none; border: 0; padding: 0; font: inherit; font-weight: inherit; color: inherit; cursor: pointer;
+  text-decoration: underline; text-decoration-color: #F4845F; text-decoration-thickness: 2px; text-underline-offset: 3px;
+}
+.setupItem__link:hover{ color: #C9603D; }
+.listingMissing__link{
+  background: none; border: 0; padding: 0; font: inherit; color: #C9603D; cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px;
 }
 .resFormTextarea{
   resize: vertical;
@@ -22443,7 +22790,7 @@ const isoToDate = (iso) => {
 };
 const DATE_FIELD_CHEVRON = { prev: "M15 18l-6-6 6-6", next: "M9 18l6-6-6-6" };
 
-function DateField({ value, onChange, className, placeholder, clearable, disabled, ariaLabel }) {
+function DateField({ value, onChange, className, placeholder, clearable, disabled, ariaLabel, invalid: bad }) {
   const el = React.createElement;
   const picked = isoToDate(value);
   const [open, setOpen] = React.useState(false);
@@ -22509,7 +22856,7 @@ function DateField({ value, onChange, className, placeholder, clearable, disable
   const trigger = el("button", {
       type: "button", ref: triggerRef, disabled,
       className: `${className || "resFormInput"} dateField${picked ? "" : " dateField--empty"}${open ? " dateField--open" : ""}`,
-      "aria-haspopup": "dialog", "aria-expanded": open, "aria-label": ariaLabel,
+      "aria-haspopup": "dialog", "aria-expanded": open, "aria-label": ariaLabel, ...invalid(!!bad),
       onClick: toggle,
     },
       el("span", { className: "dateField__text" }, picked
