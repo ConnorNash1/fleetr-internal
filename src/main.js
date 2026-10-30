@@ -7691,27 +7691,132 @@ function GasCollectionsPage() {
 
 // ─── ReportsPage ───────────────────────────────────────────────────────────────
 
+// The next 365 days at a branch, one row per class, from branch_availability
+// (fleetr-infra availability_ranges.sql). 90 days at a time, 14 on a phone.
+const AVAILABILITY_DAYS = 365;
+const availabilityState = (free, below) => (free === 0 ? "sold" : below != null && free < below ? "low" : "plenty");
+const dayAfter = (iso, n) => new Date(Date.parse(`${iso}T12:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+const shortDay = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-CA", { month: "short", day: "numeric", timeZone: "UTC" }).replace(".", "");
+const rangeWords = (from, to) => (from === to ? shortDay(from) : `${shortDay(from)} to ${shortDay(to)}`);
+const availabilityLine = (r) => (r.kind === "sold_out"
+  ? `${r.vehicleClass}: sold out ${rangeWords(r.from, r.to)}`
+  : `${r.vehicleClass}: low ${rangeWords(r.from, r.to)}, ${r.amount} free`);
+
+function AvailabilityReport() {
+  const { currentUser } = React.useContext(AppContext);
+  const el = React.createElement;
+  const location = useLocation();
+  const isMobile = useMobile();
+  const isExec = roleAtLeast(currentUser?.role, "Exec");
+  const asked = React.useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const [branches, setBranches] = React.useState([]);
+  const [branch, setBranch] = React.useState(asked.get("branch") || currentUser?.locationId || "");
+  const [cls, setCls] = React.useState(asked.get("class") || "");
+  const [data, setData] = React.useState(null);
+  const [error, setError] = React.useState("");
+  const [start, setStart] = React.useState(0);
+  const [picked, setPicked] = React.useState("");
+  const span = isMobile ? 14 : 90;
+
+  React.useEffect(() => {
+    if (!isExec) return undefined;
+    let live = true;
+    Promise.all([supabase.rpc("company_overview"), supabase.rpc("my_acting_location")]).then(([ov, act]) => {
+      if (!live) return;
+      setBranches(ov.data && ov.data.ok ? (ov.data.branches || []).filter((b) => b.active) : []);
+      setBranch((b) => b || (act.data && act.data.ok ? act.data.locationId || "" : ""));
+    });
+    return () => { live = false; };
+  }, [isExec]);
+
+  React.useEffect(() => {
+    if (!branch) return undefined;
+    let live = true;
+    setData(null); setError("");
+    supabase.rpc("branch_availability", { p_location_id: branch }).then(({ data: out, error: err }) => {
+      if (!live) return;
+      if (err || !out || !out.ok) { setError("Availability could not be loaded. Try again."); return; }
+      setData(out);
+      const from = asked.get("from");
+      if (from) {
+        const days = Math.round((Date.parse(from) - Date.parse(out.start)) / 86400000);
+        setStart(Math.max(0, Math.min(days, AVAILABILITY_DAYS - span)));
+      }
+    });
+    return () => { live = false; };
+  }, [branch]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const end = Math.min(start + span, AVAILABILITY_DAYS);
+  const dates = data ? Array.from({ length: end - start }, (_, i) => dayAfter(data.start, start + i)) : [];
+  const months = [];
+  dates.forEach((d) => {
+    const name = new Date(`${d}T12:00:00Z`).toLocaleDateString("en-CA", { month: "short", year: "numeric", timeZone: "UTC" }).replace(".", "");
+    if (months.length && months[months.length - 1].name === name) months[months.length - 1].n += 1;
+    else months.push({ name, n: 1 });
+  });
+  const rows = data ? data.classes.filter((c) => !cls || c.name === cls) : [];
+  const ranges = data ? data.ranges.filter((r) => !cls || r.vehicleClass === cls) : [];
+  const columns = { gridTemplateColumns: `minmax(84px, 120px) repeat(${dates.length || 1}, minmax(0, 1fr))` };
+  const move = (by) => { setStart((v) => Math.max(0, Math.min(v + by, AVAILABILITY_DAYS - span))); setPicked(""); };
+
+  return el("div", { className: "avail" },
+    el("div", { className: "avail__bar" },
+      isExec && branches.length > 1 && el("select", { className: "resFormInput avail__pick", "aria-label": "Branch", value: branch, onChange: (e) => setBranch(e.target.value) },
+        branches.map((b) => el("option", { key: b.id, value: b.id }, b.name))),
+      data && el("select", { className: "resFormInput avail__pick", "aria-label": "Vehicle class", value: cls, onChange: (e) => setCls(e.target.value) },
+        el("option", { value: "" }, "All classes"), data.classes.map((c) => el("option", { key: c.name, value: c.name }, c.name))),
+      el("div", { className: "avail__move" },
+        el("button", { type: "button", className: "miniBtn", disabled: start === 0, onClick: () => move(-span) }, "Previous"),
+        el("button", { type: "button", className: "miniBtn", disabled: end >= AVAILABILITY_DAYS, onClick: () => move(span) }, "Next"))),
+    el(FieldError, { text: error }),
+    !data && !error && el("div", { className: "skelBox avail__skel", role: "status", "aria-label": "Loading availability" }),
+    data && rows.length === 0 && el("p", { className: "closeRentalHint" }, "No vehicles at this branch yet"),
+    data && rows.length > 0 && el(React.Fragment, null,
+      el("div", { className: "avail__grid", style: columns },
+        el("span", null),
+        months.map((m) => el("span", { key: m.name, className: "avail__month", style: { gridColumn: `span ${m.n}` } }, m.name)),
+        isMobile && el("span", null),
+        isMobile && dates.map((d) => el("span", { key: d, className: "avail__day" }, Number(d.slice(8)))),
+        rows.map((c) => el(React.Fragment, { key: c.name },
+          el("span", { className: "avail__class", title: c.name }, c.name),
+          dates.map((d, i) => {
+            const free = c.free[start + i], total = c.total[start + i];
+            const text = `${shortDay(d)}: ${free} of ${total} free`;
+            return el("button", { key: d, type: "button", title: text, "aria-label": `${c.name}, ${text}`,
+              className: `avail__cell avail__cell--${availabilityState(free, c.below)}`, onClick: () => setPicked(`${c.name}, ${text}`) });
+          })))),
+      picked && el("div", { className: "avail__picked", role: "status" }, picked),
+      ranges.length > 0 && el("ul", { className: "avail__list" }, ranges.map((r) => el("li", { key: `${r.kind}:${r.vehicleClass}:${r.from}` }, availabilityLine(r))))));
+}
+
 function ReportsPage() {
+  const location = useLocation();
+  const asked = new URLSearchParams(location.search).get("section");
+  const reportsOn = isFeatureEnabled("reports");
   const SECTS = [
-    { key: "daily",   title: "Daily Summary",          body: "Summarises the day’s rentals, returns, no-shows, and pre-rental check completions." },
-    { key: "revenue", title: "Rental Revenue",         body: "Breakdown of rental revenue by file type (Retail, Insurance, Bodyshop/Dealership, Corporate) for the selected period." },
-    { key: "util",    title: "Fleet Utilization",      body: "Utilisation rate per vehicle class and overall. Highlights idle vehicles and high-demand periods." },
-    { key: "noshow",  title: "No-Show Report",         body: "No-show rate, text outcomes, and resolutions for the selected date range." },
-    { key: "overdue", title: "Overdue Rentals Report", body: "All overdue rental agreements, including customer contact history and resolution status." },
+    { key: "availability", title: "Availability", render: () => React.createElement(AvailabilityReport) },
+    ...(reportsOn ? [
+      { key: "daily",   title: "Daily Summary",          body: "Summarises the day’s rentals, returns, no-shows, and pre-rental check completions." },
+      { key: "revenue", title: "Rental Revenue",         body: "Breakdown of rental revenue by file type (Retail, Insurance, Bodyshop/Dealership, Corporate) for the selected period." },
+      { key: "util",    title: "Fleet Utilization",      body: "Utilisation rate per vehicle class and overall. Highlights idle vehicles and high-demand periods." },
+      ...(isFeatureEnabled("no_shows") ? [{ key: "noshow",  title: "No-Show Report", body: "No-show rate, text outcomes, and resolutions for the selected date range." }] : []),
+      { key: "overdue", title: "Overdue Rentals Report", body: "All overdue rental agreements, including customer contact history and resolution status." },
+    ] : []),
   ];
-  const [sect, setSect] = React.useState(Object.fromEntries(SECTS.map((s) => [s.key, true])));
+  const [sect, setSect] = React.useState(Object.fromEntries(SECTS.map((s) => [s.key, s.key !== asked])));
   const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
   // The same sections as the Company page: the whole box opens and closes.
   return React.createElement(
     "div", { className: "page companySetup" },
     React.createElement("h1", { className: "page__title" }, "Reports"),
     React.createElement("div", { className: "page__titleUnderline" }),
-    SECTS.map(({ key, title, body }) =>
+    SECTS.map(({ key, title, body, render }) =>
       React.createElement(CompanyStep, {
         key, id: `report-${key}`, stepKey: key, title, open: !sect[key], onToggle: () => toggle(key),
       },
-        React.createElement("p", { className: "aiTabDesc", style: { marginBottom: 0 } }, body),
-        React.createElement("div", { className: "resvEmpty", style: { marginTop: "16px" } }, "Report data will appear here.")
+        render ? render() : React.createElement(React.Fragment, null,
+          React.createElement("p", { className: "aiTabDesc", style: { marginBottom: 0 } }, body),
+          React.createElement("div", { className: "resvEmpty", style: { marginTop: "16px" } }, "Report data will appear here."))
       )
     )
   );
@@ -10689,6 +10794,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
 const LIST_REASONS = {
   exec_only:        "Only an Exec can change these lists.",
   not_signed_in:    "You are signed out. Sign in again and retry.",
+  feature_off:      "That isn't switched on for this company.",
   bad_name:         "Give it a name of 1 to 60 characters.",
   use_standard_list: "Pick that one from the standard list.",
   name_fixed:       "It keeps the name it has in the standard list.",
@@ -12571,6 +12677,17 @@ function notificationAge(iso) {
   return new Date(iso).toLocaleDateString("en-CA", { month: "short", day: "numeric" });
 }
 
+// What needs doing first, then the ranges, soonest first with sold out above
+// low, then the resolved ones.
+const NOTE_RANGE_KINDS = ["class_sold_out", "class_low"];
+function notificationOrder(a, b) {
+  const group = (n) => (n.resolvedAt ? 2 : NOTE_RANGE_KINDS.includes(n.kind) ? 1 : 0);
+  return group(a) - group(b)
+    || (group(a) > 0 ? String(a.rangeFrom || "").localeCompare(String(b.rangeFrom || "")) : 0)
+    || (group(a) > 0 ? NOTE_RANGE_KINDS.indexOf(a.kind) - NOTE_RANGE_KINDS.indexOf(b.kind) : 0)
+    || String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+}
+
 function NotificationBell() {
   const { setOpenCustomer } = React.useContext(AppContext);
   const navigate = useNavigate();
@@ -12585,13 +12702,13 @@ function NotificationBell() {
 
   const load = React.useCallback(async () => {
     const [list, count] = await Promise.all([
-      supabase.from("notifications").select("id,kind,title,body,link,locationId,createdAt,readAt")
-        .order("createdAt", { ascending: false }).limit(50),
-      supabase.from("notifications").select("id", { count: "exact", head: true }).is("readAt", null),
+      supabase.from("notifications").select("id,kind,title,body,link,locationId,createdAt,readAt,rangeFrom,resolvedAt")
+        .order("createdAt", { ascending: false }).limit(200),
+      supabase.from("notifications").select("id", { count: "exact", head: true }).is("readAt", null).is("resolvedAt", null),
     ]);
     if (list.error) { setError("Notifications could not be loaded."); return; }
     setError("");
-    setItems(list.data || []);
+    setItems([...(list.data || [])].sort(notificationOrder));
     if (!count.error) setUnread(count.count || 0);
   }, []);
 
@@ -12640,15 +12757,18 @@ function NotificationBell() {
     const link = n.link || {};
     // A fleet notification's class and dates go along as the Reservations
     // page's filter.
+    const isRange = link.section === "availability";
     const filter = link.path === "/reservations"
       ? new URLSearchParams(Object.entries({ class: link.vehicleClass, from: link.from, to: link.to }).filter(([, v]) => v)).toString()
+      : isRange ? new URLSearchParams({ section: "availability", branch: link.locationId || "", class: link.vehicleClass || "", from: link.from || "" }).toString()
       : "";
     const path = link.page === "customer" && link.resCode ? customerPath(link.resCode)
       : link.page === "customer" ? "/reservations"
       : `${link.path || "/dashboard"}${filter ? `?${filter}` : ""}`;
     const { data: acting } = await supabase.rpc("my_acting_location");
     const here = acting && acting.ok ? acting.locationId : null;
-    if (n.locationId && here !== n.locationId) {
+    // Availability has its own branch picker, so a range stays where it is.
+    if (n.locationId && here !== n.locationId && !isRange) {
       const { data, error: err } = await supabase.rpc("set_acting_location", { location_id: n.locationId });
       if (err || !data || !data.ok) { setError("Could not switch to that branch."); setOpen(true); return; }
       window.location.hash = `#${path}`;
@@ -12694,13 +12814,14 @@ function NotificationBell() {
           ? el("div", { className: "notesEmpty" }, "No notifications yet.")
           : items.map((n) => el("div", {
               key: n.id, className: "notesRow", role: "button", tabIndex: 0,
-              style: { cursor: "pointer", opacity: n.readAt ? 0.6 : 1 },
+              style: { cursor: "pointer", opacity: n.resolvedAt ? 0.4 : n.readAt ? 0.6 : 1 },
               onClick: () => follow(n),
               onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); follow(n); } },
             },
+              NOTE_RANGE_KINDS.includes(n.kind) && el("span", { className: `noteDot noteDot--${n.kind === "class_low" ? "low" : "sold"}`, "aria-hidden": "true" }),
               el("div", { className: "notesText" },
                 el("div", { style: { fontWeight: n.readAt ? 500 : 700 } }, n.title),
-                n.body && el("div", { style: { whiteSpace: "pre-line", fontSize: "12px" } }, n.body),
+                n.body && el("div", { style: { whiteSpace: "pre-line", fontSize: "12px", ...(NOTE_RANGE_KINDS.includes(n.kind) ? { color: "#6B6A66" } : null) } }, n.body),
                 el("div", { className: "notesAuthor", style: { width: "auto", fontWeight: 500, marginTop: "2px" } }, notificationAge(n.createdAt))),
               !n.readAt && el("button", {
                 type: "button", className: "notesPagerBtn", style: { width: "auto", padding: "0 8px", flexShrink: 0 },
@@ -18229,7 +18350,8 @@ function AppRoutes() {
     }),
     React.createElement(Route, {
       path: "/reports",
-      element: isFeatureEnabled("reports")
+      // Open with Notification centre too, where its ranges lead.
+      element: isFeatureEnabled("reports") || isFeatureEnabled("fleet_notifications")
         ? React.createElement(ExecNeedsBranch, null, React.createElement(ReportsPage))
         : React.createElement(Navigate, { to: "/dashboard", replace: true }),
     }),
@@ -20915,6 +21037,26 @@ select.resFormInput.listAdd__payer--empty{ color: #9B9A96; }
   .addV__grid{ grid-template-columns: minmax(0, 1fr); padding: 14px; }
   .addV__three{ grid-template-columns: minmax(0, 1fr); }
 }
+.noteDot{ flex: none; width: 9px; height: 9px; margin: 5px 8px 0 0; border-radius: 50%; }
+.noteDot--sold{ background: #1F1E1D; }
+.noteDot--low{ background: #F4845F; }
+.avail{ display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.avail__bar{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; }
+.avail__move{ display: flex; gap: 8px; margin-left: auto; }
+.avail__skel{ display: block; height: 120px; border-radius: 10px; }
+.avail__grid{ display: grid; gap: 2px 1px; align-items: stretch; max-width: 100%; min-width: 0; }
+.avail__month{ overflow: hidden; font-size: 12px; font-weight: 600; color: #1F1E1D; white-space: nowrap; }
+.avail__day{ font-size: 11px; color: #6B6A66; text-align: center; }
+.avail__class{ overflow: hidden; padding-right: 6px; font-size: 13px; font-weight: 600; color: #1F1E1D; text-overflow: ellipsis; white-space: nowrap; }
+.avail__cell{ min-width: 0; height: 26px; padding: 0; border: 0; border-radius: 2px; cursor: pointer; }
+.avail__cell--plenty{ background: #A8D8C4; }
+.avail__cell--low{ background: #F4845F; }
+.avail__cell--sold{ background: #1F1E1D; }
+.avail__picked{ font-size: 14px; font-weight: 600; color: #1F1E1D; }
+.avail__list{ margin: 0; padding: 0; list-style: none; font-size: 14px; color: #1F1E1D; }
+.avail__list li{ padding: 6px 0; border-bottom: 1px solid #EEEDE9; }
+.avail__list li:last-child{ border-bottom: 0; }
 /* Setup: the bar across the top, one piece per step, and a sub-section's own
    check once it is done. */
 .setupProgress{ margin: 0 0 18px; }
