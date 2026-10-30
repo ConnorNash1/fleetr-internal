@@ -6897,7 +6897,7 @@ function vehicleSaveError(err) {
   }
   if (err?.code === "23505") {
     const what = /vin/i.test(`${message} ${err.details || ""}`) ? "VIN" : "plate";
-    return `A vehicle with this ${what} is already saved.`;
+    return `A vehicle with this ${what} is already in your fleet.`;
   }
   if (err?.code === "23502") {
     const column = (message.match(/column "([^"]+)"/) || [])[1] || "";
