@@ -545,6 +545,12 @@ const SEASON_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "
 const seasonRange = (s) =>
   `${SEASON_MONTHS[s.startMonth - 1]} ${s.startDay} to ${SEASON_MONTHS[s.endMonth - 1]} ${s.endDay}`;
 
+// Why a season cannot have those dates.
+const seasonOverlapText = (name, seasons) => {
+  const hit = (seasons || []).find((s) => s.name === name);
+  return `Overlaps with ${name}${hit ? ` (${seasonRange(hit)})` : ""}`;
+};
+
 // The class and source ids for a reservation's vehicle class and source, as
 // stored, or null when the company has no such pair.
 function rateIdsFor(source, vehicleClass) {
@@ -8487,7 +8493,7 @@ function CompanyPage() {
           done: !!setup.items.find((i) => i.key === "vehicles" && i.done) }, el(VehiclesStep, { onAdded: changed })));
       // Sources, then the daily rates for each of them, before launch and after.
       case "rates": return el(React.Fragment, null, parts.sources, parts.seasons, parts.rates);
-      case "protection": return el(React.Fragment, null, parts.protection, parts.deductibles);
+      case "protection": return parts.protection;
       case "contract": return only(parts.acknowledgements);
       case "listing": return only(el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "listing", onSaved: refreshAll }));
       case "staff": return el(StaffPage, { embedded: true, onChanged: refreshSetup });
@@ -10624,12 +10630,92 @@ function CompanySection({ id, title, style, children, defaultOpen, done }) {
   );
 }
 
+// Every grid of number cells moves like a spreadsheet: arrow keys in all four
+// directions, Tab across, Enter down. Enter at the foot of a column goes to the
+// top of the next one, and from the last column back to the first, so it never
+// leaves the grid. Tab past the very last cell does, so the keyboard can get
+// out. null means stay where it is, or for Tab, let the browser have it.
+function gridNext({ r, c }, key, shift, rows, cols) {
+  if (key === "ArrowUp")    return r > 0 ? { r: r - 1, c } : null;
+  if (key === "ArrowDown")  return r < rows - 1 ? { r: r + 1, c } : null;
+  if (key === "ArrowLeft")  return c > 0 ? { r, c: c - 1 } : null;
+  if (key === "ArrowRight") return c < cols - 1 ? { r, c: c + 1 } : null;
+  if (key === "Tab") {
+    if (shift) return c > 0 ? { r, c: c - 1 } : r > 0 ? { r: r - 1, c: cols - 1 } : null;
+    return c < cols - 1 ? { r, c: c + 1 } : r < rows - 1 ? { r: r + 1, c: 0 } : null;
+  }
+  if (key === "Enter") {
+    if (shift) return r > 0 ? { r: r - 1, c } : { r: rows - 1, c: (c + cols - 1) % cols };
+    return r < rows - 1 ? { r: r + 1, c } : { r: 0, c: (c + 1) % cols };
+  }
+  return null;
+}
+
+// The one key handler. A grid is anything marked data-grid, its rows are table
+// rows or data-grid-row, and its cells are the inputs marked data-grid-cell.
+const GRID_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Tab", "Enter"];
+function gridKey(e) {
+  if (!GRID_KEYS.includes(e.key)) return;
+  const field = e.currentTarget;
+  const root = field.closest("[data-grid]");
+  if (!root) return;
+  const rows = [...root.querySelectorAll("tr, [data-grid-row]")]
+    .map((row) => [...row.querySelectorAll("[data-grid-cell]")]).filter((cells) => cells.length);
+  const r = rows.findIndex((cells) => cells.includes(field));
+  if (r < 0) return;
+  const cols = Math.max(...rows.map((cells) => cells.length));
+  const to = gridNext({ r, c: rows[r].indexOf(field) }, e.key, e.shiftKey, rows.length, cols);
+  if (!to) { if (e.key !== "Tab") e.preventDefault(); return; }
+  const next = rows[to.r][to.c];
+  if (!next) return;
+  e.preventDefault();
+  next.focus();
+  if (next.select) next.select();
+}
+
+// The handle on every list that can be dragged into order.
+function DragHandle({ disabled, onPointerDown }) {
+  const el = React.createElement;
+  return el("span", {
+    className: "dragHandle", title: "Drag to reorder", "aria-label": "Drag to reorder",
+    style: disabled ? { cursor: "default" } : null, onPointerDown,
+  }, el("svg", { width: 10, height: 16, viewBox: "0 0 10 16", fill: "currentColor", "aria-hidden": "true" },
+    [2, 8, 14].flatMap((y) => [2, 8].map((x) => el("circle", { key: `${x}:${y}`, cx: x, cy: y, r: 1.5 })))));
+}
+
+// Text edited where it stands: grey placeholder text while empty, the
+// company's own in black, and a Save only once something has changed.
+// fields: [{ key, label, value, placeholder, rows, max, start }]. start is
+// text to begin from in place of value, and counts as a change.
+function InPlaceText({ fields, busy, onSave, error, saveLabel = "Save" }) {
+  const el = React.createElement;
+  const seed = () => Object.fromEntries(fields.map((f) => [f.key, f.start ?? f.value ?? ""]));
+  const saved = fields.map((f) => f.value ?? "").join("\u0000");
+  const [drafts, setDrafts] = React.useState(seed);
+  React.useEffect(() => { setDrafts(seed()); }, [saved]); // eslint-disable-line react-hooks/exhaustive-deps
+  const text = (f) => (drafts[f.key] ?? "").trim();
+  const over = (f) => (f.max && text(f).length > f.max ? text(f).length - f.max : 0);
+  const changed = fields.some((f) => text(f) !== (f.value ?? ""));
+  return el(React.Fragment, null,
+    fields.map((f) => el("div", { key: f.key, className: "resFormGroup inPlaceText" },
+      f.label && el("label", { className: "resFormLabel", htmlFor: f.key }, f.label),
+      el("textarea", {
+        id: f.key, className: "resFormInput resFormTextarea", rows: f.rows || 3, placeholder: f.placeholder, value: drafts[f.key] ?? "",
+        "aria-label": f.label ? undefined : f.placeholder, ...invalid(over(f) > 0), onChange: (e) => { const v = e.target.value; setDrafts((p) => ({ ...p, [f.key]: v })); },
+      }),
+      over(f) > 0 && el(FieldError, { text: `This is ${over(f)} characters over the ${f.max.toLocaleString("en-CA")} allowed and cannot be saved.` }))),
+    changed && el("button", {
+      type: "button", className: "resModalSubmit inPlaceText__save", disabled: busy || fields.some((f) => over(f) > 0),
+      onClick: () => onSave(Object.fromEntries(fields.map((f) => [f.key, text(f)]))),
+    }, busy ? "Saving..." : saveLabel),
+    el(FieldError, { text: error }));
+}
+
 // One price in a grid. Keeps its own draft, for the reason GasRow does: a
 // shared draft would let typing in one cell save into another. Saves when the
 // cell is left, and only if it changed. Blank means no price.
-// muted shows a value worked out rather than typed. onEnter, when given, runs
-// on Enter after the cell is left, to move on. cellKey marks the cell for it.
-function ListPriceCell({ value, disabled, onSave, suffix, muted, onEnter, cellKey, title, error }) {
+// muted shows a value worked out rather than typed.
+function ListPriceCell({ value, disabled, onSave, suffix, muted, title, error, label }) {
   const shown = value == null ? "" : String(value);
   const [draft, setDraft] = React.useState(shown);
   React.useEffect(() => { setDraft(shown); }, [shown]);
@@ -10640,14 +10726,9 @@ function ListPriceCell({ value, disabled, onSave, suffix, muted, onEnter, cellKe
     React.createElement("input", {
       className: "resFormInput", style: { width: "62px", padding: "4px 6px", ...(muted ? { opacity: 0.55 } : null) },
       inputMode: "decimal", value: draft, disabled, title, maxLength: 8, ...invalid(!!error),
-      "data-rate-cell": cellKey,
+      "data-grid-cell": true, "aria-label": label,
       onChange: (e) => setDraft(numberTyped(e.target.value, { digits: 5, decimals: 2 })),
-      onKeyDown: (e) => {
-        if (e.key !== "Enter") return;
-        e.preventDefault();
-        e.currentTarget.blur();
-        if (onEnter) onEnter();
-      },
+      onKeyDown: gridKey,
       onBlur: async () => {
         const typed = draft.trim();
         if (typed === shown) { setDraft(shown); return; }
@@ -10749,11 +10830,11 @@ function ListAddRow({ placeholder, label, withType, disabled, onAdd, wide, error
   return React.createElement(
     "div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px", alignItems: "center" } },
     React.createElement("input", {
-      className: "resFormInput", style: { width: wide ? "320px" : "auto", maxWidth: "100%" }, placeholder, maxLength: 60,
+      className: "resFormInput", style: { width: wide ? "400px" : "auto", maxWidth: "100%" }, placeholder, maxLength: 60,
       value: name, ...invalid(!!error), onChange: (e) => setName(e.target.value),
     }),
     withType && React.createElement("select", {
-      className: "resFormInput", style: { width: "auto" },
+      className: `resFormInput listAdd__payer${type ? "" : " listAdd__payer--empty"}`, "aria-label": "Who pays",
       value: type, onChange: (e) => setType(e.target.value),
     },
       React.createElement("option", { value: "" }, "Who pays"),
@@ -10768,87 +10849,10 @@ function ListAddRow({ placeholder, label, withType, disabled, onAdd, wide, error
   );
 }
 
-// What the customer reads about one protection product at pickup, edited as
-// a preview until Edit is pressed, then the boxes with their character
-// counts, Save and Cancel. Required is a
-// switch beside it and saves on its own, keeping the wording as it is.
+// What the customer reads about a product at pickup, and what they tick to
+// decline it. Without decline wording an optional product is not offered.
 const PROTECTION_WORDING_MAX = 600;
 const PROTECTION_DECLINE_MAX = 300;
-
-function ProtectionDetailsCard({ product, busy, onSave, error }) {
-  const savedWording = product.customerWording || "";
-  const savedDecline = product.declineWording || "";
-  const [editing, setEditing] = React.useState(false);
-  const [wording, setWording] = React.useState(savedWording);
-  const [decline, setDecline] = React.useState(savedDecline);
-
-  const w = wording.trim();
-  const d = decline.trim();
-  const wordingOver = w.length > PROTECTION_WORDING_MAX;
-  const declineOver = d.length > PROTECTION_DECLINE_MAX;
-  const unchanged = w === savedWording && d === savedDecline;
-  // An optional product has to say what the customer ticks to decline it.
-  const declineMissing = !product.required && !d;
-
-  const open = () => { setWording(savedWording); setDecline(savedDecline); setEditing(true); };
-  const save = async () => {
-    if (await onSave(w, d, !!product.required)) setEditing(false);
-  };
-  const el = React.createElement;
-
-  return el("div", { style: { marginBottom: "22px", opacity: product.active ? 1 : 0.5 } },
-    el("div", { className: "gasSettingSubhead" }, product.active ? product.name : `${product.name} (off)`),
-    el("label", { style: { display: "inline-flex", alignItems: "center", gap: "8px", cursor: "pointer", margin: "4px 0 8px" } },
-      el("input", {
-        type: "checkbox", checked: !!product.required, disabled: busy,
-        onChange: (e) => onSave(savedWording, savedDecline, e.target.checked),
-      }),
-      "Required: included with every rental it is priced for, with no Decline"),
-
-    !editing && el(React.Fragment, null,
-      el("p", { className: "closeRentalHint" }, "What the customer reads:"),
-      el("div", { className: "closeRentalSummary" },
-        savedWording || "No wording yet. The customer sees the name and price per day only."),
-      !product.required && el(React.Fragment, null,
-        el("p", { className: "closeRentalHint" }, "What the customer ticks to decline:"),
-        el("div", { className: "closeRentalSummary" },
-          savedDecline || "Not written yet. Until it is, this product is not offered at pickup.")),
-      el("div", { className: "closeRentalActions" },
-        el("button", { type: "button", className: "resModalSubmit", disabled: busy, onClick: open }, "Edit"))),
-
-    editing && el(React.Fragment, null,
-      el("p", { className: "closeRentalHint" }, "What the customer reads. Leave it blank to show only the name and price per day."),
-      el("textarea", {
-        className: "resFormInput resFormTextarea", rows: 4, value: wording, autoFocus: true,
-        "aria-label": `${product.name} customer wording`, ...invalid(wordingOver),
-        onChange: (e) => setWording(e.target.value),
-      }),
-      wordingOver && el(FieldError, { text: `The wording is ${w.length - PROTECTION_WORDING_MAX} characters over the ${PROTECTION_WORDING_MAX} allowed and cannot be saved.` }),
-      el("p", { className: "closeRentalHint" }, `${w.length} of ${PROTECTION_WORDING_MAX} characters.`),
-
-      el("p", { className: "closeRentalHint" }, "What the customer ticks to decline. Needed unless the product is required: without it, the product is not offered at pickup."),
-      el("textarea", {
-        className: "resFormInput resFormTextarea", rows: 2, value: decline,
-        "aria-label": `${product.name} decline wording`, ...invalid(declineOver),
-        onChange: (e) => setDecline(e.target.value),
-      }),
-      declineOver && el(FieldError, { text: `The decline wording is ${d.length - PROTECTION_DECLINE_MAX} characters over the ${PROTECTION_DECLINE_MAX} allowed and cannot be saved.` }),
-      el("p", { className: "closeRentalHint" }, `${d.length} of ${PROTECTION_DECLINE_MAX} characters.`),
-
-      el("div", { className: "gasSettingSubhead" }, "Preview"),
-      el("div", { className: "closeRentalSummary" }, w || "No wording. The customer sees the name and price per day only."),
-      !product.required && el("div", { className: "closeRentalSummary" }, d || "No decline wording."),
-
-      el("div", { className: "closeRentalActions" },
-        el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: () => setEditing(false) }, "Cancel"),
-        el("button", {
-          type: "button", className: "resModalSubmit",
-          disabled: busy || unchanged || wordingOver || declineOver || declineMissing,
-          onClick: save,
-        }, busy ? "Saving..." : "Save"))),
-    el(FieldError, { text: error })
-  );
-}
 
 // What a class is filed under on fleetr.ai, in words: its category, and
 // whether it is electric or luxury. Set by the standard list, not edited.
@@ -10880,15 +10884,16 @@ function LowWarningsForm({ classes, busy, errAt, onSave }) {
       if (!(await onSave(c, t === "" ? null : Number(t)))) return;
     }
   };
-  return el(React.Fragment, null,
+  return el("div", { "data-grid": true },
     classes.map((c) => {
       const error = (problem.id === c.id && problem.text) || errAt(`classes:low:${c.id}`);
-      return el("div", { key: c.id, className: "lowWarn__row" },
+      return el("div", { key: c.id, className: "lowWarn__row", "data-grid-row": true },
         el("span", { className: "lowWarn__name" }, c.name),
         el("span", { className: "closeRentalHint", style: { margin: 0 } }, "Fewer than"),
         el("input", {
           className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric", placeholder: "Off", maxLength: 2,
           value: draftOf(c), disabled: busy, "aria-label": `${c.name}: warn when fewer than this many are free`, ...invalid(!!error),
+          "data-grid-cell": true, onKeyDown: gridKey,
           onChange: (e) => { const v = numberTyped(e.target.value, { digits: 2 }); setDrafts((p) => ({ ...p, [c.id]: v })); setProblem({ id: "", text: "" }); },
         }),
         el("span", { className: "closeRentalHint", style: { margin: 0 } }, "free"),
@@ -10924,6 +10929,7 @@ function VehicleClassDetailsCell({ entry, busy, onSave, error }) {
   const num = (key, label) => el("td", null, el("input", {
     className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric", maxLength: 2,
     value: draft[key], disabled: busy, "aria-label": `${entry.name} ${label}`, ...invalid(problem.key === key),
+    "data-grid-cell": true, onKeyDown: gridKey,
     onChange: (e) => { setDraft((p) => ({ ...p, [key]: numberTyped(e.target.value, { digits: 2 }) })); setProblem({ key: "", text: "" }); },
   }), problem.key === key && el(FieldError, { text: problem.text }));
   return el(React.Fragment, null,
@@ -11020,53 +11026,75 @@ function VehicleClassPicker({ disabled, onAdded }) {
     el(FieldError, { text: error }));
 }
 
-// One row of deductibles: the company default, or one vehicle class's own.
-// Keeps its own drafts, for the reason GasRow does. A blank amount clears it;
-// on a class that means the company default applies.
-function DeductibleRow({ label, collision, comprehensive, placeholder, busy, onSave, error }) {
-  const shown = (v) => (v == null ? "" : String(Number(v)));
-  const [coll, setColl] = React.useState(shown(collision));
-  const [comp, setComp] = React.useState(shown(comprehensive));
-  const [problem, setProblem] = React.useState({ name: "", text: "" });
-  React.useEffect(() => { setColl(shown(collision)); setComp(shown(comprehensive)); }, [collision, comprehensive]); // eslint-disable-line react-hooks/exhaustive-deps
-  const unchanged = coll.trim() === shown(collision) && comp.trim() === shown(comprehensive);
+// What the renter pays for damage with a product: one amount, or separate ones
+// for comprehensive, and any class with its own. Blank says nothing to the
+// renter. One Save for all of it.
+const damageDraft = (v) => (v == null ? "" : String(Number(v)));
+function ProtectionDamageForm({ product, classes, classRows, busy, onSave, error }) {
   const el = React.createElement;
-  const money = (value, setValue, ph, name) => el(React.Fragment, null,
-    el("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" } },
-      el("span", { style: { opacity: 0.7 } }, "$"),
-      el("input", {
-        className: "resFormInput", style: { width: "100px" }, inputMode: "decimal", maxLength: 8,
-        placeholder: ph, value, disabled: busy, "aria-label": `${label} ${name}`, ...invalid(problem.name === name),
-        onChange: (e) => { setValue(numberTyped(e.target.value, { digits: 5, decimals: 2 })); setProblem({ name: "", text: "" }); },
-      })),
-    problem.name === name && el(FieldError, { text: problem.text }));
+  const seed = () => ({
+    amount: damageDraft(product.renterPays), comp: damageDraft(product.renterPaysComprehensive),
+    separate: product.renterPaysComprehensive != null || classRows.some((r) => r.renterPaysComprehensive != null),
+    rows: classRows.map((r) => ({ classId: r.vehicleClassId, amount: damageDraft(r.renterPays), comp: damageDraft(r.renterPaysComprehensive) })),
+  });
+  const savedKey = JSON.stringify(seed());
+  const [draft, setDraft] = React.useState(seed);
+  const [problem, setProblem] = React.useState("");
+  const [picking, setPicking] = React.useState(false);
+  React.useEffect(() => { setDraft(seed()); setPicking(false); }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const edit = (patch) => { setDraft((p) => ({ ...p, ...patch })); setProblem(""); };
+  const editRow = (id, patch) => edit({ rows: draft.rows.map((r) => (r.classId === id ? { ...r, ...patch } : r)) });
+  const money = (label, value, onChange) => el("span", { className: "protCard__money" },
+    el("span", { style: { opacity: 0.7 } }, "$"),
+    el("input", {
+      className: "resFormInput", style: { width: "84px" }, inputMode: "decimal", maxLength: 8, value, disabled: busy, "aria-label": label,
+      "data-grid-cell": true, onKeyDown: gridKey, onChange: (e) => onChange(numberTyped(e.target.value, { digits: 5, decimals: 2 })),
+    }));
+  const free = classes.filter((c) => !draft.rows.some((r) => r.classId === c.id));
+  const nameOf = (id) => (classes.find((c) => c.id === id) || {}).name || "Class";
   const save = () => {
-    for (const [name, v] of [["collision", coll], ["comprehensive", comp]]) {
-      const p = numberProblem(v, { min: 0, max: 99999, label: "A deductible", whole: false });
-      if (p) { setProblem({ name, text: p }); return; }
+    for (const v of [draft.amount, draft.comp, ...draft.rows.flatMap((r) => [r.amount, r.comp])]) {
+      const p = numberProblem(v, { min: 0, max: 99999, label: "An amount", whole: false });
+      if (p) { setProblem(p); return; }
     }
-    onSave(coll.trim(), comp.trim());
+    const n = (v) => (String(v).trim() === "" ? null : Number(v));
+    onSave(n(draft.amount), draft.separate ? n(draft.comp) : null,
+      draft.rows.map((r) => ({ classId: r.classId, amount: n(r.amount), comprehensive: draft.separate ? n(r.comp) : null })));
   };
-  return el("tr", null,
-    el("td", { style: { fontWeight: 600 } }, label),
-    el("td", null, money(coll, setColl, placeholder.collision, "collision")),
-    el("td", null, money(comp, setComp, placeholder.comprehensive, "comprehensive")),
-    el("td", null,
-      el("button", {
-        className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
-        disabled: busy || unchanged, onClick: save,
-      }, "Save"),
-      el(FieldError, { text: error })));
+  return el("div", { "data-grid": true },
+    el("div", { className: "protCard__line", "data-grid-row": true },
+      el("span", null, "With this protection, renter pays up to"),
+      money(draft.separate ? "Collision amount" : "Amount", draft.amount, (v) => edit({ amount: v })),
+      draft.separate && el("span", null, "and for comprehensive"),
+      draft.separate && money("Comprehensive amount", draft.comp, (v) => edit({ comp: v }))),
+    draft.rows.map((r) => el("div", { key: r.classId, className: "protCard__line", "data-grid-row": true },
+      el("span", { style: { fontWeight: 600, minWidth: "130px" } }, nameOf(r.classId)),
+      money(`${nameOf(r.classId)} amount`, r.amount, (v) => editRow(r.classId, { amount: v })),
+      draft.separate && el("span", null, "and for comprehensive"),
+      draft.separate && money(`${nameOf(r.classId)} comprehensive amount`, r.comp, (v) => editRow(r.classId, { comp: v })),
+      el("button", { type: "button", className: "miniBtn", "aria-label": `Remove ${nameOf(r.classId)}`, disabled: busy,
+        onClick: () => edit({ rows: draft.rows.filter((x) => x.classId !== r.classId) }) }, "\u00d7"))),
+    el("label", { className: "protCard__toggle" },
+      el("input", { type: "checkbox", checked: draft.separate, disabled: busy, onChange: (e) => edit({ separate: e.target.checked }) }),
+      "Separate amounts for comprehensive"),
+    picking
+      ? el("select", {
+          className: "resFormInput listAdd__payer", value: "", autoFocus: true, "aria-label": "Vehicle class",
+          onChange: (e) => { if (e.target.value) { edit({ rows: [...draft.rows, { classId: e.target.value, amount: draft.amount, comp: draft.comp }] }); setPicking(false); } },
+        }, el("option", { value: "" }, "Choose a class"), free.map((c) => el("option", { key: c.id, value: c.id }, c.name)))
+      : free.length > 0 && el("button", { type: "button", className: "miniBtn", disabled: busy, onClick: () => setPicking(true) }, "+ Different amount for a class"),
+    JSON.stringify(draft) !== savedKey && el("div", null,
+      el("button", { type: "button", className: "resModalSubmit inPlaceText__save", disabled: busy, onClick: save }, busy ? "Saving..." : "Save")),
+    el(FieldError, { text: problem || error }));
 }
 
-// The contract acknowledgements: the current version as the customer will
-// read it, an Edit that saves a new version, and every earlier version.
+// The contract acknowledgements, edited where they stand. Every save is a new
+// version; the earlier ones are listed below and never change.
 const CONTRACT_ACK_MAX = 4000;
 function ContractAcknowledgementsCard({ versions, busy, onSave, error }) {
   const current = versions[0] || null;
   const [startError, setStartError] = React.useState("");
-  const [editing, setEditing] = React.useState(false);
-  const [draft,   setDraft]   = React.useState("");
+  const [started, setStarted] = React.useState(null);   // the text to begin from
   const [shownVersion, setShownVersion] = React.useState(null);
   const el = React.createElement;
   const when = (iso) => {
@@ -11074,58 +11102,34 @@ function ContractAcknowledgementsCard({ versions, busy, onSave, error }) {
     return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString("en-CA", { year: "numeric", month: "short", day: "numeric" });
   };
   const body = (text) => el("div", { className: "closeRentalSummary", style: { whiteSpace: "pre-line" } }, text);
-  const d = draft.trim();
-  const over = d.length > CONTRACT_ACK_MAX;
-
-  const open = () => { setDraft(current ? current.body : ""); setEditing(true); };
   // A company with no terms yet starts from fleetr's, or from its own.
   const startStandard = async () => {
     setStartError("");
     const { data, error } = await supabase.rpc("standard_contract_terms");
     if (error || typeof data !== "string") { setStartError("fleetr's standard terms could not be loaded. Try again."); return; }
-    setDraft(data); setEditing(true);
+    setStarted(data);
   };
-  const startOwn = () => { setDraft(""); setEditing(true); };
   const insurerNote = el("p", { className: "closeRentalHint" },
     "fleetr's standard terms are a starting template, not legal advice. Review them with your own insurer before you use them.");
-  const save = async () => { if (await onSave(d)) setEditing(false); };
+  const save = async ({ terms }) => { if (await onSave(terms)) setStarted(null); };
 
   return el(React.Fragment, null,
-    !editing && !current && el(React.Fragment, null,
-      el("p", { className: "closeRentalHint" }, "No contract terms yet. Start from fleetr's standard terms, or paste your own. Either way you review them before saving."),
+    !current && started === null && el(React.Fragment, null,
       insurerNote,
-      el("div", { className: "closeRentalActions" },
-        el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: startOwn }, "Paste your own"),
-        el("button", { type: "button", className: "resModalSubmit", disabled: busy, onClick: startStandard }, "Use fleetr's standard terms")),
+      el("div", { className: "termStart" },
+        el("button", { type: "button", className: "resModalSubmit", disabled: busy, onClick: startStandard }, "Use fleetr's standard terms"),
+        el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: () => setStarted("") }, "Paste your own")),
       el(FieldError, { text: startError })),
 
-    !editing && current && el(React.Fragment, null,
-      el("p", { className: "closeRentalHint" },
-        `Version ${current.version}, saved ${when(current.createdAt)}. What the customer acknowledges:`),
-      body(current.body),
-      el("div", { className: "closeRentalActions" },
-        el("button", { type: "button", className: "resModalSubmit", disabled: busy, onClick: open }, "Edit"))),
-
-    editing && el(React.Fragment, null,
-      el("p", { className: "closeRentalHint" },
-        "One statement per line. Saving makes a new version; the earlier ones are kept exactly as they were."),
-      !current && insurerNote,
-      el("textarea", {
-        className: "resFormInput resFormTextarea", rows: 10, value: draft, autoFocus: true,
-        "aria-label": "Contract acknowledgements", ...invalid(over), onChange: (e) => setDraft(e.target.value),
-      }),
-      over && el(FieldError, { text: `This is ${d.length - CONTRACT_ACK_MAX} characters over the ${CONTRACT_ACK_MAX.toLocaleString("en-CA")} allowed and cannot be saved.` }),
-      el("p", { className: "closeRentalHint" }, `${d.length} of ${CONTRACT_ACK_MAX.toLocaleString("en-CA")} characters.`),
-      el("div", { className: "gasSettingSubhead" }, "Preview"),
-      body(d || "Nothing yet."),
-      el("div", { className: "closeRentalActions" },
-        el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: () => setEditing(false) }, "Cancel"),
-        el("button", {
-          type: "button", className: "resModalSubmit",
-          disabled: busy || !d || over || (current && d === current.body),
-          onClick: save,
-        }, busy ? "Saving..." : "Save as a new version")),
-      el(FieldError, { text: error })),
+    (current || started !== null) && el(React.Fragment, null,
+      current
+        ? el("p", { className: "closeRentalHint" }, `Version ${current.version}, saved ${when(current.createdAt)}.`)
+        : insurerNote,
+      el(InPlaceText, {
+        key: current ? current.id : "new", busy, error, onSave: save,
+        fields: [{ key: "terms", value: current ? current.body : "", start: started || undefined, rows: 10, max: CONTRACT_ACK_MAX,
+          placeholder: "One statement per line" }],
+      })),
 
     versions.length > 1 && el(React.Fragment, null,
       el("div", { className: "gasSettingSubhead", style: { marginTop: "18px" } }, "Version history"),
@@ -11139,7 +11143,7 @@ function ContractAcknowledgementsCard({ versions, busy, onSave, error }) {
 }
 
 // layout receives each part (pickup, classes, sources, rates, protection,
-// deductibles, acknowledgements) to place where it belongs.
+// acknowledgements) to place where it belongs.
 // onChanged runs after every change that saved. openSections opens them all.
 function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   const { currentUser, setup } = React.useContext(AppContext);
@@ -11148,16 +11152,18 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   // { at, text }: a refusal is shown in the section it happened in.
   const [error,  setError]  = React.useState(null);
   const [prices, setPrices] = React.useState([]);
-  const [deductibles,  setDeductibles]  = React.useState(null);
-  const [overrides,    setOverrides]    = React.useState([]);
+  // The defaults, the sources with their own prices, each product's amounts
+  // and any class's own (protection_cards.sql).
+  const [protection,   setProtection]   = React.useState({ defaults: [], blocks: [], amounts: [], classes: [] });
   const [ackVersions,  setAckVersions]  = React.useState([]);
   const [, setDrawn] = React.useState(0);
   // Which sources are expanded to show their specific sources.
   const [openSources, setOpenSources] = React.useState({});
   // "kind:id" of the entry whose Delete is waiting to be confirmed.
   const [confirming, setConfirming] = React.useState("");
-  // The product whose price grid is on screen.
-  const [priceProduct, setPriceProduct] = React.useState("");
+  // The one protection card open, and the one choosing a source to price.
+  const [openProduct, setOpenProduct] = React.useState("");
+  const [pickSource, setPickSource] = React.useState("");
   // The rate table on screen: Normal or a season's id, and a source's id.
   // And the season being changed.
   const [rateView, setRateView] = React.useState("normal");
@@ -11170,16 +11176,17 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   const reload = React.useCallback(async () => {
     await loadCompanyLists(currentUser);
     const op = currentUser?.operatorId ?? null;
-    const [pp, cd, dov, ack] = await Promise.all([
+    const [pp, pd, pb, pa, pc, ack] = await Promise.all([
       supabase.from("protection_prices").select("productId,vehicleClassId,sourceId,amount").eq("operatorId", op),
-      supabase.from("company_deductibles").select("collision,comprehensive").eq("operatorId", op).maybeSingle(),
-      supabase.from("deductible_overrides").select("vehicleClassId,collision,comprehensive").eq("operatorId", op),
+      supabase.from("protection_default_prices").select("productId,vehicleClassId,amount").eq("operatorId", op),
+      supabase.from("protection_price_blocks").select("productId,sourceId").eq("operatorId", op).order("createdAt"),
+      supabase.from("protection_products").select("id,renterPays,renterPaysComprehensive").eq("operatorId", op),
+      supabase.from("protection_damage_classes").select("productId,vehicleClassId,renterPays,renterPaysComprehensive").eq("operatorId", op),
       supabase.from("contract_acknowledgements").select("id,version,body,createdAt").eq("operatorId", op)
         .order("version", { ascending: false }),
     ]);
     if (!pp.error)  setPrices(pp.data || []);
-    if (!cd.error)  setDeductibles(cd.data || null);
-    if (!dov.error) setOverrides(dov.data || []);
+    setProtection({ defaults: pd.data || [], blocks: pb.data || [], amounts: pa.data || [], classes: pc.data || [] });
     if (!ack.error) setAckVersions(ack.data || []);
     setReady(true);
     setDrawn((n) => n + 1);
@@ -11190,7 +11197,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   const refusal = (data, err) =>
     err ? LIST_REASONS.network
     : data && data.reason === "overlaps" && data.season
-      ? `It shares days with ${data.season}. Seasons cannot overlap; change or switch off ${data.season} first.`
+      ? seasonOverlapText(data.season, companyLists ? companyLists.seasons : [])
       : (LIST_REASONS[data && data.reason] || "That did not work.");
 
   const act = async (at, fn, args) => {
@@ -11294,11 +11301,16 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
       el("thead", null, el("tr", null, heads.map((h, i) => el("th", { key: i }, h)))),
       el("tbody", null, rows)));
 
+  const gridTable = (minWidth, heads, rows) => el("div", { "data-grid": true }, table(minWidth, heads, rows));
+
   // One entry in a list: drag handle, name, anything extra, on/off, Delete.
   //   reorder   { listKey, list, index, saveCall } or null when the list has
   //             no order of its own
   //   rename    (name) => the save to make
   //   goesWith  what a delete takes with it, as a sentence, or ""
+  const dragFrom = (at, reorder) => (e) => startDrag(e, {
+    at, listKey: reorder.listKey, list: reorder.list, from: reorder.index, saveCall: reorder.saveCall,
+  });
   const entryRow = ({ at, kind, entry, reorder, rename, goesWith, lead, extra, indent, fixed }) => {
     const key = `${kind}:${entry.id}`;
     const dragging = drag && reorder && drag.listKey === reorder.listKey;
@@ -11315,15 +11327,9 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
       rowProps["data-reorder-index"] = reorder.index;
     }
     return el("tr", rowProps,
-      el("td", { style: { width: "1%", paddingRight: 0 } },
+      el("td", { style: { width: "1%", paddingRight: 0, verticalAlign: "middle" } },
         reorder
-          ? el("span", {
-              title: "Drag to reorder", "aria-label": "Drag to reorder",
-              style: { cursor: busy ? "default" : "grab", touchAction: "none", userSelect: "none", padding: "4px 6px", opacity: 0.6 },
-              onPointerDown: (e) => startDrag(e, {
-                at, listKey: reorder.listKey, list: reorder.list, from: reorder.index, saveCall: reorder.saveCall,
-              }),
-            }, "⋮⋮")
+          ? el(DragHandle, { disabled: busy, onPointerDown: dragFrom(at, reorder) })
           : null),
       el("td", { style: indent ? { paddingLeft: "28px" } : null },
         lead || null,
@@ -11365,7 +11371,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   // same notice, so a layout still has something to place.
   // While loading, each part is its skeleton: the closed dropdown it opens as.
   const LIST_TITLES = { pickup: "Pickup locations", classes: "Vehicle classes", sources: "Sources", rates: "Rates", seasons: "Seasons",
-    protection: "Protection products", deductibles: "Deductibles", acknowledgements: "Contract acknowledgements" };
+    protection: "Protection products", acknowledgements: "Contract acknowledgements" };
   if (!ready && layout) {
     return layout(Object.fromEntries(Object.keys(LIST_TITLES).map((k) => [k, el(SkeletonFrame, { key: k },
       el("div", { className: "dashboardSection", style: { marginTop: "24px" } }, el("h2", null, skT(`\u25b8 ${LIST_TITLES[k]}`))))])));
@@ -11376,7 +11382,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         "The company's lists could not be loaded, so they cannot be edited right now. Reload the page to try again.");
   if (notice) {
     if (layout) {
-      return layout(Object.fromEntries(["pickup", "classes", "sources", "rates", "seasons", "protection", "deductibles", "acknowledgements"]
+      return layout(Object.fromEntries(["pickup", "classes", "sources", "rates", "seasons", "protection", "acknowledgements"]
         .map((k) => [k, el(React.Fragment, { key: k }, notice)])));
     }
     return el("div", { className: "dashboardSection", style: { marginTop: "24px" } }, el("h2", null, "Lists and prices"), notice);
@@ -11385,8 +11391,6 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   const { pickupLocations, vehicleClasses, sources, protectionProducts, rates, periodRates, seasons } = companyLists;
   const activeClasses  = vehicleClasses.filter((c) => c.active);
   const activeSources  = sources.filter((x) => x.active);
-  const activeProducts = protectionProducts.filter((pr) => pr.active);
-  const shownProduct   = activeProducts.find((pr) => pr.id === priceProduct) || activeProducts[0] || null;
 
   // A closed branch is listed only if it still has pickup locations to show.
   const pickupBranches = (branches || []).filter((b) =>
@@ -11403,7 +11407,6 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
     rates:       itemDone("rates"),
     seasons:     (seasons || []).length > 0,
     protection:  itemDone("protection"),
-    deductibles: !!deductibles,
     acknowledgements: itemDone("contract"),
   };
 
@@ -11411,33 +11414,6 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   // while the rest scrolls. The background on the held cells is the table's
   // own, so what scrolls underneath does not show through.
   const held = { position: "sticky", background: "#F9F9F7" };
-  // opts.suffix follows each amount; opts.noteFor(c, x) is a line under a cell.
-  const priceGrid = (at, valueFor, saveFor, opts = {}) =>
-    (!activeClasses.length || !activeSources.length)
-      ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-          "Prices need at least one vehicle class and one source switched on.")
-      : el("div", { style: { overflow: "auto", maxHeight: "70vh" } },
-          el("table", { className: "dashboardTable", style: { minWidth: `${170 + activeSources.length * 104}px` } },
-            el("thead", null, el("tr", null,
-              el("th", { style: { ...held, top: 0, left: 0, zIndex: 3, padding: "6px 10px" } }, "Vehicle class"),
-              activeSources.map((x) => el("th", {
-                key: x.id, style: { ...held, top: 0, zIndex: 2, padding: "6px 8px" },
-              }, x.name)))),
-            el("tbody", null, activeClasses.map((c) => el("tr", { key: c.id },
-              el("td", { style: { ...held, left: 0, zIndex: 1, padding: "4px 10px", fontWeight: 600 } }, c.name),
-              activeSources.map((x) => el("td", { key: x.id, style: { padding: "4px 8px" } },
-                el(ListPriceCell, {
-                  value: valueFor(c, x), disabled: busy, suffix: opts.suffix, error: errAt(`${at}:${c.id}:${x.id}`),
-                  onSave: (typed) => {
-                    const parsed = parsePrice(`${at}:${c.id}:${x.id}`, typed, ["rates", "periods", "seasons"].includes(at) && x.standardKey === "fleetr_ai");
-                    return parsed.ok ? saveFor(c, x, parsed.amount) : Promise.resolve(false);
-                  },
-                }),
-                opts.noteFor && (() => {
-                  const note = opts.noteFor(c, x);
-                  return note && el("div", { style: { fontSize: "0.75rem", opacity: 0.7, marginTop: "2px", whiteSpace: "nowrap" } }, note);
-                })())))))));
-
   const protectionPrice = (product, c, x) => {
     const row = prices.find((r) =>
       r.productId === product.id && r.vehicleClassId === c.id && r.sourceId === x.id);
@@ -11485,7 +11461,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
       "classes",
       vehicleClasses.length === 0
         ? el("p", { className: "closeRentalHint" }, "No vehicle classes yet")
-        : table("860px", ["", "Vehicle class", "Type", "Seats", "Bags", "Example models", "", "On", ""],
+        : gridTable("860px", ["", "Vehicle class", "Type", "Seats", "Bags", "Example models", "", "On", ""],
         vehicleClasses.map((entry, i) => entryRow({
           at: "classes", kind: "vehicle_class", entry,
           reorder: { listKey: "classes", list: vehicleClasses, index: i, saveCall: saveClass },
@@ -11559,7 +11535,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         })),
       subHeading("Add a source"),
       el(ListAddRow, {
-        placeholder: "Name, like Smith's Body Shop or Intact Insurance", label: "Add source", withType: true, wide: true, disabled: busy,
+        placeholder: "Name, for example a body shop or insurance company", label: "Add source", withType: true, wide: true, disabled: busy,
         error: errAt("sources:add"),
         onAdd: (name, type) => act("sources:add", "save_source", {
           p_id: null, p_name: name, p_billing_type: type, p_sort: null,
@@ -11606,11 +11582,6 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         const off = day ? Math.round((1 - v / day) * 100) : 0;
         return `= $${shown} per ${col === "week" ? "week" : "30 days"}${off > 0 ? `, ${off}% off` : ""}`;
       };
-      // Enter saves and moves to the same column in the next row.
-      const nextDown = (row, col) => () => {
-        const next = document.querySelector(`[data-rate-cell="${row + 1}:${col}"]`);
-        if (next) next.focus();
-      };
       const warn = [];
       activeClasses.forEach((c) => {
         const d = cellOf(c, "day").value, w = cellOf(c, "week").value, m = cellOf(c, "month").value;
@@ -11622,7 +11593,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         el("select", { className: "resFormInput", style: { width: "auto" }, value, onChange: (e) => onChange(e.target.value) },
           options.map(([v, l]) => el("option", { key: v, value: v }, l))));
       return section("Rates",
-        "Pick Normal or a season, and a source. Every cell is a daily rate: Weekly for rentals of 7 to 27 days, Monthly for 28 days or more. A blank weekly or monthly cell uses the rate to its left, and a season with no daily rate uses the normal rates. Setup needs one source with a daily rate for every vehicle class, and that has to be fleetr.ai while List on fleetr.ai is on. fleetr.ai rates are whole dollars. A season's weekly and monthly fill in from the normal rates when its daily is entered, shown faded, until you type your own. A cell saves when you leave it; Enter moves down and Tab across.",
+        "Each cell is a rate per day: Weekly is 7 to 27 days, Monthly 28 or more, and a blank uses the rate to its left.",
         "rates",
         el("div", { style: { display: "flex", gap: "16px", alignItems: "center", flexWrap: "wrap", margin: "4px 0 10px" } },
           picker("Period", season ? season.id : "normal", setRateView,
@@ -11632,21 +11603,20 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
           ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Rates need at least one vehicle class and one source switched on.")
           // Keyed by period and source, so a cell's draft never carries from
           // one table into another.
-          : el("div", { key: `${rateView}:${src.id}`, style: { overflow: "auto", maxHeight: "70vh" } },
+          : el("div", { key: `${rateView}:${src.id}`, "data-grid": true, style: { overflow: "auto", maxHeight: "70vh" } },
               el("table", { className: "dashboardTable", style: { minWidth: "480px" } },
                 el("thead", null, el("tr", null,
                   el("th", { style: { ...held, top: 0, left: 0, zIndex: 3, padding: "6px 10px" } }, "Vehicle class"),
                   COLS.map(([col, head]) => el("th", { key: col, style: { ...held, top: 0, zIndex: 2, padding: "6px 8px" } }, head)))),
-                el("tbody", null, activeClasses.map((c, row) => el("tr", { key: c.id },
+                el("tbody", null, activeClasses.map((c) => el("tr", { key: c.id },
                   el("td", { style: { ...held, left: 0, zIndex: 1, padding: "4px 10px", fontWeight: 600 } }, c.name),
                   COLS.map(([col]) => {
                     const cell = cellOf(c, col);
                     const note = noteFor(c, col);
                     return el("td", { key: col, style: { padding: "4px 8px", verticalAlign: "top" } },
                       el(ListPriceCell, {
-                        value: cell.value, suffix: "/day", muted: cell.auto, cellKey: `${row}:${col}`, error: errAt(cellAt(c, col)),
+                        value: cell.value, suffix: "/day", muted: cell.auto, label: `${c.name} ${col}`, error: errAt(cellAt(c, col)),
                         title: cell.auto ? "Worked out from the normal rates. Type a value to set your own." : undefined,
-                        onEnter: nextDown(row, col),
                         onSave: (typed) => {
                           const parsed = parsePrice(cellAt(c, col), typed, whole);
                           return parsed.ok ? save(c, col, parsed.amount) : Promise.resolve(false);
@@ -11697,78 +11667,118 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
       })),
 
     // ── Protection products ──
-    protection: section("Protection products",
-      "Each product has a price per day for every vehicle class and source. Pick a product to see its prices. A cell saves when you leave it. Blank means no price.",
-      "protection",
-      protectionProducts.length > 0 && table("520px", listHeads("Protection product"),
-        protectionProducts.map((entry, i) => entryRow({
-          at: "protection", kind: "protection_product", entry,
-          reorder: { listKey: "products", list: protectionProducts, index: i, saveCall: saveProduct },
-          rename: (name) => ["save_protection_product", { p_id: entry.id, p_name: name, p_sort: null }],
-          goesWith: "Its protection prices go with it.",
-        }))),
+    // A card for each product, one open at a time.
+    protection: section("Protection products", null, "protection",
+      protectionProducts.map((pr, i) => {
+        const isOpen = openProduct === pr.id;
+        const key = `protection_product:${pr.id}`;
+        const reorder = { listKey: "products", list: protectionProducts, index: i, saveCall: saveProduct };
+        const dragging = drag && drag.listKey === "products";
+        const blocks = protection.blocks.filter((b) => b.productId === pr.id);
+        const freeSources = sources.filter((x) => x.active && !blocks.some((b) => b.sourceId === x.id));
+        const amounts = protection.amounts.find((a) => a.id === pr.id) || {};
+        const defaultOf = (c) => {
+          const row = protection.defaults.find((d) => d.productId === pr.id && d.vehicleClassId === c.id);
+          return row ? Number(row.amount) : null;
+        };
+        const column = (valueFor, saveFor, atOf) => el("div", { "data-grid": true },
+          el("table", { className: "dashboardTable", style: { maxWidth: "340px" } },
+            el("tbody", null, activeClasses.map((c) => el("tr", { key: c.id },
+              el("td", { style: { padding: "4px 10px", fontWeight: 600 } }, c.name),
+              el("td", { style: { padding: "4px 8px" } }, el(ListPriceCell, {
+                value: valueFor(c), suffix: "/day", label: `${pr.name} ${c.name} price per day`, error: errAt(atOf(c)),
+                onSave: (typed) => {
+                  const parsed = parsePrice(atOf(c), typed);
+                  return parsed.ok ? saveFor(c, parsed.amount) : Promise.resolve(false);
+                },
+              })))))));
+        return el("div", {
+          key: pr.id, className: "protCard", "data-reorder-list": "products", "data-reorder-index": i,
+          style: { ...(pr.active ? null : { opacity: 0.6 }), ...(dragging && drag.from === i ? { opacity: 0.35 } : null),
+            ...(dragging && drag.over === i && drag.over !== drag.from ? { outline: "2px solid currentColor", outlineOffset: "-2px" } : null) },
+        },
+          el("div", { className: "protCard__head" },
+            el(DragHandle, { disabled: busy, onPointerDown: dragFrom("protection", reorder) }),
+            el("button", { type: "button", className: "protCard__toggleHead", "aria-expanded": isOpen,
+              onClick: () => setOpenProduct(isOpen ? "" : pr.id) },
+              el("span", null, pr.active ? pr.name : `${pr.name} (off)`),
+              el("span", { "aria-hidden": "true" }, isOpen ? "\u25be" : "\u25b8"))),
+          errAt(`protection:row:${pr.id}`) && !isOpen && el(FieldError, { text: errAt(`protection:row:${pr.id}`) }),
+          isOpen && el("div", { className: "protCard__body" },
+            el("div", { className: "protCard__line" },
+              el(ListInlineName, {
+                name: pr.name, disabled: busy, error: errAt(`protection:name:${pr.id}`),
+                onSave: (name) => act(`protection:name:${pr.id}`, "save_protection_product", { p_id: pr.id, p_name: name, p_sort: null }),
+              }),
+              el("label", { className: "protCard__toggle" },
+                el("input", { type: "checkbox", checked: !!pr.active, disabled: busy,
+                  onChange: () => act(`protection:row:${pr.id}`, "set_reference_active", { p_kind: "protection_product", p_id: pr.id, p_active: !pr.active }) }),
+                pr.active ? "On" : "Off"),
+              confirming !== key && btn("Delete", () => setConfirming(key))),
+            confirming === key && el("div", { className: "protCard__confirm" },
+              `Delete ${pr.name}? Its protection prices go with it. Old records keep the name.`,
+              el("div", { style: { display: "flex", gap: "6px", marginTop: "6px" } },
+                btn("Delete", async () => {
+                  await act(`protection:row:${pr.id}`, "delete_reference", { p_kind: "protection_product", p_id: pr.id });
+                  setConfirming("");
+                }),
+                btn("Cancel", () => setConfirming("")))),
+            el(FieldError, { text: errAt(`protection:row:${pr.id}`) }),
+
+            el(InPlaceText, {
+              busy, error: errAt(`protection:details:${pr.id}`),
+              fields: [
+                { key: `wording-${pr.id}`, label: "Wording", value: pr.customerWording || "", rows: 4, max: PROTECTION_WORDING_MAX,
+                  placeholder: "What the customer reads at pickup" },
+                ...(pr.required ? [] : [{ key: `decline-${pr.id}`, label: "Decline wording", value: pr.declineWording || "", rows: 2, max: PROTECTION_DECLINE_MAX,
+                  placeholder: "What the customer ticks to decline" }]),
+              ],
+              onSave: (v) => act(`protection:details:${pr.id}`, "set_protection_details", {
+                p_id: pr.id, p_wording: v[`wording-${pr.id}`], p_decline_wording: pr.required ? pr.declineWording : v[`decline-${pr.id}`], p_required: !!pr.required,
+              }),
+            }),
+
+            subHeading("Price per day"),
+            activeClasses.length === 0
+              ? el("p", { className: "closeRentalHint" }, "Prices need at least one vehicle class switched on.")
+              : column(defaultOf,
+                  (c, amount) => act(`protection:${pr.id}:${c.id}`, "set_protection_default_price", { p_product_id: pr.id, p_class_id: c.id, p_amount: amount }),
+                  (c) => `protection:${pr.id}:${c.id}`),
+            blocks.map((b) => {
+              const x = sources.find((y) => y.id === b.sourceId);
+              if (!x) return null;
+              return el("div", { key: b.sourceId, className: "protCard__block" },
+                el("div", { className: "protCard__blockHead" },
+                  el("span", { style: { fontWeight: 600 } }, x.active ? x.name : `${x.name} (off)`),
+                  el("button", { type: "button", className: "miniBtn", disabled: busy, "aria-label": `Remove ${x.name}'s prices`,
+                    onClick: () => act(`protection:block:${pr.id}:${x.id}`, "remove_protection_price_block", { p_product_id: pr.id, p_source_id: x.id }) }, "\u00d7")),
+                column((c) => protectionPrice(pr, c, x),
+                  (c, amount) => act(`protection:${pr.id}:${c.id}:${x.id}`, "set_protection_price", {
+                    p_product_id: pr.id, p_class_id: c.id, p_source_id: x.id, p_amount: amount }),
+                  (c) => `protection:${pr.id}:${c.id}:${x.id}`),
+                el(FieldError, { text: errAt(`protection:block:${pr.id}:${x.id}`) }));
+            }),
+            pickSource === pr.id
+              ? el("select", {
+                  className: "resFormInput listAdd__payer", value: "", autoFocus: true, "aria-label": "Source", disabled: busy,
+                  onChange: async (e) => { const id = e.target.value; if (id && await act(`protection:block:${pr.id}`, "add_protection_price_block", { p_product_id: pr.id, p_source_id: id })) setPickSource(""); },
+                }, el("option", { value: "" }, "Choose a source"), freeSources.map((x) => el("option", { key: x.id, value: x.id }, x.name)))
+              : freeSources.length > 0 && el("button", { type: "button", className: "miniBtn protCard__add", disabled: busy, onClick: () => setPickSource(pr.id) }, "+ Different price for a source"),
+            el(FieldError, { text: errAt(`protection:block:${pr.id}`) }),
+
+            subHeading("What the renter pays for damage"),
+            el(ProtectionDamageForm, {
+              product: { ...pr, ...amounts }, classes: activeClasses, busy, error: errAt(`protection:damage:${pr.id}`),
+              classRows: protection.classes.filter((r) => r.productId === pr.id),
+              onSave: (amount, comp, rows) => act(`protection:damage:${pr.id}`, "set_protection_damage", {
+                p_product_id: pr.id, p_amount: amount, p_comprehensive: comp, p_classes: rows,
+              }),
+            })));
+      }),
       el(ListAddRow, {
         placeholder: "New protection product", label: "Add", disabled: busy, error: errAt("protection:add"),
         onAdd: (name) => act("protection:add", "save_protection_product", { p_id: null, p_name: name, p_sort: null }),
-      }),
-      protectionProducts.length > 0 && subHeading("What the customer sees at pickup"),
-      protectionProducts.map((pr) => el(ProtectionDetailsCard, {
-        key: pr.id, product: pr, busy, error: errAt(`protection:details:${pr.id}`),
-        onSave: (wording, decline, required) => act(`protection:details:${pr.id}`, "set_protection_details", {
-          p_id: pr.id, p_wording: wording, p_decline_wording: decline, p_required: required,
-        }),
       })),
-      shownProduct
-        ? el("div", null,
-            el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", margin: "18px 0 8px" } },
-              el("span", { style: { fontWeight: 600 } }, "Price per day for"),
-              el("select", {
-                className: "resFormInput", style: { width: "auto" },
-                value: shownProduct.id, onChange: (e) => setPriceProduct(e.target.value),
-              }, activeProducts.map((pr) => el("option", { key: pr.id, value: pr.id }, pr.name)))),
-            // Keyed by product, so a cell's draft never carries from one
-            // product's grid into another's.
-            el("div", { key: shownProduct.id },
-              priceGrid("protection",
-                (c, x) => protectionPrice(shownProduct, c, x),
-                (c, x, amount) => act(`protection:${c.id}:${x.id}`, "set_protection_price", {
-                  p_product_id: shownProduct.id, p_class_id: c.id, p_source_id: x.id, p_amount: amount,
-                }))))
-        : el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-            "Switch a product on to set its prices.")),
-
-    // ── Deductibles ──
-    deductibles: section("Deductibles",
-      "The company's collision and comprehensive deductibles, and any vehicle class that has its own. A blank amount on a class means it uses the company's.",
-      "deductibles",
-      table("560px", ["", "Collision", "Comprehensive", ""], [
-        el(DeductibleRow, {
-          key: "company", label: "Company default", busy, error: errAt("deductibles:company"),
-          collision: deductibles?.collision ?? null, comprehensive: deductibles?.comprehensive ?? null,
-          placeholder: { collision: "Not set", comprehensive: "Not set" },
-          onSave: (coll, comp) => {
-            const a = parsePrice("deductibles:company", coll), b = parsePrice("deductibles:company", comp);
-            if (!a.ok || !b.ok) return Promise.resolve(false);
-            return act("deductibles:company", "set_company_deductibles", { p_collision: a.amount, p_comprehensive: b.amount });
-          },
-        }),
-        ...activeClasses.map((c) => {
-          const o = overrides.find((r) => r.vehicleClassId === c.id);
-          const dflt = (v) => (v == null ? "Company default" : `Default ${Number(v)}`);
-          return el(DeductibleRow, {
-            key: c.id, label: c.name, busy, error: errAt(`deductibles:${c.id}`),
-            collision: o?.collision ?? null, comprehensive: o?.comprehensive ?? null,
-            placeholder: { collision: dflt(deductibles?.collision), comprehensive: dflt(deductibles?.comprehensive) },
-            onSave: (coll, comp) => {
-              const a = parsePrice(`deductibles:${c.id}`, coll), b = parsePrice(`deductibles:${c.id}`, comp);
-              if (!a.ok || !b.ok) return Promise.resolve(false);
-              return act(`deductibles:${c.id}`, "set_deductible_override", {
-                p_class_id: c.id, p_collision: a.amount, p_comprehensive: b.amount,
-              });
-            },
-          });
-        }),
-      ])),
 
     // ── Contract acknowledgements ──
     acknowledgements: section("Contract acknowledgements",
@@ -11781,7 +11791,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   };
   if (layout) return layout(parts);
   return el(React.Fragment, null, parts.pickup, parts.classes, parts.sources, parts.seasons,
-    parts.rates, parts.protection, parts.deductibles, parts.acknowledgements);
+    parts.rates, parts.protection, parts.acknowledgements);
 }
 
 // embedded draws only the join code and the sign-ups waiting for approval, for
@@ -13874,14 +13884,17 @@ function ProtectionChoicesList({ rentalAgreementId }) {
       : "-";
   };
   const fmtPrice = (n) => (Number.isFinite(Number(n)) ? `$${Number(n).toFixed(2)}` : "-");
+  const damageOf = (c) => [c.renterPays, c.renterPaysComprehensive].filter((n) => n != null).map(fmtPrice).join(" / ");
+  const hasDamage = choices.some(damageOf);
   return el("div", { style: { overflowX: "auto" } },
     el("table", { className: "dashboardTable", style: { minWidth: "520px" } },
       el("thead", null, el("tr", null,
-        ["Product", "Choice", "Price per day", "Time"].map((h) => el("th", { key: h }, h)))),
+        ["Product", "Choice", "Price per day", ...(hasDamage ? ["Renter pays up to"] : []), "Time"].map((h) => el("th", { key: h }, h)))),
       el("tbody", null, choices.map((c, i) => el("tr", { key: c.productId || i },
         el("td", null, c.name || "-"),
         el("td", null, c.accepted ? (c.required ? "Included" : "Accepted") : "Declined"),
         el("td", null, fmtPrice(c.pricePerDay)),
+        hasDamage && el("td", null, damageOf(c) || "-"),
         el("td", null, fmtWhen(c.decidedAt)))))));
 }
 
@@ -13892,7 +13905,8 @@ function ProtectionChoicesList({ rentalAgreementId }) {
 // of it, and the sections are then left out altogether.
 const contractDrivers = (ra) => (ra && Array.isArray(ra.drivers) && ra.drivers.length ? ra.drivers : null);
 const contractDeductibles = (ra) =>
-  (ra && ra.deductibles && typeof ra.deductibles === "object" ? ra.deductibles : null);
+  (ra && ra.deductibles && typeof ra.deductibles === "object"
+    && (ra.deductibles.collision != null || ra.deductibles.comprehensive != null) ? ra.deductibles : null);
 
 const fmtContractDate = (iso) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))) return iso || "-";
@@ -20691,11 +20705,31 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
 .addV__summary{ display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 16px; font-weight: 600; color: #1F1E1D; }
 .addV__skel{ display: block; height: 22px; width: 60%; border-radius: 6px; }
 .addV__three{ display: grid; grid-template-columns: 110px minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
-.addV__mini{
+.addV__mini, .miniBtn{
   display: inline-flex; align-items: center; min-height: 34px; padding: 0 12px; border: 1px solid #E3E2DE; border-radius: 8px;
   background: #F9F9F7; color: #1F1E1D; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
 }
-.addV__mini:hover{ border-color: #F4845F; }
+.addV__mini:hover, .miniBtn:hover{ border-color: #F4845F; }
+.dragHandle{ display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; flex: none; color: #6B6A66; cursor: grab; touch-action: none; user-select: none; }
+select.resFormInput.listAdd__payer{ width: auto; min-width: 150px; color: #1F1E1D; appearance: auto; -webkit-appearance: menulist; cursor: pointer; }
+select.resFormInput.listAdd__payer--empty{ color: #9B9A96; }
+.listAdd__payer option{ color: #1F1E1D; }
+.inPlaceText textarea{ width: 100%; box-sizing: border-box; color: #1F1E1D; }
+.inPlaceText textarea::placeholder{ color: #9B9A96; }
+.inPlaceText__save{ width: auto; margin-top: 8px; }
+.termStart{ display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; margin-top: 10px; }
+.termStart button{ flex: 0 0 auto; width: auto; min-height: 42px; margin: 0; }
+.protCard{ margin-bottom: 10px; border: 1px solid #E3E2DE; border-radius: 12px; background: #FFFFFF; }
+.protCard__head{ display: flex; align-items: center; gap: 6px; padding: 6px 10px; }
+.protCard__toggleHead{ display: flex; flex: 1; justify-content: space-between; align-items: center; gap: 10px; min-height: 36px; padding: 0 4px; border: 0; background: none; color: #1F1E1D; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.protCard__body{ display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 8px 16px 16px; border-top: 1px solid #EEEDE9; }
+.protCard__line{ display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 6px; }
+.protCard__toggle{ display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.protCard__money{ display: inline-flex; align-items: center; gap: 3px; }
+.protCard__block{ max-width: 340px; padding-top: 8px; border-top: 1px solid #EEEDE9; }
+.protCard__blockHead{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.protCard__add{ align-self: flex-start; }
+.protCard__confirm{ font-size: 14px; }
 .addV__damageHead{
   display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 12px 14px; border: 1px solid #E3E2DE; border-radius: 10px;
   background: #F9F9F7; color: #1F1E1D; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
