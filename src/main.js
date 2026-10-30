@@ -5659,7 +5659,7 @@ function useVehicleStatusDrag() {
     const bad = refusal(to);
     if (bad) { showToast({ text: bad, error: true }); return; }
     const claim = v.status === "Damaged" && (live.current.damageClaims || [])
-      .some((c) => (c.plate || "") === v.plate && c.status !== "resolved");
+      .some((c) => (c.plate || "") === v.plate && c.status !== "resolved" && !c.preExisting);
     if (claim && !(await appConfirm({
       title: "Open damage claim",
       message: `${v.plate} has an open damage claim. Move it out of Damaged to ${to} anyway?`,
@@ -6826,6 +6826,494 @@ function FleetVehiclesPage() {
   );
 }
 
+// ─── Adding a vehicle ─────────────────────────────────────────────────────────
+// The rules, apart from the form so they can be tested on their own. Required:
+// VIN, class, plate, province, odometer and fuel level. Tank size and the PM
+// interval are set afterwards on the vehicle's page, which asks for them.
+const ADD_VEHICLE_BLANK = { vin: "", year: "", make: "", model: "", vehicleClass: "", plate: "", province: "", colour: "", odometer: "", fuelLevel: "" };
+const VIN_BAD_CHECK = "This VIN doesn't look right. Check for a typo.";
+const COMMON_COLOURS = ["White", "Black", "Grey", "Silver", "Blue", "Red"];
+
+// What can be typed: capitals, no I, O or Q, and it stops at 17.
+const vinTyped = (raw) => String(raw ?? "").toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, "").slice(0, VIN_LENGTH);
+
+// The 9th character is a check digit over the other 16 (49 CFR 565).
+function vinCheckDigitOk(vin) {
+  if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(String(vin))) return false;
+  const LETTERS = { A: 1, B: 2, C: 3, D: 4, E: 5, F: 6, G: 7, H: 8, J: 1, K: 2, L: 3, M: 4, N: 5, P: 7, R: 9, S: 2, T: 3, U: 4, V: 5, W: 6, X: 7, Y: 8, Z: 9 };
+  const WEIGHTS = [8, 7, 6, 5, 4, 3, 2, 10, 0, 9, 8, 7, 6, 5, 4, 3, 2];
+  const worth = (ch) => (/[0-9]/.test(ch) ? Number(ch) : LETTERS[ch]);
+  const sum = [...vin].reduce((n, ch, i) => n + worth(ch) * WEIGHTS[i], 0);
+  const left = sum % 11;
+  return vin[8] === (left === 10 ? "X" : String(left));
+}
+
+// The plate already holding this VIN and this plate, in what the app can see
+// and what the database said about the rest of the company (taken).
+function vehicleDuplicate(form, fleet, taken) {
+  const vin = normalizeVin(form.vin), plate = normalizePlate(form.plate);
+  const byVin = vin && (fleet || []).find((v) => normalizeVin(v.vin) === vin);
+  const byPlate = plate && (fleet || []).find((v) => normalizePlate(v.plate) === plate);
+  return {
+    vin:   (byVin && byVin.plate) || (vin && taken && taken.forVin === vin && taken.vin) || null,
+    plate: (byPlate && byPlate.plate) || (plate && taken && taken.forPlate === plate && taken.plate) || null,
+  };
+}
+
+// Each problem by field. An empty result means it can be saved.
+function addVehicleProblems(form, fleet, taken) {
+  const out = {};
+  const vin = String(form.vin || "");
+  const dup = vehicleDuplicate(form, fleet, taken);
+  if (!vin) out.vin = "VIN is required.";
+  else if (vin.length !== VIN_LENGTH) out.vin = `A VIN is exactly ${VIN_LENGTH} characters.`;
+  else if (!vinCheckDigitOk(vin)) out.vin = VIN_BAD_CHECK;
+  else if (dup.vin) out.vin = `Already in your fleet: ${dup.vin}`;
+  if (!String(form.vehicleClass || "").trim()) out.vehicleClass = "Choose a class.";
+  if (!normalizePlate(form.plate)) out.plate = "Plate is required.";
+  else if (dup.plate) out.plate = `Already in your fleet: ${dup.plate}`;
+  if (!String(form.province || "").trim()) out.province = "Choose a province or state.";
+  if (!/^\d+$/.test(String(form.odometer || "").trim())) out.odometer = "Enter the current odometer.";
+  if (!FUEL_LABELS.includes(form.fuelLevel)) out.fuelLevel = "Set the fuel level.";
+  const year = numberProblem(form.year, { min: 1980, max: new Date().getFullYear() + 1, label: "Year" });
+  if (year) out.year = year;
+  return out;
+}
+
+// The next form. "like" keeps what the next car of a batch shares.
+function nextVehicleForm(saved, mode, province) {
+  const blank = { ...ADD_VEHICLE_BLANK, province: province || "" };
+  if (mode !== "like" || !saved) return blank;
+  const { year, make, model, vehicleClass, colour } = saved;
+  return { ...blank, year, make, model, vehicleClass, colour };
+}
+
+const vehicleTitle = (f) => [f.year, f.make, f.model].filter(Boolean).join(" ");
+
+// Values already used, most used first, then any others given. Case never
+// makes two of the same.
+function rememberedValues(values, extras = []) {
+  const counts = new Map();
+  (values || []).forEach((raw) => {
+    const v = String(raw ?? "").trim();
+    if (!v) return;
+    const k = v.toLowerCase();
+    const had = counts.get(k);
+    counts.set(k, { v: had ? had.v : v, n: (had ? had.n : 0) + 1 });
+  });
+  const used = [...counts.values()].sort((a, b) => b.n - a.n).map((x) => x.v);
+  return [...used, ...extras.filter((x) => !counts.has(x.toLowerCase()))];
+}
+
+// The first of the company's classes in the category this vehicle's type falls
+// under. "" when nothing fits, and staff choose.
+function suggestedClassName(decoded, classes) {
+  const body = `${decoded?.bodyClass || ""} ${decoded?.vehicleType || ""}`;
+  const category = /pickup/i.test(body) ? "Truck"
+    : /minivan/i.test(body) ? "Minivan"
+    : /\bvan\b/i.test(body) ? "Van"
+    : /sport utility|\bsuv\b|crossover|multipurpose/i.test(body) ? "SUV"
+    : /sedan|coupe|hatchback|convertible|wagon|passenger car/i.test(body) ? "Car"
+    : /truck/i.test(body) ? "Truck" : null;
+  const hit = category && (classes || []).find((c) => c.active !== false && c.category === category);
+  return hit ? hit.name : "";
+}
+
+// One free decode from NHTSA's vPIC. null when it finds nothing or cannot be
+// reached: the form then just opens Year, Make and Model.
+const VPIC_URL = "https://vpic.nhtsa.dot.gov/api/vehicles/decodevinvalues";
+const vehicleMakeWords = (s) => String(s || "").trim().split(/\s+/)
+  .map((w) => (w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())).join(" ");
+function readVinDecode(body) {
+  const r = body && Array.isArray(body.Results) ? body.Results[0] : null;
+  if (!r || !String(r.Make || "").trim()) return null;
+  return { year: String(r.ModelYear || "").trim(), make: vehicleMakeWords(r.Make), model: String(r.Model || "").trim(),
+    bodyClass: r.BodyClass || "", vehicleType: r.VehicleType || "" };
+}
+async function decodeVin(vin) {
+  try {
+    const res = await fetch(`${VPIC_URL}/${encodeURIComponent(vin)}?format=json`);
+    return res.ok ? readVinDecode(await res.json()) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// A branch's province, as typed on its address, as the two letter code the
+// fleet holds: "NL", or "Newfoundland and Labrador".
+function provinceCodeOf(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return "";
+  const hit = PROV_STATE_LIST.find((p) => p.value !== "All" && (p.value.toLowerCase() === t || p.label.toLowerCase().endsWith(`- ${t}`)));
+  return hit ? hit.value : "";
+}
+
+// The fuel gauge, as at check-in: nine steps from Empty to Full, untouched
+// until it is set. iPhone Safari does not honour touch-action on a range input
+// and lets a drag that strays even slightly vertical scroll the page, and a
+// tap focuses the input and can scroll it into view. React's touch listeners
+// are passive and cannot preventDefault, so these are attached by hand with
+// passive: false: the page never sees the touch, and the value follows the
+// finger along the track. Mouse and keyboard still go through onChange.
+function FuelLevelField({ label, labelId, index, onChange, bad, onEnter }) {
+  const el = React.createElement;
+  const fuelRef = React.useRef(null);
+  const changeRef = React.useRef(onChange);
+  changeRef.current = onChange;
+  React.useEffect(() => {
+    const range = fuelRef.current;
+    if (!range) return undefined;
+    const onTouch = (e) => {
+      if (e.touches.length !== 1) return;
+      e.preventDefault();
+      const r    = range.getBoundingClientRect();
+      const pad  = Math.min(12, r.width / 10); // the thumb's centre stops short of each end
+      const frac = Math.min(1, Math.max(0, (e.touches[0].clientX - r.left - pad) / (r.width - 2 * pad)));
+      changeRef.current(Math.round(frac * 8));
+    };
+    range.addEventListener("touchstart", onTouch, { passive: false });
+    range.addEventListener("touchmove",  onTouch, { passive: false });
+    return () => {
+      range.removeEventListener("touchstart", onTouch);
+      range.removeEventListener("touchmove",  onTouch);
+    };
+  }, []);
+  return el("div", { className: "resFormGroup" },
+    el("span", { className: "resFormLabel", id: labelId }, label),
+    el("div", { className: "closeRentalFuel__value" }, index === null ? "Not set" : FUEL_LABELS[index]),
+    el("input", {
+      ref: fuelRef,
+      type: "range", min: 0, max: 8, step: 1,
+      className: index === null ? "closeRentalFuel closeRentalFuel--unset" : "closeRentalFuel",
+      "aria-labelledby": labelId,
+      "aria-valuetext": index === null ? "Not set" : FUEL_LABELS[index],
+      value: index === null ? 0 : index,
+      ...invalid(!!bad),
+      onChange: (e) => onChange(Number(e.target.value)),
+      // A click on the thumb's current spot fires no change event, so an
+      // unset slider could never be set to Empty. The click catches it.
+      onClick: (e) => onChange(Number(e.currentTarget.value)),
+      onKeyDown: onEnter ? (e) => { if (e.key === "Enter") { e.preventDefault(); onEnter(); } } : undefined,
+    }),
+    el("div", { className: "closeRentalFuel__labels" },
+      ["Empty", "¼", "½", "¾", "Full"].map((l) => el("span", { key: l }, l))));
+}
+
+// The door frame or windshield barcode, by the reader the check-in app scans
+// licenses with. A VIN label is Code 39 or Data Matrix, and some print a
+// leading I, which is why the 17 characters are looked for inside what it reads.
+const ZXING_URL = "https://cdn.jsdelivr.net/npm/@zxing/library@0.23.0/+esm";
+function VinScanner({ onRead, onFail, onClose }) {
+  const el = React.createElement;
+  const videoRef = React.useRef(null);
+  React.useEffect(() => {
+    let live = true, reader = null;
+    (async () => {
+      try {
+        const zx = await import(ZXING_URL);
+        if (!live) return;
+        const hints = new Map([[zx.DecodeHintType.POSSIBLE_FORMATS, [zx.BarcodeFormat.CODE_39, zx.BarcodeFormat.DATA_MATRIX]]]);
+        reader = new zx.BrowserMultiFormatReader(hints);
+        await reader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" } } }, videoRef.current, (result) => {
+          if (!result || !live) return;
+          const vin = (String(result.getText()).toUpperCase().match(/[A-HJ-NPR-Z0-9]{17}/) || [])[0];
+          if (vin) { live = false; reader.reset(); onRead(vin); }
+        });
+      } catch (e) {
+        console.warn("VIN scanner:", e);
+        if (live) onFail();
+      }
+    })();
+    return () => { live = false; if (reader) reader.reset(); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return el("div", { className: "addV__scan", role: "dialog", "aria-modal": "true", "aria-label": "Scan VIN" },
+    el("video", { ref: videoRef, className: "addV__scanVideo", playsInline: true, muted: true }),
+    el("button", { type: "button", className: "resModalCancel", onClick: onClose }, "Cancel"));
+}
+
+// Damage already on the vehicle: what and where, and photos of it. Each entry
+// becomes a pre-existing damage record once the vehicle is saved.
+function ExistingDamageSection({ items, setItems, errors, busy }) {
+  const el = React.createElement;
+  const [open, setOpen] = React.useState(false);
+  const blank = () => ({ id: crypto.randomUUID(), note: "", photos: [] });
+  const toggle = () => {
+    if (!open && items.length === 0) setItems([blank()]);
+    setOpen((o) => !o);
+  };
+  const update = (id, patch) => setItems((list) => list.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  const addPhotos = (item, files) => update(item.id, { photos: [...item.photos, ...Array.from(files || [])
+    .filter((f) => f.size <= CLOSE_PHOTO_MAX_BYTES)
+    .map((f) => ({ id: crypto.randomUUID(), blob: f, type: f.type, url: URL.createObjectURL(f), capturedAt: new Date().toISOString() }))] });
+  return el("div", { className: "addV__damage addV__wide" },
+    el("button", { type: "button", className: "addV__damageHead", "aria-expanded": open, onClick: toggle },
+      el("span", null, items.some((x) => x.note.trim()) ? `Existing damage (${items.filter((x) => x.note.trim()).length})` : "Existing damage"),
+      el("span", { "aria-hidden": "true" }, open ? "▾" : "▸")),
+    open && el("div", { className: "addV__damageBody" },
+      items.map((item) => el("div", { key: item.id, className: "addV__damageItem" },
+        el("textarea", { className: "resFormInput", rows: 2, placeholder: "Where it is and what it looks like", "aria-label": "Existing damage", disabled: busy,
+          value: item.note, ...invalid(!!errors[`damage:${item.id}`]), onChange: (e) => update(item.id, { note: e.target.value }) }),
+        el(FieldError, { text: errors[`damage:${item.id}`] }),
+        item.photos.length > 0 && el("div", { className: "damagePhotoRow" }, item.photos.map((p) =>
+          el("img", { key: p.id, src: p.url, alt: "Damage", className: "addV__thumb" }))),
+        el("div", { className: "addV__damageBtns" },
+          el("label", { className: "addV__mini" }, "Add photo",
+            el("input", { type: "file", accept: "image/*", capture: "environment", multiple: true, style: { display: "none" }, disabled: busy,
+              onChange: (e) => { addPhotos(item, e.target.files); e.target.value = ""; } })),
+          el("button", { type: "button", className: "addV__mini", disabled: busy,
+            onClick: () => { releasePhotos(item.photos); setItems((list) => list.filter((x) => x.id !== item.id)); } }, "Remove")))),
+      el("button", { type: "button", className: "addV__mini", disabled: busy, onClick: () => setItems((list) => [...list, blank()]) }, "Add more damage")));
+}
+
+function AddVehicleForm({ onAdded }) {
+  const { fleet, setFleet, guardAction, currentUser, setDamageClaims } = React.useContext(AppContext);
+  const el = React.createElement;
+  const isMobile = useMobile();
+  const [form, setForm]       = React.useState(ADD_VEHICLE_BLANK);
+  const [errors, setErrors]   = React.useState({});
+  const setAddError = (text) => setErrors(text ? { "": text } : {});
+  const [detailsOpen, setDetailsOpen] = React.useState(false);
+  const [decoding, setDecoding] = React.useState(false);
+  const [suggested, setSuggested] = React.useState("");
+  const [taken, setTaken]     = React.useState(null);
+  const [damage, setDamage]   = React.useState([]);
+  const [scanning, setScanning] = React.useState(false);
+  const [busy, setBusy]       = React.useState(false);
+  const [saved, setSaved]     = React.useState(null);   // { text, note, form }
+  const [branchProvince, setBranchProvince] = React.useState("");
+  const vinRef = React.useRef(null);
+  const formRef = React.useRef(null);
+  const anotherRef = React.useRef(null);
+
+  const set = (field, value) => {
+    setForm((p) => ({ ...p, [field]: value }));
+    setErrors((p) => { if (!p[field] && !p[""]) return p; const n = { ...p }; delete n[field]; delete n[""]; return n; });
+  };
+
+  // The province of the branch staff are working in.
+  React.useEffect(() => {
+    const branchId = companyLists && companyLists.branchId;
+    if (!branchId) return undefined;
+    let live = true;
+    supabase.from("branch_listings").select("province").eq("locationId", branchId).maybeSingle().then(({ data }) => {
+      const code = provinceCodeOf(data && data.province);
+      if (!live || !code) return;
+      setBranchProvince(code);
+      setForm((p) => (p.province ? p : { ...p, province: code }));
+    });
+    return () => { live = false; };
+  }, []);
+
+  const vinOk = form.vin.length === VIN_LENGTH && vinCheckDigitOk(form.vin);
+
+  // A VIN that passes is looked up. What comes back fills what is blank or was
+  // filled by the last lookup; nothing found opens the fields, with no message.
+  React.useEffect(() => {
+    if (!vinOk) { setDecoding(false); return undefined; }
+    let live = true;
+    setDecoding(true);
+    decodeVin(form.vin).then((found) => {
+      if (!live) return;
+      setDecoding(false);
+      if (!found) { setDetailsOpen(true); return; }
+      setDetailsOpen(!found.year || !found.model);
+      setForm((p) => ({ ...p, year: found.year || p.year, make: found.make || p.make, model: found.model || p.model }));
+      const name = suggestedClassName(found, companyLists ? companyLists.vehicleClasses : []);
+      setSuggested(name);
+      if (name) {
+        setForm((p) => (p.vehicleClass ? p : { ...p, vehicleClass: name }));
+        setErrors((p) => { const { vehicleClass, ...rest } = p; return rest; });
+      }
+    });
+    return () => { live = false; };
+  }, [form.vin, vinOk]);
+
+  // Across the whole company: staff see only their own branch's vehicles.
+  const askTaken = React.useCallback(async (vin, plate) => {
+    const { data, error } = await supabase.rpc("fleet_vehicle_taken", { p_vin: vin, p_plate: plate });
+    return !error && data && data.ok ? { ...data, forVin: vin, forPlate: plate } : null;
+  }, []);
+  const plateNow = normalizePlate(form.plate);
+  React.useEffect(() => {
+    if (!vinOk && plateNow.length < 2) { setTaken(null); return undefined; }
+    let live = true;
+    const t = setTimeout(() => askTaken(vinOk ? form.vin : "", plateNow).then((r) => { if (live) setTaken(r); }), 300);
+    return () => { live = false; clearTimeout(t); };
+  }, [form.vin, vinOk, plateNow, askTaken]);
+
+  const dup = vehicleDuplicate(form, fleet, taken);
+  // Shown as soon as it is true, not only on Save.
+  const vinError = errors.vin || (form.vin.length === VIN_LENGTH && !vinOk ? VIN_BAD_CHECK : dup.vin ? `Already in your fleet: ${dup.vin}` : "");
+  const plateError = errors.plate || (dup.plate ? `Already in your fleet: ${dup.plate}` : "");
+  const allErrors = { ...errors, vin: vinError, plate: plateError };
+
+  React.useEffect(() => { if (!saved && vinRef.current) vinRef.current.focus(); }, [saved]);
+  React.useEffect(() => { if (saved && anotherRef.current) anotherRef.current.focus(); }, [saved]);
+
+  const start = (mode) => {
+    setForm(nextVehicleForm(saved && saved.form, mode, branchProvince));
+    setErrors({}); setDamage([]); setDetailsOpen(false); setSuggested(""); setTaken(null); setSaved(null);
+  };
+
+  const save = async (e) => {
+    if (e) e.preventDefault();
+    if (busy) return;
+    if (!unitsSet()) { setAddError(UNITS_NOT_SET); return; }
+    setBusy(true);
+    const now = (form.vin || form.plate) ? await askTaken(form.vin, plateNow) : null;
+    setBusy(false);
+    if (now) setTaken(now);
+    const problems = addVehicleProblems(form, fleet, now || taken);
+    damage.forEach((d) => { if (!d.note.trim() && d.photos.length) problems[`damage:${d.id}`] = "Say what the damage is."; });
+    if (problems.year) setDetailsOpen(true);
+    setErrors(problems);
+    if (Object.keys(problems).length) {
+      setTimeout(() => {
+        const first = formRef.current && formRef.current.querySelector('[aria-invalid="true"]');
+        if (first) first.focus();
+      }, 0);
+      return;
+    }
+    const f = form;
+    const plate = normalizePlate(f.plate);
+    const title = vehicleTitle(f) || f.vehicleClass;
+    guardAction("vehicle.add", async () => {
+      setBusy(true);
+      try {
+        const row = {
+          plate, vin: normalizeVin(f.vin), make: f.make.trim(), model: f.model.trim(), year: f.year || null,
+          vehicleClass: f.vehicleClass, colour: f.colour.trim() || null, province: f.province,
+          tankSizeLiters: null, pmIntervalKm: null, lastPmOdometer: null,
+          currentOdometer: distanceToKm(Number(f.odometer)), currentFuelLevel: f.fuelLevel,
+          winterTires: "No", status: "Needs Cleaning", currentRenter: null, dueBack: null, fileType: null,
+        };
+        const res = await supabase.from("fleet").insert(row);
+        if (res.error) {
+          console.warn("fleet insert error:", res.error);
+          setErrors({ "": "The vehicle could not be saved. Check your connection and try again." });
+          throw new Error(res.error.message);
+        }
+        const added = { ...row, ...((res.data && res.data[0]) || {}) };
+        setFleet((prev) => [...prev, added]);
+
+        // Damage is kept even if a photo is not: the record is what matters.
+        let lost = 0;
+        for (const d of damage.filter((x) => x.note.trim())) {
+          const paths = [];
+          for (const p of d.photos) {
+            const path = `${currentUser?.operatorId}/vehicles/${added.id}/${p.capturedAt.replace(/[^0-9]/g, "").slice(0, 14)}-${p.id}.jpg`;
+            const up = await supabase.storage.from(DAMAGE_PHOTO_BUCKET).upload(path, p.blob, { contentType: p.type || "image/jpeg", cacheControl: "3600" });
+            if (up.error) { console.warn("damage photo upload failed:", up.error); lost += 1; } else paths.push(path);
+          }
+          const claim = { id: crypto.randomUUID(), plate, rentalAgreementId: null, description: d.note.trim(),
+            photos: paths, status: "open", preExisting: true };
+          const c = await supabase.from("damage_claims").insert(claim);
+          if (c.error) { console.warn("existing damage not saved:", c.error); lost += 1; }
+          else setDamageClaims((prev) => [{ ...claim, reportedAt: new Date().toISOString() }, ...prev]);
+          releasePhotos(d.photos);
+        }
+        setSaved({ text: `Saved ${title}, ${plate}`, form: f,
+          note: lost ? "Some of the existing damage could not be saved. Check the vehicle's page." : "" });
+        if (onAdded) onAdded();
+      } finally {
+        setBusy(false);
+      }
+    }, { tableName: "fleet", recordId: plate, description: `Added ${title}, ${f.vehicleClass}, VIN ${normalizeVin(f.vin)}.` });
+  };
+
+  const label = (text, id) => el("label", { className: "resFormLabel", htmlFor: id }, text);
+  const input = (id, field, props) => el("input", {
+    id, className: "resFormInput", value: form[field], disabled: busy, ...invalid(!!allErrors[field]),
+    autoComplete: "off", onChange: (e) => set(field, e.target.value), ...props });
+  const group = (labelText, id, field, control, wide) => el("div", { className: wide ? "resFormGroup addV__wide" : "resFormGroup" },
+    label(labelText, id), control, el(FieldError, { text: allErrors[field] }));
+  const remembered = (id, values) => el("datalist", { id }, values.map((v) => el("option", { key: v, value: v })));
+
+  const madeModels = (fleet || []).filter((v) => !form.make.trim() || String(v.make || "").toLowerCase() === form.make.trim().toLowerCase());
+  const list = [...(fleet || [])].reverse()
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  const title = vehicleTitle(form);
+
+  if (!unitsSet()) return el("div", { className: "resvEmpty", style: { textAlign: "left" } }, UNITS_NOT_SET);
+
+  const fields = el("form", { ref: formRef, className: "addV__grid", onSubmit: save, noValidate: true },
+    group("VIN", "addv-vin", "vin", el("div", { className: "addV__vinBox" },
+      el("input", {
+        id: "addv-vin", ref: vinRef, className: "resFormInput addV__vin", value: form.vin, disabled: busy, ...invalid(!!allErrors.vin),
+        autoComplete: "off", autoCorrect: "off", autoCapitalize: "characters", spellCheck: false, autoFocus: true, inputMode: "text",
+        onChange: (e) => set("vin", vinTyped(e.target.value)),
+      }),
+      el("span", { className: "addV__count", "aria-live": "polite" }, `${form.vin.length}/${VIN_LENGTH}`),
+      isMobile && el("button", { type: "button", className: "addV__mini addV__scanBtn", disabled: busy, onClick: () => setScanning(true) }, "Scan VIN")), true),
+
+    el("div", { className: "addV__wide" },
+      decoding
+        ? el("span", { className: "skelBox addV__skel", role: "status", "aria-label": "Looking up the VIN" })
+        : !detailsOpen && title && el("div", { className: "addV__summary" },
+            el("span", null, title),
+            el("button", { type: "button", className: "addV__mini", onClick: () => setDetailsOpen(true) }, "Change")),
+      !decoding && detailsOpen && el("div", { className: "addV__three" },
+        group("Year", "addv-year", "year", input("addv-year", "year", { inputMode: "numeric", maxLength: 4,
+          onChange: (e) => set("year", numberTyped(e.target.value, { digits: 4 })) })),
+        group("Make", "addv-make", "make", input("addv-make", "make", { list: "addv-makes" })),
+        group("Model", "addv-model", "model", input("addv-model", "model", { list: "addv-models" })),
+        remembered("addv-makes", rememberedValues((fleet || []).map((v) => v.make))),
+        remembered("addv-models", rememberedValues(madeModels.map((v) => v.model))))),
+
+    group("Class", "addv-class", "vehicleClass", el("select", {
+      id: "addv-class", className: "resFormInput", value: form.vehicleClass, disabled: busy, ...invalid(!!allErrors.vehicleClass),
+      onChange: (e) => set("vehicleClass", e.target.value),
+    },
+      el("option", { value: "" }, "Choose"),
+      vehicleClassOptions(form.vehicleClass).map((vc) => el("option", { key: vc, value: vc }, vc === suggested ? `${vc} (Suggested)` : vc))), true),
+
+    group("Plate", "addv-plate", "plate", input("addv-plate", "plate", { autoCapitalize: "characters", spellCheck: false,
+      onChange: (e) => set("plate", normalizePlate(e.target.value)) })),
+    group("Province or state", "addv-province", "province", el("select", {
+      id: "addv-province", className: "resFormInput", value: form.province, disabled: busy, ...invalid(!!allErrors.province),
+      onChange: (e) => set("province", e.target.value),
+    },
+      el("option", { value: "" }, "Choose"),
+      PROV_STATE_LIST.filter((p) => p.value !== "All").map((p) => el("option", { key: p.value, value: p.value }, p.value)))),
+
+    group("Colour", "addv-colour", "colour", el(React.Fragment, null,
+      input("addv-colour", "colour", { list: "addv-colours" }),
+      remembered("addv-colours", rememberedValues((fleet || []).map((v) => v.colour), COMMON_COLOURS))), true),
+
+    group(`Odometer (${distanceUnit()})`, "addv-odometer", "odometer", input("addv-odometer", "odometer", { inputMode: "numeric", maxLength: 7,
+      onChange: (e) => set("odometer", numberTyped(e.target.value, { digits: 7 })) })),
+    el("div", null,
+      el(FuelLevelField, { label: "Fuel level", labelId: "addv-fuel", bad: !!allErrors.fuelLevel,
+        index: FUEL_LABELS.includes(form.fuelLevel) ? FUEL_LABELS.indexOf(form.fuelLevel) : null,
+        onChange: (i) => set("fuelLevel", FUEL_LABELS[i]), onEnter: () => save() }),
+      el(FieldError, { text: allErrors.fuelLevel })),
+
+    el(ExistingDamageSection, { items: damage, setItems: setDamage, errors: allErrors, busy }),
+
+    el("div", { className: "addV__wide" },
+      el("button", { type: "submit", className: "resModalSubmit", disabled: busy }, busy ? "Saving…" : "Save vehicle"),
+      el(FieldError, { text: allErrors[""] })));
+
+  return el("div", { className: "addV" },
+    saved
+      ? el("div", { className: "addV__saved", role: "status" },
+          el("div", { className: "addV__savedText" }, saved.text),
+          saved.note && el(FieldError, { text: saved.note }),
+          el("div", { className: "addV__savedBtns" },
+            el("button", { type: "button", ref: anotherRef, className: "resModalSubmit", onClick: () => start("like") }, "Add another like this"),
+            el("button", { type: "button", className: "resModalCancel", onClick: () => start("blank") }, "Add a different vehicle")))
+      : fields,
+    scanning && el(VinScanner, {
+      onClose: () => setScanning(false),
+      onFail: () => { setScanning(false); setErrors((p) => ({ ...p, vin: "The camera could not read the VIN. Type it in." })); },
+      onRead: (vin) => { setScanning(false); set("vin", vinTyped(vin)); },
+    }),
+    list.length > 0 && el("ul", { className: "addV__list" }, list.map((v) => el("li", { key: v.id || v.plate, className: "addV__row" },
+      el("span", { className: "addV__rowPlate" }, v.plate),
+      el("span", null, vehicleTitle(v) || "·"),
+      el("span", { className: "addV__rowClass" }, v.vehicleClass)))));
+}
+
 // ─── FleetAdditionsPage ────────────────────────────────────────────────────────
 
 // embedded draws only the add form, for the Vehicles step of the Company page,
@@ -6836,113 +7324,11 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
   const [openCards, setOpenCards] = React.useState({ add: false, retire: false, archived: false });
 
 
-  // tankSize / pmInterval are typed in the company's own units, set once on
-  // the Company page, and converted to canonical litres/km as they are typed.
-  const BLANK_ADD    = { plate: "", province: "", year: "", make: "", model: "", colour: "", vin: "", vehicleClass: defaultVehicleClass(), tankSize: "", pmInterval: "", odometer: "", fuelLevel: "" };
-  const tankUnit = fuelUnit();
-  const pmUnit   = distanceUnit();
-  // Canonical litres / kilometres, kept alongside the typed string.
-  const [tankCanonical, setTankCanonical] = React.useState(null);
-  const [pmCanonical,   setPmCanonical]   = React.useState(null);
   // The disposal date defaults to today, which is the answer almost every time
   // a vehicle is retired from the desk it is standing at.
   const BLANK_RETIRE = { plateId: "", disposalDate: isoOffset(0), reason: "" };
-  const [addForm,    setAddForm]    = React.useState(BLANK_ADD);
-  // Each problem under its field, by the form's field name; "" for one about
-  // no field.
-  const [addErrors,  setAddErrors]  = React.useState({});
-  const setAddError = (text, field = "") => setAddErrors(text ? { [field]: text } : {});
-  const [addSuccess, setAddSuccess] = React.useState(false);
   const [retireForm, setRetireForm] = React.useState(BLANK_RETIRE);
   const [retireError,setRetireError]= React.useState({ field: "", text: "" });
-
-  const onAdd = (field, val) => {
-    setAddForm((p) => ({ ...p, [field]: val }));
-    setAddErrors((p) => { if (!p[field] && !p[""]) return p; const n = { ...p }; delete n[field]; delete n[""]; return n; });
-    setAddSuccess(false);
-  };
-  // The form's field for each of validateVehicle's.
-  const ADD_FIELD_OF = { tankSizeLiters: "tankSize", pmIntervalKm: "pmInterval" };
-
-  const handleAddSubmit = (e) => {
-    e.preventDefault();
-    if (!unitsSet()) { setAddError(UNITS_NOT_SET); return; }
-    const plate = normalizePlate(addForm.plate);
-
-    // Canonical values tracked alongside the inputs, so a unit toggle can't
-    // have introduced rounding drift into what gets stored.
-    const tankLiters = tankCanonical;
-    const pmKm       = pmCanonical;
-
-    // One rule, shared with the command bar. See validateVehicle.
-    const candidate = {
-      plate,
-      province:       addForm.province,
-      year:           addForm.year,
-      make:           addForm.make,
-      model:          addForm.model,
-      colour:         addForm.colour,
-      tankSizeLiters: tankLiters,
-      pmIntervalKm:   pmKm,
-      vehicleClass:   addForm.vehicleClass,
-      vin:            normalizeVin(addForm.vin),
-    };
-    const check = validateVehicle(candidate);
-    if (!check.ok) {
-      if (check.missing.length) {
-        setAddErrors(Object.fromEntries(VEHICLE_REQUIRED_FIELDS.filter(([label]) => check.missing.includes(label))
-          .map(([label, key]) => [ADD_FIELD_OF[key] || key, `${label} is required.`])));
-      } else {
-        setAddError(check.error, /^Tank/.test(check.error) ? "tankSize" : /^Needs PM/.test(check.error) ? "pmInterval" : "vin");
-      }
-      return;
-    }
-    const yearProblem = numberProblem(addForm.year, { min: 1980, max: new Date().getFullYear() + 1, label: "Year" });
-    if (yearProblem) { setAddError(yearProblem, "year"); return; }
-    // The starting readings. The customer app no longer takes them at pickup,
-    // so a vehicle's first rental starts from these. Typed in the company's
-    // distance unit, stored in whole kilometres.
-    const odoTyped = String(addForm.odometer).trim();
-    if (!/^\d+$/.test(odoTyped)) {
-      setAddError(`Enter the current odometer as a whole number of ${distanceUnitWord()}.`, "odometer");
-      return;
-    }
-    if (!FUEL_LABELS.includes(addForm.fuelLevel)) {
-      setAddError("Choose the current fuel level.", "fuelLevel");
-      return;
-    }
-    const odometerKm = distanceToKm(Number(odoTyped));
-    // Plate and VIN uniqueness, in the shared rule rather than inline here, so
-    // the command bar enforces the same thing.
-    const unique = validateVehicleUniqueness(candidate, fleet, null);
-    if (!unique.ok) { setAddError(unique.error, unique.field || ""); return; }
-
-    guardAction("vehicle.add", () => {
-      const newVehicle = {
-        plate, make: addForm.make, model: addForm.model,
-        vehicleClass: addForm.vehicleClass || defaultVehicleClass(),
-        year: addForm.year || null,
-        colour: addForm.colour || null,
-        vin: candidate.vin,
-        province: addForm.province || null,
-        tankSizeLiters: tankLiters,
-        pmIntervalKm: pmKm,
-        lastPmOdometer: null,
-        currentOdometer: odometerKm,
-        currentFuelLevel: addForm.fuelLevel,
-        winterTires: "No", status: "Needs Cleaning",
-        currentRenter: null, dueBack: null, fileType: null,
-      };
-      setFleet((prev) => [...prev, newVehicle]);
-      // The response is handed on, so runWrite has an error to read.
-      const written = runWrite(supabase.from("fleet").insert(newVehicle).then((res) => { console.log("fleet insert response:", res); if (res.error) console.warn("fleet insert error:", res.error); return res; }), "fleet insert");
-      if (onAdded) written.then(onAdded);
-      setAddForm(BLANK_ADD);
-      setTankCanonical(null);
-      setPmCanonical(null);
-      setAddSuccess(true);
-    }, { tableName: "fleet", recordId: plate, description: `Added ${addForm.year} ${addForm.make} ${addForm.model}, ${addForm.vehicleClass}, VIN ${candidate.vin}.` });
-  };
 
   const handleRetireSubmit = (e) => {
     e.preventDefault();
@@ -6990,90 +7376,8 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
   };
 
-  // limit, for a number: { digits, decimals }, where typing stops.
-  const fi = (label, field, limit, props) =>
-    React.createElement("div", { className: "addVehicleField" },
-      React.createElement("label", { className: "addVehicleLabel" }, label),
-      React.createElement("input", {
-        type: "text", className: "addVehicleInput", value: addForm[field], ...invalid(!!addErrors[field]),
-        ...(limit ? { inputMode: limit.decimals ? "decimal" : "numeric" } : null), ...props,
-        onChange: (props && props.onChange) || ((e) => onAdd(field, limit ? numberTyped(e.target.value, limit) : e.target.value)),
-      }),
-      React.createElement(FieldError, { text: addErrors[field] })
-    );
-
-  // Numeric field in the company's unit, named in the label. setCanonical
-  // stores the value converted to litres or kilometres.
-  // No required marker: every field on this form is required, so singling any
-  // one out would be misleading. Matches the Retire Vehicle form, which also
-  // requires everything and simply says so on submit.
-  const unitField = (label, field, unit, setCanonical, limit) =>
-    React.createElement("div", { className: "addVehicleField" },
-      React.createElement("label", { className: "addVehicleLabel" }, `${label} (${unit})`),
-      React.createElement("input", {
-        type: "text", inputMode: limit.decimals ? "decimal" : "numeric", className: "addVehicleInput",
-        value: addForm[field], ...invalid(!!addErrors[field]),
-        onChange: (e) => {
-          const typed = numberTyped(e.target.value, limit);
-          onAdd(field, typed);
-          setCanonical(toCanonicalUnits(typed, unit));
-        },
-      }),
-      React.createElement(FieldError, { text: addErrors[field] })
-    );
-  const selectField = (label, field, options) =>
-    React.createElement("div", { className: "addVehicleField" },
-      React.createElement("label", { className: "addVehicleLabel" }, label),
-      React.createElement("select", { className: "addVehicleInput", value: addForm[field], ...invalid(!!addErrors[field]),
-        onChange: (e) => onAdd(field, e.target.value) }, options),
-      React.createElement(FieldError, { text: addErrors[field] })
-    );
-  // The add form's fields, the same on the Company page and here.
-  const addGrid = React.createElement("div", { className: "addVehicleGrid" },
-    fi("Plate Number", "plate", null, { onChange: (e) => onAdd("plate", normalizePlate(e.target.value)) }),
-    selectField("Province / State", "province", [
-      React.createElement("option", { key: "", value: "" }, "Select"),
-      ...PROV_STATE_LIST.filter((p) => p.value !== "All").map((p) => React.createElement("option", { key: p.value, value: p.value }, p.value))]),
-    fi("Year",   "year", { digits: 4 }),
-    fi("Make",   "make"),
-    fi("Model",  "model"),
-    fi("Colour", "colour"),
-    unitField("Tank Size", "tankSize", tankUnit, setTankCanonical, { digits: 3, decimals: 1 }),
-    unitField("Needs PM Every", "pmInterval", pmUnit, setPmCanonical, { digits: 6 }),
-    fi(`Current Odometer (${distanceUnit()})`, "odometer", { digits: 7 }),
-    selectField("Current Fuel Level", "fuelLevel", [
-      React.createElement("option", { key: "", value: "" }, "Choose"),
-      ...FUEL_LABELS.map((f) => React.createElement("option", { key: f, value: f }, f))]),
-    selectField("Vehicle Class", "vehicleClass", vehicleClassOptions(addForm.vehicleClass).map((vc) =>
-      React.createElement("option", { key: vc, value: vc }, vc))),
-    React.createElement("div", { className: "addVehicleField addVehicleField--full" },
-      React.createElement("label", { className: "addVehicleLabel" }, "VIN"),
-      React.createElement("input", {
-        type: "text", className: "addVehicleInput", value: addForm.vin, ...invalid(!!addErrors.vin),
-        onChange: (e) => onAdd("vin", e.target.value),
-      }),
-      React.createElement(FieldError, { text: addErrors.vin })));
-
-  // Inside the Company page's Vehicles step: the add form alone, as it was.
-  if (embedded) {
-    return React.createElement("div", null,
-      !unitsSet() && React.createElement("div", { className: "resvEmpty", style: { textAlign: "left" } }, UNITS_NOT_SET),
-      unitsSet() && React.createElement(
-        "section", { className: "dashboardSection" },
-        React.createElement("div", { className: "dashboardSection__header" },
-          React.createElement("div", { className: "dashboardSection__headerRow" }, React.createElement("span", null, "Add Vehicle to Fleet"))
-        ),
-        React.createElement("div", { className: "dashboardSection__body" },
-          React.createElement("form", { className: "addVehicleForm", onSubmit: handleAddSubmit },
-          addGrid,
-          React.createElement(FieldError, { text: addErrors[""] }),
-          addSuccess && React.createElement("div", { className: "addVehicleSuccess" }, "Vehicle added to fleet."),
-          React.createElement("button", { type: "submit", className: "addVehicleBtn" }, "Add to Fleet")
-        )
-        )
-      )
-    );
-  }
+  // Inside the Company page's Vehicles step: the add form alone.
+  if (embedded) return React.createElement(AddVehicleForm, { onAdded });
 
   // The page: the Company page's section cards, each opening and closing.
   const card = (key, title, ...children) => React.createElement(CompanyStep, {
@@ -7084,16 +7388,7 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
     "div", { className: "page companySetup" },
     React.createElement("h1", { className: "companySetup__title" }, "Additions and Deletions"),
     React.createElement(FleetFilterBar, { filterState }),
-    card("add", "Add Vehicle to Fleet",
-      !unitsSet()
-        ? React.createElement("div", { className: "resvEmpty", style: { textAlign: "left" } }, UNITS_NOT_SET)
-        : React.createElement("form", { className: "addVehicleForm", onSubmit: handleAddSubmit },
-          addGrid,
-          React.createElement(FieldError, { text: addErrors[""] }),
-          addSuccess && React.createElement("div", { className: "addVehicleSuccess" }, "Vehicle added to fleet."),
-          React.createElement("div", { className: "closeRentalActions" },
-            React.createElement("button", { type: "submit", className: "resModalSubmit" }, "Add to Fleet"))
-        )),
+    card("add", "Add Vehicle to Fleet", React.createElement(AddVehicleForm, null)),
     card("retire", "Retire Vehicle",
             React.createElement("form", { className: "addVehicleForm", onSubmit: handleRetireSubmit },
             React.createElement("div", { className: "addVehicleGrid" },
@@ -7170,7 +7465,7 @@ function FleetDamageClaimsPage() {
 
   // Claims without a plate are shown regardless of the current fleet filter.
   const allClaims = damageClaims
-    .filter((c) => !c.plate || filteredPlates.has(c.plate))
+    .filter((c) => !c.preExisting && (!c.plate || filteredPlates.has(c.plate)))
     .map((c) => enrichDamageClaim(c, rentalAgreements, reservations));
 
   const openClaims   = allClaims.filter((c) => c._status !== "resolved");
@@ -7845,17 +8140,8 @@ function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, sk
 
 // What the Vehicles step shows: how many there are, and the add form.
 function VehiclesStep({ onAdded }) {
-  const { fleet } = React.useContext(AppContext);
   const el = React.createElement;
-  const byClass = {};
-  (fleet || []).forEach((v) => { const k = v.vehicleClass || "No class"; byClass[k] = (byClass[k] || 0) + 1; });
-  const total = (fleet || []).length;
-  return el(React.Fragment, null,
-    el("p", { className: "closeRentalHint" }, total
-      ? `${total} vehicle${total === 1 ? "" : "s"} so far: ${Object.entries(byClass).map(([k, n]) => `${n} ${k}`).join(", ")}. `
-      : "No vehicles yet. ",
-      el("a", { href: "#/fleet/vehicles" }, "See every vehicle"), "."),
-    el(FleetAdditionsPage, { embedded: true, onAdded }));
+  return el(FleetAdditionsPage, { embedded: true, onAdded });
 }
 
 // The last step: what is left, and the Launch button. The checklist is the
@@ -10577,34 +10863,39 @@ const vehicleClassType = (c) =>
 // One class's low availability warning: fewer than this many free at a
 // branch, or blank for none (set_class_low_warning, fleetr-infra
 // fleet_shortages.sql).
-function LowWarningRow({ entry, busy, onSave, error }) {
-  const shown = entry.lowWarnBelow == null ? "" : String(entry.lowWarnBelow);
-  const [draft, setDraft] = React.useState(shown);
-  const [problem, setProblem] = React.useState("");
-  React.useEffect(() => { setDraft(shown); }, [shown]);
+function LowWarningsForm({ classes, busy, errAt, onSave }) {
   const el = React.createElement;
-  const save = () => {
-    const t = draft.trim();
-    if (t === "") { onSave(null); return; }
-    const n = Number(t);
-    if (!Number.isInteger(n) || n < 1 || n > 99) { setProblem("A warning has to be a whole number from 1 to 99, or blank for none."); return; }
-    onSave(n);
+  const shown = (c) => (c.lowWarnBelow == null ? "" : String(c.lowWarnBelow));
+  const savedKey = classes.map((c) => `${c.id}:${shown(c)}`).join();
+  const [drafts, setDrafts] = React.useState({});
+  const [problem, setProblem] = React.useState({ id: "", text: "" });
+  React.useEffect(() => { setDrafts(Object.fromEntries(classes.map((c) => [c.id, shown(c)]))); }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const draftOf = (c) => drafts[c.id] ?? shown(c);
+  const changed = classes.filter((c) => draftOf(c).trim() !== shown(c));
+  const save = async () => {
+    const bad = changed.find((c) => draftOf(c).trim() !== "" && !(Number(draftOf(c)) >= 1 && Number(draftOf(c)) <= 99));
+    if (bad) { setProblem({ id: bad.id, text: "A warning has to be a whole number from 1 to 99, or blank for none." }); return; }
+    for (const c of changed) {
+      const t = draftOf(c).trim();
+      if (!(await onSave(c, t === "" ? null : Number(t)))) return;
+    }
   };
-  return el("div", { className: "lowWarn__row" },
-    el("span", { className: "lowWarn__name" }, entry.name),
-    el("span", { className: "closeRentalHint", style: { margin: 0 } }, "Fewer than"),
-    el("input", {
-      className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric", placeholder: "Off",
-      value: draft, disabled: busy, "aria-label": `${entry.name}: warn when fewer than this many are free`, maxLength: 2,
-      ...invalid(!!(problem || error)),
-      onChange: (e) => { setDraft(numberTyped(e.target.value, { digits: 2 })); setProblem(""); },
+  return el(React.Fragment, null,
+    classes.map((c) => {
+      const error = (problem.id === c.id && problem.text) || errAt(`classes:low:${c.id}`);
+      return el("div", { key: c.id, className: "lowWarn__row" },
+        el("span", { className: "lowWarn__name" }, c.name),
+        el("span", { className: "closeRentalHint", style: { margin: 0 } }, "Fewer than"),
+        el("input", {
+          className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric", placeholder: "Off", maxLength: 2,
+          value: draftOf(c), disabled: busy, "aria-label": `${c.name}: warn when fewer than this many are free`, ...invalid(!!error),
+          onChange: (e) => { const v = numberTyped(e.target.value, { digits: 2 }); setDrafts((p) => ({ ...p, [c.id]: v })); setProblem({ id: "", text: "" }); },
+        }),
+        el("span", { className: "closeRentalHint", style: { margin: 0 } }, "free"),
+        error && el("div", { style: { flexBasis: "100%" } }, el(FieldError, { text: error })));
     }),
-    el("span", { className: "closeRentalHint", style: { margin: 0 } }, "free"),
-    el("button", {
-      className: "loginBtn", style: { width: "auto", padding: "5px 9px" },
-      disabled: busy || draft.trim() === shown, onClick: save,
-    }, "Save"),
-    (problem || error) && el("div", { style: { flexBasis: "100%" } }, el(FieldError, { text: problem || error })));
+    el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px", marginTop: "10px" },
+      disabled: busy || changed.length === 0, onClick: save }, "Save"));
 }
 
 function VehicleClassDetailsCell({ entry, busy, onSave, error }) {
@@ -10989,7 +11280,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   const errorLine = (at) => el(FieldError, { text: errAt(at) });
   const section = (title, intro, at, ...children) => el(
     CompanySection, { id: `company-section-${at}`, title, style: { marginTop: "24px" }, defaultOpen: openSections, done: !!doneAt[at] },
-    el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, intro),
+    intro && el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, intro),
     ...children,
     // One about no single field, under the section's own controls.
     errorLine(at)
@@ -11190,9 +11481,11 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
 
     // ── Vehicle classes ──
     classes: section("Vehicle classes",
-      "One list for reservations, the fleet and rates, in the order shown here.",
+      null,
       "classes",
-      table("860px", ["", "Vehicle class", "Type", "Seats", "Bags", "Example models", "", "On", ""],
+      vehicleClasses.length === 0
+        ? el("p", { className: "closeRentalHint" }, "No vehicle classes yet")
+        : table("860px", ["", "Vehicle class", "Type", "Seats", "Bags", "Example models", "", "On", ""],
         vehicleClasses.map((entry, i) => entryRow({
           at: "classes", kind: "vehicle_class", entry,
           reorder: { listKey: "classes", list: vehicleClasses, index: i, saveCall: saveClass },
@@ -11207,12 +11500,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
       el(VehicleClassPicker, { disabled: busy, onAdded: async () => { await reload(); if (onChanged) await onChanged(); } }),
       isFeatureEnabled("fleet_notifications") && roleAtLeast(currentUser?.role, "Exec") && el("div", { className: "lowWarn" },
         el("h3", { className: "lowWarn__title" }, "Low availability warnings"),
-        el("p", { className: "closeRentalHint", style: { margin: "0 0 10px" } },
-          "Get a notification when fewer than this many of a class are free at a branch. Leave it blank for no warning."),
-        activeClasses.map((entry) => el(LowWarningRow, {
-          key: entry.id, entry, busy, error: errAt(`classes:low:${entry.id}`),
-          onSave: (below) => act(`classes:low:${entry.id}`, "set_class_low_warning", { p_class_id: entry.id, p_below: below }),
-        })))),
+        el(LowWarningsForm, { classes: activeClasses, busy, errAt,
+          onSave: (entry, below) => act(`classes:low:${entry.id}`, "set_class_low_warning", { p_class_id: entry.id, p_below: below }) }))),
 
     // ── Sources ──
     sources: section("Sources",
@@ -14478,33 +14767,6 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
 
   const setGas = (value) => setReadings((prev) => ({ ...prev, gasIndex: Number(value) }));
 
-  // The fuel slider takes the finger directly. iPhone Safari does not honour
-  // touch-action on a range input and lets a drag that strays even slightly
-  // vertical scroll the page, and a tap focuses the input and can scroll it
-  // into view. React's touch listeners are passive and cannot preventDefault,
-  // so these are attached by hand with passive: false: the page never sees
-  // the touch, and the value follows the finger along the track. Mouse and
-  // keyboard still go through onChange.
-  const fuelRef = React.useRef(null);
-  React.useEffect(() => {
-    const range = fuelRef.current;
-    if (!range) return undefined;
-    const onTouch = (e) => {
-      if (e.touches.length !== 1) return;
-      e.preventDefault();
-      const r    = range.getBoundingClientRect();
-      const pad  = Math.min(12, r.width / 10); // the thumb's centre stops short of each end
-      const frac = Math.min(1, Math.max(0, (e.touches[0].clientX - r.left - pad) / (r.width - 2 * pad)));
-      setGas(Math.round(frac * 8));
-    };
-    range.addEventListener("touchstart", onTouch, { passive: false });
-    range.addEventListener("touchmove",  onTouch, { passive: false });
-    return () => {
-      range.removeEventListener("touchstart", onTouch);
-      range.removeEventListener("touchmove",  onTouch);
-    };
-  }, []);
-
   const handleNext = () => {
     setAttempted(true);
     if (mileageError || gasError || lowError) return;
@@ -14550,25 +14812,7 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
         )
       ),
       errorLine(lowError),
-      React.createElement("div", { className: "resFormGroup" },
-        React.createElement("span", { className: "resFormLabel", id: "closeRentalGasLabel" }, L.gasLabel),
-        React.createElement("div", { className: "closeRentalFuel__value" }, gasIndex === null ? "Not set" : FUEL_LABELS[gasIndex]),
-        React.createElement("input", {
-          ref: fuelRef,
-          type: "range", min: 0, max: 8, step: 1,
-          className: gasIndex === null ? "closeRentalFuel closeRentalFuel--unset" : "closeRentalFuel",
-          "aria-labelledby": "closeRentalGasLabel",
-          "aria-valuetext": gasIndex === null ? "Not set" : FUEL_LABELS[gasIndex],
-          value: gasIndex === null ? 0 : gasIndex,
-          onChange: (e) => setGas(e.target.value),
-          // A click on the thumb's current spot fires no change event, so an
-          // unset slider could never be set to Empty. The click catches it.
-          onClick: (e) => setGas(e.currentTarget.value),
-        }),
-        React.createElement("div", { className: "closeRentalFuel__labels" },
-          ["Empty", "¼", "½", "¾", "Full"].map((l) => React.createElement("span", { key: l }, l))
-        )
-      ),
+      React.createElement(FuelLevelField, { label: L.gasLabel, labelId: "closeRentalGasLabel", index: gasIndex, onChange: setGas }),
       errorLine(gasError)
     ),
     React.createElement("div", { className: "closeRentalActions" },
@@ -16362,7 +16606,7 @@ function sourceCatsFor(current) {
 // ─── CustomerPage ─────────────────────────────────────────────────────────────
 
 function CustomerPage() {
-  const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, guardAction, logAudit, setDamageClaims, currentUser } = React.useContext(AppContext);
+  const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, guardAction, logAudit, damageClaims, setDamageClaims, currentUser } = React.useContext(AppContext);
   const navigate = useNavigate();
   const location = useLocation();
   const resCode = new URLSearchParams(location.search).get("code") || null;
@@ -16516,9 +16760,10 @@ function CustomerPage() {
       vin:          fleetVehicle.vin      || "",
       fuelLevel:    ra.fuelAtPickup       || "",
       mileage:      ra.mileage            ? String(ra.mileage) : "",
-      damage:       "",
+      damage:       (damageClaims || []).filter((c) => c.preExisting && c.status !== "resolved" && normalizePlate(c.plate) === normalizePlate(ra.plate))
+        .map((c) => c.description).filter(Boolean).join("; "),
     });
-  }, [resCode, rentalAgreements, fleet]);
+  }, [resCode, rentalAgreements, fleet, damageClaims]);
 
   // ── Fetch latest record from Supabase ───────────────────────────────────────
   const fetchRecord = React.useCallback(async () => {
@@ -20431,6 +20676,48 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
   border-color: #c0392b !important; box-shadow: 0 0 0 1px #c0392b !important;
 }
 .resFormGroup:has(> .resFormError) .resFormInput{ border-color: #c0392b !important; box-shadow: 0 0 0 1px #c0392b !important; }
+/* Adding a vehicle: one card, two columns on a desktop and one on a phone,
+   16px text in every field so a phone never zooms in. */
+.addV{ display: flex; flex-direction: column; gap: 16px; }
+.addV .addV__grid input, .addV .addV__grid select, .addV .addV__grid textarea, .addV .addV__grid .resFormInput{ font-size: 16px; }
+.addV__grid{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; background: #FFFFFF; border: 1px solid #E3E2DE; border-radius: 14px; padding: 18px; }
+.addV__wide{ grid-column: 1 / -1; min-width: 0; }
+.addV .resFormInput{ width: 100%; box-sizing: border-box; }
+.addV__vinBox{ position: relative; display: flex; align-items: center; }
+.addV__vin{ padding-right: 62px; letter-spacing: 0.04em; }
+.addV__count{ position: absolute; right: 10px; font-size: 12px; font-weight: 600; color: #6B6A66; pointer-events: none; }
+.addV__scanBtn{ flex: none; margin-left: 8px; }
+.addV__vinBox:has(.addV__scanBtn) .addV__count{ right: 100px; }
+.addV__summary{ display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 16px; font-weight: 600; color: #1F1E1D; }
+.addV__skel{ display: block; height: 22px; width: 60%; border-radius: 6px; }
+.addV__three{ display: grid; grid-template-columns: 110px minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.addV__mini{
+  display: inline-flex; align-items: center; min-height: 34px; padding: 0 12px; border: 1px solid #E3E2DE; border-radius: 8px;
+  background: #F9F9F7; color: #1F1E1D; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.addV__mini:hover{ border-color: #F4845F; }
+.addV__damageHead{
+  display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 12px 14px; border: 1px solid #E3E2DE; border-radius: 10px;
+  background: #F9F9F7; color: #1F1E1D; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
+}
+.addV__damageBody{ display: flex; flex-direction: column; gap: 12px; align-items: flex-start; margin-top: 10px; }
+.addV__damageItem{ display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.addV__damageBtns{ display: flex; gap: 8px; }
+.addV__thumb{ width: 72px; height: 72px; object-fit: cover; border-radius: 8px; }
+.addV__saved{ display: flex; flex-direction: column; gap: 10px; background: #FFFFFF; border: 1px solid #E3E2DE; border-radius: 14px; padding: 16px 18px; }
+.addV__savedText{ font-size: 16px; font-weight: 700; color: #1F1E1D; }
+.addV__savedBtns{ display: flex; flex-wrap: wrap; gap: 10px; }
+.addV__list{ list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto; border: 1px solid #E3E2DE; border-radius: 12px; background: #FFFFFF; }
+.addV__row{ display: grid; grid-template-columns: 100px minmax(0, 1fr) auto; gap: 10px; padding: 9px 14px; border-bottom: 1px solid #EEEDE9; font-size: 13.5px; color: #1F1E1D; }
+.addV__row:last-child{ border-bottom: 0; }
+.addV__rowPlate{ font-weight: 600; }
+.addV__rowClass{ color: #6B6A66; }
+.addV__scan{ position: fixed; inset: 0; z-index: 10060; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 16px; background: #1F1E1D; }
+.addV__scanVideo{ width: 100%; max-height: 70vh; border-radius: 12px; object-fit: cover; }
+@media (max-width: 767px){
+  .addV__grid{ grid-template-columns: minmax(0, 1fr); padding: 14px; }
+  .addV__three{ grid-template-columns: minmax(0, 1fr); }
+}
 /* Setup: the bar across the top, one piece per step, and a sub-section's own
    check once it is done. */
 .setupProgress{ margin: 0 0 18px; }
