@@ -5354,7 +5354,7 @@ function VehicleDetailPage() {
         detailRow("Odometer", latestRa?.mileage != null
           ? fmtDistance(latestRa.mileage)
           : vehicle.currentOdometer != null ? fmtDistance(vehicle.currentOdometer) : "\u00b7"),
-        detailRow("Fuel Level", latestRa?.fuelAtPickup || vehicle.currentFuelLevel),
+        detailRow("Fuel Level", fuelText(latestRa?.fuelAtPickup || vehicle.currentFuelLevel)),
         React.createElement(
           "div", { className: "vehicleDetailRow" },
           React.createElement("span", { className: "vehicleDetailLabel" }, "Tank Size"),
@@ -6374,7 +6374,7 @@ function validateStartingReadings(v) {
   }
   const n = Number(odo);
   if (!Number.isFinite(n) || n < 0) return { ok: false, error: "Current odometer has to be a number of kilometres, zero or more." };
-  if (!FUEL_LABELS.includes(fuel)) return { ok: false, error: `Current fuel level has to be one of: ${FUEL_LABELS.join(", ")}.` };
+  if (!FUEL_LABELS.includes(fuel)) return { ok: false, error: `Current fuel level has to be one of: ${FUEL_LABELS.map(fuelText).join(", ")}.` };
   return { ok: true, error: null, odometer: Math.round(n), fuelLevel: fuel };
 }
 
@@ -6886,6 +6886,38 @@ function addVehicleProblems(form, fleet, taken) {
   return out;
 }
 
+// What to say when the database refuses a vehicle: the real reason, unless the
+// request never arrived.
+const FLEET_COLUMN_WORDS = { year: "Year", make: "Make", model: "Model", colour: "Colour", vin: "VIN", plate: "Plate", province: "Province or state",
+  vehicleClass: "Class", locationId: "Branch", operatorId: "Company", tankSizeLiters: "Tank size", pmIntervalKm: "PM interval" };
+function vehicleSaveError(err) {
+  const message = String(err?.message || "");
+  if (!err?.code && /fetch|network|load failed|timed? ?out/i.test(message)) {
+    return "The vehicle could not be saved. Check your connection and try again.";
+  }
+  if (err?.code === "23505") {
+    const what = /vin/i.test(`${message} ${err.details || ""}`) ? "VIN" : "plate";
+    return `A vehicle with this ${what} is already saved.`;
+  }
+  if (err?.code === "23502") {
+    const column = (message.match(/column "([^"]+)"/) || [])[1] || "";
+    return `The vehicle could not be saved: ${FLEET_COLUMN_WORDS[column] || column || "a field"} is required.`;
+  }
+  if (err?.code === "42501") return "The vehicle could not be saved: you don't have permission to add a vehicle at this branch.";
+  return `The vehicle could not be saved: ${message || "the database refused it."}`;
+}
+
+// A VIN read from a barcode. Labels add a leading I or spaces around the 17
+// characters, so every run of 17 is tried. Only one with a good check digit counts.
+function vinFromBarcode(text) {
+  const raw = String(text ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  for (let i = 0; i + VIN_LENGTH <= raw.length; i++) {
+    const vin = raw.slice(i, i + VIN_LENGTH);
+    if (vinCheckDigitOk(vin)) return vin;
+  }
+  return null;
+}
+
 // The next form. "like" keeps what the next car of a batch shares.
 function nextVehicleForm(saved, mode, province) {
   const blank = { ...ADD_VEHICLE_BLANK, province: province || "" };
@@ -6955,44 +6987,49 @@ function provinceCodeOf(text) {
 }
 
 // The fuel gauge, as at check-in: nine steps from Empty to Full, untouched
-// until it is set. iPhone Safari does not honour touch-action on a range input
-// and lets a drag that strays even slightly vertical scroll the page, and a
-// tap focuses the input and can scroll it into view. React's touch listeners
-// are passive and cannot preventDefault, so these are attached by hand with
-// passive: false: the page never sees the touch, and the value follows the
-// finger along the track. Mouse and keyboard still go through onChange.
+// until it is set. A finger on it moves only the slider: touch-action turns
+// the page's own gestures off, the pointer is captured so the value follows it
+// off the track, and because iPhone Safari can still begin a scroll, its touch
+// events are refused by hand (React's are passive and cannot be). Mouse and
+// keyboard go through onChange.
 function FuelLevelField({ label, labelId, index, onChange, bad, onEnter }) {
   const el = React.createElement;
   const fuelRef = React.useRef(null);
-  const changeRef = React.useRef(onChange);
-  changeRef.current = onChange;
+  const follow = (e) => {
+    const r    = e.currentTarget.getBoundingClientRect();
+    const pad  = Math.min(12, r.width / 10); // the thumb's centre stops short of each end
+    const frac = Math.min(1, Math.max(0, (e.clientX - r.left - pad) / (r.width - 2 * pad)));
+    onChange(Math.round(frac * 8));
+  };
+  const onPointerDown = (e) => {
+    if (e.pointerType === "mouse") return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    follow(e);
+  };
+  const onPointerMove = (e) => {
+    if (e.pointerType !== "mouse" && e.currentTarget.hasPointerCapture(e.pointerId)) { e.preventDefault(); follow(e); }
+  };
   React.useEffect(() => {
     const range = fuelRef.current;
     if (!range) return undefined;
-    const onTouch = (e) => {
-      if (e.touches.length !== 1) return;
-      e.preventDefault();
-      const r    = range.getBoundingClientRect();
-      const pad  = Math.min(12, r.width / 10); // the thumb's centre stops short of each end
-      const frac = Math.min(1, Math.max(0, (e.touches[0].clientX - r.left - pad) / (r.width - 2 * pad)));
-      changeRef.current(Math.round(frac * 8));
-    };
-    range.addEventListener("touchstart", onTouch, { passive: false });
-    range.addEventListener("touchmove",  onTouch, { passive: false });
+    const stop = (e) => e.preventDefault();
+    range.addEventListener("touchstart", stop, { passive: false });
+    range.addEventListener("touchmove",  stop, { passive: false });
     return () => {
-      range.removeEventListener("touchstart", onTouch);
-      range.removeEventListener("touchmove",  onTouch);
+      range.removeEventListener("touchstart", stop);
+      range.removeEventListener("touchmove",  stop);
     };
   }, []);
   return el("div", { className: "resFormGroup" },
     el("span", { className: "resFormLabel", id: labelId }, label),
-    el("div", { className: "closeRentalFuel__value" }, index === null ? "Not set" : FUEL_LABELS[index]),
+    el("div", { className: "closeRentalFuel__value" }, index === null ? "Not set" : fuelText(FUEL_LABELS[index])),
     el("input", {
-      ref: fuelRef,
+      ref: fuelRef, onPointerDown, onPointerMove,
       type: "range", min: 0, max: 8, step: 1,
       className: index === null ? "closeRentalFuel closeRentalFuel--unset" : "closeRentalFuel",
       "aria-labelledby": labelId,
-      "aria-valuetext": index === null ? "Not set" : FUEL_LABELS[index],
+      "aria-valuetext": index === null ? "Not set" : fuelText(FUEL_LABELS[index]),
       value: index === null ? 0 : index,
       ...invalid(!!bad),
       onChange: (e) => onChange(Number(e.target.value)),
@@ -7002,47 +7039,66 @@ function FuelLevelField({ label, labelId, index, onChange, bad, onEnter }) {
       onKeyDown: onEnter ? (e) => { if (e.key === "Enter") { e.preventDefault(); onEnter(); } } : undefined,
     }),
     el("div", { className: "closeRentalFuel__labels" },
-      ["Empty", "¼", "½", "¾", "Full"].map((l) => el("span", { key: l }, l))));
+      ["Empty", "1/4", "1/2", "3/4", "Full"].map((l) => el("span", { key: l }, l))));
 }
 
 // The door frame or windshield barcode, by the reader the check-in app scans
-// licenses with. A VIN label is Code 39 or Data Matrix, and some print a
-// leading I, which is why the 17 characters are looked for inside what it reads.
+// licenses with. VIN labels are mostly Code 39 and Data Matrix, some Code 128,
+// PDF417 or QR. The rear camera at its sharpest, focusing all the time, read
+// across the whole frame. It keeps looking after the message shows.
 const ZXING_URL = "https://cdn.jsdelivr.net/npm/@zxing/library@0.23.0/+esm";
+const VIN_SCAN_NOTHING_MS = 8000;
+const VIN_SCAN_CAMERA = { video: {
+  facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 },
+  advanced: [{ focusMode: "continuous" }],
+} };
 function VinScanner({ onRead, onFail, onClose }) {
   const el = React.createElement;
   const videoRef = React.useRef(null);
+  const [nothing, setNothing] = React.useState(false);
   React.useEffect(() => {
     let live = true, reader = null;
+    const t = setTimeout(() => { if (live) setNothing(true); }, VIN_SCAN_NOTHING_MS);
     (async () => {
       try {
         const zx = await import(ZXING_URL);
         if (!live) return;
-        const hints = new Map([[zx.DecodeHintType.POSSIBLE_FORMATS, [zx.BarcodeFormat.CODE_39, zx.BarcodeFormat.DATA_MATRIX]]]);
+        const hints = new Map([
+          [zx.DecodeHintType.POSSIBLE_FORMATS, [zx.BarcodeFormat.CODE_39, zx.BarcodeFormat.DATA_MATRIX, zx.BarcodeFormat.CODE_128, zx.BarcodeFormat.PDF_417, zx.BarcodeFormat.QR_CODE]],
+          [zx.DecodeHintType.TRY_HARDER, true],
+        ]);
         reader = new zx.BrowserMultiFormatReader(hints);
-        await reader.decodeFromConstraints({ video: { facingMode: { ideal: "environment" } } }, videoRef.current, (result) => {
+        reader.timeBetweenDecodingAttempts = 150;
+        await reader.decodeFromConstraints(VIN_SCAN_CAMERA, videoRef.current, (result) => {
           if (!result || !live) return;
-          const vin = (String(result.getText()).toUpperCase().match(/[A-HJ-NPR-Z0-9]{17}/) || [])[0];
+          const vin = vinFromBarcode(result.getText());
           if (vin) { live = false; reader.reset(); onRead(vin); }
         });
+        // Some phones take focus only once the camera is running.
+        const track = videoRef.current?.srcObject?.getVideoTracks?.()[0];
+        if (track && track.applyConstraints) track.applyConstraints({ advanced: [{ focusMode: "continuous" }] }).catch(() => {});
       } catch (e) {
         console.warn("VIN scanner:", e);
         if (live) onFail();
       }
     })();
-    return () => { live = false; if (reader) reader.reset(); };
+    return () => { live = false; clearTimeout(t); if (reader) reader.reset(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return el("div", { className: "addV__scan", role: "dialog", "aria-modal": "true", "aria-label": "Scan VIN" },
     el("video", { ref: videoRef, className: "addV__scanVideo", playsInline: true, muted: true }),
+    nothing && el("p", { className: "addV__scanNote", role: "status" }, "Couldn't read the barcode. Try the sticker in the driver's door frame, or type the VIN."),
     el("button", { type: "button", className: "resModalCancel", onClick: onClose }, "Cancel"));
 }
 
-// Damage already on the vehicle: what and where, and photos of it. Each entry
-// becomes a pre-existing damage record once the vehicle is saved.
+// Damage already on the vehicle: what and where, and photos of it. Saved here
+// it folds to one line, and each becomes a pre-existing damage record once the
+// vehicle is saved.
 function ExistingDamageSection({ items, setItems, errors, busy }) {
   const el = React.createElement;
   const [open, setOpen] = React.useState(false);
-  const blank = () => ({ id: crypto.randomUUID(), note: "", photos: [] });
+  const [shown, setShown] = React.useState("");
+  const [problem, setProblem] = React.useState({ id: "", text: "" });
+  const blank = () => ({ id: crypto.randomUUID(), note: "", photos: [], saved: false });
   const toggle = () => {
     if (!open && items.length === 0) setItems([blank()]);
     setOpen((o) => !o);
@@ -7051,24 +7107,47 @@ function ExistingDamageSection({ items, setItems, errors, busy }) {
   const addPhotos = (item, files) => update(item.id, { photos: [...item.photos, ...Array.from(files || [])
     .filter((f) => f.size <= CLOSE_PHOTO_MAX_BYTES)
     .map((f) => ({ id: crypto.randomUUID(), blob: f, type: f.type, url: URL.createObjectURL(f), capturedAt: new Date().toISOString() }))] });
+  const saveItem = (item) => {
+    if (!item.note.trim()) { setProblem({ id: item.id, text: "Say what the damage is." }); return; }
+    setProblem({ id: "", text: "" });
+    update(item.id, { saved: true });
+    setShown("");
+  };
+  const remove = (item) => { releasePhotos(item.photos); setItems((list) => list.filter((x) => x.id !== item.id)); };
+  const photoRow = (item) => item.photos.length > 0 && el("div", { className: "damagePhotoRow" }, item.photos.map((p) =>
+    el("img", { key: p.id, src: p.url, alt: "Damage", className: "addV__thumb" })));
+  const addPhoto = (item) => el("label", { className: "addV__mini" }, "Add photo",
+    el("input", { type: "file", accept: "image/*", capture: "environment", multiple: true, style: { display: "none" }, disabled: busy,
+      onChange: (e) => { addPhotos(item, e.target.files); e.target.value = ""; } }));
+  const removeBtn = (item) => el("button", { type: "button", className: "addV__mini", disabled: busy, onClick: () => remove(item) }, "Remove");
+  const count = items.filter((x) => x.saved).length;
   return el("div", { className: "addV__damage addV__wide" },
     el("button", { type: "button", className: "addV__damageHead", "aria-expanded": open, onClick: toggle },
-      el("span", null, items.some((x) => x.note.trim()) ? `Existing damage (${items.filter((x) => x.note.trim()).length})` : "Existing damage"),
-      el("span", { "aria-hidden": "true" }, open ? "▾" : "▸")),
+      el("span", null, count ? `Existing damage (${count})` : "Existing damage"),
+      el("span", { "aria-hidden": "true" }, open ? "\u25be" : "\u25b8")),
     open && el("div", { className: "addV__damageBody" },
-      items.map((item) => el("div", { key: item.id, className: "addV__damageItem" },
-        el("textarea", { className: "resFormInput", rows: 2, placeholder: "Where it is and what it looks like", "aria-label": "Existing damage", disabled: busy,
-          value: item.note, ...invalid(!!errors[`damage:${item.id}`]), onChange: (e) => update(item.id, { note: e.target.value }) }),
-        el(FieldError, { text: errors[`damage:${item.id}`] }),
-        item.photos.length > 0 && el("div", { className: "damagePhotoRow" }, item.photos.map((p) =>
-          el("img", { key: p.id, src: p.url, alt: "Damage", className: "addV__thumb" }))),
-        el("div", { className: "addV__damageBtns" },
-          el("label", { className: "addV__mini" }, "Add photo",
-            el("input", { type: "file", accept: "image/*", capture: "environment", multiple: true, style: { display: "none" }, disabled: busy,
-              onChange: (e) => { addPhotos(item, e.target.files); e.target.value = ""; } })),
-          el("button", { type: "button", className: "addV__mini", disabled: busy,
-            onClick: () => { releasePhotos(item.photos); setItems((list) => list.filter((x) => x.id !== item.id)); } }, "Remove")))),
-      el("button", { type: "button", className: "addV__mini", disabled: busy, onClick: () => setItems((list) => [...list, blank()]) }, "Add more damage")));
+      items.map((item) => {
+        const n = item.photos.length;
+        const error = (problem.id === item.id && problem.text) || errors[`damage:${item.id}`];
+        if (item.saved) {
+          const isOpen = shown === item.id;
+          return el("div", { key: item.id, className: "addV__damageItem" },
+            el("button", { type: "button", className: "addV__damageHead addV__damageRow", "aria-expanded": isOpen, onClick: () => setShown(isOpen ? "" : item.id) },
+              el("span", null, n ? `${item.note.trim()} \u00b7 ${n} photo${n === 1 ? "" : "s"}` : item.note.trim()),
+              el("span", { "aria-hidden": "true" }, isOpen ? "\u25be" : "\u25b8")),
+            isOpen && el(React.Fragment, null, photoRow(item), el("div", { className: "addV__damageBtns" }, addPhoto(item), removeBtn(item))));
+        }
+        return el("div", { key: item.id, className: "addV__damageItem" },
+          el("textarea", { className: "resFormInput", rows: 2, placeholder: "Where it is and what it looks like", "aria-label": "Existing damage", disabled: busy,
+            value: item.note, ...invalid(!!error), onChange: (e) => { update(item.id, { note: e.target.value }); setProblem({ id: "", text: "" }); } }),
+          el(FieldError, { text: error }),
+          photoRow(item),
+          el("div", { className: "addV__damageBtns" },
+            addPhoto(item),
+            el("button", { type: "button", className: "addV__mini", disabled: busy, onClick: () => saveItem(item) }, "Save"),
+            removeBtn(item)));
+      }),
+      items.every((x) => x.saved) && el("button", { type: "button", className: "addV__mini", disabled: busy, onClick: () => setItems((list) => [...list, blank()]) }, "Add more damage")));
 }
 
 function AddVehicleForm({ onAdded }) {
@@ -7196,7 +7275,7 @@ function AddVehicleForm({ onAdded }) {
         const res = await supabase.from("fleet").insert(row);
         if (res.error) {
           console.warn("fleet insert error:", res.error);
-          setErrors({ "": "The vehicle could not be saved. Check your connection and try again." });
+          setErrors({ "": vehicleSaveError(res.error) });
           throw new Error(res.error.message);
         }
         const added = { ...row, ...((res.data && res.data[0]) || {}) };
@@ -7237,20 +7316,21 @@ function AddVehicleForm({ onAdded }) {
 
   const madeModels = (fleet || []).filter((v) => !form.make.trim() || String(v.make || "").toLowerCase() === form.make.trim().toLowerCase());
   const list = [...(fleet || [])].reverse()
-    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
   const title = vehicleTitle(form);
 
   if (!unitsSet()) return el("div", { className: "resvEmpty", style: { textAlign: "left" } }, UNITS_NOT_SET);
 
   const fields = el("form", { ref: formRef, className: "addV__grid", onSubmit: save, noValidate: true },
-    group("VIN", "addv-vin", "vin", el("div", { className: "addV__vinBox" },
+    group("VIN", "addv-vin", "vin", el(React.Fragment, null,
       el("input", {
         id: "addv-vin", ref: vinRef, className: "resFormInput addV__vin", value: form.vin, disabled: busy, ...invalid(!!allErrors.vin),
         autoComplete: "off", autoCorrect: "off", autoCapitalize: "characters", spellCheck: false, autoFocus: true, inputMode: "text",
         onChange: (e) => set("vin", vinTyped(e.target.value)),
       }),
-      el("span", { className: "addV__count", "aria-live": "polite" }, `${form.vin.length}/${VIN_LENGTH}`),
-      isMobile && el("button", { type: "button", className: "addV__mini addV__scanBtn", disabled: busy, onClick: () => setScanning(true) }, "Scan VIN")), true),
+      el("div", { className: "addV__vinFoot" },
+        isMobile && el("button", { type: "button", className: "addV__mini", disabled: busy, onClick: () => setScanning(true) }, "Scan VIN"),
+        el("span", { className: "addV__count", "aria-live": "polite" }, `${form.vin.length}/${VIN_LENGTH}`))), true),
 
     el("div", { className: "addV__wide" },
       decoding
@@ -7311,7 +7391,7 @@ function AddVehicleForm({ onAdded }) {
       : fields,
     scanning && el(VinScanner, {
       onClose: () => setScanning(false),
-      onFail: () => { setScanning(false); setErrors((p) => ({ ...p, vin: "The camera could not read the VIN. Type it in." })); },
+      onFail: () => { setScanning(false); setErrors((p) => ({ ...p, vin: "The camera could not start. Type the VIN." })); },
       onRead: (vin) => { setScanning(false); set("vin", vinTyped(vin)); },
     }),
     list.length > 0 && el("ul", { className: "addV__list" }, list.map((v) => el("li", { key: v.id || v.plate, className: "addV__row" },
@@ -15017,6 +15097,10 @@ function RentalAgreementsPage() {
 // as in rental_agreements.fuelAtPickup, so the gas charge maths can compare a
 // pickup and a closing reading directly.
 const FUEL_LABELS = ["Empty", "⅛", "¼", "⅜", "½", "⅝", "¾", "⅞", "Full"];
+// How a level reads on screen: "1/2". The stored labels above stay, since the
+// database compares them.
+const FUEL_FRACTIONS = { "⅛": "1/8", "¼": "1/4", "⅜": "3/8", "½": "1/2", "⅝": "5/8", "¾": "3/4", "⅞": "7/8" };
+const fuelText = (v) => (v == null ? v : String(v).replace(/[⅛¼⅜½⅝¾⅞]/g, (c) => FUEL_FRACTIONS[c]));
 
 // Step 2. Starts empty every time: nothing is pre-filled, because both values
 // are read off the vehicle by staff at return.
@@ -16182,7 +16266,7 @@ function CloseRentalPage() {
       recordId: ra.resCode || ra.id,
       warning: `Close the rental agreement for ${ra.resCode || ra.id}${row?.plate ? ` on ${row.plate}` : ""}?`,
       description: `Closed rental agreement ${ra.resCode || ra.id}: ${row?.plate || "vehicle"} back at ` +
-        `${fmtDistance(final.closingMileage)}, gas ${final.closingGasLevel}, ` +
+        `${fmtDistance(final.closingMileage)}, gas ${fuelText(final.closingGasLevel)}, ` +
         (final.newDamageFound ? `new damage reported (${final.newDamageNote})` : "no new damage") +
         (gasCharge ? `, gas charge $${gasCharge}` : "") + ".",
     });
@@ -16255,7 +16339,7 @@ function CloseRentalPage() {
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Confirm the close"),
       line("Rental agreement", ra?.resCode || "·"),
       line("Closing mileage", fmtDistance(final.closingMileage)),
-      line("Closing gas level", final.closingGasLevel),
+      line("Closing gas level", fuelText(final.closingGasLevel)),
       line("New damage found", final.newDamageFound ? "Yes" : "No"),
       final.newDamageFound && line("New damage note", final.newDamageNote),
       final.newDamageFound && line("Vehicle", vehicleRentableLabel(final.vehicleRentable)),
@@ -16471,7 +16555,7 @@ function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, oldVeh
     React.createElement("h2", { className: "closeRentalStepTitle" }, "Confirm the switch"),
     line("Vehicle coming back", `${row?.vehicle || "-"} (${row?.plate || "-"})`),
     line("Closing mileage", fmtDistance(closing.closingMileage)),
-    line("Closing gas level", closing.closingGasLevel),
+    line("Closing gas level", fuelText(closing.closingGasLevel)),
     line("New damage found", review.newDamageFound ? "Yes" : "No"),
     review.newDamageFound && line("New damage note", review.newDamageNote),
     review.newDamageFound && line("Vehicle", vehicleRentableLabel(review.vehicleRentable)),
@@ -16713,7 +16797,7 @@ function SwitchOutPage() {
       tableName: "rental_agreements",
       recordId: ra.resCode || ra.id,
       description: `Switched ${row?.plate || "the vehicle"} out for ${newVehicle.plate} on rental agreement ${ra.resCode || ra.id}: ` +
-        `back at ${fmtDistance(closing.closingMileage)}, gas ${closing.closingGasLevel}, ` +
+        `back at ${fmtDistance(closing.closingMileage)}, gas ${fuelText(closing.closingGasLevel)}, ` +
         (review.newDamageFound ? `new damage reported (${review.newDamageNote})` : "no new damage") +
         `. ${newVehicle.plate} is Ready for Pickup; the customer must now pick it up in the customer app.`,
     });
@@ -17613,7 +17697,7 @@ function CustomerPage() {
             rvField("Plate",            (rentalVehicle.plate || "").replace(/-/g, "")),
             rvField("Vehicle Class",    rentalVehicle.vehicleClass),
             rvField("Province / State", rentalVehicle.province),
-            rvField("Starting Fuel",    rentalVehicle.fuelLevel)
+            rvField("Starting Fuel",    fuelText(rentalVehicle.fuelLevel))
           ),
           React.createElement("div", { className: "resFormRow" },
             rvField("Colour",   rentalVehicle.colour),
@@ -20609,6 +20693,8 @@ body, * {
   color: #C9603D;
 }
 .closeRentalFuel{
+  touch-action: none;
+  overscroll-behavior: contain;
   width: 100%;
   accent-color: #F4845F;
   cursor: pointer;
@@ -20982,11 +21068,10 @@ input[aria-invalid="true"], select[aria-invalid="true"], textarea[aria-invalid="
 .addV__grid{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; background: #FFFFFF; border: 1px solid #E3E2DE; border-radius: 14px; padding: 18px; }
 .addV__wide{ grid-column: 1 / -1; min-width: 0; }
 .addV .resFormInput{ width: 100%; box-sizing: border-box; }
-.addV__vinBox{ position: relative; display: flex; align-items: center; }
-.addV__vin{ padding-right: 62px; letter-spacing: 0.04em; }
-.addV__count{ position: absolute; right: 10px; font-size: 12px; font-weight: 600; color: #6B6A66; pointer-events: none; }
-.addV__scanBtn{ flex: none; margin-left: 8px; }
-.addV__vinBox:has(.addV__scanBtn) .addV__count{ right: 100px; }
+.addV__vin{ letter-spacing: 0.02em; }
+.addV__vinFoot{ display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 6px; }
+.addV__vinFoot .addV__count{ font-size: 12px; font-weight: 600; color: #6B6A66; }
+.addV__vinFoot .addV__mini{ margin-right: auto; }
 .addV__summary{ display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 16px; font-weight: 600; color: #1F1E1D; }
 .addV__skel{ display: block; height: 22px; width: 60%; border-radius: 6px; }
 .addV__three{ display: grid; grid-template-columns: 110px minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
@@ -21021,6 +21106,8 @@ select.resFormInput.listAdd__payer--empty{ color: #9B9A96; }
 }
 .addV__damageBody{ display: flex; flex-direction: column; gap: 12px; align-items: flex-start; margin-top: 10px; }
 .addV__damageItem{ display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.addV__damageRow{ padding: 10px 12px; font-size: 14px; font-weight: 500; text-align: left; }
+.addV__scanNote{ margin: 0; max-width: 420px; color: #F9F9F7; font-size: 15px; text-align: center; }
 .addV__damageBtns{ display: flex; gap: 8px; }
 .addV__thumb{ width: 72px; height: 72px; object-fit: cover; border-radius: 8px; }
 .addV__saved{ display: flex; flex-direction: column; gap: 10px; background: #FFFFFF; border: 1px solid #E3E2DE; border-radius: 14px; padding: 16px 18px; }
