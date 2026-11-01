@@ -8297,6 +8297,9 @@ const COMPANY_JUMP_EVENT = "fleetr:company-jump";
 // Sections inside a closed step are not on the page yet, so the ones to open
 // wait here until they are. The last one named is the one brought into view.
 const jumpTargets = new Set();
+// The step whose field last took Enter, until the next click or tap. Enter
+// stays in its step, so a save it finishes the step with does not move on.
+let enterStep = "";
 const jumpTo = (step, ...targets) => {
   targets.forEach((t) => jumpTargets.add(t));
   window.dispatchEvent(new CustomEvent(COMPANY_JUMP_EVENT, { detail: { step, target: targets[targets.length - 1] } }));
@@ -8529,7 +8532,7 @@ function CompanyPage() {
     stepsBefore.current = now;
     if (!before) return;
     const finished = COMPANY_STEPS.find((st) => st.key !== "launch" && st.key !== "vehicles" && openSteps[st.key]
-      && before[st.key] !== "done" && now[st.key] === "done");
+      && enterStep !== `company-step-${st.key}` && before[st.key] !== "done" && now[st.key] === "done");
     if (finished) advance(finished.key);
   });
   // A link to a step, or to a section or field inside one.
@@ -10306,7 +10309,12 @@ function RequirementCards({ listing: l, busy, save, error, errField, clearError,
   };
   const saveCard = async (key) => {
     const fields = fieldsOf(key);
-    if (fields && await save(`req:${key}`, fields)) close();
+    const card = document.activeElement && document.activeElement.closest(".reqCard");
+    if (fields && await save(`req:${key}`, fields)) {
+      close();
+      // The field is gone with the editor; the card it was in keeps the focus.
+      if (card) setTimeout(() => card.focus({ preventScroll: true }), 0);
+    }
   };
   const shownError = (key) => problem || (errField === `req:${key}` ? error : "");
   const numberField = (key, label, prefix, digits) => el("label", { className: "reqCard__field" },
@@ -23657,8 +23665,8 @@ function DateField({ value, onChange, className, placeholder, clearable, disable
 // A form is a <form>, or else the nearest box holding the button that saves
 // it: one of the save button styles, not a Cancel, Back, Close, Delete or Edit.
 const ENTER_FIELD_SKIP = ["hidden", "checkbox", "radio", "button", "submit", "reset", "file", "range", "color", "image"];
-const ENTER_SAVE_BUTTONS = 'button[type="submit"], .resModalSubmit, .resModalSave, .addVehicleBtn, .addPaymentBtn, .loginBtn';
-const ENTER_FORM_EDGE = ".dashboardSection, .resModal, .page, [role=\"dialog\"]";
+const ENTER_SAVE_BUTTONS = 'button[type="submit"], .resModalSubmit, .resModalSave, .addVehicleBtn, .addPaymentBtn, .loginBtn, .faiBtn--primary';
+const ENTER_FORM_EDGE = ".dashboardSection, .companyStep__body, .protCard, .resModal, .page, [role=\"dialog\"]";
 const ENTER_NOT_SAVE = /^(cancel|back|close|delete|remove|edit)\b/i;
 const enterShown = (n) => n.getClientRects().length > 0;
 const enterIsField = (n) => n instanceof HTMLElement && !n.disabled && !n.readOnly && enterShown(n)
@@ -23680,6 +23688,18 @@ const enterOwnKeys = (field) => {
   const key = Object.keys(field).find((k) => k.startsWith("__reactProps$"));
   return !!(key && field[key] && field[key].onKeyDown);
 };
+// A company setup field disabled while it saves loses the focus. It gets it
+// back when the save is over.
+const enterKeepFocus = (field) => {
+  if (!field.closest(".companySetup")) return;
+  const watch = new MutationObserver(() => {
+    if (field.disabled || document.activeElement !== document.body) return;
+    watch.disconnect();
+    field.focus({ preventScroll: true });
+  });
+  watch.observe(field, { attributes: true, attributeFilter: ["disabled"] });
+  setTimeout(() => watch.disconnect(), 15000);
+};
 
 document.addEventListener("focusin", (e) => {
   const field = e.target;
@@ -23693,7 +23713,10 @@ document.addEventListener("focusin", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" || e.isComposing || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
   const field = e.target;
-  if (!enterIsField(field) || field.tagName === "TEXTAREA" || enterOwnKeys(field)) return;
+  if (!enterIsField(field) || field.tagName === "TEXTAREA") return;
+  const step = field.closest(".companyStep");
+  if (step) enterStep = step.id;
+  if (enterOwnKeys(field)) return;
   const box = enterFormOf(field);
   if (!box) return;
   const fields = enterFieldsOf(box);
@@ -23714,8 +23737,9 @@ document.addEventListener("keydown", (e) => {
   }
   const save = enterSaveButtons(box).find((b) => field.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
   e.preventDefault();
-  if (save && !save.disabled) save.click();
+  if (save && !save.disabled) { save.click(); enterKeepFocus(field); }
 }, true);
+document.addEventListener("pointerdown", () => { enterStep = ""; }, true);
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   React.createElement(React.StrictMode, null, React.createElement(App))
