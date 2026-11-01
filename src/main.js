@@ -8281,7 +8281,7 @@ const COMPANY_STEPS = [
   { key: "business",   title: "Business details",           items: ["branch", "fuel_rate"] },
   { key: "vehicles",   title: "Vehicles",                   items: ["vehicle_classes", "vehicles"] },
   { key: "rates",      title: "Rates",                      items: ["rates"] },
-  { key: "protection", title: "Protections and Deductibles", items: ["protection"], skippable: true },
+  { key: "protection", title: "Protections", items: ["protection"], skippable: true },
   { key: "contract",   title: "Contract terms",             items: ["contract"] },
   { key: "listing",    title: "fleetr.ai listing",          items: ["listing"], skippable: true },
   { key: "staff",      title: "Staff",                      items: ["staff"], skippable: true },
@@ -11369,68 +11369,6 @@ function VehicleClassPicker({ disabled, onAdded }) {
     el(FieldError, { text: error }));
 }
 
-// What the renter pays for damage with a product: one amount, or separate ones
-// for comprehensive, and any class with its own. Blank says nothing to the
-// renter. One Save for all of it.
-const damageDraft = (v) => (v == null ? "" : String(Number(v)));
-function ProtectionDamageForm({ product, classes, classRows, busy, onSave, error }) {
-  const el = React.createElement;
-  const seed = () => ({
-    amount: damageDraft(product.renterPays), comp: damageDraft(product.renterPaysComprehensive),
-    separate: product.renterPaysComprehensive != null || classRows.some((r) => r.renterPaysComprehensive != null),
-    rows: classRows.map((r) => ({ classId: r.vehicleClassId, amount: damageDraft(r.renterPays), comp: damageDraft(r.renterPaysComprehensive) })),
-  });
-  const savedKey = JSON.stringify(seed());
-  const [draft, setDraft] = React.useState(seed);
-  const [problem, setProblem] = React.useState("");
-  const [picking, setPicking] = React.useState(false);
-  React.useEffect(() => { setDraft(seed()); setPicking(false); }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const edit = (patch) => { setDraft((p) => ({ ...p, ...patch })); setProblem(""); };
-  const editRow = (id, patch) => edit({ rows: draft.rows.map((r) => (r.classId === id ? { ...r, ...patch } : r)) });
-  const money = (label, value, onChange) => el("span", { className: "protCard__money" },
-    el("span", { style: { opacity: 0.7 } }, "$"),
-    el("input", {
-      className: "resFormInput", style: { width: "84px" }, inputMode: "decimal", maxLength: 8, value, disabled: busy, "aria-label": label,
-      "data-grid-cell": true, onKeyDown: gridKey, onChange: (e) => onChange(numberTyped(e.target.value, { digits: 5, decimals: 2 })),
-    }));
-  const free = classes.filter((c) => !draft.rows.some((r) => r.classId === c.id));
-  const nameOf = (id) => (classes.find((c) => c.id === id) || {}).name || "Class";
-  const save = () => {
-    for (const v of [draft.amount, draft.comp, ...draft.rows.flatMap((r) => [r.amount, r.comp])]) {
-      const p = numberProblem(v, { min: 0, max: 99999, label: "An amount", whole: false });
-      if (p) { setProblem(p); return; }
-    }
-    const n = (v) => (String(v).trim() === "" ? null : Number(v));
-    onSave(n(draft.amount), draft.separate ? n(draft.comp) : null,
-      draft.rows.map((r) => ({ classId: r.classId, amount: n(r.amount), comprehensive: draft.separate ? n(r.comp) : null })));
-  };
-  return el("div", { "data-grid": true },
-    el("div", { className: "protCard__line", "data-grid-row": true },
-      el("span", null, "With this protection, renter pays up to"),
-      money(draft.separate ? "Collision amount" : "Amount", draft.amount, (v) => edit({ amount: v })),
-      draft.separate && el("span", null, "and for comprehensive"),
-      draft.separate && money("Comprehensive amount", draft.comp, (v) => edit({ comp: v }))),
-    draft.rows.map((r) => el("div", { key: r.classId, className: "protCard__line", "data-grid-row": true },
-      el("span", { style: { fontWeight: 600, minWidth: "130px" } }, nameOf(r.classId)),
-      money(`${nameOf(r.classId)} amount`, r.amount, (v) => editRow(r.classId, { amount: v })),
-      draft.separate && el("span", null, "and for comprehensive"),
-      draft.separate && money(`${nameOf(r.classId)} comprehensive amount`, r.comp, (v) => editRow(r.classId, { comp: v })),
-      el("button", { type: "button", className: "miniBtn", "aria-label": `Remove ${nameOf(r.classId)}`, disabled: busy,
-        onClick: () => edit({ rows: draft.rows.filter((x) => x.classId !== r.classId) }) }, "\u00d7"))),
-    el("label", { className: "protCard__toggle" },
-      el("input", { type: "checkbox", checked: draft.separate, disabled: busy, onChange: (e) => edit({ separate: e.target.checked }) }),
-      "Separate amounts for comprehensive"),
-    picking
-      ? el("select", {
-          className: "resFormInput listAdd__payer", value: "", autoFocus: true, "aria-label": "Vehicle class",
-          onChange: (e) => { if (e.target.value) { edit({ rows: [...draft.rows, { classId: e.target.value, amount: draft.amount, comp: draft.comp }] }); setPicking(false); } },
-        }, el("option", { value: "" }, "Choose a class"), free.map((c) => el("option", { key: c.id, value: c.id }, c.name)))
-      : free.length > 0 && el("button", { type: "button", className: "miniBtn", disabled: busy, onClick: () => setPicking(true) }, "+ Different amount for a class"),
-    JSON.stringify(draft) !== savedKey && el("div", null,
-      el("button", { type: "button", className: "resModalSubmit inPlaceText__save", disabled: busy, onClick: save }, busy ? "Saving..." : "Save")),
-    el(FieldError, { text: problem || error }));
-}
-
 // The contract acknowledgements, edited where they stand. Every save is a new
 // version; the earlier ones are listed below and never change.
 const CONTRACT_ACK_MAX = 4000;
@@ -11495,9 +11433,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   // { at, text }: a refusal is shown in the section it happened in.
   const [error,  setError]  = React.useState(null);
   const [prices, setPrices] = React.useState([]);
-  // The defaults, the sources with their own prices, each product's amounts
-  // and any class's own (protection_cards.sql).
-  const [protection,   setProtection]   = React.useState({ defaults: [], blocks: [], amounts: [], classes: [] });
+  // The defaults and the sources with their own prices (protection_cards.sql).
+  const [protection,   setProtection]   = React.useState({ defaults: [], blocks: [] });
   const [ackVersions,  setAckVersions]  = React.useState([]);
   const [, setDrawn] = React.useState(0);
   // Which sources are expanded to show their specific sources.
@@ -11519,17 +11456,15 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   const reload = React.useCallback(async () => {
     await loadCompanyLists(currentUser);
     const op = currentUser?.operatorId ?? null;
-    const [pp, pd, pb, pa, pc, ack] = await Promise.all([
+    const [pp, pd, pb, ack] = await Promise.all([
       supabase.from("protection_prices").select("productId,vehicleClassId,sourceId,amount").eq("operatorId", op),
       supabase.from("protection_default_prices").select("productId,vehicleClassId,amount").eq("operatorId", op),
       supabase.from("protection_price_blocks").select("productId,sourceId").eq("operatorId", op).order("createdAt"),
-      supabase.from("protection_products").select("id,renterPays,renterPaysComprehensive").eq("operatorId", op),
-      supabase.from("protection_damage_classes").select("productId,vehicleClassId,renterPays,renterPaysComprehensive").eq("operatorId", op),
       supabase.from("contract_acknowledgements").select("id,version,body,createdAt").eq("operatorId", op)
         .order("version", { ascending: false }),
     ]);
     if (!pp.error)  setPrices(pp.data || []);
-    setProtection({ defaults: pd.data || [], blocks: pb.data || [], amounts: pa.data || [], classes: pc.data || [] });
+    setProtection({ defaults: pd.data || [], blocks: pb.data || [] });
     if (!ack.error) setAckVersions(ack.data || []);
     setReady(true);
     setDrawn((n) => n + 1);
@@ -12019,7 +11954,6 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
         const dragging = drag && drag.listKey === "products";
         const blocks = protection.blocks.filter((b) => b.productId === pr.id);
         const freeSources = sources.filter((x) => x.active && !blocks.some((b) => b.sourceId === x.id));
-        const amounts = protection.amounts.find((a) => a.id === pr.id) || {};
         const defaultOf = (c) => {
           const row = protection.defaults.find((d) => d.productId === pr.id && d.vehicleClassId === c.id);
           return row ? Number(row.amount) : null;
@@ -12107,16 +12041,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
                   onChange: async (e) => { const id = e.target.value; if (id && await act(`protection:block:${pr.id}`, "add_protection_price_block", { p_product_id: pr.id, p_source_id: id })) setPickSource(""); },
                 }, el("option", { value: "" }, "Choose a source"), freeSources.map((x) => el("option", { key: x.id, value: x.id }, x.name)))
               : freeSources.length > 0 && el("button", { type: "button", className: "miniBtn protCard__add", disabled: busy, onClick: () => setPickSource(pr.id) }, "+ Different price for a source"),
-            el(FieldError, { text: errAt(`protection:block:${pr.id}`) }),
-
-            subHeading("What the renter pays for damage"),
-            el(ProtectionDamageForm, {
-              product: { ...pr, ...amounts }, classes: activeClasses, busy, error: errAt(`protection:damage:${pr.id}`),
-              classRows: protection.classes.filter((r) => r.productId === pr.id),
-              onSave: (amount, comp, rows) => act(`protection:damage:${pr.id}`, "set_protection_damage", {
-                p_product_id: pr.id, p_amount: amount, p_comprehensive: comp, p_classes: rows,
-              }),
-            })));
+            el(FieldError, { text: errAt(`protection:block:${pr.id}`) })));
       }),
       el(ListAddRow, {
         placeholder: "New protection product", label: "Add", disabled: busy, error: errAt("protection:add"),
@@ -13962,7 +13887,7 @@ const SETUP_ITEMS = {
   rates:                 { title: "Rates", path: null,
                            text: "One source with a daily rate for every vehicle class: fleetr.ai while List on fleetr.ai is on." },
   vehicles:              { title: "Vehicles", path: null, text: "At least one at the default branch, of one of your vehicle classes." },
-  protection:            { title: "Protections and Deductibles", path: null,
+  protection:            { title: "Protections", path: null,
                            text: "Every product priced, and an optional one with its decline wording. Can be skipped." },
   contract:              { title: "Contract terms", path: null, text: "What the customer acknowledges at pickup." },
   revenue_share:         { title: "Revenue share", path: null,
@@ -14242,35 +14167,28 @@ function ProtectionChoicesList({ rentalAgreementId }) {
       : "-";
   };
   const fmtPrice = (n) => (Number.isFinite(Number(n)) ? `$${Number(n).toFixed(2)}` : "-");
-  const damageOf = (c) => [c.renterPays, c.renterPaysComprehensive].filter((n) => n != null).map(fmtPrice).join(" / ");
-  const hasDamage = choices.some(damageOf);
   return el("div", { style: { overflowX: "auto" } },
     el("table", { className: "dashboardTable", style: { minWidth: "520px" } },
       el("thead", null, el("tr", null,
-        ["Product", "Choice", "Price per day", ...(hasDamage ? ["Renter pays up to"] : []), "Time"].map((h) => el("th", { key: h }, h)))),
+        ["Product", "Choice", "Price per day", "Time"].map((h) => el("th", { key: h }, h)))),
       el("tbody", null, choices.map((c, i) => el("tr", { key: c.productId || i },
         el("td", null, c.name || "-"),
         el("td", null, c.accepted ? (c.required ? "Included" : "Accepted") : "Declined"),
         el("td", null, fmtPrice(c.pricePerDay)),
-        hasDamage && el("td", null, damageOf(c) || "-"),
         el("td", null, fmtWhen(c.decidedAt)))))));
 }
 
 // ─── The contract signed at pickup ────────────────────────────────────────────
 // What complete_pickup recorded from the customer app's Contract step: the
-// drivers, the deductibles and the acknowledgements version, with the pickup
+// drivers and the acknowledgements version, with the pickup
 // signature. Read-only. An agreement from before the Contract step has none
 // of it, and the sections are then left out altogether.
 const contractDrivers = (ra) => (ra && Array.isArray(ra.drivers) && ra.drivers.length ? ra.drivers : null);
-const contractDeductibles = (ra) =>
-  (ra && ra.deductibles && typeof ra.deductibles === "object"
-    && (ra.deductibles.collision != null || ra.deductibles.comprehensive != null) ? ra.deductibles : null);
 
 const fmtContractDate = (iso) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))) return iso || "-";
   return new Date(`${iso}T12:00:00`).toLocaleDateString("en-CA", { year: "numeric", month: "short", day: "numeric" });
 };
-const fmtContractMoney = (n) => (n != null && Number.isFinite(Number(n)) ? `$${Number(n).toFixed(2)}` : "Not set");
 
 // The renter's own insurance, as they gave it at check-in. Left out where the
 // branch does not ask for it.
@@ -14308,21 +14226,6 @@ function ContractDriversList({ rentalAgreementId }) {
         el("td", null, d.licenceProvince || d.province || "-"),
         el("td", null, fmtContractDate(d.licenceIssued)),
         el("td", null, fmtContractDate(d.licenceExpiry)))))));
-}
-
-function ContractDeductiblesList({ rentalAgreementId }) {
-  const { rentalAgreements } = React.useContext(AppContext);
-  const ra = (rentalAgreements || []).find((a) => String(a.id) === String(rentalAgreementId)) || null;
-  const ded = contractDeductibles(ra);
-  if (!ded) return null;
-  const el = React.createElement;
-  return el("div", { className: "rentalAgreementFields" },
-    el("div", { className: "rentalAgreementField" },
-      el("span", { className: "rentalAgreementFieldLabel" }, "Collision"),
-      el("span", { className: "rentalAgreementFieldValue" }, fmtContractMoney(ded.collision))),
-    el("div", { className: "rentalAgreementField" },
-      el("span", { className: "rentalAgreementFieldLabel" }, "Comprehensive"),
-      el("span", { className: "rentalAgreementFieldValue" }, fmtContractMoney(ded.comprehensive))));
 }
 
 // The version is read by its id, so the text shown is exactly what the
@@ -14834,9 +14737,6 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
     raRecord?.insuranceCompany && section("insurance", "Renter's insurance", React.createElement(RentalInsuranceRecord, { ra: raRecord })),
     contractDrivers(raRecord) && section("drivers", "Drivers",
       React.createElement(ContractDriversList, { rentalAgreementId: rentalAgreement.raId })
-    ),
-    contractDeductibles(raRecord) && section("deductibles", "Deductibles",
-      React.createElement(ContractDeductiblesList, { rentalAgreementId: rentalAgreement.raId })
     ),
     raRecord?.acknowledgementId && section("acknowledgements", "Acknowledgements",
       React.createElement(ContractAcknowledgementRecord, { rentalAgreementId: rentalAgreement.raId })
@@ -17738,8 +17638,6 @@ function CustomerPage() {
     ra?.insuranceCompany && React.createElement(RentalInsuranceRecord, { ra }),
     contractDrivers(ra) && React.createElement("div", { className: "cdetailSubGroup" }, "Drivers"),
     contractDrivers(ra) && React.createElement(ContractDriversList, { rentalAgreementId: ra.id }),
-    contractDeductibles(ra) && React.createElement("div", { className: "cdetailSubGroup" }, "Deductibles"),
-    contractDeductibles(ra) && React.createElement(ContractDeductiblesList, { rentalAgreementId: ra.id }),
     ra?.acknowledgementId && React.createElement("div", { className: "cdetailSubGroup" }, "Acknowledgements"),
     ra?.acknowledgementId && React.createElement(ContractAcknowledgementRecord, { rentalAgreementId: ra.id }),
     React.createElement("div", { className: "cdetailSubGroup" }, "Photos & Signatures"),
@@ -21109,7 +21007,6 @@ select.resFormInput.listAdd__payer--empty{ color: #9B9A96; }
 .protCard__body{ display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 8px 16px 16px; border-top: 1px solid #EEEDE9; }
 .protCard__line{ display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 6px; }
 .protCard__toggle{ display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
-.protCard__money{ display: inline-flex; align-items: center; gap: 3px; }
 .protCard__block{ max-width: 340px; padding-top: 8px; border-top: 1px solid #EEEDE9; }
 .protCard__blockHead{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
 .protCard__add{ align-self: flex-start; }
