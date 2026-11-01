@@ -7150,7 +7150,7 @@ function ExistingDamageSection({ items, setItems, errors, busy }) {
       items.every((x) => x.saved) && el("button", { type: "button", className: "addV__mini", disabled: busy, onClick: () => setItems((list) => [...list, blank()]) }, "Add more damage")));
 }
 
-function AddVehicleForm({ onAdded }) {
+function AddVehicleForm({ onAdded, stayOnForm }) {
   const { fleet, setFleet, guardAction, currentUser, setDamageClaims } = React.useContext(AppContext);
   const el = React.createElement;
   const isMobile = useMobile();
@@ -7235,8 +7235,8 @@ function AddVehicleForm({ onAdded }) {
   React.useEffect(() => { if (!saved && vinRef.current) vinRef.current.focus(); }, [saved]);
   React.useEffect(() => { if (saved && anotherRef.current) anotherRef.current.focus(); }, [saved]);
 
-  const start = (mode) => {
-    setForm(nextVehicleForm(saved && saved.form, mode, branchProvince));
+  const start = (mode, from = saved && saved.form) => {
+    setForm(nextVehicleForm(from, mode, branchProvince));
     setErrors({}); setDamage([]); setDetailsOpen(false); setSuggested(""); setTaken(null); setSaved(null);
   };
 
@@ -7297,12 +7297,14 @@ function AddVehicleForm({ onAdded }) {
           else setDamageClaims((prev) => [{ ...claim, reportedAt: new Date().toISOString() }, ...prev]);
           releasePhotos(d.photos);
         }
+        if (stayOnForm) start("blank", f);
         setSaved({ text: `Saved ${title}, ${plate}`, form: f,
           note: lost ? "Some of the existing damage could not be saved. Check the vehicle's page." : "" });
         if (onAdded) onAdded();
       } finally {
         setBusy(false);
       }
+      if (stayOnForm) setTimeout(() => { if (vinRef.current) vinRef.current.focus(); }, 0);
     }, { tableName: "fleet", recordId: plate, description: `Added ${title}, ${f.vehicleClass}, VIN ${normalizeVin(f.vin)}.` });
   };
 
@@ -7374,14 +7376,17 @@ function AddVehicleForm({ onAdded }) {
         onChange: (i) => set("fuelLevel", FUEL_LABELS[i]), onEnter: () => save() }),
       el(FieldError, { text: allErrors.fuelLevel })),
 
-    el(ExistingDamageSection, { items: damage, setItems: setDamage, errors: allErrors, busy }),
+    el(ExistingDamageSection, { key: saved ? saved.text : "damage", items: damage, setItems: setDamage, errors: allErrors, busy }),
 
     el("div", { className: "addV__wide" },
       el("button", { type: "submit", className: "resModalSubmit", disabled: busy }, busy ? "Saving…" : "Save vehicle"),
       el(FieldError, { text: allErrors[""] })));
 
   return el("div", { className: "addV" },
-    saved
+    stayOnForm && saved && el("div", { className: "addV__saved", role: "status" },
+      el("div", { className: "addV__savedText" }, saved.text),
+      saved.note && el(FieldError, { text: saved.note })),
+    saved && !stayOnForm
       ? el("div", { className: "addV__saved", role: "status" },
           el("div", { className: "addV__savedText" }, saved.text),
           saved.note && el(FieldError, { text: saved.note }),
@@ -7463,7 +7468,7 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
   };
 
   // Inside the Company page's Vehicles step: the add form alone.
-  if (embedded) return React.createElement(AddVehicleForm, { onAdded });
+  if (embedded) return React.createElement(AddVehicleForm, { onAdded, stayOnForm: true });
 
   // The page: the Company page's section cards, each opening and closing.
   const card = (key, title, ...children) => React.createElement(CompanyStep, {
@@ -8514,7 +8519,8 @@ function CompanyPage() {
     setOpenSteps((o) => ({ ...o, [key]: false, [next.key]: true }));
     scrollToStep(next.key);
   };
-  // Saving the last thing a step needed does the same as pressing Done.
+  // Saving the last thing a step needed does the same as pressing Done, except
+  // Vehicles, which stays open for the next vehicle until Done is pressed.
   const stepsBefore = React.useRef(null);
   React.useEffect(() => {
     if (!setup || launched) { stepsBefore.current = null; return; }
@@ -8522,7 +8528,7 @@ function CompanyPage() {
     const before = stepsBefore.current;
     stepsBefore.current = now;
     if (!before) return;
-    const finished = COMPANY_STEPS.find((st) => st.key !== "launch" && openSteps[st.key]
+    const finished = COMPANY_STEPS.find((st) => st.key !== "launch" && st.key !== "vehicles" && openSteps[st.key]
       && before[st.key] !== "done" && now[st.key] === "done");
     if (finished) advance(finished.key);
   });
