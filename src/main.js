@@ -11111,6 +11111,7 @@ const LIST_REASONS = {
   bad_billing_type: "Choose who pays.",
   bad_source:       "That source is not part of this company.",
   bad_class:        "That vehicle class is not part of this company.",
+  class_has_vehicles: "This class still has vehicles in it, at one of your branches. Move or remove them before turning it off.",
   bad_product:      "That protection product is not part of this company.",
   bad_amount:       "A price has to be a number from 0 to 99,999.",
   bad_kind:         "That list cannot be changed from here.",
@@ -11488,7 +11489,20 @@ function VehicleClassPicker({ busy, act, errAt, onAdded }) {
   const [adding, setAdding]   = React.useState("");
   const [error, setError]     = React.useState("");
   const [editing, setEditing] = React.useState("");
+  // Each class's vehicles at every branch of the company, by name, from the
+  // database (my_vehicle_class_counts, vehicle_class_off_guard.sql in
+  // fleetr-infra): the fleet loaded here can be one branch's. Read again
+  // whenever the classes or the fleet change.
+  const [counts, setCounts] = React.useState(null);
   const el = React.createElement;
+  const classesKey = JSON.stringify(((companyLists && companyLists.vehicleClasses) || []).map((c) => [c.id, c.active]));
+  React.useEffect(() => {
+    let live = true;
+    supabase.rpc("my_vehicle_class_counts").then(({ data, error: err }) => {
+      if (live && !err && data && data.ok && data.counts) setCounts(data.counts);
+    });
+    return () => { live = false; };
+  }, [classesKey, (fleet || []).length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
     let live = true;
@@ -11503,8 +11517,15 @@ function VehicleClassPicker({ busy, act, errAt, onAdded }) {
   const lower = (n) => String(n || "").trim().toLowerCase();
   const mine = (companyLists && companyLists.vehicleClasses) || [];
   const mineOf = (name) => mine.find((c) => lower(c.name) === lower(name)) || null;
-  // How many vehicles are filed under a class.
-  const vehiclesIn = (name) => (fleet || []).filter((v) => lower(v.vehicleClass) === lower(name)).length;
+  // How many vehicles are filed under a class, at every branch. The loaded
+  // fleet stands in only until the database has answered.
+  const vehiclesIn = (name) => {
+    if (counts) {
+      const k = Object.keys(counts).find((x) => lower(x) === lower(name));
+      return k ? Number(counts[k]) || 0 : 0;
+    }
+    return (fleet || []).filter((v) => lower(v.vehicleClass) === lower(name)).length;
+  };
 
   // On: added from the standard list, or switched back on if it was added
   // before. Off: switched off, which keeps its rates for when it comes back.
