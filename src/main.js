@@ -7069,66 +7069,6 @@ function VinScanner({ onRead, onFail, onClose }) {
     el("button", { type: "button", className: "resModalCancel", onClick: onClose }, "Cancel"));
 }
 
-// Damage already on the vehicle: what and where, and photos of it. Saved here
-// it folds to one line, and each becomes a pre-existing damage record once the
-// vehicle is saved.
-function ExistingDamageSection({ items, setItems, errors, busy }) {
-  const el = React.createElement;
-  const [open, setOpen] = React.useState(false);
-  const [shown, setShown] = React.useState("");
-  const [problem, setProblem] = React.useState({ id: "", text: "" });
-  const blank = () => ({ id: crypto.randomUUID(), note: "", photos: [], saved: false });
-  const toggle = () => {
-    if (!open && items.length === 0) setItems([blank()]);
-    setOpen((o) => !o);
-  };
-  const update = (id, patch) => setItems((list) => list.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-  const addPhotos = (item, files) => update(item.id, { photos: [...item.photos, ...Array.from(files || [])
-    .filter((f) => f.size <= CLOSE_PHOTO_MAX_BYTES)
-    .map((f) => ({ id: crypto.randomUUID(), blob: f, type: f.type, url: URL.createObjectURL(f), capturedAt: new Date().toISOString() }))] });
-  const saveItem = (item) => {
-    if (!item.note.trim()) { setProblem({ id: item.id, text: "Say what the damage is." }); return; }
-    setProblem({ id: "", text: "" });
-    update(item.id, { saved: true });
-    setShown("");
-  };
-  const remove = (item) => { releasePhotos(item.photos); setItems((list) => list.filter((x) => x.id !== item.id)); };
-  const photoRow = (item) => item.photos.length > 0 && el("div", { className: "damagePhotoRow" }, item.photos.map((p) =>
-    el("img", { key: p.id, src: p.url, alt: "Damage", className: "addV__thumb" })));
-  const addPhoto = (item) => el("label", { className: "addV__mini" }, "Add photo",
-    el("input", { type: "file", accept: "image/*", capture: "environment", multiple: true, style: { display: "none" }, disabled: busy,
-      onChange: (e) => { addPhotos(item, e.target.files); e.target.value = ""; } }));
-  const removeBtn = (item) => el("button", { type: "button", className: "addV__mini", disabled: busy, onClick: () => remove(item) }, "Remove");
-  const count = items.filter((x) => x.saved).length;
-  return el("div", { className: "addV__damage addV__wide" },
-    el("button", { type: "button", className: "addV__damageHead", "aria-expanded": open, onClick: toggle },
-      el("span", null, count ? `Existing damage (${count})` : "Existing damage"),
-      el("span", { "aria-hidden": "true" }, open ? "\u25be" : "\u25b8")),
-    open && el("div", { className: "addV__damageBody" },
-      items.map((item) => {
-        const n = item.photos.length;
-        const error = (problem.id === item.id && problem.text) || errors[`damage:${item.id}`];
-        if (item.saved) {
-          const isOpen = shown === item.id;
-          return el("div", { key: item.id, className: "addV__damageItem" },
-            el("button", { type: "button", className: "addV__damageHead addV__damageRow", "aria-expanded": isOpen, onClick: () => setShown(isOpen ? "" : item.id) },
-              el("span", null, n ? `${item.note.trim()} \u00b7 ${n} photo${n === 1 ? "" : "s"}` : item.note.trim()),
-              el("span", { "aria-hidden": "true" }, isOpen ? "\u25be" : "\u25b8")),
-            isOpen && el(React.Fragment, null, photoRow(item), el("div", { className: "addV__damageBtns" }, addPhoto(item), removeBtn(item))));
-        }
-        return el("div", { key: item.id, className: "addV__damageItem" },
-          el("textarea", { className: "resFormInput", rows: 2, placeholder: "Where it is and what it looks like", "aria-label": "Existing damage", disabled: busy,
-            value: item.note, ...invalid(!!error), onChange: (e) => { update(item.id, { note: e.target.value }); setProblem({ id: "", text: "" }); } }),
-          el(FieldError, { text: error }),
-          photoRow(item),
-          el("div", { className: "addV__damageBtns" },
-            addPhoto(item),
-            el("button", { type: "button", className: "addV__mini", disabled: busy, onClick: () => saveItem(item) }, "Save"),
-            removeBtn(item)));
-      }),
-      items.every((x) => x.saved) && el("button", { type: "button", className: "addV__mini", disabled: busy, onClick: () => setItems((list) => [...list, blank()]) }, "Add more damage")));
-}
-
 function AddVehicleForm({ onAdded, stayOnForm }) {
   const { fleet, setFleet, guardAction, currentUser, setDamageClaims } = React.useContext(AppContext);
   const el = React.createElement;
@@ -7228,7 +7168,6 @@ function AddVehicleForm({ onAdded, stayOnForm }) {
     setBusy(false);
     if (now) setTaken(now);
     const problems = addVehicleProblems(form, fleet, now || taken);
-    damage.forEach((d) => { if (!d.note.trim() && d.photos.length) problems[`damage:${d.id}`] = "Say what the damage is."; });
     if (problems.year) setDetailsOpen(true);
     setErrors(problems);
     if (Object.keys(problems).length) {
@@ -7260,22 +7199,23 @@ function AddVehicleForm({ onAdded, stayOnForm }) {
         const added = { ...row, ...((res.data && res.data[0]) || {}) };
         setFleet((prev) => [...prev, added]);
 
-        // Damage is kept even if a photo is not: the record is what matters.
+        // Each photo of existing damage is a pre-existing damage record, with
+        // its note, if it has one, as the description. A photo that will not
+        // upload still leaves its note on record.
         let lost = 0;
-        for (const d of damage.filter((x) => x.note.trim())) {
-          const paths = [];
-          for (const p of d.photos) {
-            const path = `${currentUser?.operatorId}/vehicles/${added.id}/${p.capturedAt.replace(/[^0-9]/g, "").slice(0, 14)}-${p.id}.jpg`;
-            const up = await supabase.storage.from(DAMAGE_PHOTO_BUCKET).upload(path, p.blob, { contentType: p.type || "image/jpeg", cacheControl: "3600" });
-            if (up.error) { console.warn("damage photo upload failed:", up.error); lost += 1; } else paths.push(path);
-          }
-          const claim = { id: crypto.randomUUID(), plate, rentalAgreementId: null, description: d.note.trim(),
-            photos: paths, status: "open", preExisting: true };
+        for (const p of damage) {
+          const path = `${currentUser?.operatorId}/vehicles/${added.id}/${p.capturedAt.replace(/[^0-9]/g, "").slice(0, 14)}-${p.id}.jpg`;
+          const up = await supabase.storage.from(DAMAGE_PHOTO_BUCKET).upload(path, p.blob, { contentType: p.type || "image/jpeg", cacheControl: "3600" });
+          if (up.error) { console.warn("damage photo upload failed:", up.error); lost += 1; }
+          const note = (p.note || "").trim() || null;
+          if (up.error && !note) continue;
+          const claim = { id: crypto.randomUUID(), plate, rentalAgreementId: null, description: note,
+            photos: up.error ? [] : [path], status: "open", preExisting: true };
           const c = await supabase.from("damage_claims").insert(claim);
           if (c.error) { console.warn("existing damage not saved:", c.error); lost += 1; }
           else setDamageClaims((prev) => [{ ...claim, reportedAt: new Date().toISOString() }, ...prev]);
-          releasePhotos(d.photos);
         }
+        releasePhotos(damage);
         if (stayOnForm) start("blank", f);
         setSaved({ text: `Saved ${title}, ${plate}`, form: f,
           note: lost ? "Some of the existing damage could not be saved. Check the vehicle's page." : "" });
@@ -7355,7 +7295,8 @@ function AddVehicleForm({ onAdded, stayOnForm }) {
         onChange: (i) => set("fuelLevel", FUEL_LABELS[i]), onEnter: () => save() }),
       el(FieldError, { text: allErrors.fuelLevel })),
 
-    el(ExistingDamageSection, { key: saved ? saved.text : "damage", items: damage, setItems: setDamage, errors: allErrors, busy }),
+    el("div", { className: "addV__wide" },
+      el(DamagePhotosSection, { key: saved ? saved.text : "damage", title: "Existing damage", photos: damage, setPhotos: setDamage, disabled: busy })),
 
     el("div", { className: "addV__wide" },
       el("button", { type: "submit", className: "resModalSubmit", disabled: busy }, busy ? "Saving…" : "Save vehicle"),
@@ -14829,7 +14770,8 @@ function RentalPhotoTile({ photo, onOpen }) {
             onClick: () => onOpen(photo.path),
           }, React.createElement("img", { src: url, alt: `${photo.label} photo` })),
     React.createElement("div", { style: { fontSize: "11px", lineHeight: 1.3 } }, photo.label),
-    React.createElement("div", { style: { fontSize: "11px", lineHeight: 1.3, opacity: 0.7 } }, when));
+    React.createElement("div", { style: { fontSize: "11px", lineHeight: 1.3, opacity: 0.7 } }, when),
+    photo.note && React.createElement("div", { style: { fontSize: "11px", lineHeight: 1.3, overflowWrap: "anywhere" } }, photo.note));
 }
 
 function RentalPhotosAndSignatures({ rentalAgreementId }) {
@@ -14862,7 +14804,12 @@ function RentalPhotosAndSignatures({ rentalAgreementId }) {
           const time = rentalPhotoTime(f.name, f.created_at);
           return { path: `${folder}/${f.name}`, name: f.name, time, ...placeRentalPhoto(f.name, time, legs) };
         });
-      setState({ loading: false, photos, legs, error: listed?.error || null });
+      // Each photo's note, where one was left (damage_photo_notes_for).
+      const notes = photos.length ? await supabase.rpc("damage_photo_notes_for", { paths: photos.map((p) => p.path) }) : null;
+      if (!live) return;
+      if (notes?.error) console.warn("rental photo notes failed:", notes.error);
+      const noteOf = (notes && !notes.error && notes.data) || {};
+      setState({ loading: false, photos: photos.map((p) => ({ ...p, note: noteOf[p.path] || "" })), legs, error: listed?.error || null });
     })().catch((e) => { if (live) { console.warn("rental photos:", e); setState({ loading: false, photos: [], legs: [], error: e }); } });
     return () => { live = false; };
   }, [ra?.id, ra?.operatorId]);
@@ -15559,7 +15506,8 @@ function DamagePhotoThumb({ value, onOpen }) {
 }
 
 // Full-size view. Closes on the button, a click outside the photo, or Escape.
-function DamagePhotoViewer({ url, onClose }) {
+// onRemove, when given, adds Remove under the photo.
+function DamagePhotoViewer({ url, onClose, onRemove }) {
   React.useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -15570,7 +15518,8 @@ function DamagePhotoViewer({ url, onClose }) {
     onClick: (e) => { if (e.target === e.currentTarget) onClose(); },
   },
     React.createElement("button", { type: "button", className: "damagePhotoViewer__close", onClick: onClose, "aria-label": "Close photo" }, "×"),
-    React.createElement("img", { className: "damagePhotoViewer__img", src: url, alt: "Damage photo, full size" })
+    React.createElement("img", { className: "damagePhotoViewer__img", src: url, alt: "Damage photo, full size" }),
+    onRemove && React.createElement("button", { type: "button", className: "damagePhotoViewer__remove", onClick: onRemove }, "Remove")
   );
 }
 
@@ -15579,13 +15528,14 @@ function DamagePhotoViewer({ url, onClose }) {
 // left off this list is damage the returning customer could be wrongly
 // charged for. Newest first.
 //
-// Then a Yes/No for new damage, with no default, so the answer is always a
-// deliberate one. Yes needs a description before moving on.
-function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, onBack, onNext, pageTitle }) {
+// Then New damage, photo first: no photos is no new damage. A note on a photo
+// is optional. With photos, whether the vehicle can still be rented.
+function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, photos, setPhotos, onBack, onNext, pageTitle }) {
   const { damageClaims, rentalAgreements } = React.useContext(AppContext);
   const [viewing,   setViewing]   = React.useState(null);
   const [attempted, setAttempted] = React.useState(false);
-  const { choice, note, rentable } = damageDraft;
+  const { rentable } = damageDraft;
+  const found = photos.length > 0;
 
   const fmtDate = (iso) => {
     if (!iso) return null;
@@ -15604,16 +15554,15 @@ function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, onBack, onNex
     })
     .sort((a, b) => String(b.reportedAt || b.createdAt || "").localeCompare(String(a.reportedAt || a.createdAt || "")));
 
-  const noteError = choice === "yes" && !note.trim() ? "Describe the new damage." : null;
-  const rentableError = choice === "yes" && !rentable ? "Choose whether the vehicle can still be rented." : null;
+  const rentableError = found && !rentable ? "Choose whether the vehicle can still be rented." : null;
 
   const handleNext = () => {
     setAttempted(true);
-    if (!choice || noteError || rentableError) return;
+    if (rentableError) return;
     onNext({
-      newDamageFound:  choice === "yes",
-      newDamageNote:   choice === "yes" ? note.trim() : null,
-      vehicleRentable: choice === "yes" ? rentable === "rentable" : null,
+      newDamageFound:  found,
+      newDamageNote:   found ? damageNotes(photos) : null,
+      vehicleRentable: found ? rentable === "rentable" : null,
     });
   };
 
@@ -15622,13 +15571,6 @@ function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, onBack, onNex
       type: "button", "aria-pressed": rentable === value,
       className: rentable === value ? "closeRentalChoice closeRentalChoice--active" : "closeRentalChoice",
       onClick: () => setDamageDraft((prev) => ({ ...prev, rentable: value })),
-    }, label);
-
-  const choiceBtn = (value, label) =>
-    React.createElement("button", {
-      type: "button", "aria-pressed": choice === value,
-      className: choice === value ? "closeRentalChoice closeRentalChoice--active" : "closeRentalChoice",
-      onClick: () => setDamageDraft((prev) => ({ ...prev, choice: value })),
     }, label);
 
   return React.createElement("div", { className: "page" },
@@ -15659,22 +15601,9 @@ function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, onBack, onNex
             );
           })
     ),
-    React.createElement("h2", { className: "closeRentalStepTitle" }, "New damage found?"),
-    React.createElement("div", { className: "closeRentalChoiceRow", role: "group", "aria-label": "New damage found?" },
-      choiceBtn("yes", "Yes"),
-      choiceBtn("no",  "No")
-    ),
-    choice === "yes" && React.createElement("div", { className: "closeRentalForm", style: { marginTop: 14 } },
-      React.createElement("label", { className: "resFormGroup" },
-        React.createElement("span", { className: "resFormLabel" }, "Describe the new damage"),
-        React.createElement("textarea", {
-          className: "resFormInput resFormTextarea closeRentalNote", rows: 4,
-          placeholder: "Where it is and what it looks like, e.g. 10 cm scratch on the rear passenger door",
-          value: note, ...invalid(attempted && !!noteError),
-          onChange: (e) => setDamageDraft((prev) => ({ ...prev, note: e.target.value })),
-        })
-      ),
-      attempted && noteError && React.createElement("div", { className: "closeRentalError" }, noteError),
+    React.createElement("div", { style: { marginTop: 18 } },
+      React.createElement(DamagePhotosSection, { title: "New damage", photos, setPhotos })),
+    found && React.createElement("div", { className: "closeRentalForm", style: { marginTop: 14 } },
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Can the vehicle still be rented?"),
       React.createElement("div", { className: "closeRentalChoiceRow", role: "group", "aria-label": "Can the vehicle still be rented?" },
         rentableBtn("rentable",   "Rentable"),
@@ -15686,7 +15615,7 @@ function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, onBack, onNex
     ),
     React.createElement("div", { className: "closeRentalActions" },
       React.createElement("button", { type: "button", className: "resModalCancel", onClick: onBack }, "Back"),
-      choice && React.createElement("button", { type: "button", className: "resModalSubmit", onClick: handleNext }, "Next")
+      React.createElement("button", { type: "button", className: "resModalSubmit", onClick: handleNext }, "Next")
     ),
     viewing && React.createElement(DamagePhotoViewer, { url: viewing, onClose: () => setViewing(null) })
   );
@@ -15749,9 +15678,9 @@ const releasePhotos = (list) => (list || []).forEach((p) => { if (p?.url) URL.re
 // the file name, as pickup- and return- do for the customer app's photos, so
 // Photos & Signatures can tell the two apart without matching by time.
 async function uploadDamagePhotos({ operatorId, rentalAgreementId, photos, step }) {
-  const paths = [], failures = [];
+  const paths = [], failures = [], saved = [];
   if (!operatorId || !rentalAgreementId) {
-    return { paths, failures: (photos || []).map((p) => p.id), reason: "no operator or agreement on file" };
+    return { paths, saved, failures: (photos || []).map((p) => p.id), reason: "no operator or agreement on file" };
   }
   for (const photo of photos || []) {
     const stamp = (photo.capturedAt || new Date().toISOString()).replace(/[^0-9]/g, "").slice(0, 14);
@@ -15761,37 +15690,39 @@ async function uploadDamagePhotos({ operatorId, rentalAgreementId, photos, step 
       const res = await supabase.storage.from(DAMAGE_PHOTO_BUCKET)
         .upload(path, photo.blob, { contentType: photo.type || "image/jpeg", cacheControl: "3600" });
       if (res?.error) { console.warn("damage photo upload failed:", path, res.error); failures.push(photo.id); }
-      else paths.push(path);
+      else { paths.push(path); saved.push({ id: photo.id, path }); }
     } catch (e) {
       console.warn("damage photo upload threw:", path, e);
       failures.push(photo.id);
     }
   }
-  return { paths, failures, reason: null };
+  return { paths, saved, failures, reason: null };
 }
 
-function CloseRentalPhotoStep({ row, note, photos, setPhotos, onBack, onNext, pageTitle }) {
-  const videoRef   = React.useRef(null);
-  const streamRef  = React.useRef(null);
-  const pendingRef = React.useRef(null);
-  const [camera,      setCamera]      = React.useState("starting");
+// The live camera for damage photos, over the page: one photo per tap of the
+// shutter, as many in a row as needed, then Done. Live camera only,
+// deliberately: there is no file input and none may be added. A photo picked
+// from the camera roll could have been taken at any time, on any car, and
+// these photos are the evidence that the damage was there when it was
+// recorded. Every photo is a frame grabbed from the camera while it is open.
+// onPhoto gets each one as it is taken.
+function DamageCamera({ title, onPhoto, onClose }) {
+  const el = React.createElement;
+  const videoRef  = React.useRef(null);
+  const streamRef = React.useRef(null);
+  const [camera, setCamera] = React.useState("starting");
   const [cameraError, setCameraError] = React.useState(null);
-  const [attempt,     setAttempt]     = React.useState(0);
-  const [pending,     setPending]     = React.useState(null);
-  const [busy,        setBusy]        = React.useState(false);
+  const [attempt, setAttempt] = React.useState(0);
+  const [busy, setBusy] = React.useState(false);
+  const [taken, setTaken] = React.useState(0);
   const [captureError, setCaptureError] = React.useState(null);
-  const [viewing,     setViewing]     = React.useState(null);
-
-  pendingRef.current = pending;
 
   const stopCamera = () => {
     if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
   };
-
   // Rear camera preferred, since staff are photographing a car, but any camera
-  // is accepted. Restarted by Try again. Always stopped on the way out, so the
-  // camera light goes off the moment this screen closes.
+  // is accepted. Always stopped on the way out, so the light goes off.
   React.useEffect(() => {
     let cancelled = false;
     const md = navigator.mediaDevices;
@@ -15820,20 +15751,12 @@ function CloseRentalPhotoStep({ row, note, photos, setPhotos, onBack, onNext, pa
       setCamera("live");
     }).catch((err) => {
       if (cancelled) return;
-      console.warn("close rental camera:", err);
+      console.warn("damage camera:", err);
       setCamera("error");
       setCameraError(cameraErrorMessage(err));
     });
     return () => { cancelled = true; stopCamera(); };
   }, [attempt]);
-
-  // A still that was never accepted or retaken is dropped with the screen.
-  React.useEffect(() => () => { if (pendingRef.current) URL.revokeObjectURL(pendingRef.current.url); }, []);
-
-  const resumePreview = () => {
-    const video = videoRef.current;
-    if (video && video.paused) { const p = video.play(); if (p && p.catch) p.catch(() => {}); }
-  };
 
   const takePhoto = async () => {
     if (busy || !videoRef.current) return;
@@ -15841,121 +15764,95 @@ function CloseRentalPhotoStep({ row, note, photos, setPhotos, onBack, onNext, pa
     setCaptureError(null);
     try {
       const { blob, width, height } = await captureVideoFrame(videoRef.current);
-      setPending({ blob, width, height, url: URL.createObjectURL(blob), capturedAt: new Date().toISOString() });
+      onPhoto({
+        id: crypto.randomUUID(), blob, url: URL.createObjectURL(blob), type: blob.type || "image/jpeg",
+        size: blob.size, width, height, capturedAt: new Date().toISOString(), note: "",
+      });
+      setTaken((n) => n + 1);
     } catch (e) {
-      console.warn("close rental capture:", e);
+      console.warn("damage camera capture:", e);
       setCaptureError("That photo could not be taken. Try again.");
     } finally {
       setBusy(false);
     }
   };
+  const done = () => { stopCamera(); onClose(); };
 
-  const retake = () => {
-    if (pending) URL.revokeObjectURL(pending.url);
-    setPending(null);
-    resumePreview();
-  };
-
-  const accept = () => {
-    if (!pending) return;
-    const photo = {
-      id: crypto.randomUUID(), blob: pending.blob, url: pending.url, type: pending.blob.type || "image/jpeg",
-      size: pending.blob.size, width: pending.width, height: pending.height, capturedAt: pending.capturedAt,
-    };
-    setPhotos((prev) => [...prev, photo]);
-    setPending(null);
-    resumePreview();
-  };
-
-  const removePhoto = (id) => {
-    setPhotos((prev) => {
-      releasePhotos(prev.filter((p) => p.id === id));
-      return prev.filter((p) => p.id !== id);
-    });
-  };
-
-  const leave = (fn) => () => {
-    stopCamera();
-    if (pending) { URL.revokeObjectURL(pending.url); setPending(null); }
-    fn();
-  };
-
-  const stage = pending
-    ? React.createElement("img", { className: "closeRentalCamera__still", src: pending.url, alt: "Photo just taken" })
-    : null;
-
-  return React.createElement("div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, pageTitle || "Close Rental"),
-    React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement("div", { className: "closeRentalSummary" },
-      React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
-      React.createElement("div", { className: "closeRentalSummary__meta" },
-        row ? [row.customer, row.plate || null].filter(Boolean).join(" · ") : "Rental not found")
-    ),
-    React.createElement("h2", { className: "closeRentalStepTitle" }, "Photos of the new damage"),
-    note && React.createElement("p", { className: "closeRentalPhotoNote" },
-      React.createElement("span", { className: "resFormLabel" }, "Damage noted"), " ", note),
-    React.createElement("div", { className: "closeRentalCamera" },
-      // Always mounted, so the stream has somewhere to go the moment it
-      // arrives. Hidden, not removed, while a still is being reviewed, which
-      // keeps the camera warm for a retake.
-      React.createElement("video", {
+  return el("div", { className: "damageCamera", role: "dialog", "aria-modal": "true", "aria-label": title || "Damage photos" },
+    el("div", { className: "damageCamera__top" },
+      el("span", { className: "damageCamera__title" }, title || "Damage photos"),
+      el("button", { type: "button", className: "damageCamera__done", onClick: done }, taken ? "Done" : "Cancel")),
+    el("div", { className: "closeRentalCamera damageCamera__stage" },
+      el("video", {
         ref: videoRef, className: "closeRentalCamera__video", playsInline: true, muted: true, autoPlay: true,
-        style: { visibility: camera === "live" && !pending ? "visible" : "hidden" },
+        style: { visibility: camera === "live" ? "visible" : "hidden" },
       }),
-      stage,
-      camera === "starting" && React.createElement("div", { className: "closeRentalCamera__status" }, "Starting camera..."),
-      camera === "error" && React.createElement("div", { className: "closeRentalCamera__status" },
-        React.createElement("div", null, cameraError),
-        React.createElement("button", {
-          type: "button", className: "resModalSubmit", style: { marginTop: 12 },
-          onClick: () => setAttempt((n) => n + 1),
-        }, "Try again")
-      )
-    ),
-    captureError && React.createElement("div", { className: "closeRentalError", style: { marginTop: 8 } }, captureError),
-    pending
-      ? React.createElement("div", { className: "closeRentalCameraControls" },
-          React.createElement("button", { type: "button", className: "resModalCancel", onClick: retake }, "Retake"),
-          React.createElement("button", { type: "button", className: "resModalSubmit", onClick: accept }, "Use photo")
-        )
-      : React.createElement("div", { className: "closeRentalCameraControls" },
-          React.createElement("button", {
-            type: "button", className: "closeRentalShutter", onClick: takePhoto,
-            disabled: camera !== "live" || busy,
-          }, busy ? "Taking photo..." : "Take photo")
-        ),
-    React.createElement("div", { className: "closeRentalPhotoListTitle" },
-      photos.length === 0 ? "No photos yet" : `${photos.length} photo${photos.length === 1 ? "" : "s"} taken`),
-    photos.length > 0 && React.createElement("div", { className: "damagePhotoRow" },
-      photos.map((p, i) =>
-        React.createElement("div", { key: p.id, className: "closeRentalPhotoItem" },
-          React.createElement("button", {
-            type: "button", className: "damagePhotoThumb", onClick: () => setViewing(p.url),
-            "aria-label": `View photo ${i + 1} full size`,
-          }, React.createElement("img", { src: p.url, alt: `New damage photo ${i + 1}` })),
-          React.createElement("button", {
-            type: "button", className: "closeRentalPhotoItem__remove", onClick: () => removePhoto(p.id),
-            "aria-label": `Remove photo ${i + 1}`,
-          }, "×")
-        )
-      )
-    ),
-    React.createElement("div", { className: "closeRentalActions" },
-      React.createElement("button", { type: "button", className: "resModalCancel", onClick: leave(onBack) }, "Back"),
-      React.createElement("button", {
-        type: "button", className: "resModalSubmit", disabled: photos.length === 0,
-        title: photos.length === 0 ? "Take at least one photo to continue" : undefined,
-        onClick: leave(() => onNext(photos)),
-      }, "Next")
-    ),
-    photos.length === 0 && React.createElement("div", { className: "closeRentalHint", style: { marginTop: 8 } }, "Take at least one photo to continue."),
-    viewing && React.createElement(DamagePhotoViewer, { url: viewing, onClose: () => setViewing(null) })
-  );
+      camera === "starting" && el("div", { className: "closeRentalCamera__status" }, "Starting camera..."),
+      camera === "error" && el("div", { className: "closeRentalCamera__status" },
+        el("div", null, cameraError),
+        el("button", { type: "button", className: "resModalSubmit", style: { marginTop: 12 }, onClick: () => setAttempt((n) => n + 1) }, "Try again"))),
+    el("div", { className: "damageCamera__count", role: "status" },
+      captureError || (taken ? `${taken} photo${taken === 1 ? "" : "s"} added` : "Take as many as you need, then Done.")),
+    el("div", { className: "closeRentalCameraControls" },
+      el("button", { type: "button", className: "closeRentalShutter", onClick: takePhoto, disabled: camera !== "live" || busy },
+        busy ? "Taking photo..." : "Take photo")));
 }
 
+// Damage, photo first, wherever it is recorded: one section that folds, with
+// a count beside its title, a grid of photos and + Add photo as the last
+// square. A photo opens full size with Remove; a note under it is optional.
+// photos: [{ id, blob, url, ..., note }].
+function DamagePhotosSection({ title, photos, setPhotos, disabled }) {
+  const el = React.createElement;
+  const [open, setOpen] = React.useState(false);
+  const [camera, setCamera] = React.useState(false);
+  const [viewing, setViewing] = React.useState("");
+  const [noting, setNoting] = React.useState("");
+  const shown = photos.find((p) => p.id === viewing) || null;
+  const setNote = (id, note) => setPhotos((list) => list.map((p) => (p.id === id ? { ...p, note } : p)));
+  const remove = (id) => {
+    setPhotos((list) => { releasePhotos(list.filter((p) => p.id === id)); return list.filter((p) => p.id !== id); });
+    setViewing("");
+  };
+  return el("div", { className: "damageSection" },
+    el("button", { type: "button", className: "damageSection__head", "aria-expanded": open, onClick: () => setOpen((o) => !o) },
+      el("span", { className: "damageSection__title" }, title),
+      photos.length > 0 && el("span", { className: "damageSection__count", "aria-label": `${photos.length} photo${photos.length === 1 ? "" : "s"}` }, String(photos.length)),
+      el("span", { className: "damageSection__chevron", "aria-hidden": "true" }, open ? "\u25be" : "\u25b8")),
+    open && el("div", { className: "damageSection__grid" },
+      photos.map((p, i) => el("div", { key: p.id, className: "damageSection__item" },
+        el("button", { type: "button", className: "damageSection__thumb", onClick: () => setViewing(p.id), "aria-label": `View photo ${i + 1} full size` },
+          el("img", { src: p.url, alt: `Damage photo ${i + 1}` })),
+        noting === p.id
+          ? el("textarea", {
+              className: "resFormInput damageSection__noteBox", rows: 2, maxLength: 300, autoFocus: true, value: p.note || "",
+              placeholder: "Where it is, what it is", "aria-label": `Note for photo ${i + 1}`,
+              onChange: (e) => setNote(p.id, e.target.value), onBlur: () => setNoting(""),
+              onKeyDown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.currentTarget.blur(); } },
+            })
+          : el("button", { type: "button", className: p.note && p.note.trim() ? "damageSection__note" : "damageSection__addNote",
+              disabled, onClick: () => setNoting(p.id) }, p.note && p.note.trim() ? p.note.trim() : "Add note"))),
+      el("button", { type: "button", className: "damageSection__add", disabled, onClick: () => setCamera(true) }, "+ Add photo")),
+    camera && el(DamageCamera, { title, onPhoto: (p) => setPhotos((list) => [...list, p]), onClose: () => setCamera(false) }),
+    shown && el(DamagePhotoViewer, { url: shown.url, onClose: () => setViewing(""), onRemove: disabled ? null : () => remove(shown.id) }));
+}
+
+// The notes on photos just uploaded, by their paths, for Photos & Signatures
+// (save_damage_photo_notes, damage_photo_first.sql in fleetr-infra). A note
+// that does not save leaves the photo, which is what matters.
+async function saveDamagePhotoNotes(photos, saved) {
+  const pathOf = Object.fromEntries((saved || []).map((x) => [x.id, x.path]));
+  const notes = (photos || []).filter((p) => p.note && p.note.trim() && pathOf[p.id]).map((p) => ({ path: pathOf[p.id], note: p.note.trim() }));
+  if (!notes.length) return;
+  const { data, error } = await supabase.rpc("save_damage_photo_notes", { notes });
+  if (error || !data || !data.ok) console.warn("damage photo notes not saved:", error || data);
+}
+
+// The photos' notes as one description, for a damage claim: none is null.
+const damageNotes = (photos) => (photos || []).map((p) => (p.note || "").trim()).filter(Boolean).join("; ") || null;
+
 const EMPTY_CLOSE_READINGS = { mileage: "", gasIndex: null, lowConfirmed: false };
-const EMPTY_DAMAGE_DRAFT   = { choice: null, note: "", rentable: null };
+const EMPTY_DAMAGE_DRAFT   = { rentable: null };
 
 // Whether a vehicle that came back damaged can still go out. Asked whenever
 // damage is marked, because damage covers everything from a scuffed bumper to
@@ -16454,6 +16351,7 @@ function CloseRentalPage() {
               operatorId: currentUser?.operatorId, rentalAgreementId: ra.id, photos: final.photos, step: "close",
             })
           : { paths: [], failures: [] };
+        await saveDamagePhotoNotes(final.photos, upload.saved);
 
         // Damage found on a return is a claim, the same as damage a staff
         // member flags by hand. It was only written onto the leg before, which
@@ -16646,8 +16544,8 @@ function CloseRentalPage() {
     return React.createElement("div", { className: "page" },
       React.createElement("button", {
         type: "button", className: "rentalAgreementBackBtn", disabled: busy,
-        onClick: () => { setFinal(null); if (!final.newDamageFound) setReview(null); },
-      }, final.newDamageFound ? "← Back to photos" : "← Back to damage review"),
+        onClick: () => { setFinal(null); setReview(null); },
+      }, "← Back to damage review"),
       React.createElement("h1", { className: "page__title" }, "Close Rental"),
       React.createElement("div", { className: "page__titleUnderline" }),
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Confirm the close"),
@@ -16655,7 +16553,7 @@ function CloseRentalPage() {
       line("Closing mileage", fmtDistance(final.closingMileage)),
       line("Closing gas level", fuelText(final.closingGasLevel)),
       line("New damage found", final.newDamageFound ? "Yes" : "No"),
-      final.newDamageFound && line("New damage note", final.newDamageNote),
+      final.newDamageFound && final.newDamageNote && line("New damage notes", final.newDamageNote),
       final.newDamageFound && line("Vehicle", vehicleRentableLabel(final.vehicleRentable)),
       final.newDamageFound && line("New damage photos", String(final.photos.length)),
       final.photos.length > 0 && React.createElement("div", { className: "damagePhotoRow", style: { marginBottom: 12 } },
@@ -16677,7 +16575,7 @@ function CloseRentalPage() {
       React.createElement("div", { className: "closeRentalActions" },
         React.createElement("button", {
           type: "button", className: "resModalCancel", disabled: busy,
-          onClick: () => { setFinal(null); if (!final.newDamageFound) setReview(null); },
+          onClick: () => { setFinal(null); setReview(null); },
         }, "Back"),
         React.createElement("button", { type: "button", className: "resModalSubmit", onClick: completeClose, disabled: busy },
           busy ? "Closing..." : "Complete Close")
@@ -16685,31 +16583,18 @@ function CloseRentalPage() {
     );
   }
 
-  // Step 4, reached only after a Yes. Back returns to step 3 with its answer
-  // and note intact. Photos already taken are kept here, so they are still
-  // there if staff come forward again.
-  if (review) {
-    return React.createElement(CloseRentalPhotoStep, {
-      row: openRows.find((r) => r.id === review.rentalAgreementId) || null,
-      note: review.newDamageNote,
-      photos, setPhotos,
-      onBack: () => setReview(null),
-      onNext: (taken) => setFinal({ ...review, photos: taken }),
-    });
-  }
-
-  // Step 3. Back returns to step 2 with its values intact; they live here,
-  // not in the step, so they survive the round trip. A No skips photos and
-  // goes straight to step 5, dropping any photos taken under an earlier Yes.
+  // Step 3: previous damage, and the new damage's photos. Back returns to
+  // step 2 with its values intact; they live here, not in the step, so they
+  // survive the round trip, photos included.
   if (closing) {
     return React.createElement(CloseRentalDamageStep, {
       row: openRows.find((r) => r.id === closing.rentalAgreementId) || null,
-      damageDraft, setDamageDraft,
+      damageDraft, setDamageDraft, photos, setPhotos,
       onBack: () => setClosing(null),
       onNext: (answer) => {
         const next = { ...closing, ...answer };
         setReview(next);
-        if (!answer.newDamageFound) { clearPhotos(); setFinal({ ...next, photos: [] }); }
+        setFinal({ ...next, photos });
       },
     });
   }
@@ -16871,7 +16756,7 @@ function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, oldVeh
     line("Closing mileage", fmtDistance(closing.closingMileage)),
     line("Closing gas level", fuelText(closing.closingGasLevel)),
     line("New damage found", review.newDamageFound ? "Yes" : "No"),
-    review.newDamageFound && line("New damage note", review.newDamageNote),
+    review.newDamageFound && review.newDamageNote && line("New damage notes", review.newDamageNote),
     review.newDamageFound && line("Vehicle", vehicleRentableLabel(review.vehicleRentable)),
     review.newDamageFound && line("New damage photos", String(photos.length)),
     line("Its new status", oldVehicleStatus.status),
@@ -17042,6 +16927,7 @@ function SwitchOutPage() {
               operatorId: currentUser?.operatorId, rentalAgreementId: ra.id, photos, step: "switch",
             })
           : { paths: [], failures: [] };
+        await saveDamagePhotoNotes(photos, upload.saved);
 
         // Damage on the vehicle coming back is a claim, as it is on a return.
         // The plate is the OLD vehicle's: the agreement is about to carry the
@@ -17176,30 +17062,20 @@ function SwitchOutPage() {
   if (review && photosDone) {
     return React.createElement(SwitchOutVehicleStep, {
       row,
-      onBack: () => { if (review.newDamageFound) setPhotosDone(false); else { setPhotosDone(false); setReview(null); } },
+      onBack: () => { setPhotosDone(false); setReview(null); },
       onNext: setNewVehicle,
     });
   }
 
-  // Step 4: photos, only after a Yes.
-  if (review) {
-    return React.createElement(CloseRentalPhotoStep, {
-      row, note: review.newDamageNote,
-      photos, setPhotos, pageTitle: "Switch Out",
-      onBack: () => setReview(null),
-      onNext: () => setPhotosDone(true),
-    });
-  }
-
-  // Step 3: previous damage, and whether there is new damage.
+  // Step 3: previous damage, and the new damage's photos.
   if (closing) {
     return React.createElement(CloseRentalDamageStep, {
       row,
-      damageDraft, setDamageDraft, pageTitle: "Switch Out",
+      damageDraft, setDamageDraft, photos, setPhotos, pageTitle: "Switch Out",
       onBack: () => setClosing(null),
       onNext: (answer) => {
         setReview({ ...closing, ...answer });
-        if (!answer.newDamageFound) { clearPhotos(); setPhotosDone(true); }
+        setPhotosDone(true);
       },
     });
   }
@@ -21151,6 +21027,32 @@ body, * {
   border-radius: 8px;
   box-shadow: 0 10px 30px rgba(0,0,0,0.35);
 }
+/* Damage, photo first: one section that folds, a count beside its title, a
+   grid of photos and + Add photo as the last square. */
+.damageSection{ border: 1px solid #E3E2DE; border-radius: 12px; background: #F9F9F7; }
+.damageSection__head{ width: 100%; display: flex; align-items: center; gap: 8px; padding: 12px 14px; background: none; border: none; font: inherit; color: #1F1E1D; text-align: left; cursor: pointer; }
+.damageSection__title{ font-weight: 600; }
+.damageSection__count{ min-width: 22px; padding: 1px 8px; border-radius: 999px; background: #E3E2DE; color: #1F1E1D; font-size: 12px; font-weight: 600; text-align: center; }
+.damageSection__chevron{ margin-left: auto; opacity: 0.6; }
+.damageSection__grid{ display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px; padding: 0 14px 14px; }
+.damageSection__item{ display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.damageSection__thumb, .damageSection__add{ aspect-ratio: 1; width: 100%; border-radius: 10px; overflow: hidden; padding: 0; cursor: pointer; }
+.damageSection__thumb{ border: 1px solid #E3E2DE; background: #FFFFFF; }
+.damageSection__thumb img{ width: 100%; height: 100%; object-fit: cover; display: block; }
+.damageSection__add{ border: 1px dashed rgba(31, 30, 29, 0.3); background: #FFFFFF; font: inherit; font-size: 13px; font-weight: 600; color: #C9603D; }
+.damageSection__addNote, .damageSection__note{ background: none; border: none; padding: 0; font: inherit; font-size: 12px; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.damageSection__addNote{ color: rgba(31, 30, 29, 0.62); text-decoration: underline; text-underline-offset: 2px; }
+.damageSection__note{ color: #1F1E1D; }
+.damageSection__noteBox{ font-size: 12px; padding: 6px 8px; }
+.damagePhotoViewer:has(.damagePhotoViewer__remove){ padding-bottom: 84px; }
+.damagePhotoViewer__remove{ position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%); padding: 10px 22px; border-radius: 999px; border: none; background: #F9F9F7; color: #c0392b; font: inherit; font-weight: 600; cursor: pointer; }
+/* The damage camera, over the page, for several photos in a row. */
+.damageCamera{ position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; gap: 10px; padding: 14px; background: #1F1E1D; color: #F9F9F7; }
+.damageCamera__top{ display: flex; align-items: center; justify-content: space-between; }
+.damageCamera__title{ font-weight: 600; }
+.damageCamera__done{ background: none; border: none; color: #F9F9F7; font: inherit; font-weight: 600; cursor: pointer; padding: 6px 10px; }
+.closeRentalCamera.damageCamera__stage{ flex: 1 1 auto; min-height: 0; max-width: none; aspect-ratio: auto; }
+.damageCamera__count{ text-align: center; font-size: 13px; opacity: 0.8; }
 .damagePhotoViewer__close{
   position: absolute;
   top: 10px;
