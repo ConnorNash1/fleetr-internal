@@ -8355,7 +8355,7 @@ function LaunchStep({ steps }) {
       window.location.hash = "/dashboard";
       window.location.reload();
     }, {
-      description: "Launched the company.", tableName: "operators", danger: true,
+      description: "Launched the company.", tableName: "operators",
       warning: "Launch the company? Your branches that are switched on show on fleetr.ai and take bookings, texts start going to customers, and every test record made in setup mode is deleted. This cannot be undone, though the company can be paused afterwards.",
     });
   };
@@ -8372,7 +8372,7 @@ function LaunchStep({ steps }) {
       : left === 0 ? "Every required step is done." : `${left} required step${left === 1 ? "" : "s"} left.`),
     isExec
       ? el("button", {
-          type: "button", className: "loginBtn", style: { width: "auto", padding: "10px 18px" },
+          type: "button", className: "loginBtn launchBtn", style: { width: "auto", padding: "10px 18px" },
           disabled: busy || !setup.ready || setup.suspended, onClick: launch,
         }, busy ? "Launching..." : "Launch")
       : el("p", { className: "closeRentalHint" }, "An Exec launches the company once every required step is done."),
@@ -19537,6 +19537,7 @@ body, * {
 .staffPage .loginBtn:disabled,
 .staffPage .resModalSubmit:disabled,
 .staffPage .addVehicleBtn:disabled{ opacity: 0.45; cursor: not-allowed; }
+.companyStep__body .launchBtn:disabled{ background: #D9D8D3; color: #6F6E69; opacity: 1; }
 .companyStep__body .resModalCancel,
 .staffPage .resModalCancel{
   background: var(--cs-card);
