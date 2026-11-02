@@ -8399,8 +8399,10 @@ function PhoneHandoffQr() {
   }, []);
   if (failed) return null;
   return el("div", { className: "phoneHandoff" },
-    src ? el("img", { className: "phoneHandoff__qr", src, alt: "QR code that opens this step on your phone" })
-      : el("div", { className: "phoneHandoff__qr skelBox" }),
+    el("div", { className: "phoneHandoff__code" },
+      src ? el("img", { className: "phoneHandoff__qr", src, alt: "QR code that opens this step on your phone" })
+        : el("div", { className: "phoneHandoff__qr skelBox" }),
+      el("div", { className: "phoneHandoff__tip" }, "Tip: add fleetr to your home screen.")),
     el("div", null,
       el("div", { className: "phoneHandoff__title" }, "Scan to continue on your phone"),
       el("p", { className: "closeRentalHint", style: { margin: "4px 0 0" } },
@@ -19768,6 +19770,8 @@ body, * {
 .phoneHandoff{ display: flex; gap: 18px; align-items: center; padding: 16px; margin-bottom: 18px; border: 1px solid var(--cs-line); border-radius: 12px; background: var(--cs-card); }
 .phoneHandoff__qr{ width: 140px; height: 140px; flex: 0 0 auto; border-radius: 8px; }
 .phoneHandoff__title{ font-weight: 700; font-size: 15px; }
+.phoneHandoff__code{ flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.phoneHandoff__tip{ font-size: 12px; line-height: 1.4; color: var(--cs-muted); white-space: nowrap; }
 .companyStep__state--defaults,
 .companyStep__state--optional{ background: transparent; color: var(--cs-muted); }
 .companyDefaults{ margin-left: 10px; font-size: 12px; font-weight: 600; color: var(--cs-muted); }
