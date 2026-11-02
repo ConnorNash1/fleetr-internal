@@ -8483,11 +8483,14 @@ function CompanyPage() {
       default: return false;
     }
   };
+  const notListed = (st) => st.key === "listing" && !!companyLists && !isFleetrAiListed();
   // Done when every setup item it holds is done, Skipped when one is skipped
   // and the rest are done, In progress once anything in it is saved, and Not
   // started before that.
   const stepState = (st) => {
     if (st.key === "launch") return launched ? "done" : "todo";
+    // With List on fleetr.ai off there is nothing to do in the listing step.
+    if (notListed(st)) return "done";
     const its = itemsOf(st);
     if (its.every((it) => it.done)) return "done";
     if (its.every((it) => it.done || it.skipped)) return "skipped";
@@ -8518,7 +8521,7 @@ function CompanyPage() {
     const before = stepsBefore.current;
     stepsBefore.current = now;
     if (!before) return;
-    const finished = COMPANY_STEPS.find((st) => st.key !== "launch" && st.key !== "vehicles" && openSteps[st.key]
+    const finished = COMPANY_STEPS.find((st) => st.key !== "launch" && st.key !== "vehicles" && !notListed(st) && openSteps[st.key]
       && enterStep !== `company-step-${st.key}` && before[st.key] !== "done" && now[st.key] === "done");
     if (finished) advance(finished.key);
   });
@@ -9412,6 +9415,16 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
   };
 
   const open = (branches || []).filter((b) => b.active);
+  // List on fleetr.ai off: one line and the switch. Nothing else is checked or
+  // asked for, and the fleetr.ai rates wait under the switched off source.
+  if (part === "listing" && companyLists && !fleetrOn) {
+    return React.createElement("div", { id: "company-section-listing" },
+      React.createElement("p", { style: { marginTop: 0 } }, "Not listed on fleetr.ai"),
+      React.createElement("label", { style: { display: "inline-flex", alignItems: "center", gap: "8px", cursor: switching ? "default" : "pointer", fontWeight: 600 } },
+        React.createElement("input", { type: "checkbox", checked: false, disabled: switching, onChange: (e) => setListed(e.target.checked) }),
+        switching ? "Saving…" : "List on fleetr.ai"),
+      React.createElement(FieldError, { text: switchError }));
+  }
   return React.createElement(
     CompanySection, { id: `company-section-${part}`, title: part === "address" ? "Address" : "Listing", style: { marginTop: "24px" }, defaultOpen,
       done: part === "address" && !!listings && open.length > 0 && open.every((b) => {
@@ -9425,9 +9438,8 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
       React.createElement("label", { style: { display: "inline-flex", alignItems: "center", gap: "8px", cursor: switching ? "default" : "pointer", fontWeight: 600 } },
         React.createElement("input", { type: "checkbox", checked: fleetrOn, disabled: switching, onChange: (e) => setListed(e.target.checked) }),
         switching ? "Saving…" : "List on fleetr.ai"),
-      React.createElement("p", { className: "closeRentalHint" }, fleetrOn
-        ? "On: fleetr.ai is a source under Rates, with a whole-dollar rate for every vehicle class, and staff can pick it for walk-in and phone customers too."
-        : "Off: nothing shows on fleetr.ai, and the fleetr.ai source is hidden from Rates and from the source lists."),
+      React.createElement("p", { className: "closeRentalHint" },
+        "On: fleetr.ai is a source under Rates, with a whole-dollar rate for every vehicle class, and staff can pick it for walk-in and phone customers too."),
       React.createElement(FieldError, { text: switchError })),
     loadError && React.createElement("div", { className: "loginError" }, loadError),
     !listings && !loadError && React.createElement(SkeletonFrame, null, open.map((b) => part === "listing"
@@ -10354,7 +10366,7 @@ function RequirementCards({ listing: l, busy, save, error, errField, clearError,
   }));
 }
 
-function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, timeZone, onSaved, fleetrOn, multi }) {
+function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, timeZone, onSaved, multi }) {
   const el = React.createElement;
   const l = listing || {};
   const [busy, setBusy] = React.useState("");
@@ -10800,8 +10812,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
         busy === "shown" ? "Saving…" : "Show this branch on fleetr.ai"),
       errField === "shown" && el(FieldError, { text: error })),
     el("p", { className: "closeRentalHint", style: { marginTop: 0, marginBottom: "14px" } },
-      !fleetrOn ? "Not on fleetr.ai: List on fleetr.ai is off."
-        : multi && !shown ? "Not on fleetr.ai: Show this branch on fleetr.ai is off."
+      multi && !shown ? "Not on fleetr.ai: Show this branch on fleetr.ai is off."
         : listed ? "Shows on fleetr.ai."
         : "Not on fleetr.ai yet.",
       missingKeys.length > 0 && el(ListingMissingLinks, { keys: missingKeys, branchId: branch.id, onEdit: (part) => {
