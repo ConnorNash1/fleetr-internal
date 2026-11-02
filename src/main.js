@@ -11425,11 +11425,6 @@ const PROTECTION_DECLINE_MAX = 300;
 const vehicleClassType = (c) =>
   [c.category, c.electric && "electric", c.luxury && "luxury"].filter(Boolean).join(", ") || "No type";
 
-// One vehicle class's type, seats, bags and example models, a cell each so
-// they line up under their headings. Its name, type and example models come
-// from the standard list and stay: the example models are matched up on
-// fleetr.ai. Seats and bags can be changed. Keeps its own drafts, for the
-// reason GasRow does.
 // One class's low availability warning: fewer than this many free at a
 // branch, or blank for none (set_class_low_warning, fleetr-infra
 // fleet_shortages.sql).
@@ -11474,59 +11469,25 @@ function LowWarningsForm({ classes, errAt, onSave }) {
     }));
 }
 
-function VehicleClassDetailsCell({ entry, onSave, error }) {
-  const [problem, setProblem] = React.useState({ key: "", text: "" });
-  const shown = () => ({
-    seats:  entry.seats == null ? "" : String(entry.seats),
-    bags:   entry.bags  == null ? "" : String(entry.bags),
-  });
-  const [draft, setDraft] = React.useState(shown);
-  // Each box follows its own saved value, so saving one never resets the
-  // other while it is being typed in.
-  React.useEffect(() => { setDraft((p) => ({ ...p, seats: shown().seats })); }, [entry.seats, entry.name]); // eslint-disable-line react-hooks/exhaustive-deps
-  React.useEffect(() => { setDraft((p) => ({ ...p, bags: shown().bags })); }, [entry.bags, entry.name]); // eslint-disable-line react-hooks/exhaustive-deps
-  const saved = shown();
-  const unchanged = draft.seats.trim() === saved.seats && draft.bags.trim() === saved.bags;
-  const el = React.createElement;
-  const whole = (s, min, max) => {
-    const t = s.trim();
-    if (t === "") return { ok: true, value: null };
-    const n = Number(t);
-    return Number.isInteger(n) && n >= min && n <= max ? { ok: true, value: n } : { ok: false };
-  };
-  // Saved when the seats or the bags box is left, if either changed.
-  const save = () => {
-    if (unchanged) return;
-    const seats = whole(draft.seats, 1, 20), bags = whole(draft.bags, 0, 20);
-    if (!seats.ok) { setProblem({ key: "seats", text: "Seats has to be a whole number from 1 to 20." }); return; }
-    if (!bags.ok)  { setProblem({ key: "bags", text: "Bags has to be a whole number from 0 to 20." }); return; }
-    onSave(seats.value, bags.value, entry.exampleModels || null);
-  };
-  const num = (key, label) => el("td", null, el("input", {
-    className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric", maxLength: 2,
-    value: draft[key], "aria-label": `${entry.name} ${label}`, ...invalid(problem.key === key),
-    "data-grid-cell": true, onKeyDown: gridKey, onBlur: save,
-    onChange: (e) => { setDraft((p) => ({ ...p, [key]: numberTyped(e.target.value, { digits: 2 }) })); setProblem({ key: "", text: "" }); },
-  }), problem.key === key && el(FieldError, { text: problem.text }));
-  return el(React.Fragment, null,
-    el("td", null, el("span", { className: "closeRentalHint", style: { margin: 0 } }, vehicleClassType(entry))),
-    num("seats", "seats"),
-    num("bags", "bags"),
-    el("td", null, entry.exampleModels || el("span", { className: "closeRentalHint", style: { margin: 0 } }, "None"),
-      el(FieldError, { text: error })));
-}
-
-// The standard vehicle classes (standard_vehicle_classes in the database),
-// each with its type, seats, bags and example models. A class is added as
-// soon as the Exec ticks it; nothing is added unless it is ticked. One already
-// added shows as added. Used on the Company page.
-function VehicleClassPicker({ disabled, onAdded }) {
-  const { currentUser } = React.useContext(AppContext);
+// The vehicle classes, as one list: the standard classes (standard_vehicle_
+// classes in the database) as cards under their groups, and any class of the
+// company's own from before the standard list under Other. Tapping a card
+// turns that class on or off and saves at once; a class with vehicles in it
+// stays on. A card that is on has Edit, for its seats and bags. Its name, type
+// and example models come from the standard list and stay: the example models
+// are matched up on fleetr.ai.
+const VEHICLE_CLASS_GROUPS = [
+  ["Cars", ["Small car", "Medium car", "Large car", "Luxury car", "Electric car"]],
+  ["SUVs", ["Small SUV", "Medium SUV", "Large SUV", "Luxury SUV", "Electric SUV"]],
+  ["Vans and trucks", ["Minivan", "Cargo van", "Passenger van", "Pickup truck"]],
+  ["Other", ["Other"]],
+];
+function VehicleClassPicker({ busy, act, errAt, onAdded }) {
+  const { currentUser, fleet } = React.useContext(AppContext);
   const [list, setList]       = React.useState(null);
-  const [busy, setBusy]       = React.useState(false);
+  const [adding, setAdding]   = React.useState("");
   const [error, setError]     = React.useState("");
-  const [notice, setNotice]   = React.useState("");
-  const [, setTick]           = React.useState(0);
+  const [editing, setEditing] = React.useState("");
   const el = React.createElement;
 
   React.useEffect(() => {
@@ -11539,55 +11500,129 @@ function VehicleClassPicker({ disabled, onAdded }) {
     return () => { live = false; };
   }, []);
 
-  const have = new Set(((companyLists && companyLists.vehicleClasses) || []).map((c) => String(c.name).toLowerCase()));
+  const lower = (n) => String(n || "").trim().toLowerCase();
+  const mine = (companyLists && companyLists.vehicleClasses) || [];
+  const mineOf = (name) => mine.find((c) => lower(c.name) === lower(name)) || null;
+  // How many vehicles are filed under a class.
+  const vehiclesIn = (name) => (fleet || []).filter((v) => lower(v.vehicleClass) === lower(name)).length;
 
-  const add = async (chosen) => {
-    setBusy(true); setError(""); setNotice("");
+  // On: added from the standard list, or switched back on if it was added
+  // before. Off: switched off, which keeps its rates for when it comes back.
+  const toggle = async (std) => {
+    const entry = mineOf(std.name);
+    if (busy || adding) return;
+    setError("");
+    if (entry && entry.active) {
+      if (vehiclesIn(entry.name) > 0) return;
+      if (editing === entry.id) setEditing("");
+      act(`classes:row:${entry.id}`, "set_reference_active", { p_kind: "vehicle_class", p_id: entry.id, p_active: false });
+      return;
+    }
+    if (entry) {
+      act(`classes:row:${entry.id}`, "set_reference_active", { p_kind: "vehicle_class", p_id: entry.id, p_active: true });
+      return;
+    }
+    const chosen = [std.name];
+    setAdding(std.name);
     const { data, error: err } = await supabase.rpc("add_standard_vehicle_classes", { p_names: chosen });
     if (err || !data || !data.ok) {
-      setBusy(false);
+      setAdding("");
       setError(err ? "Could not reach the server." : (LIST_REASONS[data && data.reason] || "That did not work."));
       return;
     }
     await loadCompanyLists(currentUser);
-    setBusy(false);
-    setTick((n) => n + 1);
-    const n = (data.added || []).length;
-    setNotice(n ? `Added ${n} vehicle class${n === 1 ? "" : "es"}. Change their seats, bags and example models above if yours differ.` : "Those were already added.");
+    setAdding("");
     if (onAdded) await onAdded();
   };
 
+  const card = (std) => {
+    const entry = mineOf(std.name);
+    const on = !!(entry && entry.active);
+    const shown = on ? entry : std;
+    const n = on ? vehiclesIn(entry.name) : 0;
+    const facts = [shown.seats != null && `${shown.seats} seats`, shown.bags != null && `${shown.bags} bag${shown.bags === 1 ? "" : "s"}`].filter(Boolean).join(" \u00b7 ");
+    const open = on && editing === entry.id;
+    const err = entry ? errAt(`classes:row:${entry.id}`) || errAt(`classes:details:${entry.id}`) : "";
+    return el("div", {
+      key: std.name, className: `classCard${on ? " classCard--on" : ""}${n > 0 ? " classCard--held" : ""}`,
+      role: "button", tabIndex: 0, "aria-pressed": on, "aria-disabled": n > 0 || undefined,
+      "aria-label": `${std.name}${on ? ", on" : ", off"}`,
+      onClick: () => toggle(std),
+      onKeyDown: (e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggle(std); } },
+    },
+      el("span", { className: "classCard__tick", "aria-hidden": "true" }, on ? "\u2713" : ""),
+      el("span", { className: "classCard__name" }, std.name),
+      shown.exampleModels && el("span", { className: "classCard__model" }, ` (${shown.exampleModels} or similar)`),
+      facts && el("span", { className: "classCard__facts" }, facts),
+      adding === std.name && el("span", { className: "classCard__note" }, "Adding\u2026"),
+      n > 0 && el("span", { className: "classCard__note" },
+        `${n} vehicle${n === 1 ? " is" : "s are"} in this class. Move or remove ${n === 1 ? "it" : "them"} before turning it off.`),
+      on && !open && el("button", { type: "button", className: "classCard__edit",
+        onClick: (e) => { e.stopPropagation(); setEditing(entry.id); } }, "Edit"),
+      open && el(VehicleClassEditor, { entry, act, onClose: () => setEditing("") }),
+      err && el(FieldError, { text: err }));
+  };
+
   if (!list) return error ? el("div", { className: "loginError" }, error) : el(SkeletonFrame, null,
-    el("div", { style: { marginTop: "12px" } },
-      el("div", { className: "gasSettingSubhead" }, skT("Add vehicle classes")),
-      el("p", { className: "closeRentalHint" }, skT("Tick the ones you rent.")),
-      el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "6px 16px" } },
-        ["Small car", "Compact car", "Midsize car", "Full-size car", "Small SUV", "Medium SUV"].map((name) =>
-          el("label", { key: name, style: { display: "flex", gap: "8px", alignItems: "flex-start" } },
-            el("input", { type: "checkbox", tabIndex: -1, style: { marginTop: "3px" } }),
-            el("span", null,
-              el("span", { style: { fontWeight: 600 } }, skT(name)), skT(" (Nissan Versa or similar)"),
-              el("span", { className: "closeRentalHint", style: { display: "block", margin: 0 } }, skT("Car \u00b7 5 seats \u00b7 2 bags"))))))));
-  return el("div", { style: { marginTop: "12px" } },
-    el("div", { className: "gasSettingSubhead" }, "Add vehicle classes"),
-    el("p", { className: "closeRentalHint" }, "Tick the ones you rent."),
-    el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "6px 16px" } },
-      list.map((c) => {
-        const added = have.has(String(c.name).toLowerCase());
-        const facts = [vehicleClassType(c), c.seats != null && `${c.seats} seats`, c.bags != null && `${c.bags} bags`].filter(Boolean).join(" \u00b7 ");
-        return el("label", { key: c.name, style: { display: "flex", gap: "8px", alignItems: "flex-start", cursor: added ? "default" : "pointer", opacity: added ? 0.6 : 1 } },
-          el("input", {
-            type: "checkbox", checked: added, disabled: disabled || busy || added,
-            style: { marginTop: "3px" },
-            onChange: (e) => { if (e.target.checked) add([c.name]); },
-          }),
-          el("span", null,
-            el("span", { style: { fontWeight: 600 } }, c.name),
-            c.exampleModels && el("span", null, ` (${c.exampleModels} or similar)`),
-            el("span", { className: "closeRentalHint", style: { display: "block", margin: 0 } }, added ? `${facts} \u00b7 added` : facts)));
-      })),
-    notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginTop: "8px" } }, notice),
+    el("div", { className: "classGroups" },
+      el("div", { className: "gasSettingSubhead" }, skT("Cars")),
+      el("div", { className: "classCards" },
+        ["Small car", "Medium car", "Large car", "Luxury car", "Electric car"].map((name) =>
+          el("div", { key: name, className: "classCard" },
+            el("span", { className: "classCard__name" }, skT(name)),
+            el("span", { className: "classCard__facts" }, skT("5 seats \u00b7 2 bags")))))));
+  const byName = (name) => list.find((c) => lower(c.name) === lower(name));
+  // Classes of the company's own, from before the standard list, go under Other.
+  const own = mine.filter((c) => !list.some((x) => lower(x.name) === lower(c.name)));
+  return el("div", { className: "classGroups" },
+    el("p", { className: "closeRentalHint" }, "Tap the ones you rent. Tap again to turn one off."),
+    VEHICLE_CLASS_GROUPS.map(([title, names]) => {
+      const cards = [...names.map(byName).filter(Boolean), ...(title === "Other" ? own : [])];
+      return cards.length > 0 && el(React.Fragment, { key: title },
+        el("div", { className: "gasSettingSubhead" }, title),
+        el("div", { className: "classCards" }, cards.map(card)));
+    }),
     el(FieldError, { text: error }));
+}
+
+// A class's seats and bags, open under its card, saved as they are typed. The
+// example models show here too, as the standard list has them.
+function VehicleClassEditor({ entry, act, onClose }) {
+  const el = React.createElement;
+  const shown = (v) => (v == null ? "" : String(v));
+  const [seats, setSeats] = React.useState(shown(entry.seats));
+  const [bags,  setBags]  = React.useState(shown(entry.bags));
+  const [problem, setProblem] = React.useState({ key: "", text: "" });
+  const whole = (t, min, max) => {
+    if (t.trim() === "") return { ok: true, value: null };
+    const n = Number(t);
+    return Number.isInteger(n) && n >= min && n <= max ? { ok: true, value: n } : { ok: false };
+  };
+  const auto = useAutosave(`${seats.trim()}|${bags.trim()}`, `${shown(entry.seats)}|${shown(entry.bags)}`, (final) => {
+    const s = whole(seats, 1, 20), b = whole(bags, 0, 20);
+    if (!s.ok) { if (final) setProblem({ key: "seats", text: "Seats has to be a whole number from 1 to 20." }); return false; }
+    if (!b.ok) { if (final) setProblem({ key: "bags", text: "Bags has to be a whole number from 0 to 20." }); return false; }
+    return act(`classes:details:${entry.id}`, "save_vehicle_class_details", {
+      p_id: entry.id, p_seats: s.value, p_bags: b.value, p_example_models: entry.exampleModels || null,
+    });
+  });
+  const num = (key, label, value, set) => el("label", { className: "classEditor__field" },
+    el("span", { className: "resFormLabel" }, label),
+    el("input", {
+      className: "resFormInput", style: { width: "70px" }, inputMode: "numeric", maxLength: 2, value,
+      "aria-label": `${entry.name} ${label.toLowerCase()}`, ...invalid(problem.key === key),
+      onChange: (e) => { set(numberTyped(e.target.value, { digits: 2 })); setProblem({ key: "", text: "" }); },
+      onBlur: auto.flush, "data-autosave": true,
+    }));
+  return el("div", { className: "classEditor", onClick: (e) => e.stopPropagation(), onKeyDown: (e) => e.stopPropagation() },
+    el("div", { className: "classEditor__row" },
+      num("seats", "Seats", seats, setSeats),
+      num("bags", "Bags", bags, setBags),
+      el(AutosaveNote, { state: auto.state })),
+    el(FieldError, { text: problem.text }),
+    el("div", { className: "closeRentalHint", style: { margin: "6px 0 0" } },
+      `Example model: ${entry.exampleModels || "none"}. It comes from the standard list, which fleetr.ai matches on.`),
+    el("button", { type: "button", className: "classCard__edit", onClick: () => { auto.flush(); onClose(); } }, "Close"));
 }
 
 // The contract terms: fleetr's standard terms, or the company's own, one term
@@ -11989,7 +12024,6 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
     return row ? Number(row.amount) : null;
   };
 
-  const saveClass   = (c, order) => ["save_vehicle_class", { p_id: c.id, p_name: c.name, p_sort: order }];
   const saveSource  = (x, order) => ["save_source",
     { p_id: x.id, p_name: x.name, p_billing_type: x.billingType, p_sort: order }];
   // A product can only go on once own insurance is off. Asks first; false if
@@ -12042,22 +12076,9 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
     classes: section("Vehicle classes",
       null,
       "classes",
-      vehicleClasses.length === 0
-        ? el("p", { className: "closeRentalHint" }, "No vehicle classes yet")
-        : gridTable("860px", ["", "Vehicle class", "Type", "Seats", "Bags", "Example models", "On", ""],
-        vehicleClasses.map((entry, i) => entryRow({
-          at: "classes", kind: "vehicle_class", entry,
-          reorder: { listKey: "classes", list: vehicleClasses, index: i, saveCall: saveClass },
-          goesWith: "Its daily rates and protection prices go with it.",
-          extra: el(VehicleClassDetailsCell, {
-            entry, busy, error: errAt(`classes:details:${entry.id}`),
-            onSave: (seats, bags, models) => act(`classes:details:${entry.id}`, "save_vehicle_class_details", {
-              p_id: entry.id, p_seats: seats, p_bags: bags, p_example_models: models,
-            }),
-          }),
-        }))),
-      el(VehicleClassPicker, { disabled: busy, onAdded: async () => { await reload(); if (onChanged) await onChanged(); } }),
-      isFeatureEnabled("fleet_notifications") && roleAtLeast(currentUser?.role, "Exec") && el("div", { className: "lowWarn" },
+      el(VehicleClassPicker, { busy, act, errAt, onAdded: async () => { await reload(); if (onChanged) await onChanged(); } }),
+      // Only once there are classes to warn about.
+      isFeatureEnabled("fleet_notifications") && roleAtLeast(currentUser?.role, "Exec") && activeClasses.length > 0 && el("div", { className: "lowWarn" },
         el("h3", { className: "lowWarn__title" }, "Low availability warnings"),
         el(LowWarningsForm, { classes: activeClasses, busy, errAt,
           onSave: (entry, below) => act(`classes:low:${entry.id}`, "set_class_low_warning", { p_class_id: entry.id, p_below: below }) }))),
@@ -23691,6 +23712,20 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
   font-size: 13px; font-weight: 600; color: #1F1E1D;
 }
 /* Low availability warnings, under Vehicle classes. */
+/* Vehicle classes: a card per class, terracotta with a tick while it is on. */
+.classCards{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.classCard{ position: relative; display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border: 1px solid #E3E2DE; border-radius: 10px; background: #F9F9F7; cursor: pointer; text-align: left; }
+.classCard:hover{ border-color: rgba(31, 30, 29, 0.28); }
+.classCard--on{ border: 2px solid #F4845F; padding: 11px 13px; }
+.classCard--held{ cursor: default; }
+.classCard__tick{ position: absolute; top: 10px; right: 12px; color: #F4845F; font-weight: 700; }
+.classCard__name{ font-weight: 600; padding-right: 18px; }
+.classCard__model, .classCard__facts, .classCard__note{ font-size: 13px; color: rgba(31, 30, 29, 0.62); }
+.classCard__note{ margin-top: 4px; }
+.classCard__edit{ align-self: flex-start; margin-top: 6px; background: none; border: none; padding: 0; font: inherit; font-size: 13px; font-weight: 600; color: #C9603D; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.classEditor{ margin-top: 8px; padding-top: 8px; border-top: 1px solid #EEEDE9; cursor: default; }
+.classEditor__row{ display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.classEditor__field{ display: flex; flex-direction: column; gap: 4px; }
 .lowWarn{ margin-top: 18px; padding-top: 14px; border-top: 1px solid #EEEDE9; }
 .lowWarn__title{ margin: 0 0 4px; font-size: 14px; font-weight: 700; }
 .lowWarn__row{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; }
