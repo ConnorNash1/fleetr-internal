@@ -8686,7 +8686,7 @@ function CompanyPage() {
         if (notListed(st)) return [];
         const missing = detail("listing");
         return [
-          ...branches.filter((b) => b.active).map((b) => ({ title: `${b.name} listing`, target: `listing-branch-${b.id}`, done: !missing.includes(b.name) })),
+          ...branches.filter((b) => b.active).map((b) => ({ title: `${b.name} listing`, target: "company-section-listing-preview", done: !missing.includes(b.name) })),
           { title: "Booking rules", target: "company-step-listing", done: true, defaults: rulesDefault },
         ];
       }
@@ -8903,7 +8903,7 @@ function CompanyPage() {
             el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, onClick: () => setShowProducts(true) }, "Change"))
         : parts.protection;
       case "contract": return only(parts.acknowledgements);
-      case "listing": return only(el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "listing", onSaved: refreshAll }));
+      case "listing": return el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "listing", onSaved: refreshAll });
       case "staff": return el(StaffPage, { embedded: true, onChanged: refreshSetup });
       case "launch": return launched ? el(CompanyStatusSection, { bare: true })
         : el(LaunchStep, { steps: COMPANY_STEPS.filter((st) => st.key !== "launch").map((st) => ({ ...st, state: stepState(st), items: itemsOf(st) })) });
@@ -9669,6 +9669,44 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
         switching ? "Saving…" : "List on fleetr.ai"),
       React.createElement(FieldError, { text: switchError }));
   }
+  // The listing in three sections: Show on fleetr.ai, open; Booking rules and
+  // Preview, folded until clicked. Each branch has its part in each.
+  if (part === "listing") {
+    const el = React.createElement;
+    const editors = (view) => listings && open.map((b) => el(ListingPreviewEditor, {
+      key: b.id, view, branch: b, operatorId: currentUser?.operatorId, company, taxes: taxes[b.id] || [],
+      listing: listings.find((l) => l.locationId === b.id) || null,
+      timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: saved, multi: open.length > 1,
+    }));
+    return el(React.Fragment, null,
+      el(CompanySection, { id: "company-section-listing", title: "Show on fleetr.ai", defaultOpen: true },
+        el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+          "While List on fleetr.ai is on, a branch shows once its listing is complete. Photos and logos are public. The address comes from Branch."),
+        el("label", { className: "reqSwitch faiShowSwitch" },
+          el("input", { type: "checkbox", role: "switch", checked: fleetrOn, disabled: switching, onChange: (e) => setListed(e.target.checked) }),
+          el("span", { "aria-hidden": "true" }),
+          switching ? "Saving\u2026" : "List on fleetr.ai"),
+        el("p", { className: "closeRentalHint" },
+          "On: fleetr.ai is a source under Rates, with a whole-dollar rate for every vehicle class, and staff can pick it for walk-in and phone customers too."),
+        el(FieldError, { text: switchError }),
+        loadError && el("div", { className: "loginError" }, loadError),
+        editors("show")),
+      el(CompanySection, { id: "company-section-listing-rules", title: "Booking rules", style: { marginTop: "24px" } },
+        el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "How online bookings are checked. Renters only see these when a search breaks one."),
+        editors("rules")),
+      el(CompanySection, { id: "company-section-listing-preview", title: "Preview", style: { marginTop: "24px" } },
+        el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Each branch as renters see it on fleetr.ai. Click any part to change it."),
+        !listings && !loadError && el(SkeletonFrame, null, open.map((b) => el("div", { key: b.id, className: "faiBranch" },
+          el("div", { className: "gasSettingSubhead" }, skT(b.name)),
+          el("div", { className: "fai" },
+            el("div", { className: "faiStage" },
+              el("div", { className: "faiStage__label" }, skT("In search results")),
+              el("div", { className: "skelBox", style: { height: "320px", borderRadius: "14px" } })),
+            el("div", { className: "faiStage faiStage--page" },
+              el("div", { className: "faiStage__label" }, skT("The branch page")),
+              el("div", { className: "skelBox", style: { height: "560px", borderRadius: "14px" } })))))),
+        editors("preview")));
+  }
   return React.createElement(
     CompanySection, { id: `company-section-${part}`, title: part === "address" ? "Address" : "Listing", style: { marginTop: "24px" }, defaultOpen,
       done: part === "address" && !!listings && open.length > 0 && open.every((b) => {
@@ -10216,9 +10254,20 @@ function faiSampleTrip() {
   return { pu, rt, range: `${faiShort(pu)} 10:00 AM – ${faiShort(rt)} 10:00 AM` };
 }
 const faiCityOf = (l) => ((l.citiesServed || [])[0]) || ((l.airportCodes || [])[0]) || "";
+// The airport perk: a free ride from the airport, as the branch picks the
+// renter up or covers their taxi or Uber. The same words as fleetr-website's
+// perksOf; if they change there, change them here.
+const AIRPORT_RIDE = "Free airport ride";
+const AIRPORT_RIDE_TYPES = { pickup: "We pick you up", taxi: "We cover your taxi or Uber to us" };
+const airportRideText = (l) => {
+  const codes = (l.airportCodes || []).join(", ");
+  return l.airportRideType === "taxi"
+    ? `${AIRPORT_RIDE_TYPES.taxi}${codes ? ` from ${codes}` : ""}`
+    : `${AIRPORT_RIDE_TYPES.pickup}${codes ? ` at ${codes}` : ""}`;
+};
 function faiPerksOf(l) {
   const out = [];
-  if (l.airportPickup) out.push({ icon: "lPlane", name: "Airport pickup", text: (l.airportCodes || []).length ? `At ${l.airportCodes.join(", ")}` : "Pick up at the airport" });
+  if (l.airportPickup) out.push({ icon: "lPlane", name: AIRPORT_RIDE, text: airportRideText(l) });
   if (l.delivery) out.push({ icon: "lTruck", name: "Delivery", text: "Get the vehicle brought to you" });
   if (l.afterHoursDropoff) out.push({ icon: "lMoon", name: "Return anytime with the key drop", text: "Outside opening hours" });
   return out;
@@ -10520,6 +10569,17 @@ const reqPayment = (methods) => {
   const other = (methods || []).filter((m) => !LISTING_PAYMENT_METHODS.includes(m)).join(", ");
   return { known, other, otherOn: !!other };
 };
+// The listing's cards, one pattern throughout: a card not set yet has a
+// dashed outline and "+ Set ..." in terracotta; a set card is solid, shows
+// its value and a small pencil. The whole card is the button.
+const cardPencil = () => React.createElement("svg", { className: "setCard__pencil", width: 14, height: 14, viewBox: "0 0 24 24", fill: "none",
+  stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+  React.createElement("path", { d: "M12 20h9" }),
+  React.createElement("path", { d: "M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" }));
+// A company's initials, for the logo's square until it has a logo.
+const companyInitials = (name) => String(name || "").trim().split(/\s+/).filter(Boolean).slice(0, 2)
+  .map((w) => w.charAt(0).toUpperCase()).join("") || "?";
+
 function RequirementCards({ listing: l, busy, save, error, errField, clearError, request, onRequestTaken }) {
   const el = React.createElement;
   const [open, setOpen] = React.useState("");
@@ -10618,15 +10678,16 @@ function RequirementCards({ listing: l, busy, save, error, errField, clearError,
   return el("div", { className: "reqCards" }, cards.map((c) => {
     const editing = open === c.key;
     return el("div", {
-      key: c.key, className: `reqCard${editing ? " reqCard--open" : ""}`,
+      key: c.key, className: `reqCard${editing ? " reqCard--open" : c.value ? " setCard" : " setCard setCard--unset"}`,
       ...(editing
         ? { onKeyDown: (e) => { if (e.key === "Escape") finish(); } }
-        : { role: "button", tabIndex: 0, "aria-label": `Edit ${c.name.toLowerCase()}`, onClick: () => begin(c.key),
+        : { role: "button", tabIndex: 0, "aria-label": c.value ? `Edit ${c.name.toLowerCase()}, ${c.value}` : `Set ${c.name.toLowerCase()}`, onClick: () => begin(c.key),
             onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); begin(c.key); } } }),
     },
       el("div", { className: "reqCard__head" },
         el("span", { className: "ft-icon" }, faiIcon(c.icon, "1.8")),
-        el("b", null, c.name)),
+        el("b", null, c.name),
+        !editing && c.value && cardPencil()),
       editing
         ? el(React.Fragment, null,
             editors[c.key](),
@@ -10636,13 +10697,13 @@ function RequirementCards({ listing: l, busy, save, error, errField, clearError,
               el("button", { type: "button", className: "faiBtn faiBtn--ghost", disabled: !!busy, onClick: finish }, "Close")))
         : c.value
           ? el("div", { className: "reqCard__value" }, c.value)
-          : el("div", { className: "reqCard__empty" },
-              el("span", null, "Not set"),
-              el("button", { type: "button", className: "miniBtn", tabIndex: -1, onClick: (e) => { e.stopPropagation(); begin(c.key); } }, "Add")));
+          : el("div", { className: "setCard__add" }, `+ Set ${c.name.toLowerCase()}`));
   }));
 }
 
-function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, timeZone, onSaved, multi }) {
+// view is the section it is drawn in: "show" (whether it shows on fleetr.ai
+// and what is missing), "rules" (its booking rules) or "preview".
+function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listing, timeZone, onSaved, multi }) {
   const el = React.createElement;
   const l = listing || {};
   const [busy, setBusy] = React.useState("");
@@ -10725,7 +10786,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     ? [String(h[k].open).slice(0, 5), String(h[k].close).slice(0, 5)] : null)));
   const draftFor = (part) => ({
     places:       { citiesServed: (l.citiesServed || []).length ? l.citiesServed : (l.city ? [l.city] : []), airportCodes: (l.airportCodes || []).join(", ") },
-    perks:        { airportPickup: !!l.airportPickup, delivery: !!l.delivery, afterHoursDropoff: !!l.afterHoursDropoff, airportCodes: (l.airportCodes || []).join(", ") },
+    perks:        { airportPickup: !!l.airportPickup, airportRideType: l.airportRideType || "pickup", delivery: !!l.delivery, afterHoursDropoff: !!l.afterHoursDropoff, airportCodes: (l.airportCodes || []).join(", ") },
     hours:        { hours: hoursDraft() },
   }[part] || null);
   const startEdit = (part, where) => {
@@ -10769,7 +10830,8 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     if (part === "perks") {
       const airportCodes = airportsOf(d.airportCodes);
       if (!airportCodes) return fail("Airport codes are 3 or 4 letters, separated by commas, for example YYT.", "airportCodes");
-      return { airportPickup: d.airportPickup, delivery: d.delivery, afterHoursDropoff: d.afterHoursDropoff, airportCodes };
+      return { airportPickup: d.airportPickup, airportRideType: d.airportPickup ? d.airportRideType || "pickup" : null,
+        delivery: d.delivery, afterHoursDropoff: d.afterHoursDropoff, airportCodes };
     }
     if (part === "hours") {
       const hours = {};
@@ -10788,7 +10850,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   // is, until Close, which saves anything not saved yet first.
   const codesKey = (codes) => splitList(codes).map((x) => x.toUpperCase()).join(",");
   const editKey = (part, d) => (!part || !d ? "" : part === "hours" ? hoursKey({ ...d.hours, __draft: true })
-    : JSON.stringify(part === "places" ? [d.citiesServed, codesKey(d.airportCodes)] : [d.airportPickup, d.delivery, d.afterHoursDropoff, codesKey(d.airportCodes)]));
+    : JSON.stringify(part === "places" ? [d.citiesServed, codesKey(d.airportCodes)] : [d.airportPickup, d.airportPickup ? d.airportRideType || "pickup" : null, d.delivery, d.afterHoursDropoff, codesKey(d.airportCodes)]));
   // What is saved. For hours that is the listing's own, so a new branch's
   // starting hours are saved once the editor is open.
   const savedEditKey = (part) => (!part ? "" : part === "hours" ? hoursKey(savedHours()) : editKey(part, draftFor(part)));
@@ -10928,11 +10990,14 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   // The logo in its rounded square, as a result and the branch page show it.
   const logoBlock = (cls, where) => {
     const logo = listingPhotoUrl(l.logoPath);
+    // Until there is a logo, a neutral grey square with the company's initials.
     return el("div", {
       className: `${cls} faiImage faiLogo${logo ? "" : " faiLogo--empty"}`, role: "button", tabIndex: 0,
       "aria-label": logo ? "Change the logo" : "Add your logo",
       onClick: openImage("logo", where), onKeyDown: keyClick(openImage("logo", where)),
-    }, logo ? el("img", { src: logo, alt: `${companyName} logo` }) : el("span", null, busy === "logo" ? "Uploading…" : "Add logo"),
+    }, logo ? el("img", { src: logo, alt: `${companyName} logo` })
+        : el("span", { className: "faiLogo__initials" }, busy === "logo" ? "\u2026" : companyInitials(companyName)),
+      el("span", { className: `faiImage__badge${logo ? "" : " faiImage__badge--add"}`, "aria-hidden": "true" }, logo ? cardPencil() : "+"),
       imageMenu("logo", where));
   };
   // The location photo, beside the map in Where you'll pick up.
@@ -10944,10 +11009,11 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
         "aria-label": url ? "Change the location photo" : "Add a photo of your location",
         onClick: openImage("photo", "pickup"), onKeyDown: keyClick(openImage("photo", "pickup")),
       },
-        url ? el("img", { src: url, alt: branch.name })
+        url ? el(React.Fragment, null, el("img", { src: url, alt: branch.name }),
+              el("span", { className: "faiImage__badge", "aria-hidden": "true" }, cardPencil()))
           : el("div", { className: "placeholder-photo faiImage__empty" },
               faiIcon("camera", "1.4"),
-              el("span", null, busy === "photo" ? "Uploading…" : "Add a photo of your location"))),
+              el("span", null, busy === "photo" ? "Uploading\u2026" : "+ Add location photo"))),
       imageMenu("photo", "pickup"));
   };
 
@@ -10980,11 +11046,16 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     } else if (part === "perks") {
       body = el(React.Fragment, null,
         el("div", { className: "faiChecks" },
-          check("Airport pickup", d.airportPickup, (v) => setD("airportPickup", v)),
+          check(AIRPORT_RIDE, d.airportPickup, (v) => setD("airportPickup", v)),
           check("Delivery", d.delivery, (v) => setD("delivery", v)),
           check("Key drop returns", d.afterHoursDropoff, (v) => setD("afterHoursDropoff", v))),
-        el("p", { className: "faiHint" }, AFTER_HOURS_HINT),
-        d.airportPickup && field("Airport codes", input("airportCodes", { placeholder: "YYT" }), "airportCodes"));
+        // How the ride is given: picked up, or a taxi or Uber paid for.
+        d.airportPickup && el("div", { className: "faiChecks", role: "radiogroup", "aria-label": AIRPORT_RIDE },
+          Object.entries(AIRPORT_RIDE_TYPES).map(([v, text]) => el("label", { key: v, className: "faiCheck" },
+            el("input", { type: "radio", name: `airport-ride-${branch.id}`, checked: (d.airportRideType || "pickup") === v, disabled: !!busy,
+              onChange: () => setD("airportRideType", v) }), text))),
+        d.airportPickup && field("Airport codes", input("airportCodes", { placeholder: "YYT" }), "airportCodes"),
+        el("p", { className: "faiHint" }, AFTER_HOURS_HINT));
     } else if (part === "hours") {
       const setDay = (k, f, v) => setDraft((p) => ({ ...p, hours: { ...p.hours, [k]: { ...p.hours[k], [f]: v } } }));
       // Monday's times on every day that is open.
@@ -11041,10 +11112,6 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
         : el("div", { className: "faiMuted" }, "Add a fleetr.ai daily rate under Rates")));
 
   // ── The branch page ──
-  // Perks: the website's tile.
-  const tile = (f) => el("div", { key: f.name, className: `feature-tile${f.text ? "" : " faiEmptyTile"}` },
-    el("span", { className: "ft-icon" }, faiIcon(f.icon, "1.8")),
-    el("div", null, el("b", null, f.name), el("span", null, f.text || f.empty)));
   const section = (title, body, extra) => el("section", { className: `sec${extra ? ` ${extra}` : ""}` }, title && el("h2", null, title), body);
   const chosen = classes.find((c) => c.id === chosenId) || null;
   const open = hours ? faiOpenNow(hours, timeZone) : null;
@@ -11084,10 +11151,26 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
         ? el("div", { className: "hours-compact" }, faiHoursRows(hours).map((r) => el("div", { key: r.label, className: `hrow${r.keys.includes(tk) ? " today" : ""}` },
             el("span", null, r.label), el("span", { className: r.text === "Closed" ? "closed" : null }, r.text))))
         : add("Add your opening hours"))),
-    section("What this branch offers", editable("perks", "what this branch offers", perks.length
-      ? el("div", { className: "tiles" }, perks.map(tile))
-      : el(React.Fragment, null, add("Add airport pickup, delivery or after-hours drop-off"),
-          el("p", { className: "faiHint" }, "This part is left off fleetr.ai until you add one.")))),
+    // Every perk as a card: one offered is solid, with what renters read; one
+    // not offered is dashed, to add. Only the ones offered show on fleetr.ai.
+    section("What this branch offers", editing === "perks" && spot === "perks"
+      ? el("div", { className: "faiEditing" }, editor("perks"))
+      : el(React.Fragment, null,
+          el("div", { className: "perkCards" }, [
+            { key: "air", icon: "lPlane", name: AIRPORT_RIDE, value: l.airportPickup ? airportRideText(l) : null },
+            { key: "delivery", icon: "lTruck", name: "Delivery", value: l.delivery ? "Get the vehicle brought to you" : null },
+            { key: "keydrop", icon: "lMoon", name: "Key drop returns", value: l.afterHoursDropoff ? "Return anytime, outside opening hours" : null },
+          ].map((f) => el("div", {
+            key: f.key, className: `reqCard setCard${f.value ? "" : " setCard--unset"}`, role: "button", tabIndex: 0,
+            "aria-label": f.value ? `Edit ${f.name.toLowerCase()}` : `Add ${f.name.toLowerCase()}`,
+            onClick: () => startEdit("perks", "perks"), onKeyDown: keyClick(() => startEdit("perks", "perks")),
+          },
+            el("div", { className: "reqCard__head" },
+              el("span", { className: "ft-icon" }, faiIcon(f.icon, "1.8")),
+              el("b", null, f.name),
+              f.value && cardPencil()),
+            f.value ? el("div", { className: "perkCard__text" }, f.value) : el("div", { className: "setCard__add" }, `+ ${f.name}`)))),
+          el("p", { className: "faiHint" }, perks.length ? "Only the ones you offer show on fleetr.ai." : "This part is left off fleetr.ai until you add one."))),
     section("Requirements", el(RequirementCards, {
       listing: l, busy, save, error, errField, request: editing,
       clearError: () => { setError(""); setErrField(""); }, onRequestTaken: stopEdit,
@@ -11123,17 +11206,53 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
           el("div", null, el("b", null, "Select a vehicle"), el("small", null, trip.range)),
           classes.length > 0 && el("div", { className: "btn btn-primary" }, "Choose")));
 
+  const status = multi && !shown ? "Not on fleetr.ai: Show this branch on fleetr.ai is off."
+    : listed ? "Shows on fleetr.ai."
+    : "Not on fleetr.ai yet.";
+  const subhead = multi && el("div", { className: "gasSettingSubhead" }, branch.name);
+
+  // Show on fleetr.ai: the branch's own switch, where it stands and what is missing.
+  if (view === "show") {
+    return el("div", { className: "faiShow", id: `listing-show-${branch.id}` },
+      subhead,
+      multi && el("div", { style: { marginBottom: "6px" } },
+        el("label", { className: "reqSwitch faiShowSwitch" },
+          el("input", { type: "checkbox", role: "switch", checked: shown, disabled: !!busy, onChange: (e) => toggleShown(e.target.checked) }),
+          el("span", { "aria-hidden": "true" }),
+          busy === "shown" ? "Saving\u2026" : "Show this branch on fleetr.ai"),
+        errField === "shown" && el(FieldError, { text: error })),
+      el("p", { className: "closeRentalHint", style: { marginTop: 0, marginBottom: "14px" } },
+        status, missingKeys.length > 0 && ` Missing: ${listingNeedsList(missingKeys)}.`));
+  }
+
+  // Booking rules, as sentences, each with its one number.
+  if (view === "rules") {
+    const rule = (k, before, after, digits) => el("label", { key: k, className: "faiRule" },
+      el("span", null, before),
+      el("input", { id: `listing-rule-${branch.id}-${k}`, className: "faiInput faiRule__input", inputMode: "numeric", maxLength: digits, value: rules[k],
+        "aria-label": `${before} ${after}`.trim(), ...invalid(errField === k && !!error),
+        onChange: (e) => { const v = numberTyped(e.target.value, { digits }); setRules((p) => ({ ...p, [k]: v })); if (errField === k) { setError(""); setErrField(""); } },
+        onBlur: rulesAuto.flush, "data-autosave": true }),
+      el("span", null, after),
+      errField === k && el(FieldError, { text: error }));
+    const n = (k) => Number(rules[k]);
+    return el("div", { className: "faiRules" },
+      el("div", { className: "gasSettingSubhead" }, multi ? branch.name : "Rules",
+        rulesKey(rulesOf(l)) === rulesKey(rulesOf({})) && !confirmed.includes("listing")
+          && el("span", { className: "companyDefaults" }, "Ready, using defaults")),
+      // Each stops at its longest allowed value's length: 720 hours, 365 days,
+      // 72 hours.
+      rule("minNoticeHours", "Bookings must be made at least", `${n("minNoticeHours") === 1 ? "hour" : "hours"} before pickup`, 3),
+      rule("maxRentalDays", "Longest rental:", n("maxRentalDays") === 1 ? "day" : "days", 3),
+      rule("turnaroundHours", "Time to get a car ready between rentals:", n("turnaroundHours") === 1 ? "hour" : "hours", 2),
+      el(AutosaveNote, { state: rulesAuto.state }),
+      errField === "rules" && el(FieldError, { text: error }));
+  }
+
   return el("div", { className: "faiBranch", id: `listing-branch-${branch.id}` },
-    el("div", { className: "gasSettingSubhead" }, branch.name),
-    multi && el("div", { style: { marginBottom: "6px" } },
-      el("label", { style: { display: "inline-flex", alignItems: "center", gap: "8px", cursor: "pointer" } },
-        el("input", { type: "checkbox", checked: shown, disabled: !!busy, onChange: (e) => toggleShown(e.target.checked) }),
-        busy === "shown" ? "Saving…" : "Show this branch on fleetr.ai"),
-      errField === "shown" && el(FieldError, { text: error })),
+    subhead,
     el("p", { className: "closeRentalHint", style: { marginTop: 0, marginBottom: "14px" } },
-      multi && !shown ? "Not on fleetr.ai: Show this branch on fleetr.ai is off."
-        : listed ? "Shows on fleetr.ai."
-        : "Not on fleetr.ai yet.",
+      status,
       missingKeys.length > 0 && el(ListingMissingLinks, { keys: missingKeys, branchId: branch.id, onEdit: (part) => {
         startEdit(part);
         setTimeout(() => {
@@ -11160,24 +11279,6 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
       el("p", { className: "faiHint faiStage__foot" }, `Prices are shown for a sample ${FAI_SAMPLE_DAYS} day trip, before tax. Click any part to change it.`),
       // A logo or photo that could not be used or saved, under the preview it is in.
       !editing && !crop && errField === "" && el(FieldError, { text: error })),
-
-    el("div", { className: "faiRules" },
-      el("div", { className: "gasSettingSubhead" }, "Booking rules",
-        rulesKey(rulesOf(l)) === rulesKey(rulesOf({})) && !confirmed.includes("listing")
-          && el("span", { className: "companyDefaults" }, "Ready, using defaults")),
-      el("p", { className: "closeRentalHint", style: { marginTop: 0 } }, "How online bookings are checked. Renters only see these when a search breaks one."),
-      el("div", { className: "faiFieldRow" },
-        // Each stops at its longest allowed value's length: 720 hours, 365
-        // days, 72 hours.
-        [["minNoticeHours", "Minimum notice (hours)", 3], ["maxRentalDays", "Maximum rental length (days)", 3], ["turnaroundHours", "Turnaround buffer (hours)", 2]].map(([k, label, digits]) =>
-          el("label", { key: k, className: "faiField" }, el("span", null, label),
-            el("input", { id: `listing-rule-${branch.id}-${k}`, className: "faiInput", inputMode: "numeric", maxLength: digits, style: { width: "150px" }, value: rules[k],
-              ...invalid(errField === k && !!error),
-              onChange: (e) => { const v = numberTyped(e.target.value, { digits }); setRules((p) => ({ ...p, [k]: v })); if (errField === k) { setError(""); setErrField(""); } },
-              onBlur: rulesAuto.flush, "data-autosave": true }),
-            errField === k && el(FieldError, { text: error }))),
-        el(AutosaveNote, { state: rulesAuto.state })),
-      errField === "rules" && el(FieldError, { text: error })),
 
     ["logo", "photo"].map((kind) => el("input", {
       key: kind, ref: files[kind], type: "file", accept: "image/*", style: { display: "none" },
@@ -23780,7 +23881,7 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 /* Editing in place. A part that can be changed shows a terracotta outline and
    an Edit tag on hover or focus; its editor opens in the same spot. */
 .faiEditable{ position: relative; cursor: pointer; border-radius: 10px; outline: 1px dashed transparent; outline-offset: 6px; transition: outline-color .12s, background-color .12s; }
-.faiEditable:hover{ outline-color: var(--terra); background: rgba(244, 132, 95, 0.05); }
+.faiEditable:hover{ background: rgba(31, 30, 29, 0.04); }
 .faiEditTag{ position: absolute; top: -10px; right: -6px; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--terra); color: var(--ink); opacity: 0; transition: opacity .12s; pointer-events: none; }
 .faiEditable:hover > .faiEditTag{ opacity: 1; }
 .fai .perks.two > .faiEditable--row .perk{ border-top: 1px solid var(--rule); }
@@ -23795,12 +23896,18 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .fai .card-price .faiMuted{ white-space: normal; text-align: right; }
 .fai .faiHint{ color: var(--ink-55); font-size: 13px; margin-top: 10px; }
 .faiImage__hit{ position: absolute; inset: 0; cursor: pointer; }
-.faiImage__hit:hover::after{ content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 2px var(--terra); border-radius: inherit; pointer-events: none; }
+.faiImage__hit:hover::after{ content: ""; position: absolute; inset: 0; background: rgba(31, 30, 29, 0.06); border-radius: inherit; pointer-events: none; }
 .faiImage__empty{ flex-direction: column; gap: 10px; font-weight: 600; font-size: 15px; color: var(--terra-dk); }
 .faiImage__empty svg{ width: 34px; height: 34px; }
 .faiLogo{ cursor: pointer; }
-.faiLogo:hover{ box-shadow: 0 0 0 2px var(--terra), var(--shadow); }
-.fai .faiLogo--empty{ border: 1.5px dashed var(--terra); box-shadow: none; text-align: center; font-size: 11px; font-weight: 700; line-height: 1.15; color: var(--terra-dk); }
+.faiLogo:hover{ filter: brightness(0.96); }
+/* No logo yet: a neutral grey square with the company's initials, dashed
+   until a logo is added. */
+.fai .faiLogo--empty{ background: #EEEDE9; border: 1.5px dashed rgba(31, 30, 29, 0.28); box-shadow: none; }
+.faiLogo__initials{ font-size: 24px; font-weight: 600; color: rgba(31, 30, 29, 0.6); letter-spacing: 0.02em; }
+.faiImage__badge{ position: absolute; right: 4px; bottom: 4px; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 999px; background: #FFFFFF; color: #1F1E1D; box-shadow: 0 1px 3px rgba(31, 30, 29, 0.2); pointer-events: none; font-weight: 700; font-size: 14px; }
+.faiImage__badge--add{ color: #C9603D; }
+.fai .placeholder-photo.faiImage__empty{ border: 1.5px dashed rgba(31, 30, 29, 0.28); }
 .faiMenu{ position: absolute; z-index: 5; display: grid; min-width: 160px; padding: 6px; border-radius: 12px; background: #fff; box-shadow: var(--shadow-lg); border: 1px solid var(--rule); }
 .faiMenu--photo{ top: 12px; right: 12px; }
 .faiMenu--logo{ left: 0; top: calc(100% + 6px); }
@@ -23857,9 +23964,20 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .reqCards{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 1fr; gap: 12px; }
 .reqCard{ display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 16px; border: 1px solid #E3E2DE; border-radius: 14px; background: #FFFFFF; color: #1F1E1D; cursor: pointer; }
 .reqCard--open{ cursor: default; border-color: #F4845F; }
-.reqCard:not(.reqCard--open):hover{ border-color: #F4845F; }
+.reqCard:not(.reqCard--open):hover{ background: #F9F9F7; }
+/* Not set: dashed, with + Set ... in terracotta. Set: solid, its value large,
+   a small pencil. */
+.setCard--unset{ border-style: dashed; border-color: rgba(31, 30, 29, 0.28); }
+.setCard__add{ color: #C9603D; font-weight: 600; font-size: 15px; }
+.setCard__pencil{ margin-left: auto; flex: 0 0 auto; color: rgba(31, 30, 29, 0.5); }
+.perkCards{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.perkCard__text{ font-size: 15px; color: #1F1E1D; }
+/* Booking rules, as sentences. */
+.faiRule{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 15px; }
+.faiRule__input{ width: 72px; text-align: center; }
+.faiShowSwitch{ font-weight: 600; font-size: 15px; }
 .reqCard__head{ display: flex; align-items: center; gap: 10px; }
-.reqCard__value{ font-size: 16px; font-weight: 600; color: #1F1E1D; }
+.reqCard__value{ font-size: 24px; font-weight: 700; color: #1F1E1D; line-height: 1.2; }
 .reqCard__empty{ display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #9B9A96; font-size: 16px; }
 .reqCard__field{ display: flex; flex-direction: column; gap: 4px; }
 .reqCard__label{ font-size: 13px; color: #6B6A66; }
