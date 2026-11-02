@@ -7031,6 +7031,84 @@ const VIN_SCAN_CAMERA = { video: {
   facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 },
   advanced: [{ focusMode: "continuous" }],
 } };
+// The barcode formats a VIN label uses, for the live scan and a photo alike.
+const vinBarcodeHints = (zx) => new Map([
+  [zx.DecodeHintType.POSSIBLE_FORMATS, [zx.BarcodeFormat.CODE_39, zx.BarcodeFormat.DATA_MATRIX, zx.BarcodeFormat.CODE_128, zx.BarcodeFormat.PDF_417, zx.BarcodeFormat.QR_CODE]],
+  [zx.DecodeHintType.TRY_HARDER, true],
+]);
+
+// A VIN from a photo: its barcode first, by the same reader as the live scan;
+// failing that, the printed VIN, read by fleetr ai through the same proxy as
+// the command bar (CLAUDE_API_URL, worker.js). Either way only a VIN with 17
+// characters and a good check digit is returned, as { vin }; otherwise
+// { error } says why, in words staff can act on.
+const VIN_PHOTO_UNREAD = "Couldn't read a VIN from that photo. Try a sharper, closer photo of the barcode or the VIN plate, or type the VIN.";
+const VIN_PHOTO_MAX_EDGE = 1568;
+async function vinFromPhoto(file) {
+  if (!file || !/^image\//.test(file.type || "")) return { error: "Choose a photo of the VIN barcode or the VIN plate." };
+  const url = URL.createObjectURL(file);
+  try {
+    try {
+      const zx = await import(ZXING_URL);
+      const reader = new zx.BrowserMultiFormatReader(vinBarcodeHints(zx));
+      const result = await reader.decodeFromImageUrl(url);
+      const vin = vinFromBarcode(result && result.getText());
+      if (vin) return { vin };
+    } catch (e) {
+      // No barcode found, or the reader could not load: try the printed VIN.
+    }
+    const session = supabase.auth.session();
+    if (!session) return { error: "Your session has expired. Sign in again to read a VIN from a photo." };
+    const data = await vinPhotoJpeg(url);
+    if (!data) return { error: VIN_PHOTO_UNREAD };
+    let res;
+    try {
+      res = await fetch(CLAUDE_API_URL, {
+        method: "POST",
+        headers: { "anthropic-version": "2023-06-01", "content-type": "application/json", "authorization": `Bearer ${session.access_token}` },
+        body: JSON.stringify({
+          model: CLAUDE_MODEL,
+          max_tokens: 40,
+          messages: [{ role: "user", content: [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
+            { type: "text", text: "This photo shows a vehicle's VIN, printed on a label, plate or document. Reply with the 17-character VIN exactly as printed and nothing else. If no full VIN can be read, reply NONE." },
+          ] }],
+        }),
+      });
+    } catch (e) {
+      return { error: "Couldn't reach fleetr to read the photo. Check the connection, then try again, or type the VIN." };
+    }
+    const out = await res.json().catch(() => null);
+    if (!res.ok) { console.warn("VIN photo read failed:", res.status, out); return { error: VIN_PHOTO_UNREAD }; }
+    const text = String((out && out.content && out.content[0] && out.content[0].text) || "").toUpperCase();
+    const vin = vinFromBarcode(text);
+    if (vin) return { vin };
+    return { error: /[A-HJ-NPR-Z0-9]{17}/.test(text.replace(/[^A-Z0-9]/g, ""))
+      ? "The VIN in that photo didn't pass the check, so it may have been misread. Type the VIN instead."
+      : VIN_PHOTO_UNREAD };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+// The photo as a JPEG no longer than VIN_PHOTO_MAX_EDGE on its long side, in
+// base64, small enough to send. null if it cannot be drawn.
+async function vinPhotoJpeg(url) {
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i); i.onerror = reject; i.src = url;
+    });
+    const k = Math.min(1, VIN_PHOTO_MAX_EDGE / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(img.naturalWidth * k); canvas.height = Math.round(img.naturalHeight * k);
+    canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.88).split(",")[1] || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function VinScanner({ onRead, onFail, onClose }) {
   const el = React.createElement;
   const videoRef = React.useRef(null);
@@ -7042,11 +7120,7 @@ function VinScanner({ onRead, onFail, onClose }) {
       try {
         const zx = await import(ZXING_URL);
         if (!live) return;
-        const hints = new Map([
-          [zx.DecodeHintType.POSSIBLE_FORMATS, [zx.BarcodeFormat.CODE_39, zx.BarcodeFormat.DATA_MATRIX, zx.BarcodeFormat.CODE_128, zx.BarcodeFormat.PDF_417, zx.BarcodeFormat.QR_CODE]],
-          [zx.DecodeHintType.TRY_HARDER, true],
-        ]);
-        reader = new zx.BrowserMultiFormatReader(hints);
+        reader = new zx.BrowserMultiFormatReader(vinBarcodeHints(zx));
         reader.timeBetweenDecodingAttempts = 150;
         await reader.decodeFromConstraints(VIN_SCAN_CAMERA, videoRef.current, (result) => {
           if (!result || !live) return;
@@ -7082,6 +7156,16 @@ function AddVehicleForm({ onAdded, stayOnForm }) {
   const [taken, setTaken]     = React.useState(null);
   const [damage, setDamage]   = React.useState([]);
   const [scanning, setScanning] = React.useState(false);
+  const [readingPhoto, setReadingPhoto] = React.useState(false);
+  // Upload photo: the VIN from a photo, checked before it is looked up.
+  const readPhoto = async (file) => {
+    if (!file) return;
+    setReadingPhoto(true);
+    const out = await vinFromPhoto(file);
+    setReadingPhoto(false);
+    if (out.vin) set("vin", vinTyped(out.vin));
+    else setErrors((p) => ({ ...p, vin: out.error }));
+  };
   const [busy, setBusy]       = React.useState(false);
   const [saved, setSaved]     = React.useState(null);   // { text, note, form }
   const [branchProvince, setBranchProvince] = React.useState("");
@@ -7250,7 +7334,11 @@ function AddVehicleForm({ onAdded, stayOnForm }) {
         onChange: (e) => set("vin", vinTyped(e.target.value)),
       }),
       el("div", { className: "addV__vinFoot" },
-        isMobile && el("button", { type: "button", className: "addV__mini", disabled: busy, onClick: () => setScanning(true) }, "Scan VIN"),
+        isMobile && el("button", { type: "button", className: "addV__mini", disabled: busy || readingPhoto, onClick: () => setScanning(true) }, "Scan VIN"),
+        el("label", { className: "addV__mini", "aria-disabled": busy || readingPhoto || undefined, style: { cursor: busy || readingPhoto ? "default" : "pointer" } },
+          readingPhoto ? "Reading photo\u2026" : "Upload photo",
+          el("input", { type: "file", accept: "image/*", style: { display: "none" }, disabled: busy || readingPhoto,
+            onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; readPhoto(f); } })),
         el("span", { className: "addV__count", "aria-live": "polite" }, `${form.vin.length}/${VIN_LENGTH}`))), true),
 
     el("div", { className: "addV__wide" },
