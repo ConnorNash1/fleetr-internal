@@ -8252,6 +8252,60 @@ function ChangeRecoveryEmail({ account, onDone }) {
   );
 }
 
+// ─── Company: autosave ──────────────────────────────────────────────────────
+// A Company field saves by itself: once typing pauses, or at once (delay 0)
+// for a pick or a tap. draftKey and savedKey are the draft and what is saved,
+// as text; nothing is sent while they match. save(final) gets final false
+// when typing paused, and stays quiet about a draft that is not finished
+// yet; true when the field is left, and says what is wrong. The flush it
+// returns is for onBlur. Saves never overlap.
+function useAutosave(draftKey, savedKey, save, delay = 800) {
+  const saveRef = React.useRef(save);
+  saveRef.current = save;
+  const running = React.useRef(false);
+  const [state, setState] = React.useState("");
+  const pending = draftKey !== savedKey;
+  const go = React.useCallback(async (final) => {
+    if (running.current) return;
+    running.current = true;
+    setState("saving");
+    let ok = false;
+    try { ok = (await saveRef.current(final)) !== false; } finally { running.current = false; }
+    setState(ok ? "saved" : "");
+  }, []);
+  React.useEffect(() => {
+    if (!pending) return undefined;
+    const t = setTimeout(() => go(false), delay);
+    return () => clearTimeout(t);
+  }, [draftKey, savedKey, pending, delay, go]);
+  const flush = React.useCallback(() => { if (pending) go(true); }, [pending, go]);
+  return { flush, state: pending && state === "saved" ? "" : state };
+}
+
+// Where a Save button used to be: Saving while it saves, then Saved.
+function AutosaveNote({ state }) {
+  return React.createElement("span", { className: "autosaveNote", "aria-live": "polite" },
+    state === "saving" ? "Saving…" : state === "saved" ? "Saved" : "");
+}
+
+// The steps the Exec has finished with Done, by company, on this device. A
+// solid Done on a step that fleetr's defaults could complete means the Exec
+// pressed it.
+const SETUP_CONFIRMED_KEY = "fleetr_setup_confirmed";
+const confirmedSteps = (op) => {
+  try { return (JSON.parse(window.localStorage.getItem(`${SETUP_CONFIRMED_KEY}:${op}`)) || []); } catch { return []; }
+};
+const confirmStep = (op, key) => {
+  const list = confirmedSteps(op);
+  if (list.includes(key)) return list;
+  const next = [...list, key];
+  try { window.localStorage.setItem(`${SETUP_CONFIRMED_KEY}:${op}`, JSON.stringify(next)); } catch { /* kept for this visit only */ }
+  return next;
+};
+// The steps finished with Done, for the sections inside them: one that only
+// fleetr's defaults complete shows Ready, using defaults until its step is.
+const CompanyDefaults = React.createContext([]);
+
 // ─── Company: setup, then settings ──────────────────────────────────────────
 // The sections, in order. Before launch each is a setup step, done when every
 // company_setup_status item it holds is done; afterwards the same sections
@@ -8267,18 +8321,20 @@ const COMPANY_STEPS = [
   { key: "launch",     title: "Launch", after: "Status" },
 ];
 // Not started until something in a step is saved, In progress after that,
-// Done only once it is complete.
-const STEP_STATE_WORDS = { done: "Done", skipped: "Skipped", progress: "In progress", todo: "Not started" };
+// Done only once it is complete. A step that fleetr's defaults complete is
+// Ready, using defaults until the Exec presses Done; Staff is Optional until
+// someone is added or the Exec presses its Done.
+const STEP_STATE_WORDS = { done: "Done", skipped: "Skipped", progress: "In progress", todo: "Not started",
+  defaults: "Ready, using defaults", optional: "Optional" };
 
 // Opens a setup step, and the section or field named inside it, and brings it
 // into view: the links in the launch checklist and in a listing's Missing list.
 const COMPANY_JUMP_EVENT = "fleetr:company-jump";
+// Shows one period and source in the Rates table: { period, source }.
+const RATES_VIEW_EVENT = "fleetr:rates-view";
 // Sections inside a closed step are not on the page yet, so the ones to open
 // wait here until they are. The last one named is the one brought into view.
 const jumpTargets = new Set();
-// The step whose field last took Enter, until the next click or tap. Enter
-// stays in its step, so a save it finishes the step with does not move on.
-let enterStep = "";
 const jumpTo = (step, ...targets) => {
   targets.forEach((t) => jumpTargets.add(t));
   window.dispatchEvent(new CustomEvent(COMPANY_JUMP_EVENT, { detail: { step, target: targets[targets.length - 1] } }));
@@ -8289,7 +8345,7 @@ const jumpTo = (step, ...targets) => {
 // the section. Only the outermost CompanySection reads it.
 const CompanySectionFlat = React.createContext(false);
 
-function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, onDone, doneLabel, skipError, busy, showState, children }) {
+function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, onDone, doneLabel, next, onNext, skipError, busy, showState, children }) {
   const el = React.createElement;
   return el("section", { id, className: `companyStep companyStep--${stepKey}${open ? " companyStep--open" : ""}${current ? " companyStep--current" : ""}` },
     el("button", {
@@ -8302,18 +8358,17 @@ function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, sk
       el("span", { className: "companyStep__chevron", "aria-hidden": "true" }, open ? "\u25be" : "\u25b8")),
     open && el("div", { className: "companyStep__body" },
       children,
-      // Skip only while it is unfinished; once it is complete, Done closes it
-      // and opens the next.
-      showState && skippable && (state === "todo" || state === "progress") && el("div", { className: "closeRentalActions" },
-        el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: onSkip }, "Skip for now")),
-      el(FieldError, { text: skipError }),
-      showState && state === "done" && onDone && el("div", { className: "closeRentalActions" },
-        el("button", { type: "button", className: "resModalSubmit", onClick: onDone }, doneLabel || "Done")),
       showState && state === "skipped" && el("p", { className: "closeRentalHint" },
         "Skipped for now. Finish it any time, or ",
-        el("button", { type: "button", className: "linkBtn", disabled: busy, onClick: onUnskip,
-          style: { background: "none", border: "none", padding: 0, color: "inherit", textDecoration: "underline", cursor: "pointer", font: "inherit" } },
-          "take it back into setup"), ".")));
+        el("button", { type: "button", className: "companyStep__textBtn", disabled: busy, onClick: onUnskip }, "take it back into setup"), "."),
+      // One button: what is left, until the step is complete, then Done.
+      // Skip for now, small and grey, only while something is left.
+      showState && onDone && el("div", { className: "companyStep__foot" },
+        next
+          ? el("button", { type: "button", className: "resModalSubmit", onClick: onNext }, `Next: ${next}`)
+          : el("button", { type: "button", className: "resModalSubmit", onClick: onDone }, doneLabel || "Done"),
+        next && skippable && state !== "skipped" && el("button", { type: "button", className: "companyStep__textBtn", disabled: busy, onClick: onSkip }, "Skip for now")),
+      el(FieldError, { text: skipError })));
 }
 
 // What the Vehicles step shows: how many there are, and the add form.
@@ -8334,7 +8389,7 @@ function LaunchStep({ steps }) {
   if (!setup) return null;
   const required = (st) => st.items.some((i) => i.required);
   const testRentals = setup.items.find((i) => i.key === "test_rentals_finished");
-  const left = (steps || []).filter((st) => required(st) && st.state !== "done").length + (testRentals && !testRentals.done ? 1 : 0);
+  const left = (steps || []).filter((st) => required(st) && !st.items.every((i) => i.done)).length + (testRentals && !testRentals.done ? 1 : 0);
   // Every step here is done but the company is not ready: what is missing is
   // fleetr's part.
   const waitingOnFleetr = left === 0 && !setup.ready;
@@ -8409,10 +8464,15 @@ function CompanyPage() {
   const [acting,   setActing]   = React.useState(null);
   const [busy,     setBusy]     = React.useState("");
   const [error,    setError]    = React.useState("");
-  const [notice,   setNotice]   = React.useState("");
   // Whether anything of a fleetr.ai listing has been saved yet, beyond the
   // address the Business details step keeps on the same row.
   const [listingStarted, setListingStarted] = React.useState(false);
+  // Whether every open branch has its full address and pin, and whether every
+  // branch's booking rules are still the ones each starts with.
+  const [addressDone, setAddressDone] = React.useState(false);
+  const [rulesDefault, setRulesDefault] = React.useState(true);
+  // The steps the Exec has finished with Done.
+  const [confirmed, setConfirmed] = React.useState(() => confirmedSteps(currentUser?.operatorId));
   // Whether any branch requires renters to bring their own insurance, and
   // whether the Exec has asked to see the switched off products anyway.
   const [ownInsurance, setOwnInsurance] = React.useState(false);
@@ -8441,6 +8501,13 @@ function CompanyPage() {
       setListingStarted((bl.data || []).some((row) => LISTING_FIELDS.some((k) => has(row[k]))));
       setOwnInsurance((bl.data || []).some((row) => row.ownInsuranceRequired));
       setShowProducts(false);
+      const rows = bl.data || [];
+      const open = ov.ok ? (ov.branches || []).filter((b) => b.active) : [];
+      setAddressDone(open.length > 0 && open.every((b) => {
+        const l = rows.find((x) => x.locationId === b.id);
+        return !!l && branchAddressComplete(l) && l.latitude != null && l.longitude != null;
+      }));
+      setRulesDefault(rows.every((row) => Object.entries(LISTING_RULE_DEFAULTS).every(([k, v]) => row[k] == null || Number(row[k]) === v)));
     }
     if (!bs.error) setBranchSetup(Object.fromEntries((bs.data || []).map((b) => [b.id, b])));
     if (!bs.error) {
@@ -8466,6 +8533,7 @@ function CompanyPage() {
 
   const launched = !!(setup && setup.launched);
   const itemsOf = (st) => (st.items || []).map((k) => setup && setup.items.find((i) => i.key === k)).filter(Boolean);
+  const itemOf = (key) => (setup && setup.items.find((i) => i.key === key)) || null;
   // Whether anything in a step has been saved yet.
   const lists = companyLists || {};
   const started = (st, its) => {
@@ -8482,19 +8550,85 @@ function CompanyPage() {
     }
   };
   const notListed = (st) => st.key === "listing" && !!companyLists && !isFleetrAiListed();
-  // Done when every setup item it holds is done, Skipped when one is skipped
-  // and the rest are done, In progress once anything in it is saved, and Not
-  // started before that.
+  // The parts of a step, in order, each with its title, where it is, and
+  // whether it is done. defaults marks one only fleetr's defaults complete.
+  const partsOf = (st) => {
+    const classes = (lists.vehicleClasses || []).filter((c) => c.active);
+    const sources = (lists.sources || []).filter((x) => x.active);
+    const detail = (key) => { const it = itemOf(key); return it && !it.done && Array.isArray(it.detail) ? it.detail : []; };
+    switch (st.key) {
+      case "business": {
+        const open = taxes.filter((t) => t.active);
+        return [
+          { title: "Address", target: "company-section-address", done: addressDone },
+          { title: "Units", target: "company-section-units", done: unitsSet() },
+          { title: "Post-pay fuel rate", target: "company-section-fuel", done: Number(companyFuelRate) > 0 },
+          { title: "Sales tax", target: "company-section-tax",
+            done: open.length > 0 && open.every((t) => !!branchSetup[t.locationId]?.salesTaxesSetAt) },
+        ];
+      }
+      case "vehicles": return [
+        { title: "Vehicle classes", target: "company-section-classes", done: classes.length > 0 },
+        { title: "Add vehicles", target: "company-section-vehicles", done: !!(itemOf("vehicles") && itemOf("vehicles").done) },
+      ];
+      case "rates": {
+        const priced = (x) => classes.every((c) => lists.rates && lists.rates[x.name] && lists.rates[x.name][c.name] != null);
+        const seasonSourcePriced = (season, x) => classes.every((c) => {
+          const v = season.rates && season.rates[x.name] && season.rates[x.name][c.name];
+          return !!v && v.day != null;
+        });
+        const seasonPriced = (season) => sources.every((x) => seasonSourcePriced(season, x));
+        return [
+          { title: "Sources", target: "company-section-sources", done: sources.length > 0,
+            defaults: sources.length > 0 && sources.every((x) => x.standardKey) },
+          ...sources.map((x) => ({ title: `${x.name} rates`, target: "company-section-rates",
+            rates: { period: "normal", source: x.id }, done: classes.length > 0 && priced(x) })),
+          ...(lists.seasons || []).filter((x) => x.active).map((x) => ({ title: `${x.name} season`, target: "company-section-rates",
+            rates: { period: x.id, source: (sources.find((y) => !seasonSourcePriced(x, y)) || {}).id },
+            done: classes.length > 0 && seasonPriced(x) })),
+        ];
+      }
+      case "protection": {
+        if (ownInsurance) return [];
+        const products = (lists.protectionProducts || []).filter((x) => x.active);
+        if (!products.length) return [{ title: "Protection products", target: "company-section-protection", done: false }];
+        const missing = detail("protection");
+        return products.map((x) => ({ title: x.name, target: "company-section-protection", done: !missing.includes(x.name) }));
+      }
+      case "contract": return [{ title: "Contract terms", target: "company-step-contract", done: !!(itemOf("contract") && itemOf("contract").done) }];
+      case "listing": {
+        if (notListed(st)) return [];
+        const missing = detail("listing");
+        return [
+          ...branches.filter((b) => b.active).map((b) => ({ title: `${b.name} listing`, target: `listing-branch-${b.id}`, done: !missing.includes(b.name) })),
+          { title: "Booking rules", target: "company-step-listing", done: true, defaults: rulesDefault },
+        ];
+      }
+      default: return [];
+    }
+  };
+  // Complete: every setup item it holds done, and every part of it done.
+  const complete = (st) => {
+    if (notListed(st)) return true;
+    return itemsOf(st).every((it) => it.done) && partsOf(st).every((pt) => pt.done);
+  };
+  // Done only when complete and either the Exec pressed Done or nothing in it
+  // is only fleetr's defaults. Skipped when one item is skipped and the rest
+  // are done, In progress once anything in it is saved, and Not started before
+  // that.
   const stepState = (st) => {
     if (st.key === "launch") return launched ? "done" : "todo";
-    // With List on fleetr.ai off there is nothing to do in the listing step.
-    if (notListed(st)) return "done";
-    // The Exec is staff enough to start with; more can join later.
-    if (st.key === "staff") return "done";
+    if (st.key === "staff") return (itemOf("staff") && itemOf("staff").done) || confirmed.includes("staff") ? "done" : "optional";
+    if (complete(st)) return confirmed.includes(st.key) || !partsOf(st).some((pt) => pt.defaults) ? "done" : "defaults";
     const its = itemsOf(st);
-    if (its.every((it) => it.done)) return "done";
-    if (its.every((it) => it.done || it.skipped)) return "skipped";
+    if (its.every((it) => it.done || it.skipped) && its.some((it) => it.skipped)) return "skipped";
     return started(st, its) ? "progress" : "todo";
+  };
+  // What is left in a step, for its button: the first part not done, or the
+  // step itself when only something outside its parts is left.
+  const nextPart = (st) => {
+    if (complete(st) || st.key === "staff" || st.key === "launch") return null;
+    return partsOf(st).find((pt) => !pt.done) || { title: st.title, target: `company-step-${st.key}` };
   };
   const unfinished = (st) => ["todo", "progress"].includes(stepState(st));
   // The current step: the first unfinished one, else Launch.
@@ -8505,26 +8639,20 @@ function CompanyPage() {
     const node = document.getElementById(`company-step-${key}`);
     if (node) node.scrollIntoView({ block: "start", behavior: "smooth" });
   }, 150);
-  // A step finished: it folds, and the next unfinished one opens.
+  // Done pressed: the step is the Exec's, it folds, and the next unfinished
+  // one opens. Saving never does this; only Done.
   const advance = (key) => {
+    setConfirmed(confirmStep(currentUser?.operatorId, key));
     const at = COMPANY_STEPS.findIndex((st) => st.key === key);
     const next = COMPANY_STEPS.slice(at + 1).find((st) => st.key === "launch" || unfinished(st)) || COMPANY_STEPS[COMPANY_STEPS.length - 1];
     setOpenSteps((o) => ({ ...o, [key]: false, [next.key]: true }));
     scrollToStep(next.key);
   };
-  // Saving the last thing a step needed does the same as pressing Done, except
-  // Vehicles, which stays open for the next vehicle until Done is pressed.
-  const stepsBefore = React.useRef(null);
-  React.useEffect(() => {
-    if (!setup || launched) { stepsBefore.current = null; return; }
-    const now = Object.fromEntries(COMPANY_STEPS.map((st) => [st.key, stepState(st)]));
-    const before = stepsBefore.current;
-    stepsBefore.current = now;
-    if (!before) return;
-    const finished = COMPANY_STEPS.find((st) => st.key !== "launch" && st.key !== "vehicles" && !notListed(st) && openSteps[st.key]
-      && enterStep !== `company-step-${st.key}` && before[st.key] !== "done" && now[st.key] === "done");
-    if (finished) advance(finished.key);
-  });
+  // Next pressed: the part that is left opens and comes into view.
+  const goTo = (st, part) => {
+    if (part.rates) window.dispatchEvent(new CustomEvent(RATES_VIEW_EVENT, { detail: part.rates }));
+    jumpTo(st.key, part.target);
+  };
   // A link to a step, or to a section or field inside one.
   React.useEffect(() => {
     const onJump = (e) => {
@@ -8555,7 +8683,7 @@ function CompanyPage() {
   const [fieldError, setFieldError] = React.useState({ at: "", text: "" });
   const errorFor = (at) => (fieldError.at === at ? fieldError.text : "");
   const run = async (label, fn, args, at = label) => {
-    setBusy(label); setError(""); setNotice(""); setFieldError({ at: "", text: "" });
+    setBusy(label); setError(""); setFieldError({ at: "", text: "" });
     const res = await call(fn, args);
     setBusy("");
     if (!res.ok) { setFieldError({ at, text: COMPANY_REASONS[res.reason] || res.message || "That did not work." }); return false; }
@@ -8590,13 +8718,13 @@ function CompanyPage() {
     switch (key) {
       case "business": return el(React.Fragment, null,
         el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "address", onSaved: refreshAll }),
-        el(CompanyUnitsSection, { key: `${fuelUnit()}-${distanceUnit()}`, onSaved: () => { setNotice("Units saved."); changed(); } }),
+        el(CompanyUnitsSection, { onSaved: changed }),
         el(PostPayFuelRateSection, { key: `rate-${fuelUnit()}`, gas, companyRate: companyFuelRate, busy, onSave: run, errorFor }),
         React.createElement(
           CompanySection, { id: "company-section-tax", title: "Sales tax",
             done: taxes.some((t) => t.active) && taxes.filter((t) => t.active).every((t) => !!branchSetup[t.locationId]?.salesTaxesSetAt) },
           React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-            "Up to two taxes per branch, each with a name and a rate, for example HST 15%, or GST 5% and PST 7%. They are added to every charge, and locked onto a rental agreement when the customer picks up, so a later change here does not reach rentals already out. A branch with no sales tax still needs Save pressed with both left blank, so it is set on purpose."),
+            "Up to two taxes per branch, each with a name and a rate, for example HST 15%, or GST 5% and PST 7%. They are added to every charge, and locked onto a rental agreement when the customer picks up, so a later change here does not reach rentals already out. A branch with no sales tax still needs No sales tax here pressed, so it is set on purpose."),
           React.createElement(
             "div", { style: { overflowX: "auto" } },
             React.createElement(
@@ -8663,7 +8791,7 @@ function CompanyPage() {
               className: "loginBtn", style: { width: "auto", padding: "8px 14px" },
               onClick: async () => {
                 if (await run("create", "create_location", { location_name: newName })) {
-                  setNewName(""); setNotice("Branch opened.");
+                  setNewName("");
                 }
               },
             }, "Open a branch")
@@ -8708,8 +8836,7 @@ function CompanyPage() {
         progress.map((p, i) => el("span", { key: p.key, title: `${i + 1}. ${p.title}: ${STEP_STATE_WORDS[p.state]}`,
           className: `setupProgress__seg setupProgress__seg--${p.state}` })))),
     error  && el("div", { className: "loginError" }, error),
-    notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
-    el(CompanyListsSections, {
+    el(CompanyDefaults.Provider, { value: confirmed }, el(CompanyListsSections, {
       branches, onChanged: changed, openSections: false, ownInsurance, onOwnInsuranceOff: refreshAll,
       layout: (parts) => el(React.Fragment, null, COMPANY_STEPS.map((st, i) => el(CompanyStep, {
         key: st.key, id: `company-step-${st.key}`, stepKey: st.key,
@@ -8724,7 +8851,9 @@ function CompanyPage() {
         onUnskip: () => setSkip(st.key, false),
         skipError: errorFor(`skip:${st.key}`),
         onDone: () => advance(st.key),
-        doneLabel: st.doneLabel,
+        doneLabel: st.key === "staff" && !(itemOf("staff") && itemOf("staff").done) ? st.doneLabel : null,
+        next: nextPart(st) && nextPart(st).title,
+        onNext: () => goTo(st, nextPart(st)),
         busy: stepBusy,
         showState: !launched && st.key !== "launch",
       }, stepBody(st.key, parts))),
@@ -8733,7 +8862,7 @@ function CompanyPage() {
         key: "billing", id: "company-step-billing", stepKey: "billing", n: null, title: "Billing", state: "done",
         current: false, open: !!openSteps.billing, onToggle: () => setOpenSteps((o) => ({ ...o, billing: !o.billing })),
         busy: stepBusy, showState: false,
-      }, el(BillingSection))) }),
+      }, el(BillingSection))) })),
   );
 }
 
@@ -8849,6 +8978,9 @@ const fuelRateText = (perLitre) => {
   return n == null ? null : `$${n.toFixed(2)} per ${fuelRateUnit()}`;
 };
 
+// A typed rate as autosave compares it with the saved one: 1.50 is 1.5.
+const rateKey = (typed) => (typed.trim() === "" || !Number.isFinite(Number(typed)) ? typed.trim() : String(Number(typed)));
+
 function PostPayFuelRateSection({ gas, companyRate, busy, onSave, errorFor }) {
   const el = React.createElement;
   const shown = (v) => (fuelRateForDisplay(v) != null ? String(fuelRateForDisplay(v)) : "");
@@ -8858,6 +8990,12 @@ function PostPayFuelRateSection({ gas, companyRate, busy, onSave, errorFor }) {
   const rows = gas.filter((g) => g.active);
   const overridden = rows.some((g) => g.postPayFuelRate != null);
   const [showOverrides, setShowOverrides] = React.useState(false);
+  const auto = useAutosave(rateKey(rate), shown(companyRate), async (final) => {
+    if (rate.trim() === "") return false;
+    const check = validateFuelRate(rate);
+    if (!check.ok) { if (final) setError(check.error); return false; }
+    return onSave("gas", "set_company_fuel_rate", { p_rate: fuelRateToLitre(check.value) });
+  });
 
   return el(
     CompanySection, { id: "company-section-fuel", title: "Post-pay fuel rate", done: Number(companyRate) > 0 },
@@ -8869,16 +9007,9 @@ function PostPayFuelRateSection({ gas, companyRate, busy, onSave, errorFor }) {
         id: "company-fuel-rate", className: "resFormInput", style: { width: "110px" }, maxLength: 7,
         inputMode: "decimal", value: rate, ...invalid(!!(error || errorFor("gas"))),
         onChange: (e) => { setRate(numberTyped(e.target.value, { digits: 3, decimals: 3 })); setError(""); },
+        onBlur: auto.flush, "data-autosave": true,
       }),
-      el("button", {
-        className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
-        disabled: busy === "gas",
-        onClick: () => {
-          const check = validateFuelRate(rate);
-          if (!check.ok) { setError(check.error); return; }
-          onSave("gas", "set_company_fuel_rate", { p_rate: fuelRateToLitre(check.value) });
-        },
-      }, "Save")),
+      el(AutosaveNote, { state: auto.state })),
     el(FieldError, { text: error || errorFor("gas") }),
     rows.length > 0 && el("button", {
       type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px", marginTop: "4px" },
@@ -8886,7 +9017,7 @@ function PostPayFuelRateSection({ gas, companyRate, busy, onSave, errorFor }) {
     }, showOverrides ? "Hide branch rates" : (overridden ? "Change a branch's own rate" : "Set a different rate for a branch")),
     showOverrides && el("div", { style: { overflowX: "auto", marginTop: "12px" } },
       el("table", { className: "dashboardTable", style: { minWidth: "520px" } },
-        el("thead", null, el("tr", null, ["Branch", `Its own rate ($ per ${fuelRateUnit()})`, ""].map((h) => el("th", { key: h }, h)))),
+        el("thead", null, el("tr", null, ["Branch", `Its own rate ($ per ${fuelRateUnit()})`].map((h) => el("th", { key: h }, h)))),
         el("tbody", null, rows.map((g) => el(GasRow, { key: g.locationId, row: g, busy, onSave, companyRate, error: errorFor(`gas:${g.locationId}`) }))))));
 }
 
@@ -8900,6 +9031,16 @@ function GasRow({ row, busy, onSave, companyRate, error }) {
     row.postPayFuelRate != null ? shown(row.postPayFuelRate) : "");
   const [problem, setProblem] = React.useState("");
   React.useEffect(() => { setRate(shown(row.postPayFuelRate)); }, [row.postPayFuelRate]); // eslint-disable-line react-hooks/exhaustive-deps
+  const auto = useAutosave(rateKey(rate), shown(row.postPayFuelRate), async (final) => {
+    if (rate.trim() === "") {
+      return onSave("gas", "set_company_gas_setting", { location_id: row.locationId, setting_key: "postPayFuelRate", setting_value: null }, `gas:${row.locationId}`);
+    }
+    const check = validateFuelRate(rate);
+    if (!check.ok) { if (final) setProblem(check.error); return false; }
+    return onSave("gas", "set_company_gas_setting", {
+      location_id: row.locationId, setting_key: "postPayFuelRate", setting_value: fuelRateToLitre(check.value),
+    }, `gas:${row.locationId}`);
+  });
 
   return React.createElement(
     "tr", null,
@@ -8910,24 +9051,10 @@ function GasRow({ row, busy, onSave, companyRate, error }) {
         placeholder: fuelRateForDisplay(companyRate) != null ? `Company: ${fuelRateForDisplay(companyRate)}` : "Company",
         inputMode: "decimal", value: rate, ...invalid(!!(problem || error)),
         onChange: (e) => { setRate(numberTyped(e.target.value, { digits: 3, decimals: 3 })); setProblem(""); },
+        onBlur: auto.flush, "data-autosave": true,
       }),
-      React.createElement(FieldError, { text: problem || error })),
-    React.createElement("td", null,
-      React.createElement("button", {
-        className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
-        disabled: busy === "gas",
-        onClick: () => {
-          if (rate.trim() === "") {
-            onSave("gas", "set_company_gas_setting", { location_id: row.locationId, setting_key: "postPayFuelRate", setting_value: null }, `gas:${row.locationId}`);
-            return;
-          }
-          const check = validateFuelRate(rate);
-          if (!check.ok) { setProblem(check.error); return; }
-          onSave("gas", "set_company_gas_setting", {
-            location_id: row.locationId, setting_key: "postPayFuelRate", setting_value: fuelRateToLitre(check.value),
-          }, `gas:${row.locationId}`);
-        },
-      }, "Save"))
+      React.createElement(AutosaveNote, { state: auto.state }),
+      React.createElement(FieldError, { text: problem || error }))
   );
 }
 
@@ -8935,7 +9062,8 @@ function GasRow({ row, busy, onSave, companyRate, error }) {
 // branch keeps its own draft. A tax with a blank name and rate is left out;
 // both blank clears the branch's taxes. The database checks the rest.
 // suggestion, from suggested_sales_tax, fills the boxes of a branch whose tax
-// has never been set. Nothing is saved until Save, which is the confirmation.
+// has never been set. A change saves by itself; a branch never set has one
+// button to confirm what is there, the suggestion or no tax at all.
 function SalesTaxRow({ row, busy, onSave, isSet, suggestion, error }) {
   const saved = !isSet && Array.isArray(suggestion) && suggestion.length
     ? suggestion : (Array.isArray(row.salesTaxes) ? row.salesTaxes : []);
@@ -8952,17 +9080,44 @@ function SalesTaxRow({ row, busy, onSave, isSet, suggestion, error }) {
   };
   const bad = (i, field) => !!problem && problem.i === i && problem.field === field;
 
+  // The taxes to save, or null when a box is not right yet. final says so.
+  const listOf = (final) => {
+    const say = (p) => { if (final) setProblem(p); return null; };
+    for (let i = 0; i < drafts.length; i++) {
+      const d = drafts[i];
+      if (d.name.trim() === "" && d.rate.trim() === "") continue;
+      if (d.name.trim() === "") return say({ i, field: "name", text: "Give the tax a name." });
+      const n = Number(d.rate);
+      if (d.rate.trim() === "" || !Number.isFinite(n) || n <= 0 || n >= 100) {
+        return say({ i, field: "rate", text: "A tax rate is a percentage above 0 and below 100." });
+      }
+    }
+    if (drafts.every((d) => d.name.trim() !== "") && drafts[0].name.trim().toLowerCase() === drafts[1].name.trim().toLowerCase()) {
+      return say({ i: 1, field: "name", text: "The two taxes need different names." });
+    }
+    return drafts
+      .filter((d) => d.name.trim() !== "" || d.rate.trim() !== "")
+      .map((d) => ({ name: d.name.trim(), rate: d.rate.trim() === "" ? null : Number(d.rate) }));
+  };
+  const keyOf = (list) => JSON.stringify(list.map((d) => [d.name.trim(), d.rate.trim() === "" ? "" : String(Number(d.rate))]));
+  const send = (list) => onSave("tax", "set_branch_sales_taxes", { p_location_id: row.locationId, p_taxes: list }, `tax:${row.locationId}`);
+  const auto = useAutosave(keyOf(drafts), keyOf([toDraft(saved[0]), toDraft(saved[1])]), async (final) => {
+    const list = listOf(final);
+    return list ? send(list) : false;
+  });
+  const blank = drafts.every((d) => d.name.trim() === "" && d.rate.trim() === "");
+
   const taxCell = (i) =>
     React.createElement("td", null,
       React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: "6px" } },
         React.createElement("input", {
           className: "resFormInput", style: { width: "90px" }, placeholder: "Name", maxLength: 20,
-          value: drafts[i].name, ...invalid(bad(i, "name")), onChange: (e) => update(i, "name", e.target.value),
+          value: drafts[i].name, ...invalid(bad(i, "name")), onChange: (e) => update(i, "name", e.target.value), onBlur: auto.flush, "data-autosave": true,
         }),
         // Below 100%, to three decimal places, as Quebec's 9.975 is.
         React.createElement("input", {
           className: "resFormInput", style: { width: "70px" }, placeholder: "Rate", inputMode: "decimal", maxLength: 6,
-          value: drafts[i].rate, ...invalid(bad(i, "rate")), onChange: (e) => update(i, "rate", numberTyped(e.target.value, { digits: 2, decimals: 3 })),
+          value: drafts[i].rate, ...invalid(bad(i, "rate")), onChange: (e) => update(i, "rate", numberTyped(e.target.value, { digits: 2, decimals: 3 })), onBlur: auto.flush, "data-autosave": true,
         }),
         React.createElement("span", { style: { opacity: 0.7 } }, "%")),
       problem && problem.i === i && React.createElement(FieldError, { text: problem.text }));
@@ -8971,32 +9126,17 @@ function SalesTaxRow({ row, busy, onSave, isSet, suggestion, error }) {
     "tr", null,
     React.createElement("td", null, row.name,
       !isSet && React.createElement("div", { className: "closeRentalHint", style: { margin: 0 } },
-        Array.isArray(suggestion) && suggestion.length ? "Suggested from the province. Check it, then Save." : "Not set yet")),
+        Array.isArray(suggestion) && suggestion.length ? "Suggested from the province. Check it, then confirm." : "Not set yet")),
     taxCell(0),
     taxCell(1),
     React.createElement("td", null,
-      React.createElement("button", {
-        className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
-        disabled: busy === "tax",
-        onClick: () => {
-          for (let i = 0; i < drafts.length; i++) {
-            const d = drafts[i];
-            if (d.name.trim() === "" && d.rate.trim() === "") continue;
-            if (d.name.trim() === "") { setProblem({ i, field: "name", text: "Give the tax a name." }); return; }
-            const n = Number(d.rate);
-            if (d.rate.trim() === "" || !Number.isFinite(n) || n <= 0 || n >= 100) {
-              setProblem({ i, field: "rate", text: "A tax rate is a percentage above 0 and below 100." }); return;
-            }
-          }
-          if (drafts.every((d) => d.name.trim() !== "") && drafts[0].name.trim().toLowerCase() === drafts[1].name.trim().toLowerCase()) {
-            setProblem({ i: 1, field: "name", text: "The two taxes need different names." }); return;
-          }
-          const list = drafts
-            .filter((d) => d.name.trim() !== "" || d.rate.trim() !== "")
-            .map((d) => ({ name: d.name.trim(), rate: d.rate.trim() === "" ? null : Number(d.rate) }));
-          onSave("tax", "set_branch_sales_taxes", { p_location_id: row.locationId, p_taxes: list }, `tax:${row.locationId}`);
-        },
-      }, "Save"),
+      isSet
+        ? React.createElement(AutosaveNote, { state: auto.state })
+        : React.createElement("button", {
+            className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+            disabled: busy === "tax",
+            onClick: () => { const list = listOf(true); if (list) send(list); },
+          }, blank ? "No sales tax here" : "Confirm"),
       React.createElement(FieldError, { text: error }))
   );
 }
@@ -9017,21 +9157,26 @@ const UNITS_REASONS = {
 function CompanyUnitsSection({ onSaved }) {
   const [fuel,     setFuel]     = React.useState(() => fuelUnit() || "");
   const [distance, setDistance] = React.useState(() => distanceUnit() || "");
+  // Follows the units once they are read or saved. Kept mounted, so saving
+  // never folds the section.
+  React.useEffect(() => { setFuel(fuelUnit() || ""); setDistance(distanceUnit() || ""); }, [fuelUnit(), distanceUnit()]); // eslint-disable-line react-hooks/exhaustive-deps
   const [busy,     setBusy]     = React.useState(false);
   const [error,    setError]    = React.useState("");
-  const changed = !!fuel && !!distance && (fuel !== fuelUnit() || distance !== distanceUnit());
-
   const save = async () => {
     setBusy(true); setError("");
     const { data, error: err } = await supabase.rpc("set_company_units", { p_fuel: fuel, p_distance: distance });
     setBusy(false);
     if (err || !data || !data.ok) {
       setError(err ? UNITS_REASONS.network : (UNITS_REASONS[data && data.reason] || "That did not work."));
-      return;
+      return false;
     }
     companyUnits = { fuel: data.fuelUnit, distance: data.distanceUnit };
     if (onSaved) onSaved();
+    return true;
   };
+  // Saved as soon as both are picked, and again on any change after that.
+  const auto = useAutosave(fuel && distance ? `${fuel}|${distance}` : `${fuelUnit()}|${distanceUnit()}`,
+    `${fuelUnit()}|${distanceUnit()}`, save, 0);
 
   const select = (label, value, setValue, options) =>
     React.createElement("label", { style: { display: "flex", flexDirection: "column", gap: "4px" } },
@@ -9051,10 +9196,7 @@ function CompanyUnitsSection({ onSaved }) {
     React.createElement("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "flex-end" } },
       select("Fuel", fuel, setFuel, VOLUME_UNIT_OPTIONS),
       select("Distance", distance, setDistance, DISTANCE_UNIT_OPTIONS),
-      React.createElement("button", {
-        className: "loginBtn", style: { width: "auto", padding: "8px 14px" },
-        disabled: busy || !changed, onClick: save,
-      }, busy ? "Saving…" : "Save")),
+      React.createElement(AutosaveNote, { state: auto.state })),
     React.createElement(FieldError, { text: error })
   );
 }
@@ -9504,8 +9646,22 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     };
   };
   const [draft, setDraft] = React.useState(() => toDraft(listing));
+  // What this part saves, as autosave compares it: the address and pin, or
+  // the rest of the listing.
+  const keyOf = (d) => JSON.stringify([
+    ...(showAddress ? [...BRANCH_ADDRESS_PARTS.map(([k]) => d[k].trim()),
+      d.latitude === "" ? "" : Number(d.latitude), d.longitude === "" ? "" : Number(d.longitude)] : []),
+    ...(showListing ? [d.hours, d.citiesServed, d.airportCodes, d.airportPickup, d.delivery, d.afterHoursDropoff,
+      d.minimumAge, d.deposit, d.paymentMethods, d.minNoticeHours, d.maxRentalDays, d.turnaroundHours] : []),
+  ]);
+  // The draft last sent. A listing read again replaces the draft only while
+  // nothing has been typed since, so a save never takes back what is typed.
+  const sent = React.useRef(null);
   const savedKey = JSON.stringify(listing);
-  React.useEffect(() => { setDraft(toDraft(listing)); }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => {
+    setDraft((p) => (sent.current === null || keyOf(p) === sent.current ? toDraft(listing) : p));
+    sent.current = null;
+  }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const [busy,    setBusy]    = React.useState("");
   const [error,   setError]   = React.useState("");
   const [notice,  setNotice]  = React.useState("");
@@ -9560,8 +9716,10 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
   };
 
   // Every field but the photo and the logo, checked here so a
-  // mistake reads as a sentence rather than as the database's refusal.
-  const saveDetails = async () => {
+  // mistake reads as a sentence rather than as the database's refusal. final
+  // false, while typing pauses, leaves an unfinished field unsaid.
+  const saveDetails = async (final) => {
+    const sending = keyOf(draft);
     const splitList = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
     const optional = (s, min, max, label, whole) => {
       const t = s.trim();
@@ -9584,29 +9742,32 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       turnaroundHours: required(draft.turnaroundHours, 0, 72, "Turnaround buffer"),
     };
     const bad = showListing && Object.values(checks).find((c) => !c.ok);
-    if (bad) { setError(bad.text); setNotice(""); return; }
+    if (bad) { if (final) { setError(bad.text); setNotice(""); } return false; }
 
     const hours = {};
     for (const [k, name] of showListing ? LISTING_DAYS : []) {
       const d = draft.hours[k];
       if (!d.open && !d.close) continue;
       if (!d.open || !d.close) {
-        setError(`${name}: enter the opening and closing times.`); setNotice(""); return;
+        if (final) { setError(`${name}: enter the opening and closing times.`); setNotice(""); }
+        return false;
       }
       if (d.close <= d.open) {
-        setError(`${name}: the closing time has to be after the opening time.`); setNotice(""); return;
+        if (final) { setError(`${name}: the closing time has to be after the opening time.`); setNotice(""); }
+        return false;
       }
       hours[k] = { open: d.open, close: d.close };
     }
 
     const airports = splitList(draft.airportCodes).map((x) => x.toUpperCase());
     if (showListing && airports.some((x) => !/^[A-Z]{3,4}$/.test(x))) {
-      setError("Airport codes are 3 or 4 letters, separated by commas, for example YYT."); setNotice(""); return;
+      if (final) { setError("Airport codes are 3 or 4 letters, separated by commas, for example YYT."); setNotice(""); }
+      return false;
     }
     const address = {};
     for (const [k, label, max] of BRANCH_ADDRESS_PARTS) {
       const v = draft[k].trim();
-      if (v.length > max) { setError(`Keep the ${label.toLowerCase()} to ${max} characters.`); setNotice(""); return; }
+      if (v.length > max) { setError(`Keep the ${label.toLowerCase()} to ${max} characters.`); setNotice(""); return false; }
       address[k] = v || null;
     }
 
@@ -9661,17 +9822,20 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       zone = await branchTimeZoneAt(latitude, longitude);
       setBusy("");
     }
-    if (!(await save("details", fields))) return;
+    sent.current = sending;
+    if (!(await save("details", fields))) return false;
     if (zone && zone !== timeZone) {
       const { data, error: err } = await supabase.rpc("set_branch_time_zone", { p_location_id: branch.id, p_time_zone: zone });
       if (err || !data || !data.ok) {
-        setError("The listing was saved, but the branch's local time could not be set from the pin. Save again to retry.");
-        return;
+        setError("The listing was saved, but the branch's local time could not be set from the pin. Change the address or move the pin to retry.");
+        return false;
       }
       if (onTimeZoneSet) await onTimeZoneSet();
     }
-    setNotice(`${part === "address" ? "Address" : "Listing"} saved.${pinNote}`);
+    setNotice(pinNote.trim());
+    return true;
   };
+  const auto = useAutosave(keyOf(draft), keyOf(toDraft(listing)), saveDetails, 1200);
 
   // Uploads a new photo or logo, points the listing at it, then removes the
   // file it replaced. A file the listing never pointed at is removed again.
@@ -9712,8 +9876,8 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     el("label", { style: { display: "flex", flexDirection: "column", gap: "4px", width: width || "auto" } },
       el("span", { className: "resFormLabel" }, label), child);
   const input = (name, props) => el("input", {
-    className: "resFormInput", value: draft[name], disabled: !!busy,
-    onChange: (e) => set(name, e.target.value), ...props,
+    className: "resFormInput", value: draft[name],
+    onChange: (e) => set(name, e.target.value), onBlur: auto.flush, "data-autosave": true, ...props,
   });
   const check = (label, checked, onChange) =>
     el("label", { style: { display: "inline-flex", alignItems: "center", gap: "8px", cursor: "pointer" } },
@@ -9725,8 +9889,8 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     el("label", { className: wide ? "addressForm__field addressForm__field--wide" : "addressForm__field" },
       el("span", { className: "addressForm__label" }, label),
       el("input", {
-        className: "addressForm__input", value: draft[name], disabled: !!busy,
-        onChange: (e) => set(name, e.target.value), ...props,
+        className: "addressForm__input", value: draft[name],
+        onChange: (e) => set(name, e.target.value), onBlur: auto.flush, "data-autosave": true, ...props,
       }));
   const imageBlock = (kind, label) => {
     const path = listing && listing[kind === "logo" ? "logoPath" : "photoPath"];
@@ -9761,7 +9925,6 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
         done: !!listing && branchAddressComplete(listing) && listing.latitude != null && listing.longitude != null }
     : { style: { marginBottom: "28px" } },
     !asDropdown && el("div", { className: "gasSettingSubhead" }, branch.name),
-    notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
 
     showListing && el(React.Fragment, null,
       // Show this branch on fleetr.ai, when there is more than one branch,
@@ -9804,8 +9967,8 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
             lat, lng, disabled: !!busy,
             onPlace: (a, b) => setDraft((p) => ({ ...p, latitude: a.toFixed(6), longitude: b.toFixed(6) })),
           }),
-          el("p", { className: "closeRentalHint" }, "Only if the pin looks wrong: drag it to the right spot, then save."))
-      : el("p", { className: "closeRentalHint" }, "The map pin is placed from the address when you save.")),
+          el("p", { className: "closeRentalHint" }, "Only if the pin looks wrong: drag it to the right spot."))
+      : el("p", { className: "closeRentalHint" }, "The map pin is placed from the address once every part is filled in.")),
 
     showListing && el(React.Fragment, null,
     el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Hours"),
@@ -9860,10 +10023,8 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       field("Maximum rental length (days)", input("maxRentalDays", { inputMode: "numeric", style: { width: "150px" } })),
       field("Turnaround buffer (hours)", input("turnaroundHours", { inputMode: "numeric", style: { width: "150px" } })))),
 
-    el("div", { className: "closeRentalActions" },
-      el("button", {
-        type: "button", className: "resModalSubmit", disabled: !!busy, onClick: saveDetails,
-      }, busy === "details" ? "Saving..." : part === "address" ? "Save address" : "Save listing")),
+    el(AutosaveNote, { state: auto.state }),
+    notice && el("p", { className: "closeRentalHint" }, notice),
     el(FieldError, { text: error })
   );
 }
@@ -10263,15 +10424,16 @@ function RequirementCards({ listing: l, busy, save, error, errField, clearError,
   const [open, setOpen] = React.useState("");
   const [draft, setDraft] = React.useState(null);
   const [problem, setProblem] = React.useState("");
+  const savedOf = (key) => ({
+    age: { value: l.minimumAge == null ? "" : String(l.minimumAge) },
+    deposit: { value: l.deposit == null ? "" : String(Math.round(Number(l.deposit))) },
+    payment: reqPayment(l.paymentMethods),
+    insurance: { on: !!l.ownInsuranceRequired },
+  }[key]);
   const begin = (key) => {
     if (busy) return;
     clearError(); setProblem(""); setOpen(key);
-    setDraft({
-      age: { value: l.minimumAge == null ? "" : String(l.minimumAge) },
-      deposit: { value: l.deposit == null ? "" : String(Math.round(Number(l.deposit))) },
-      payment: reqPayment(l.paymentMethods),
-      insurance: { on: !!l.ownInsuranceRequired },
-    }[key]);
+    setDraft(savedOf(key));
   };
   // A Missing link elsewhere on the page opens its card here.
   React.useEffect(() => {
@@ -10280,41 +10442,53 @@ function RequirementCards({ listing: l, busy, save, error, errField, clearError,
     if (request === "requirements" || request === "payment") onRequestTaken();
   }, [request]); // eslint-disable-line react-hooks/exhaustive-deps
   const close = () => { setOpen(""); setDraft(null); setProblem(""); clearError(); };
-  const fieldsOf = (key) => {
+  // The fields a card saves, or null when it is not right yet. final says what
+  // is wrong; while typing pauses an unfinished field is left unsaid.
+  const fieldsOf = (key, final) => {
+    const say = (p) => { if (final) setProblem(p); return null; };
     if (key === "age") {
       const p = numberProblem(draft.value, { min: 16, max: 99, label: "Minimum age", required: true });
-      if (p) { setProblem(p); return null; }
+      if (p) return say(p);
       return { minimumAge: Number(draft.value) };
     }
     if (key === "deposit") {
       const p = numberProblem(draft.value, { min: 0, max: 99999, label: "Deposit" });
-      if (p) { setProblem(p); return null; }
+      if (p) return say(p);
       return { deposit: String(draft.value).trim() === "" ? null : Number(draft.value) };
     }
     if (key === "payment") {
       const other = draft.other.trim();
-      if (draft.otherOn && !other) { setProblem("Say what other payment you take."); return null; }
+      if (draft.otherOn && !other) return say("Say what other payment you take.");
       const methods = [...draft.known, ...(draft.otherOn ? [other] : [])];
-      if (!methods.length) { setProblem("Choose at least one way to pay."); return null; }
+      if (!methods.length) return say("Choose at least one way to pay.");
       return { paymentMethods: methods };
     }
     return { ownInsuranceRequired: draft.on };
   };
-  const saveCard = async (key) => {
-    const fields = fieldsOf(key);
-    const card = document.activeElement && document.activeElement.closest(".reqCard");
-    if (fields && await save(`req:${key}`, fields)) {
-      close();
-      // The field is gone with the editor; the card it was in keeps the focus.
-      if (card) setTimeout(() => card.focus({ preventScroll: true }), 0);
+  // A card saves as it is changed: a tap at once, typing once it pauses. It
+  // stays open, where it is, until Close.
+  const keyOf = (d) => JSON.stringify(open === "payment" ? [d.known, d.otherOn, d.otherOn ? String(d.other || "").trim() : ""] : d);
+  const draftKey = open && draft ? keyOf(draft) : "";
+  const savedKey = open && draft ? keyOf(savedOf(open)) : "";
+  const auto = useAutosave(draftKey, savedKey, async (final) => {
+    const fields = fieldsOf(open, final);
+    return fields ? save(`req:${open}`, fields) : false;
+  }, open === "age" || open === "deposit" || (open === "payment" && draft && draft.otherOn) ? 800 : 0);
+  // Close: anything not saved yet is saved first, and a card that is not
+  // right stays open to say why.
+  const finish = async () => {
+    if (draftKey !== savedKey) {
+      const fields = fieldsOf(open, true);
+      if (!fields || !(await save(`req:${open}`, fields))) return;
     }
+    close();
   };
   const shownError = (key) => problem || (errField === `req:${key}` ? error : "");
   const numberField = (key, label, prefix, digits) => el("label", { className: "reqCard__field" },
     el("span", { className: "reqCard__label" }, label),
     el("span", { className: "reqCard__input" }, prefix && el("span", null, prefix),
-      el("input", { className: "faiInput", inputMode: "numeric", autoFocus: true, maxLength: digits, value: draft.value, disabled: !!busy, ...invalid(!!shownError(key)),
-        onChange: (e) => { setDraft({ value: numberTyped(e.target.value, { digits }) }); setProblem(""); clearError(); } })));
+      el("input", { className: "faiInput", inputMode: "numeric", autoFocus: true, maxLength: digits, value: draft.value, ...invalid(!!shownError(key)),
+        onChange: (e) => { setDraft({ value: numberTyped(e.target.value, { digits }) }); setProblem(""); clearError(); }, onBlur: auto.flush, "data-autosave": true })));
   const chip = (label, on, onClick) => el("button", { key: label, type: "button", className: `reqChip${on ? " reqChip--on" : ""}`, "aria-pressed": on, disabled: !!busy, onClick }, label);
   const editors = {
     age: () => numberField("age", "Minimum age", null, 2),
@@ -10326,8 +10500,8 @@ function RequirementCards({ listing: l, busy, save, error, errField, clearError,
           setDraft((d) => ({ ...d, known: d.known.includes(m) ? d.known.filter((x) => x !== m) : LISTING_PAYMENT_METHODS.filter((x) => x === m || d.known.includes(x)) }));
         })),
         chip("Other", draft.otherOn, () => { setProblem(""); setDraft((d) => ({ ...d, otherOn: !d.otherOn })); })),
-      draft.otherOn && el("input", { className: "faiInput", autoFocus: true, maxLength: REQ_OTHER_MAX, value: draft.other, placeholder: "Other payment", "aria-label": "Other payment", disabled: !!busy, ...invalid(!!shownError("payment")),
-        onChange: (e) => { const v = e.target.value; setProblem(""); setDraft((d) => ({ ...d, other: v })); } })),
+      draft.otherOn && el("input", { className: "faiInput", autoFocus: true, maxLength: REQ_OTHER_MAX, value: draft.other, placeholder: "Other payment", "aria-label": "Other payment", ...invalid(!!shownError("payment")),
+        onChange: (e) => { const v = e.target.value; setProblem(""); setDraft((d) => ({ ...d, other: v })); }, onBlur: auto.flush, "data-autosave": true })),
     insurance: () => el("label", { className: "reqSwitch" },
       el("input", { type: "checkbox", role: "switch", checked: draft.on, disabled: !!busy, onChange: (e) => { const on = e.target.checked; setDraft({ on }); } }),
       el("span", { "aria-hidden": "true" }),
@@ -10345,7 +10519,7 @@ function RequirementCards({ listing: l, busy, save, error, errField, clearError,
     return el("div", {
       key: c.key, className: `reqCard${editing ? " reqCard--open" : ""}`,
       ...(editing
-        ? { onKeyDown: (e) => { if (e.key === "Escape") close(); } }
+        ? { onKeyDown: (e) => { if (e.key === "Escape") finish(); } }
         : { role: "button", tabIndex: 0, "aria-label": `Edit ${c.name.toLowerCase()}`, onClick: () => begin(c.key),
             onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); begin(c.key); } } }),
     },
@@ -10357,8 +10531,8 @@ function RequirementCards({ listing: l, busy, save, error, errField, clearError,
             editors[c.key](),
             el(FieldError, { text: shownError(c.key) }),
             el("div", { className: "faiEditor__actions" },
-              el("button", { type: "button", className: "faiBtn faiBtn--ghost", disabled: !!busy, onClick: close }, "Cancel"),
-              el("button", { type: "button", className: "faiBtn faiBtn--primary", disabled: !!busy, onClick: () => saveCard(c.key) }, busy === `req:${c.key}` ? "Saving\u2026" : "Save")))
+              el(AutosaveNote, { state: auto.state }),
+              el("button", { type: "button", className: "faiBtn faiBtn--ghost", disabled: !!busy, onClick: finish }, "Close")))
         : c.value
           ? el("div", { className: "reqCard__value" }, c.value)
           : el("div", { className: "reqCard__empty" },
@@ -10375,7 +10549,6 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   // Which field the error is about: a draft field, "hours:<day>", a booking
   // rule, "shown", or "" for one about no field. It is shown under that field.
   const [errField, setErrField] = React.useState("");
-  const [notice, setNotice] = React.useState("");
   const [editing, setEditing] = React.useState("");
   // Where the part being edited was clicked: the cities and the perks show
   // on the card and on the page, and are edited where they were clicked.
@@ -10389,8 +10562,15 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   const num = (v) => (v == null ? "" : String(Number(v)));
   const rulesOf = (x) => { const r = { ...LISTING_RULE_DEFAULTS, ...x }; return { minNoticeHours: num(r.minNoticeHours), maxRentalDays: num(r.maxRentalDays), turnaroundHours: num(r.turnaroundHours) }; };
   const [rules, setRules] = React.useState(() => rulesOf(l));
+  // The rules last sent. A listing read again replaces them only while nothing
+  // has been typed since, so a save never takes back what is typed.
+  const rulesSent = React.useRef(null);
   const savedKey = JSON.stringify(listing);
-  React.useEffect(() => { setRules(rulesOf(listing || {})); }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => {
+    setRules((p) => (rulesSent.current === null || JSON.stringify(p) === rulesSent.current ? rulesOf(listing || {}) : p));
+    rulesSent.current = null;
+  }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const confirmed = React.useContext(CompanyDefaults);
   React.useEffect(() => {
     if (!menu) return undefined;
     const close = () => setMenu("");
@@ -10404,7 +10584,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   const folder = `${operatorId}/${branch.id}`;
 
   const save = async (label, fields) => {
-    setBusy(label); setError(""); setErrField(""); setNotice("");
+    setBusy(label); setError(""); setErrField("");
     const { data, error: err } = await supabase.rpc("save_branch_listing", { p_location_id: branch.id, p_listing: fields });
     setBusy("");
     if (err || !data || !data.ok) {
@@ -10418,7 +10598,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     return true;
   };
   const toggleShown = async (on) => {
-    setBusy("shown"); setError(""); setErrField(""); setNotice("");
+    setBusy("shown"); setError(""); setErrField("");
     const { data, error: err } = await supabase.rpc("set_branch_shown", { p_location_id: branch.id, p_shown: on });
     setBusy("");
     if (err || !data || !data.ok) { setErrField("shown"); setError(err ? LISTING_REASONS.network : (LISTING_REASONS[data && data.reason] || "That did not work.")); return; }
@@ -10433,20 +10613,26 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
       return [k, d && d.open && d.close ? { open: String(d.open).slice(0, 5), close: String(d.close).slice(0, 5) } : { open: "", close: "" }];
     }));
   };
+  const draftFor = (part) => ({
+    places:       { citiesServed: (l.citiesServed || []).length ? l.citiesServed : (l.city ? [l.city] : []), airportCodes: (l.airportCodes || []).join(", ") },
+    perks:        { airportPickup: !!l.airportPickup, delivery: !!l.delivery, afterHoursDropoff: !!l.afterHoursDropoff, airportCodes: (l.airportCodes || []).join(", ") },
+    hours:        { hours: hoursDraft(), sameOpen: "", sameClose: "" },
+  }[part] || null);
   const startEdit = (part, where) => {
     if (busy) return;
-    setError(""); setErrField(""); setNotice(""); setMenu("");
+    // What the part open before was changed to is saved first.
+    editAuto.flush();
+    setError(""); setErrField(""); setMenu("");
     setEditing(part);
     setSpot(where || part);
-    setDraft({
-      places:       { citiesServed: (l.citiesServed || []).length ? l.citiesServed : (l.city ? [l.city] : []), airportCodes: (l.airportCodes || []).join(", ") },
-      perks:        { airportPickup: !!l.airportPickup, delivery: !!l.delivery, afterHoursDropoff: !!l.afterHoursDropoff, airportCodes: (l.airportCodes || []).join(", ") },
-      hours:        { hours: hoursDraft(), sameOpen: "", sameClose: "" },
-    }[part] || null);
+    setDraft(draftFor(part));
   };
   const stopEdit = () => { setEditing(""); setSpot(""); setDraft(null); setError(""); setErrField(""); };
   const setD = (k, v) => setDraft((p) => ({ ...p, [k]: v }));
-  const fail = (text, fieldKey = "") => { setError(text); setErrField(fieldKey); setNotice(""); return null; };
+  const fail = (text, fieldKey = "") => { setError(text); setErrField(fieldKey); return null; };
+  const failLoud = fail;
+  // While typing pauses, a part that is not right yet is left unsaid.
+  const quiet = () => null;
   const splitList = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
   const numberIn = (s, min, max, label, whole) => {
     const t = String(s).trim();
@@ -10461,8 +10647,10 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     const a = splitList(s).map((x) => x.toUpperCase());
     return a.some((x) => !/^[A-Z]{3,4}$/.test(x)) ? null : a;
   };
-  // The fields one part saves, checked as the old form checked them.
-  const fieldsFor = (part, d) => {
+  // The fields one part saves, checked as the old form checked them. final
+  // says what is wrong.
+  const fieldsFor = (part, d, final = true) => {
+    const fail = final ? failLoud : quiet;
     if (part === "places") {
       const airportCodes = airportsOf(d.airportCodes);
       if (!airportCodes) return fail("Airport codes are 3 or 4 letters, separated by commas, for example YYT.", "airportCodes");
@@ -10486,19 +10674,33 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     }
     return null;
   };
-  const saveEdit = async () => {
-    const fields = fieldsFor(editing, draft);
-    if (!fields) return;
-    if (await save(editing, fields)) { stopEdit(); setNotice("Saved."); }
+  // The part being edited saves as it is changed, and stays open, where it
+  // is, until Close, which saves anything not saved yet first.
+  const codesKey = (codes) => splitList(codes).map((x) => x.toUpperCase()).join(",");
+  const editKey = (part, d) => (!part || !d ? "" : JSON.stringify(part === "hours" ? d.hours
+    : part === "places" ? [d.citiesServed, codesKey(d.airportCodes)] : [d.airportPickup, d.delivery, d.afterHoursDropoff, codesKey(d.airportCodes)]));
+  const editAuto = useAutosave(editKey(editing, draft), editKey(editing, editing ? draftFor(editing) : null), async (final) => {
+    const fields = fieldsFor(editing, draft, final);
+    return fields ? save(editing, fields) : false;
+  });
+  const finishEdit = async () => {
+    if (editKey(editing, draft) !== editKey(editing, draftFor(editing))) {
+      const fields = fieldsFor(editing, draft);
+      if (!fields || !(await save(editing, fields))) return;
+    }
+    stopEdit();
   };
-  const saveRules = async () => {
+  // The booking rules save once typing pauses.
+  const rulesKey = (r) => JSON.stringify(["minNoticeHours", "maxRentalDays", "turnaroundHours"].map((k) => String(r[k]).trim()));
+  const rulesAuto = useAutosave(rulesKey(rules), rulesKey(rulesOf(l)), async (final) => {
     const checks = [
       ["minNoticeHours", 0, 720, "Minimum notice"], ["maxRentalDays", 1, 365, "Maximum rental length"], ["turnaroundHours", 0, 72, "Turnaround buffer"],
     ].map(([k, min, max, label]) => [k, String(rules[k]).trim() === "" ? { ok: false, text: `${label} is needed.` } : numberIn(rules[k], min, max, label, true)]);
     const bad = checks.find(([, c]) => !c.ok);
-    if (bad) { fail(bad[1].text, bad[0]); return; }
-    if (await save("rules", Object.fromEntries(checks.map(([k, c]) => [k, c.value])))) setNotice("Booking rules saved.");
-  };
+    if (bad) { if (final) fail(bad[1].text, bad[0]); return false; }
+    rulesSent.current = JSON.stringify(rules);
+    return save("rules", Object.fromEntries(checks.map(([k, c]) => [k, c.value])));
+  });
 
   // ── Images ──
   const fieldOf = (kind) => (kind === "logo" ? "logoPath" : "photoPath");
@@ -10506,7 +10708,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     const { data } = await supabase.storage.from(LISTING_BUCKET).list(folder, { limit: 100 });
     return (data || []).map((f) => f.name).filter((n) => n.startsWith(`${kind}-original-`)).sort();
   };
-  const choose = (kind) => { setMenu(""); setError(""); setNotice(""); if (files[kind].current) files[kind].current.click(); };
+  const choose = (kind) => { setMenu(""); setError(""); if (files[kind].current) files[kind].current.click(); };
   const picked = (kind, file) => {
     if (!file) return;
     if (!/^image\//.test(file.type || "")) { fail("Choose a JPEG, PNG or WebP image."); return; }
@@ -10515,7 +10717,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   };
   // Crop again, from the image as it was chosen, starting where it was cut.
   const recrop = async (kind) => {
-    setMenu(""); setError(""); setNotice("");
+    setMenu(""); setError("");
     const current = l[fieldOf(kind)];
     if (!current) return;
     setBusy(kind);
@@ -10568,7 +10770,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
       const gone = [before, ...oldOriginals].filter(Boolean);
       if (gone.length) await supabase.storage.from(LISTING_BUCKET).remove(gone);
       closeCrop();
-      setNotice(kind === "logo" ? "Logo saved." : "Location photo saved.");
+     
       return true;
     }
     await supabase.storage.from(LISTING_BUCKET).remove([path, ...added]);
@@ -10581,7 +10783,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     if (await save(kind, { [fieldOf(kind)]: null })) {
       const originals = (await originalsOf(kind)).map((n) => `${folder}/${n}`);
       await supabase.storage.from(LISTING_BUCKET).remove([old, ...originals]);
-      setNotice(kind === "logo" ? "Logo removed." : "Location photo removed.");
+     
     }
   };
 
@@ -10653,8 +10855,9 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     const field = (label, child, k) => el("label", { className: "faiField" }, el("span", null, label), child,
       k && errField === k && el(FieldError, { text: error }));
     // limit: { digits, decimals } for a number field, which stops at its length.
-    const input = (k, props, limit) => el("input", { className: "faiInput", value: d[k] ?? "", disabled: !!busy, ...invalid(errField === k && !!error),
-      onChange: (e) => { setD(k, limit ? numberTyped(e.target.value, limit) : e.target.value); if (errField === k) { setError(""); setErrField(""); } }, ...props });
+    const input = (k, props, limit) => el("input", { className: "faiInput", value: d[k] ?? "", ...invalid(errField === k && !!error),
+      onChange: (e) => { setD(k, limit ? numberTyped(e.target.value, limit) : e.target.value); if (errField === k) { setError(""); setErrField(""); } },
+      onBlur: editAuto.flush, "data-autosave": true, ...props });
     let body = null;
     if (part === "places") {
       body = el(React.Fragment, null,
@@ -10695,12 +10898,12 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
           errField === `hours:${k}` && el(FieldError, { text: error }))),
         el("p", { className: "faiHint" }, "Leave a day blank if the branch is closed that day."));
     }
-    return el("div", { className: "faiEditor", onKeyDown: (e) => { if (e.key === "Escape") stopEdit(); } },
+    return el("div", { className: "faiEditor", onKeyDown: (e) => { if (e.key === "Escape") finishEdit(); } },
       body,
       el("div", { className: "faiEditor__actions" },
-        el("button", { type: "button", className: "faiBtn faiBtn--ghost", disabled: !!busy, onClick: stopEdit }, "Cancel"),
-        el("button", { type: "button", className: "faiBtn faiBtn--primary", disabled: !!busy, onClick: saveEdit }, busy === part ? "Saving…" : "Save")),
-      // A refusal of the whole part, under its Save.
+        el(AutosaveNote, { state: editAuto.state }),
+        el("button", { type: "button", className: "faiBtn faiBtn--ghost", disabled: !!busy, onClick: finishEdit }, "Close")),
+      // A refusal of the whole part, under Close.
       errField === "" && el(FieldError, { text: error }));
   };
 
@@ -10823,7 +11026,6 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
           if (node) { node.scrollIntoView({ block: "center", behavior: "smooth" }); const f = node.querySelector("input, select, textarea"); if (f) f.focus({ preventScroll: true }); }
         }, 120);
       } })),
-    notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
 
     el("div", { className: "fai" },
       el("div", { className: "faiStage" },
@@ -10845,19 +11047,21 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
       !editing && !crop && errField === "" && el(FieldError, { text: error })),
 
     el("div", { className: "faiRules" },
-      el("div", { className: "gasSettingSubhead" }, "Booking rules"),
+      el("div", { className: "gasSettingSubhead" }, "Booking rules",
+        rulesKey(rulesOf(l)) === rulesKey(rulesOf({})) && !confirmed.includes("listing")
+          && el("span", { className: "companyDefaults" }, "Ready, using defaults")),
       el("p", { className: "closeRentalHint", style: { marginTop: 0 } }, "How online bookings are checked. Renters only see these when a search breaks one."),
       el("div", { className: "faiFieldRow" },
         // Each stops at its longest allowed value's length: 720 hours, 365
         // days, 72 hours.
         [["minNoticeHours", "Minimum notice (hours)", 3], ["maxRentalDays", "Maximum rental length (days)", 3], ["turnaroundHours", "Turnaround buffer (hours)", 2]].map(([k, label, digits]) =>
           el("label", { key: k, className: "faiField" }, el("span", null, label),
-            el("input", { id: `listing-rule-${branch.id}-${k}`, className: "faiInput", inputMode: "numeric", maxLength: digits, style: { width: "150px" }, value: rules[k], disabled: !!busy,
+            el("input", { id: `listing-rule-${branch.id}-${k}`, className: "faiInput", inputMode: "numeric", maxLength: digits, style: { width: "150px" }, value: rules[k],
               ...invalid(errField === k && !!error),
-              onChange: (e) => { const v = numberTyped(e.target.value, { digits }); setRules((p) => ({ ...p, [k]: v })); if (errField === k) { setError(""); setErrField(""); } } }),
+              onChange: (e) => { const v = numberTyped(e.target.value, { digits }); setRules((p) => ({ ...p, [k]: v })); if (errField === k) { setError(""); setErrField(""); } },
+              onBlur: rulesAuto.flush, "data-autosave": true }),
             errField === k && el(FieldError, { text: error }))),
-        el("button", { type: "button", className: "faiBtn faiBtn--primary", disabled: !!busy, onClick: saveRules },
-          busy === "rules" ? "Saving…" : "Save booking rules")),
+        el(AutosaveNote, { state: rulesAuto.state })),
       errField === "rules" && el(FieldError, { text: error })),
 
     ["logo", "photo"].map((kind) => el("input", {
@@ -10931,7 +11135,7 @@ const SOURCE_PAYERS = [
 // A section of the Company page. Closed until its header is tapped, so the
 // page opens as a short list of headings rather than seven screens of tables.
 // What is inside is only drawn while it is open.
-function CompanySection({ id, title, style, children, defaultOpen, done }) {
+function CompanySection({ id, title, style, children, defaultOpen, done, defaults }) {
   const flat = React.useContext(CompanySectionFlat);
   const [open, setOpen] = React.useState(!!defaultOpen);
   const toggle = () => setOpen((o) => !o);
@@ -10960,7 +11164,8 @@ function CompanySection({ id, title, style, children, defaultOpen, done }) {
       onClick: toggle,
       onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } },
     }, `${open ? "▾" : "▸"} ${title}`,
-      done && React.createElement("span", { className: "companySection__done", role: "img", "aria-label": "Done" }, "\u2713")),
+      done && defaults && React.createElement("span", { className: "companyDefaults" }, "Ready, using defaults"),
+      done && !defaults && React.createElement("span", { className: "companySection__done", role: "img", "aria-label": "Done" }, "\u2713")),
     open && children
   );
 }
@@ -11019,30 +11224,39 @@ function DragHandle({ disabled, onPointerDown }) {
 }
 
 // Text edited where it stands: grey placeholder text while empty, the
-// company's own in black, and a Save only once something has changed.
+// company's own in black, saved by itself once typing pauses.
 // fields: [{ key, label, value, placeholder, rows, max, start }]. start is
 // text to begin from in place of value, and counts as a change.
-function InPlaceText({ fields, busy, onSave, error, saveLabel = "Save" }) {
+function InPlaceText({ fields, onSave, error }) {
   const el = React.createElement;
   const seed = () => Object.fromEntries(fields.map((f) => [f.key, f.start ?? f.value ?? ""]));
   const saved = fields.map((f) => f.value ?? "").join("\u0000");
   const [drafts, setDrafts] = React.useState(seed);
-  React.useEffect(() => { setDrafts(seed()); }, [saved]); // eslint-disable-line react-hooks/exhaustive-deps
-  const text = (f) => (drafts[f.key] ?? "").trim();
+  // What was last sent. Text read back replaces the boxes only while nothing
+  // has been typed since, so a save never takes back what is typed.
+  const sent = React.useRef(null);
+  const text = (f, d = drafts) => (d[f.key] ?? "").trim();
+  const draftKey = (d) => fields.map((f) => text(f, d)).join("\u0000");
+  React.useEffect(() => {
+    setDrafts((p) => (sent.current === null || draftKey(p) === sent.current ? seed() : p));
+    sent.current = null;
+  }, [saved]); // eslint-disable-line react-hooks/exhaustive-deps
   const over = (f) => (f.max && text(f).length > f.max ? text(f).length - f.max : 0);
-  const changed = fields.some((f) => text(f) !== (f.value ?? ""));
+  const auto = useAutosave(draftKey(drafts), saved, () => {
+    if (fields.some((f) => over(f) > 0)) return false;
+    sent.current = draftKey(drafts);
+    return onSave(Object.fromEntries(fields.map((f) => [f.key, text(f)])));
+  });
   return el(React.Fragment, null,
     fields.map((f) => el("div", { key: f.key, className: "resFormGroup inPlaceText" },
       f.label && el("label", { className: "resFormLabel", htmlFor: f.key }, f.label),
       el("textarea", {
         id: f.key, className: "resFormInput resFormTextarea", rows: f.rows || 3, placeholder: f.placeholder, value: drafts[f.key] ?? "",
         "aria-label": f.label ? undefined : f.placeholder, ...invalid(over(f) > 0), onChange: (e) => { const v = e.target.value; setDrafts((p) => ({ ...p, [f.key]: v })); },
+        onBlur: auto.flush,
       }),
       over(f) > 0 && el(FieldError, { text: `This is ${over(f)} characters over the ${f.max.toLocaleString("en-CA")} allowed and cannot be saved.` }))),
-    changed && el("button", {
-      type: "button", className: "resModalSubmit inPlaceText__save", disabled: busy || fields.some((f) => over(f) > 0),
-      onClick: () => onSave(Object.fromEntries(fields.map((f) => [f.key, text(f)]))),
-    }, busy ? "Saving..." : saveLabel),
+    el(AutosaveNote, { state: auto.state }),
     el(FieldError, { text: error }));
 }
 
@@ -11074,8 +11288,8 @@ function ListPriceCell({ value, disabled, onSave, suffix, muted, title, error, l
   ), React.createElement(FieldError, { text: error, style: { whiteSpace: "normal", minWidth: "140px" } }));
 }
 
-// An entry's name, renamed where it stands: click it, type, Enter or Save.
-// Escape or Cancel puts it back.
+// An entry's name, renamed where it stands: click it and type. Enter or
+// leaving the box saves it; Escape puts it back.
 function ListInlineName({ name, disabled, onSave, error }) {
   const [editing, setEditing] = React.useState(false);
   const [draft,   setDraft]   = React.useState(name);
@@ -11084,13 +11298,18 @@ function ListInlineName({ name, disabled, onSave, error }) {
     if (disabled) return;
     setDraft(name); setEditing(true);
   };
+  const saving = React.useRef(false);
   const save = async () => {
+    if (saving.current) return;
     if (draft.trim() === name) { setEditing(false); return; }
-    if (await onSave(draft)) setEditing(false);
+    saving.current = true;
+    const ok = await onSave(draft);
+    saving.current = false;
+    if (ok) setEditing(false);
   };
   const onKeyDown = (e) => {
     if (e.key === "Enter")  { e.preventDefault(); save(); }
-    if (e.key === "Escape") { e.preventDefault(); setEditing(false); }
+    if (e.key === "Escape") { e.preventDefault(); saving.current = true; setDraft(name); setEditing(false); setTimeout(() => { saving.current = false; }, 0); }
   };
 
   if (!editing) {
@@ -11101,21 +11320,19 @@ function ListInlineName({ name, disabled, onSave, error }) {
       onKeyDown: (e) => { if (e.key === "Enter") start(); },
     }, name);
   }
-  const small = { width: "auto", padding: "5px 9px" };
   return React.createElement(React.Fragment, null, React.createElement(
     "span", { style: { display: "inline-flex", gap: "6px", flexWrap: "wrap", alignItems: "center" } },
     React.createElement("input", {
       className: "resFormInput", style: { width: "180px", padding: "5px 8px" }, maxLength: 60,
-      autoFocus: true, value: draft, disabled, onKeyDown, ...invalid(!!error),
+      autoFocus: true, value: draft, disabled, onKeyDown, onBlur: save, ...invalid(!!error),
       onChange: (e) => setDraft(e.target.value),
-    }),
-    React.createElement("button", { className: "loginBtn", style: small, disabled, onClick: save }, "Save"),
-    React.createElement("button", { className: "loginBtn", style: small, disabled, onClick: () => setEditing(false) }, "Cancel")
+    })
   ), React.createElement(FieldError, { text: error }));
 }
 
 // A season's name and dates, for adding one or changing one. Months and days
-// are picked from lists, and a day every year has: no Feb 29.
+// are picked from lists, and a day every year has: no Feb 29. A season being
+// changed saves by itself, and Close closes it.
 const SEASON_MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 function SeasonForm({ season, label, disabled, onSave, onCancel, error }) {
   const [name, setName] = React.useState(season ? season.name : "");
@@ -11123,6 +11340,10 @@ function SeasonForm({ season, label, disabled, onSave, onCancel, error }) {
     ? { sm: season.startMonth, sd: season.startDay, em: season.endMonth, ed: season.endDay }
     : { sm: 6, sd: 15, em: 9, ed: 15 });
   const el = React.createElement;
+  const keyOf = (n, x) => JSON.stringify([n.trim(), x.sm, x.sd, x.em, x.ed]);
+  const auto = useAutosave(season ? keyOf(name, d) : "",
+    season ? keyOf(season.name, { sm: season.startMonth, sd: season.startDay, em: season.endMonth, ed: season.endDay }) : "",
+    () => (name.trim() ? onSave({ name, ...d }) : false));
   const pick = (mKey, dKey, text) => el("span", { style: { display: "inline-flex", gap: "4px", alignItems: "center" } },
     el("span", { style: { opacity: 0.8 } }, text),
     el("select", {
@@ -11141,19 +11362,22 @@ function SeasonForm({ season, label, disabled, onSave, onCancel, error }) {
   return el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: "10px", alignItems: "center" } },
     el("input", {
       className: "resFormInput", style: { width: "200px", maxWidth: "100%" }, placeholder: "Name, like Summer", maxLength: 40,
-      value: name, disabled, ...invalid(!!error), onChange: (e) => setName(e.target.value),
+      value: name, disabled: disabled && !season, ...invalid(!!error), onChange: (e) => setName(e.target.value),
+      ...(season ? { onBlur: auto.flush, "data-autosave": true } : null),
     }),
     pick("sm", "sd", "From"),
     pick("em", "ed", "to"),
-    el("button", {
-      className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled,
-      onClick: async () => {
-        if (await onSave({ name, ...d }) && !season) setName("");
-      },
-    }, label),
+    season
+      ? el(AutosaveNote, { state: auto.state })
+      : el("button", {
+          className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled,
+          onClick: async () => {
+            if (await onSave({ name, ...d })) setName("");
+          },
+        }, label),
     onCancel && el("button", {
-      className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled, onClick: onCancel,
-    }, "Cancel"),
+      className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled, onClick: () => { auto.flush(); onCancel(); },
+    }, season ? "Close" : "Cancel"),
     error && el("div", { style: { flexBasis: "100%" } }, el(FieldError, { text: error })));
 }
 
@@ -11202,22 +11426,29 @@ const vehicleClassType = (c) =>
 // One class's low availability warning: fewer than this many free at a
 // branch, or blank for none (set_class_low_warning, fleetr-infra
 // fleet_shortages.sql).
-function LowWarningsForm({ classes, busy, errAt, onSave }) {
+function LowWarningsForm({ classes, errAt, onSave }) {
   const el = React.createElement;
   const shown = (c) => (c.lowWarnBelow == null ? "" : String(c.lowWarnBelow));
   const savedKey = classes.map((c) => `${c.id}:${shown(c)}`).join();
   const [drafts, setDrafts] = React.useState({});
   const [problem, setProblem] = React.useState({ id: "", text: "" });
-  React.useEffect(() => { setDrafts(Object.fromEntries(classes.map((c) => [c.id, shown(c)]))); }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A box follows its class's saved value when that changes, so saving one
+  // never resets another while it is being typed in.
+  const before = React.useRef({});
+  React.useEffect(() => {
+    setDrafts((p) => Object.fromEntries(classes.map((c) => [c.id,
+      !(c.id in p) || before.current[c.id] !== shown(c) ? shown(c) : p[c.id]])));
+    before.current = Object.fromEntries(classes.map((c) => [c.id, shown(c)]));
+  }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const draftOf = (c) => drafts[c.id] ?? shown(c);
-  const changed = classes.filter((c) => draftOf(c).trim() !== shown(c));
-  const save = async () => {
-    const bad = changed.find((c) => draftOf(c).trim() !== "" && !(Number(draftOf(c)) >= 1 && Number(draftOf(c)) <= 99));
-    if (bad) { setProblem({ id: bad.id, text: "A warning has to be a whole number from 1 to 99, or blank for none." }); return; }
-    for (const c of changed) {
-      const t = draftOf(c).trim();
-      if (!(await onSave(c, t === "" ? null : Number(t)))) return;
+  // A class's warning saves when its box is left, if it changed.
+  const save = async (c) => {
+    const t = draftOf(c).trim();
+    if (t === shown(c)) return;
+    if (t !== "" && !(Number(t) >= 1 && Number(t) <= 99)) {
+      setProblem({ id: c.id, text: "A warning has to be a whole number from 1 to 99, or blank for none." }); return;
     }
+    await onSave(c, t === "" ? null : Number(t));
   };
   return el("div", { "data-grid": true },
     classes.map((c) => {
@@ -11227,25 +11458,26 @@ function LowWarningsForm({ classes, busy, errAt, onSave }) {
         el("span", { className: "closeRentalHint", style: { margin: 0 } }, "Fewer than"),
         el("input", {
           className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric", placeholder: "Off", maxLength: 2,
-          value: draftOf(c), disabled: busy, "aria-label": `${c.name}: warn when fewer than this many are free`, ...invalid(!!error),
-          "data-grid-cell": true, onKeyDown: gridKey,
+          value: draftOf(c), "aria-label": `${c.name}: warn when fewer than this many are free`, ...invalid(!!error),
+          "data-grid-cell": true, onKeyDown: gridKey, onBlur: () => save(c),
           onChange: (e) => { const v = numberTyped(e.target.value, { digits: 2 }); setDrafts((p) => ({ ...p, [c.id]: v })); setProblem({ id: "", text: "" }); },
         }),
         el("span", { className: "closeRentalHint", style: { margin: 0 } }, "free"),
         error && el("div", { style: { flexBasis: "100%" } }, el(FieldError, { text: error })));
-    }),
-    el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px", marginTop: "10px" },
-      disabled: busy || changed.length === 0, onClick: save }, "Save"));
+    }));
 }
 
-function VehicleClassDetailsCell({ entry, busy, onSave, error }) {
+function VehicleClassDetailsCell({ entry, onSave, error }) {
   const [problem, setProblem] = React.useState({ key: "", text: "" });
   const shown = () => ({
     seats:  entry.seats == null ? "" : String(entry.seats),
     bags:   entry.bags  == null ? "" : String(entry.bags),
   });
   const [draft, setDraft] = React.useState(shown);
-  React.useEffect(() => { setDraft(shown()); }, [entry.seats, entry.bags, entry.name]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Each box follows its own saved value, so saving one never resets the
+  // other while it is being typed in.
+  React.useEffect(() => { setDraft((p) => ({ ...p, seats: shown().seats })); }, [entry.seats, entry.name]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => { setDraft((p) => ({ ...p, bags: shown().bags })); }, [entry.bags, entry.name]); // eslint-disable-line react-hooks/exhaustive-deps
   const saved = shown();
   const unchanged = draft.seats.trim() === saved.seats && draft.bags.trim() === saved.bags;
   const el = React.createElement;
@@ -11255,7 +11487,9 @@ function VehicleClassDetailsCell({ entry, busy, onSave, error }) {
     const n = Number(t);
     return Number.isInteger(n) && n >= min && n <= max ? { ok: true, value: n } : { ok: false };
   };
+  // Saved when the seats or the bags box is left, if either changed.
   const save = () => {
+    if (unchanged) return;
     const seats = whole(draft.seats, 1, 20), bags = whole(draft.bags, 0, 20);
     if (!seats.ok) { setProblem({ key: "seats", text: "Seats has to be a whole number from 1 to 20." }); return; }
     if (!bags.ok)  { setProblem({ key: "bags", text: "Bags has to be a whole number from 0 to 20." }); return; }
@@ -11263,29 +11497,25 @@ function VehicleClassDetailsCell({ entry, busy, onSave, error }) {
   };
   const num = (key, label) => el("td", null, el("input", {
     className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric", maxLength: 2,
-    value: draft[key], disabled: busy, "aria-label": `${entry.name} ${label}`, ...invalid(problem.key === key),
-    "data-grid-cell": true, onKeyDown: gridKey,
+    value: draft[key], "aria-label": `${entry.name} ${label}`, ...invalid(problem.key === key),
+    "data-grid-cell": true, onKeyDown: gridKey, onBlur: save,
     onChange: (e) => { setDraft((p) => ({ ...p, [key]: numberTyped(e.target.value, { digits: 2 }) })); setProblem({ key: "", text: "" }); },
   }), problem.key === key && el(FieldError, { text: problem.text }));
   return el(React.Fragment, null,
     el("td", null, el("span", { className: "closeRentalHint", style: { margin: 0 } }, vehicleClassType(entry))),
     num("seats", "seats"),
     num("bags", "bags"),
-    el("td", null, entry.exampleModels || el("span", { className: "closeRentalHint", style: { margin: 0 } }, "None")),
-    el("td", null, el("button", {
-      className: "loginBtn", style: { width: "auto", padding: "5px 9px" },
-      disabled: busy || unchanged, onClick: save,
-    }, "Save"), el(FieldError, { text: error })));
+    el("td", null, entry.exampleModels || el("span", { className: "closeRentalHint", style: { margin: 0 } }, "None"),
+      el(FieldError, { text: error })));
 }
 
 // The standard vehicle classes (standard_vehicle_classes in the database),
-// each with its type, seats, bags and example models. The Exec ticks the ones
-// they rent and saves; nothing is added unless it is ticked. One already
+// each with its type, seats, bags and example models. A class is added as
+// soon as the Exec ticks it; nothing is added unless it is ticked. One already
 // added shows as added. Used on the Company page.
 function VehicleClassPicker({ disabled, onAdded }) {
   const { currentUser } = React.useContext(AppContext);
   const [list, setList]       = React.useState(null);
-  const [picked, setPicked]   = React.useState({});
   const [busy, setBusy]       = React.useState(false);
   const [error, setError]     = React.useState("");
   const [notice, setNotice]   = React.useState("");
@@ -11303,10 +11533,8 @@ function VehicleClassPicker({ disabled, onAdded }) {
   }, []);
 
   const have = new Set(((companyLists && companyLists.vehicleClasses) || []).map((c) => String(c.name).toLowerCase()));
-  const chosen = Object.keys(picked).filter((k) => picked[k] && !have.has(k.toLowerCase()));
 
-  const add = async () => {
-    if (!chosen.length) return;
+  const add = async (chosen) => {
     setBusy(true); setError(""); setNotice("");
     const { data, error: err } = await supabase.rpc("add_standard_vehicle_classes", { p_names: chosen });
     if (err || !data || !data.ok) {
@@ -11315,7 +11543,6 @@ function VehicleClassPicker({ disabled, onAdded }) {
       return;
     }
     await loadCompanyLists(currentUser);
-    setPicked({});
     setBusy(false);
     setTick((n) => n + 1);
     const n = (data.added || []).length;
@@ -11326,27 +11553,26 @@ function VehicleClassPicker({ disabled, onAdded }) {
   if (!list) return error ? el("div", { className: "loginError" }, error) : el(SkeletonFrame, null,
     el("div", { style: { marginTop: "12px" } },
       el("div", { className: "gasSettingSubhead" }, skT("Add vehicle classes")),
-      el("p", { className: "closeRentalHint" }, skT("Tick the ones you rent, then add them.")),
+      el("p", { className: "closeRentalHint" }, skT("Tick the ones you rent.")),
       el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "6px 16px" } },
         ["Small car", "Compact car", "Midsize car", "Full-size car", "Small SUV", "Medium SUV"].map((name) =>
           el("label", { key: name, style: { display: "flex", gap: "8px", alignItems: "flex-start" } },
             el("input", { type: "checkbox", tabIndex: -1, style: { marginTop: "3px" } }),
             el("span", null,
               el("span", { style: { fontWeight: 600 } }, skT(name)), skT(" (Nissan Versa or similar)"),
-              el("span", { className: "closeRentalHint", style: { display: "block", margin: 0 } }, skT("Car \u00b7 5 seats \u00b7 2 bags")))))),
-      skB("button", "loginBtn", "Add", undefined, { width: "auto", padding: "8px 14px", marginTop: "10px" })));
+              el("span", { className: "closeRentalHint", style: { display: "block", margin: 0 } }, skT("Car \u00b7 5 seats \u00b7 2 bags"))))))));
   return el("div", { style: { marginTop: "12px" } },
     el("div", { className: "gasSettingSubhead" }, "Add vehicle classes"),
-    el("p", { className: "closeRentalHint" }, "Tick the ones you rent, then add them."),
+    el("p", { className: "closeRentalHint" }, "Tick the ones you rent."),
     el("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "6px 16px" } },
       list.map((c) => {
         const added = have.has(String(c.name).toLowerCase());
         const facts = [vehicleClassType(c), c.seats != null && `${c.seats} seats`, c.bags != null && `${c.bags} bags`].filter(Boolean).join(" \u00b7 ");
         return el("label", { key: c.name, style: { display: "flex", gap: "8px", alignItems: "flex-start", cursor: added ? "default" : "pointer", opacity: added ? 0.6 : 1 } },
           el("input", {
-            type: "checkbox", checked: added || !!picked[c.name], disabled: disabled || busy || added,
+            type: "checkbox", checked: added, disabled: disabled || busy || added,
             style: { marginTop: "3px" },
-            onChange: (e) => { const on = e.target.checked; setPicked((p) => ({ ...p, [c.name]: on })); setNotice(""); },
+            onChange: (e) => { if (e.target.checked) add([c.name]); },
           }),
           el("span", null,
             el("span", { style: { fontWeight: 600 } }, c.name),
@@ -11354,10 +11580,6 @@ function VehicleClassPicker({ disabled, onAdded }) {
             el("span", { className: "closeRentalHint", style: { display: "block", margin: 0 } }, added ? `${facts} \u00b7 added` : facts)));
       })),
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginTop: "8px" } }, notice),
-    el("button", {
-      type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px", marginTop: "10px" },
-      disabled: disabled || busy || chosen.length === 0, onClick: add,
-    }, busy ? "Adding..." : chosen.length ? `Add ${chosen.length} vehicle class${chosen.length === 1 ? "" : "es"}` : "Add"),
     el(FieldError, { text: error }));
 }
 
@@ -11404,10 +11626,16 @@ function ContractAcknowledgementsCard({ versions, busy, onSave, onUseStandard, e
   };
   const ownTerms = choice === "own" && current ? termsOf(current.body) : [];
   const saveTerms = async (terms) => { if (await onSave(terms.join("\n"))) setEditing(null); };
-  const commit = () => {
+  // A term saves when Enter is pressed or its box is left. Left empty or
+  // unchanged, the box just closes; Escape closes it without saving.
+  const committing = React.useRef(false);
+  const commit = async () => {
+    if (committing.current || !editing) return;
     const text = editing.text.trim();
-    if (!text) return;
-    saveTerms(editing.at < 0 ? [...ownTerms, text] : ownTerms.map((t, i) => (i === editing.at ? text : t)));
+    if (!text || (editing.at >= 0 && text === ownTerms[editing.at])) { setEditing(null); return; }
+    committing.current = true;
+    await saveTerms(editing.at < 0 ? [...ownTerms, text] : ownTerms.map((t, i) => (i === editing.at ? text : t)));
+    committing.current = false;
   };
   const small = { width: "auto", padding: "6px 10px" };
   const smallBtn = (label, onClick, off) => el("button", { type: "button", className: "loginBtn", style: small, disabled: busy || off, onClick }, label);
@@ -11417,11 +11645,10 @@ function ContractAcknowledgementsCard({ versions, busy, onSave, onUseStandard, e
       onChange: (e) => { const text = e.target.value; setEditing((p) => ({ ...p, text })); },
       onKeyDown: (e) => {
         if (e.key === "Enter") { e.preventDefault(); commit(); }
-        if (e.key === "Escape") { e.preventDefault(); setEditing(null); }
+        if (e.key === "Escape") { e.preventDefault(); committing.current = true; setEditing(null); setTimeout(() => { committing.current = false; }, 0); }
       },
-    }),
-    smallBtn("Save", commit, !editing.text.trim()),
-    smallBtn("Cancel", () => setEditing(null)));
+      onBlur: commit,
+    }));
   const option = (value, label) => el("label", { className: "termChoice" },
     el("input", { type: "radio", name: "contract-terms-choice", checked: choice === value, disabled: busy, onChange: () => choose(value) }),
     label);
@@ -11467,6 +11694,7 @@ function ContractAcknowledgementsCard({ versions, busy, onSave, onUseStandard, e
 // onChanged runs after every change that saved. openSections opens them all.
 function CompanyListsSections({ branches, layout, onChanged, openSections, ownInsurance, onOwnInsuranceOff }) {
   const { currentUser, setup } = React.useContext(AppContext);
+  const confirmed = React.useContext(CompanyDefaults);
   const [ready,  setReady]  = React.useState(false);
   const [busy,   setBusy]   = React.useState(false);
   // { at, text }: a refusal is shown in the section it happened in.
@@ -11488,6 +11716,16 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
   const [rateView, setRateView] = React.useState("normal");
   const [rateSource, setRateSource] = React.useState("");
   const [editSeason, setEditSeason] = React.useState("");
+  // The Rates step's Next shows the table that is left.
+  React.useEffect(() => {
+    const onView = (e) => {
+      const { period, source } = e.detail || {};
+      if (period) setRateView(period);
+      if (source) setRateSource(source);
+    };
+    window.addEventListener(RATES_VIEW_EVENT, onView);
+    return () => window.removeEventListener(RATES_VIEW_EVENT, onView);
+  }, []);
   // { listKey, from, over } while a row is being dragged.
   const [drag, setDrag] = React.useState(null);
   const dragRef = React.useRef(null);
@@ -11605,7 +11843,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
   const errAt = (at) => (error && error.at === at ? error.text : "");
   const errorLine = (at) => el(FieldError, { text: errAt(at) });
   const section = (title, intro, at, ...children) => el(
-    CompanySection, { id: `company-section-${at}`, title, style: { marginTop: "24px" }, defaultOpen: openSections, done: !!doneAt[at] },
+    CompanySection, { id: `company-section-${at}`, title, style: { marginTop: "24px" }, defaultOpen: openSections, done: !!doneAt[at], defaults: !!defaultsAt[at] },
     intro && el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, intro),
     ...children,
     // One about no single field, under the section's own controls.
@@ -11728,6 +11966,11 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
     protection:  itemDone("protection"),
     acknowledgements: itemDone("contract"),
   };
+  // Done only because fleetr made them: the standard sources, until the Rates
+  // step is finished with Done.
+  const defaultsAt = {
+    sources: activeSources.length > 0 && activeSources.every((x) => x.standardKey) && !confirmed.includes("rates"),
+  };
 
   // Compact, with the vehicle class column and the header row held in place
   // while the rest scrolls. The background on the held cells is the table's
@@ -11794,7 +12037,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
       "classes",
       vehicleClasses.length === 0
         ? el("p", { className: "closeRentalHint" }, "No vehicle classes yet")
-        : gridTable("860px", ["", "Vehicle class", "Type", "Seats", "Bags", "Example models", "", "On", ""],
+        : gridTable("860px", ["", "Vehicle class", "Type", "Seats", "Bags", "Example models", "On", ""],
         vehicleClasses.map((entry, i) => entryRow({
           at: "classes", kind: "vehicle_class", entry,
           reorder: { listKey: "classes", list: vehicleClasses, index: i, saveCall: saveClass },
@@ -11969,14 +12212,12 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
         seasons.map((x) => el("tr", { key: x.id, style: x.active ? null : { opacity: 0.5 } },
           editSeason === x.id
             ? el("td", { colSpan: 4 }, el(SeasonForm, {
-                season: x, label: "Save", disabled: busy, error: errAt(`seasons:edit:${x.id}`),
+                season: x, disabled: busy, error: errAt(`seasons:edit:${x.id}`),
                 onCancel: () => setEditSeason(""),
                 onSave: async (f) => {
-                  const ok = await act(`seasons:edit:${x.id}`, "save_rate_season", {
+                  return act(`seasons:edit:${x.id}`, "save_rate_season", {
                     p_id: x.id, p_name: f.name, p_start_month: f.sm, p_start_day: f.sd, p_end_month: f.em, p_end_day: f.ed,
                   });
-                  if (ok) setEditSeason("");
-                  return ok;
                 },
               }))
             : [
@@ -19403,6 +19644,19 @@ body, * {
 }
 .companyStep__state--done{ background: var(--cs-ink); border-color: var(--cs-ink); color: var(--cs-paper); }
 .companyStep__state--skipped{ border-style: dashed; }
+/* Ready, using defaults and Optional: grey, never the solid Done. */
+.companyStep__state--defaults,
+.companyStep__state--optional{ background: transparent; color: var(--cs-muted); }
+.companyDefaults{ margin-left: 10px; font-size: 12px; font-weight: 600; color: var(--cs-muted); }
+/* A step's one button, and Skip for now as small grey text under it. */
+.companyStep__foot{ margin-top: 20px; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.companyStep__textBtn{
+  background: none; border: none; padding: 0; font: inherit; font-size: 13px;
+  color: var(--cs-muted); text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.companyStep__textBtn:disabled{ cursor: default; opacity: 0.6; }
+/* Where a Save button used to be: Saving, then Saved. */
+.autosaveNote{ display: inline-block; min-width: 4.5em; font-size: 12px; color: var(--cs-muted); }
 .companyStep--current .companyStep__state--todo{ background: var(--cs-terra-soft); border-color: var(--cs-terra); color: var(--cs-ink); }
 .companyStep__chevron{ flex: 0 0 auto; color: var(--cs-muted); font-size: 14px; }
 .companyStep__body{ border-top: 1px solid var(--cs-line); }
@@ -19503,6 +19757,7 @@ body, * {
 .staffPage .closeRentalHint{ color: var(--cs-muted); line-height: 1.5; }
 .companyStep__body .closeRentalActions,
 .staffPage .closeRentalActions{ margin-top: 20px; }
+.companyStep__body:has(> .dashboardSection) > .companyStep__foot,
 .companyStep__body:has(> .dashboardSection) > .closeRentalActions,
 .staffPage:has(> .dashboardSection) > .closeRentalActions{ margin-top: 0; }
 .companyStep__body .loginError,
@@ -21132,6 +21387,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 .setupProgress__seg{ height: 8px; border-radius: 999px; background: #E3E2DE; }
 .setupProgress__seg--done{ background: #F4845F; }
 .setupProgress__seg--progress{ background: rgba(244, 132, 95, 0.45); }
+.setupProgress__seg--defaults{ background: rgba(244, 132, 95, 0.45); }
 .setupProgress__seg--skipped{ background: repeating-linear-gradient(90deg, #E3E2DE 0 4px, rgba(244, 132, 95, 0.45) 4px 8px); }
 .companySection__done{
   display: inline-grid; place-items: center; width: 18px; height: 18px; margin-left: 8px; vertical-align: 2px;
@@ -23644,8 +23900,9 @@ const enterShown = (n) => n.getClientRects().length > 0;
 const enterIsField = (n) => n instanceof HTMLElement && !n.disabled && !n.readOnly && enterShown(n)
   && (n.tagName === "SELECT" || n.tagName === "TEXTAREA"
     || (n.tagName === "INPUT" && !ENTER_FIELD_SKIP.includes((n.getAttribute("type") || "text").toLowerCase())));
+// A setup step's own Next or Done button is never pressed by Enter.
 const enterSaveButtons = (box) => Array.from(box.querySelectorAll(ENTER_SAVE_BUTTONS))
-  .filter((b) => enterShown(b) && !ENTER_NOT_SAVE.test(b.textContent.trim()));
+  .filter((b) => enterShown(b) && !ENTER_NOT_SAVE.test(b.textContent.trim()) && !b.closest(".companyStep__foot"));
 const enterFormOf = (field) => {
   const form = field.closest("form");
   if (form) return form;
@@ -23686,8 +23943,6 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" || e.isComposing || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
   const field = e.target;
   if (!enterIsField(field) || field.tagName === "TEXTAREA") return;
-  const step = field.closest(".companyStep");
-  if (step) enterStep = step.id;
   if (enterOwnKeys(field)) return;
   const box = enterFormOf(field);
   if (!box) return;
@@ -23701,6 +23956,9 @@ document.addEventListener("keydown", (e) => {
     next.focus();
     return;
   }
+  // A field that saves by itself has no button to press: Enter on the last
+  // one leaves it, which saves it.
+  if (field.hasAttribute("data-autosave")) { e.preventDefault(); field.blur(); return; }
   // The last field. A <form> submits itself; anything else presses its save
   // button, the first one after the field.
   if (box.tagName === "FORM") {
@@ -23711,7 +23969,6 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
   if (save && !save.disabled) { save.click(); enterKeepFocus(field); }
 }, true);
-document.addEventListener("pointerdown", () => { enterStep = ""; }, true);
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   React.createElement(React.StrictMode, null, React.createElement(App))
