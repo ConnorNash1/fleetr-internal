@@ -18798,6 +18798,7 @@ function ForgotScreen({ onCancel }) {
 
   const submit = (e) => {
     e.preventDefault();
+    if (!username.trim()) { setErr("Enter your username."); return; }
     setBusy(true); setErr("");
     fetch(`${RESET_API_URL}/forgot`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -18837,12 +18838,12 @@ function ForgotScreen({ onCancel }) {
               style: { background: "none", border: "none", color: "#C9603D", cursor: "pointer", fontSize: "0.85rem" },
             }, "Back to sign in"))
         : React.createElement(
-            "form", { className: "loginForm", onSubmit: submit },
+            "form", { className: "loginForm", onSubmit: submit, noValidate: true },
             React.createElement("input", {
               className: "loginInput", type: "text", placeholder: "Username",
               minLength: USERNAME_MIN, maxLength: USERNAME_MAX,
-              autoComplete: "username", value: username,
-              onChange: (e) => setUsername(e.target.value.toLowerCase()),
+              autoComplete: "username", value: username, ...invalid(!!err),
+              onChange: (e) => { setUsername(e.target.value.toLowerCase()); setErr(""); },
             }),
             React.createElement("button", { type: "submit", className: "loginBtn", disabled: busy },
               busy ? "Sending\u2026" : "Send a reset link"),
@@ -18901,7 +18902,17 @@ function SignupScreen({ onDone, onCancel }) {
     e.preventDefault();
     // Checked here as well as in the database, because the database's check
     // runs after the account exists. A four-character rule enforced only at the
-    // end costs the person their chosen username.
+    // end costs the person their chosen username. Said here, under the field,
+    // in place of the browser's own popups.
+    const say = (at, text) => { setMessage(text); setMessageAt(at); };
+    if (!joinCode.trim()) { say("joinCode", "Enter your join code."); return; }
+    if (!name.trim()) { say("name", "Enter your name."); return; }
+    if (!username.trim()) { say("username", "Choose a username."); return; }
+    if (username.trim().length < USERNAME_MIN) { say("username", `A username is at least ${USERNAME_MIN} characters.`); return; }
+    if (!email.trim()) { say("email", "Enter your email."); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { say("email", "Enter a valid email address."); return; }
+    if (!password) { say("password", "Choose a password."); return; }
+    if (password.length < PASSWORD_MIN) { say("password", `A password is at least ${PASSWORD_MIN} characters.`); return; }
     if (!/^[0-9]{4}$/.test(pin)) { setMessage("Your PIN must be 4 digits."); setMessageAt("pin"); return; }
     setLoading(true);
     setMessage(""); setMessageAt("");
@@ -18969,7 +18980,7 @@ function SignupScreen({ onDone, onCancel }) {
       React.createElement("div", { className: "loginBrand", style: { marginBottom: "4px" } }, fleetrLogo("light", 34)),
       React.createElement("div", { className: "loginSubtitle" }, "Create your account."),
       React.createElement(
-        "form", { className: "loginForm", onSubmit: submit },
+        "form", { className: "loginForm", onSubmit: submit, noValidate: true },
         // Ten letters and digits. The old dash is still accepted, so one more.
         field({ label: "Join code", error: errorOf("joinCode"), type: "text", placeholder: "Join code", maxLength: 11, autoCapitalize: "characters",
                 value: joinCode, onChange: (e) => { setJoinCode(e.target.value.toUpperCase()); setMessage(""); } }),
@@ -19060,7 +19071,7 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
         fleetrLogo("light", 35)),
       React.createElement(
         "form",
-        { className: "loginForm loginForm--signIn", onSubmit: handleSubmit },
+        { className: "loginForm loginForm--signIn", noValidate: true, onSubmit: handleSubmit },
         React.createElement("input", {
           className: "loginInput",
           type: "text",
@@ -19624,7 +19635,6 @@ body, * {
 .companyStep__head:hover{ background: var(--cs-paper); }
 .companyStep__head--static{ cursor: default; }
 .companyStep__head--static:hover{ background: none; }
-.companyStep__head:focus-visible{ outline: 2px solid var(--cs-terra); outline-offset: -2px; }
 .companyStep__num{
   flex: 0 0 auto;
   width: 28px;
@@ -19713,8 +19723,6 @@ body, * {
 }
 .companyStep__body .dashboardSection > h2[role="button"]:hover,
 .staffPage .dashboardSection > h2[role="button"]:hover{ color: #C9603D; }
-.companyStep__body .dashboardSection > h2:focus-visible,
-.staffPage .dashboardSection > h2:focus-visible{ outline: 2px solid var(--cs-terra); outline-offset: 2px; border-radius: 6px; }
 .companyStep__body .dashboardSection > h2:not([aria-expanded="false"]),
 .staffPage .dashboardSection > h2:not([aria-expanded="false"]){
   border-bottom: 1px solid var(--cs-line);
@@ -22802,7 +22810,6 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   background: none; border: none; padding: 0; margin: 0 0 8px; cursor: pointer;
   font: inherit; color: inherit; text-align: left; border-radius: 6px;
 }
-.statCard__head:focus-visible{ outline: 2px solid #F4845F; outline-offset: 3px; }
 .statCard__title{ font-size: 13px; font-weight: 600; color: rgba(31, 30, 29, 0.62); }
 .statCard__chevron{ font-size: 22px; line-height: 1; color: rgba(31, 30, 29, 0.45); transition: transform 160ms ease, color 160ms ease; }
 .statCard__head:hover .statCard__chevron{ transform: translateX(3px); color: #C9603D; }
@@ -23058,7 +23065,6 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   transition: background 120ms ease;
 }
 .fleetGroup .fleetGroupHeader:hover{ background: color-mix(in srgb, var(--fg) 17%, #FFFFFF); }
-.fleetGroup .fleetGroupHeader:focus-visible{ outline: 2px solid #F4845F; outline-offset: -2px; }
 .fleetGroup .fleetGroupHeader::before{
   content: ""; flex: none; width: 8px; height: 8px; border-radius: 999px; background: var(--fg);
 }
@@ -23546,9 +23552,9 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 /* Editing in place. A part that can be changed shows a terracotta outline and
    an Edit tag on hover or focus; its editor opens in the same spot. */
 .faiEditable{ position: relative; cursor: pointer; border-radius: 10px; outline: 1px dashed transparent; outline-offset: 6px; transition: outline-color .12s, background-color .12s; }
-.faiEditable:hover, .faiEditable:focus-visible{ outline-color: var(--terra); background: rgba(244, 132, 95, 0.05); }
+.faiEditable:hover{ outline-color: var(--terra); background: rgba(244, 132, 95, 0.05); }
 .faiEditTag{ position: absolute; top: -10px; right: -6px; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--terra); color: var(--ink); opacity: 0; transition: opacity .12s; pointer-events: none; }
-.faiEditable:hover > .faiEditTag, .faiEditable:focus-visible > .faiEditTag{ opacity: 1; }
+.faiEditable:hover > .faiEditTag{ opacity: 1; }
 .fai .perks.two > .faiEditable--row .perk{ border-top: 1px solid var(--rule); }
 .fai .perks.two > .faiEditable--row + .faiEditable--row .perk{ border-top: none; }
 @container (min-width: 640px){ .fai .perks.two > .faiEditable--row:nth-child(2) .perk{ border-top: 1px solid var(--rule); } }
@@ -23561,11 +23567,11 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .fai .card-price .faiMuted{ white-space: normal; text-align: right; }
 .fai .faiHint{ color: var(--ink-55); font-size: 13px; margin-top: 10px; }
 .faiImage__hit{ position: absolute; inset: 0; cursor: pointer; }
-.faiImage__hit:hover::after, .faiImage__hit:focus-visible::after{ content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 2px var(--terra); border-radius: inherit; pointer-events: none; }
+.faiImage__hit:hover::after{ content: ""; position: absolute; inset: 0; box-shadow: inset 0 0 0 2px var(--terra); border-radius: inherit; pointer-events: none; }
 .faiImage__empty{ flex-direction: column; gap: 10px; font-weight: 600; font-size: 15px; color: var(--terra-dk); }
 .faiImage__empty svg{ width: 34px; height: 34px; }
 .faiLogo{ cursor: pointer; }
-.faiLogo:hover, .faiLogo:focus-visible{ box-shadow: 0 0 0 2px var(--terra), var(--shadow); }
+.faiLogo:hover{ box-shadow: 0 0 0 2px var(--terra), var(--shadow); }
 .fai .faiLogo--empty{ border: 1.5px dashed var(--terra); box-shadow: none; text-align: center; font-size: 11px; font-weight: 700; line-height: 1.15; color: var(--terra-dk); }
 .faiMenu{ position: absolute; z-index: 5; display: grid; min-width: 160px; padding: 6px; border-radius: 12px; background: #fff; box-shadow: var(--shadow-lg); border: 1px solid var(--rule); }
 .faiMenu--photo{ top: 12px; right: 12px; }
@@ -23640,7 +23646,6 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .faiCrop__hint{ margin: 0; font-size: 14px; color: rgba(31, 30, 29, 0.68); }
 .faiCrop__frame{ position: relative; width: 100%; overflow: hidden; touch-action: none; cursor: grab; user-select: none; background: repeating-conic-gradient(#ECEBE7 0 25%, #F9F9F7 0 50%) 0 0 / 18px 18px; border-radius: 14px; }
 .faiCrop__frame:active{ cursor: grabbing; }
-.faiCrop__frame:focus-visible{ outline: 2px solid #F4845F; outline-offset: 3px; }
 .faiCrop__frame--logo{ max-width: 340px; margin: 0 auto; border-radius: 24%; }
 .faiCrop__img{ position: absolute; left: 0; top: 0; max-width: none !important; pointer-events: none; }
 .faiCrop__failed{ position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 20px; font-weight: 600; }
@@ -23735,17 +23740,40 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
   .vehicleDetailLabel{ min-width: 110px; }
   .vehicleDetailRow select{ max-width: 100%; min-width: 0; }
 }
-/* Checkboxes and radio buttons are terracotta, and a focus ring shows for the
-   keyboard only. A text field marks its focus with its border, because a
-   browser counts every click into one as :focus-visible. */
+/* Checkboxes and radio buttons are terracotta. A focus ring shows only on a
+   button, a link or a field, never on a card, a step, a section header or
+   anything else that holds more, and only while the keyboard is moving
+   around the page (html[data-keys], set by Tab or an arrow key and cleared
+   by a click or tap). Cmd, Shift or Return alone never brings one back. A
+   text field marks its focus with its border, because a browser counts
+   every click into one as :focus-visible. */
 input[type="checkbox"], input[type="radio"]{ accent-color: #F4845F; }
 :focus:not(:focus-visible){ outline: none; }
-:focus-visible{ outline: 2px solid #F4845F; outline-offset: 2px; }
+:focus-visible{ outline: none; }
+html[data-keys] :is(button, a[href], input, select, textarea):focus-visible{ outline: 2px solid #F4845F; outline-offset: 2px; }
+html[data-keys] :is(.companyStep__head, .statCard__head, .protCard__toggleHead):focus-visible{ outline: none; }
+html:not([data-keys]) :focus-visible{ outline: none !important; }
+html:not([data-keys]) .reqSwitch input:focus-visible + span{ outline: none; }
+html:not([data-keys]) .statusTab:focus-visible{ box-shadow: none; }
+html:not([data-keys]) .statusTab--active:focus-visible{ box-shadow: 0 1px 2px rgba(31, 30, 29, 0.08); }
 [tabindex="-1"]:focus-visible{ outline: none; }
+/* An autofilled field keeps our white and our text colour, not the
+   browser's light blue. */
+input:-webkit-autofill, textarea:-webkit-autofill, select:-webkit-autofill{
+  -webkit-box-shadow: 0 0 0 1000px #F9F9F7 inset; box-shadow: 0 0 0 1000px #F9F9F7 inset;
+  -webkit-text-fill-color: #1F1E1D; caret-color: #1F1E1D;
+}
+input:autofill, textarea:autofill, select:autofill{ box-shadow: 0 0 0 1000px #F9F9F7 inset; color: #1F1E1D; }
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([readonly]):focus,
 textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
 `;
 document.head.appendChild(style);
+
+// Focus rings are for moving around with the keyboard: Tab or an arrow key
+// turns them on, a click or tap turns them off.
+const FOCUS_KEYS = ["Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"];
+document.addEventListener("keydown", (e) => { if (FOCUS_KEYS.includes(e.key)) document.documentElement.setAttribute("data-keys", ""); }, true);
+document.addEventListener("pointerdown", () => document.documentElement.removeAttribute("data-keys"), true);
 
 // Every table cell under its column's name, so a phone can show each row as a
 // card. Read from the table's header row, kept up to date as the app renders.
