@@ -21020,8 +21020,8 @@ body, * {
   background: #F9F9F7;
 }
 .resFormInput:focus{
-  outline: 2px solid #F4845F;
-  outline-offset: -1px;
+  border-color: #F4845F;
+  box-shadow: 0 0 0 1px #F4845F;
 }
 .resFormError{
   font-size: 12px;
@@ -23470,6 +23470,15 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
   .vehicleDetailLabel{ min-width: 110px; }
   .vehicleDetailRow select{ max-width: 100%; min-width: 0; }
 }
+/* Checkboxes and radio buttons are terracotta, and a focus ring shows for the
+   keyboard only. A text field marks its focus with its border, because a
+   browser counts every click into one as :focus-visible. */
+input[type="checkbox"], input[type="radio"]{ accent-color: #F4845F; }
+:focus:not(:focus-visible){ outline: none; }
+:focus-visible{ outline: 2px solid #F4845F; outline-offset: 2px; }
+[tabindex="-1"]:focus-visible{ outline: none; }
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([readonly]):focus,
+textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
 `;
 document.head.appendChild(style);
 
