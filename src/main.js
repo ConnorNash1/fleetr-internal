@@ -5373,25 +5373,6 @@ function VehicleDetailPage() {
           )
         ),
         numberErr.column === "tankSizeLiters" && React.createElement(FieldError, { text: numberErr.text }),
-        // In a lockbox, so renters can pick it up outside opening hours when
-        // the branch has Lockbox pickup on (fleetr-infra after_hours_access.sql).
-        React.createElement(
-          "div", { className: "vehicleDetailRow" },
-          React.createElement("span", { className: "vehicleDetailLabel" }, "In lockbox"),
-          React.createElement("label", { className: "vehicleDetailControl lockboxSwitch" },
-            React.createElement("input", {
-              type: "checkbox", checked: !!vehicle.inLockbox, disabled: !vehicle.id,
-              "aria-label": "In lockbox",
-              onChange: (e) => {
-                const on = e.target.checked;
-                guardAction("vehicle.details", () => {
-                  setFleet((prev) => prev.map((v) => v.id === vehicle.id ? { ...v, inLockbox: on } : v));
-                  runWrite(supabase.from("fleet").update({ inLockbox: on }).eq("id", vehicle.id), "fleet inLockbox update");
-                }, { tableName: "fleet", recordId: plate, description: `${plate} ${on ? "put in" : "taken out of"} the lockbox.` });
-              },
-            }),
-            React.createElement("span", null, vehicle.inLockbox ? "Yes" : "No"))
-        )
       )
     ),
 
@@ -9508,7 +9489,6 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       airportPickup:     !!(l && l.airportPickup),
       delivery:          !!(l && l.delivery),
       afterHoursDropoff: !!(l && l.afterHoursDropoff),
-      lockboxPickup:     !!(l && l.lockboxPickup),
       minimumAge:        num(l && l.minimumAge),
       deposit:           num(l && l.deposit),
       paymentMethods:    (l && l.paymentMethods) || [],
@@ -9656,7 +9636,6 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       airportPickup: draft.airportPickup,
       delivery: draft.delivery,
       afterHoursDropoff: draft.afterHoursDropoff,
-      lockboxPickup: draft.lockboxPickup,
       minimumAge: checks.minimumAge.value,
       deposit: checks.deposit.value,
       paymentMethods: draft.paymentMethods,
@@ -9855,7 +9834,6 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     el("div", { style: { display: "flex", gap: "16px", flexWrap: "wrap", marginBottom: "12px" } },
       check("Airport pickup", draft.airportPickup, (v) => set("airportPickup", v)),
       check("Delivery", draft.delivery, (v) => set("delivery", v)),
-      check("Lockbox pickup", draft.lockboxPickup, (v) => set("lockboxPickup", v)),
       check("Key drop returns", draft.afterHoursDropoff, (v) => set("afterHoursDropoff", v))),
     el("p", { className: "closeRentalHint" }, AFTER_HOURS_HINT),
 
@@ -9974,12 +9952,11 @@ function faiPerksOf(l) {
   const out = [];
   if (l.airportPickup) out.push({ icon: "lPlane", name: "Airport pickup", text: (l.airportCodes || []).length ? `At ${l.airportCodes.join(", ")}` : "Pick up at the airport" });
   if (l.delivery) out.push({ icon: "lTruck", name: "Delivery", text: "Get the vehicle brought to you" });
-  if (l.lockboxPickup) out.push({ icon: "lKey", name: "Pick up anytime from the lockbox", text: "Outside opening hours" });
   if (l.afterHoursDropoff) out.push({ icon: "lMoon", name: "Return anytime with the key drop", text: "Outside opening hours" });
   return out;
 }
-// What the two after-hours switches do, under them wherever they are set.
-const AFTER_HOURS_HINT = "Lockbox pickup: renters can pick up at any time, for a class with a vehicle marked In lockbox. Key drop returns: renters can return at any time. Otherwise, a time when the branch is closed moves to the earliest it is open, and fleetr.ai says so.";
+// What the after-hours switch does, under it wherever it is set.
+const AFTER_HOURS_HINT = "Key drop returns: renters can return at any time. Otherwise, a time when the branch is closed moves to the earliest it is open, and fleetr.ai says so.";
 // fleetr-website app.js's hoursRows, openNow, directionsUrl and quote.
 const FAI_DAY_SHORT = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
 function faiHoursRows(hours) {
@@ -10457,7 +10434,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     setSpot(where || part);
     setDraft({
       places:       { citiesServed: (l.citiesServed || []).length ? l.citiesServed : (l.city ? [l.city] : []), airportCodes: (l.airportCodes || []).join(", ") },
-      perks:        { airportPickup: !!l.airportPickup, delivery: !!l.delivery, afterHoursDropoff: !!l.afterHoursDropoff, lockboxPickup: !!l.lockboxPickup, airportCodes: (l.airportCodes || []).join(", ") },
+      perks:        { airportPickup: !!l.airportPickup, delivery: !!l.delivery, afterHoursDropoff: !!l.afterHoursDropoff, airportCodes: (l.airportCodes || []).join(", ") },
       hours:        { hours: hoursDraft(), sameOpen: "", sameClose: "" },
     }[part] || null);
   };
@@ -10488,7 +10465,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
     if (part === "perks") {
       const airportCodes = airportsOf(d.airportCodes);
       if (!airportCodes) return fail("Airport codes are 3 or 4 letters, separated by commas, for example YYT.", "airportCodes");
-      return { airportPickup: d.airportPickup, delivery: d.delivery, afterHoursDropoff: d.afterHoursDropoff, lockboxPickup: d.lockboxPickup, airportCodes };
+      return { airportPickup: d.airportPickup, delivery: d.delivery, afterHoursDropoff: d.afterHoursDropoff, airportCodes };
     }
     if (part === "hours") {
       const hours = {};
@@ -10683,7 +10660,6 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
         el("div", { className: "faiChecks" },
           check("Airport pickup", d.airportPickup, (v) => setD("airportPickup", v)),
           check("Delivery", d.delivery, (v) => setD("delivery", v)),
-          check("Lockbox pickup", d.lockboxPickup, (v) => setD("lockboxPickup", v)),
           check("Key drop returns", d.afterHoursDropoff, (v) => setD("afterHoursDropoff", v))),
         el("p", { className: "faiHint" }, AFTER_HOURS_HINT),
         d.airportPickup && field("Airport codes", input("airportCodes", { placeholder: "YYT" }), "airportCodes"));
@@ -23386,9 +23362,6 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .lowWarn__title{ margin: 0 0 4px; font-size: 14px; font-weight: 700; }
 .lowWarn__row{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; }
 .lowWarn__name{ min-width: 160px; font-size: 14px; font-weight: 600; }
-/* In lockbox, on a vehicle's page. */
-.lockboxSwitch{ display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
-.lockboxSwitch input{ width: 18px; height: 18px; accent-color: #F4845F; }
 /* The warning inside the PIN prompt: what entering the PIN will do. */
 .pinWarning{ margin: 0 0 10px; font-size: 15px; font-weight: 600; line-height: 1.5; color: #1F1E1D; }
 
