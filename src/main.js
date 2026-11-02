@@ -2660,14 +2660,12 @@ function skCustomerPage(openCustomer, rentalAgreements) {
 function skJoinCode() {
   return skEl("div", { key: "join", className: "dashboardSection", style: { marginBottom: "24px" } },
     skEl("h2", null, skT("Join code")),
-    skEl("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, skT("Each branch has its own code. New staff enter their branch's code when they create their account, and join that branch. Everyone who uses one waits for approval below before they can sign in, so keep it to people you mean to hire.")),
+    skEl("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, skT("Share this code with new staff. You approve them before they can sign in.")),
     skEl("div", { style: { marginTop: "14px" } },
       skEl("div", { style: { fontWeight: 600, fontSize: "0.9rem", marginBottom: "6px" } }, skT("Airport")),
       skEl("div", { style: { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" } },
-        skEl("code", { className: "skelBox", style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px" } }, "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"),
-        skB("button", "loginBtn", "Show", 1, { width: "auto", padding: "8px 14px" }),
-        skB("button", "loginBtn", "Generate new code", 2, { width: "auto", padding: "8px 14px" }))),
-    skEl("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "12px" } }, skT("Generating a new code stops that branch's old code working immediately. Anyone who was given it will need the new one. Every other branch's code stays as it is.")));
+        skEl("code", { className: "skelBox", style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px" } }, "ABCDE12345"),
+        skB("button", "loginBtn", "Copy", 1, { width: "auto", padding: "8px 14px" }))));
 }
 
 // The staff list while it loads: the section and table it fills.
@@ -8265,7 +8263,7 @@ const COMPANY_STEPS = [
   { key: "protection", title: "Protections", items: ["protection"], skippable: true },
   { key: "contract",   title: "Contract terms",             items: ["contract"] },
   { key: "listing",    title: "fleetr.ai listing",          items: ["listing"], skippable: true },
-  { key: "staff",      title: "Staff",                      items: ["staff"], skippable: true },
+  { key: "staff",      title: "Staff",                      items: ["staff"], doneLabel: "Done, I'll add staff later" },
   { key: "launch",     title: "Launch", after: "Status" },
 ];
 // Not started until something in a step is saved, In progress after that,
@@ -8291,7 +8289,7 @@ const jumpTo = (step, ...targets) => {
 // the section. Only the outermost CompanySection reads it.
 const CompanySectionFlat = React.createContext(false);
 
-function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, onDone, skipError, busy, showState, children }) {
+function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, onDone, doneLabel, skipError, busy, showState, children }) {
   const el = React.createElement;
   return el("section", { id, className: `companyStep companyStep--${stepKey}${open ? " companyStep--open" : ""}${current ? " companyStep--current" : ""}` },
     el("button", {
@@ -8310,7 +8308,7 @@ function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, sk
         el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: onSkip }, "Skip for now")),
       el(FieldError, { text: skipError }),
       showState && state === "done" && onDone && el("div", { className: "closeRentalActions" },
-        el("button", { type: "button", className: "resModalSubmit", onClick: onDone }, "Done")),
+        el("button", { type: "button", className: "resModalSubmit", onClick: onDone }, doneLabel || "Done")),
       showState && state === "skipped" && el("p", { className: "closeRentalHint" },
         "Skipped for now. Finish it any time, or ",
         el("button", { type: "button", className: "linkBtn", disabled: busy, onClick: onUnskip,
@@ -8491,6 +8489,8 @@ function CompanyPage() {
     if (st.key === "launch") return launched ? "done" : "todo";
     // With List on fleetr.ai off there is nothing to do in the listing step.
     if (notListed(st)) return "done";
+    // The Exec is staff enough to start with; more can join later.
+    if (st.key === "staff") return "done";
     const its = itemsOf(st);
     if (its.every((it) => it.done)) return "done";
     if (its.every((it) => it.done || it.skipped)) return "skipped";
@@ -8724,6 +8724,7 @@ function CompanyPage() {
         onUnskip: () => setSkip(st.key, false),
         skipError: errorFor(`skip:${st.key}`),
         onDone: () => advance(st.key),
+        doneLabel: st.doneLabel,
         busy: stepBusy,
         showState: !launched && st.key !== "launch",
       }, stepBody(st.key, parts))),
@@ -12139,7 +12140,7 @@ function StaffPage({ embedded, onChanged } = {}) {
   // Each branch's join code, as my_join_code returns them: every open branch
   // for an Exec, an Admin's own branch only. The database decides which.
   const [codes,      setCodes]      = React.useState([]);
-  const [codeShown,  setCodeShown]  = React.useState({});
+  const [copied,     setCopied]     = React.useState("");
   const [codeError,  setCodeError]  = React.useState("");
   const [rotating,   setRotating]   = React.useState("");
   const isExec = roleAtLeast(currentUser?.role, "Exec");
@@ -12176,8 +12177,6 @@ function StaffPage({ embedded, onChanged } = {}) {
     setCodeError("");
   }, []);
 
-  // Fetched on mount, not on Show: the codes arrive and are simply not
-  // displayed, which is what Show controls.
   React.useEffect(() => {
     loadStaff(); loadBranches(); loadCode();
     supabase.rpc("my_acting_location").then(({ data }) => {
@@ -12186,16 +12185,27 @@ function StaffPage({ embedded, onChanged } = {}) {
   }, [loadStaff, loadBranches, loadCode]);
 
   // Replaces one branch's code; every other branch's stays as it is.
-  const rotate = (locationId) => {
+  const rotate = async (locationId) => {
+    if (!(await appConfirm({ title: "Generate a new code?", message: "The old code stops working right away. Continue?", confirmLabel: "Continue" }))) return;
     setRotating(locationId);
     supabase.rpc("regenerate_join_code", { location_id: locationId })
       .then(({ data, error: err }) => {
         if (err || !data || !data.ok) { setCodeError("Could not generate a new code."); return; }
         setCodes((list) => list.map((c) => (c.locationId === locationId ? { ...c, code: data.code, setAt: new Date().toISOString() } : c)));
-        setCodeShown((p) => ({ ...p, [locationId]: true }));
         setCodeError("");
       })
       .then(() => setRotating(""), () => setRotating(""));
+  };
+
+  const copyCode = async (c) => {
+    try {
+      await navigator.clipboard.writeText(c.code);
+      setCopied(c.locationId);
+      setCodeError("");
+      setTimeout(() => setCopied((at) => (at === c.locationId ? "" : at)), 1500);
+    } catch (err) {
+      setCodeError("Could not copy the code.");
+    }
   };
 
   // Both mutations go through guardAction, so they are PIN gated and land in
@@ -12299,32 +12309,26 @@ function StaffPage({ embedded, onChanged } = {}) {
       "div", { className: "dashboardSection", style: { marginBottom: "24px" } },
       React.createElement("h2", null, codes.length > 1 ? "Join codes" : "Join code"),
       React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-        "Each branch has its own code. New staff enter their branch's code when they create their account, and join that branch. Everyone who uses one waits for approval below before they can sign in, so keep it to people you mean to hire."),
+        "Share this code with new staff. You approve them before they can sign in."),
       codes.map((c) => React.createElement("div", { key: c.locationId, style: { marginTop: "14px" } },
         React.createElement("div", { style: { fontWeight: 600, fontSize: "0.9rem", marginBottom: "6px" } }, c.name),
         React.createElement(
           "div", { style: { display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" } },
           React.createElement("code", {
             style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px", background: "rgba(244, 132, 95,0.12)" },
-          }, codeShown[c.locationId] && c.code ? fmtJoinCode(c.code) : "••••••••••"),
+          }, fmtJoinCode(c.code)),
           React.createElement("button", {
-            className: "loginBtn",
+            type: "button", className: "loginBtn",
             style: { width: "auto", padding: "8px 14px" },
-            // Hidden by default because a code on screen is a code on screen while
-            // a customer is standing at the counter.
-            onClick: () => setCodeShown((p) => ({ ...p, [c.locationId]: !p[c.locationId] })),
-          }, codeShown[c.locationId] ? "Hide" : "Show"),
-          React.createElement("button", {
-            className: "loginBtn",
-            style: { width: "auto", padding: "8px 14px" },
-            disabled: !!rotating,
-            onClick: () => rotate(c.locationId),
-          }, rotating === c.locationId ? "Generating…" : "Generate new code")
+            onClick: () => copyCode(c),
+          }, copied === c.locationId ? "Copied" : "Copy")
         ),
-        c.setAt && codeShown[c.locationId] && React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } },
+        React.createElement("button", {
+          type: "button", disabled: !!rotating, onClick: () => rotate(c.locationId),
+          style: { display: "block", background: "none", border: "none", padding: 0, marginTop: "8px", color: "#6F6E69", fontSize: "0.8rem", fontFamily: "inherit", cursor: rotating ? "default" : "pointer" },
+        }, rotating === c.locationId ? "Generating…" : "Generate new code"),
+        c.setAt && React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } },
           `Set ${new Date(c.setAt).toLocaleDateString("en-CA")}`))),
-      React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "12px" } },
-        "Generating a new code stops that branch's old code working immediately. Anyone who was given it will need the new one. Every other branch's code stays as it is."),
       React.createElement(FieldError, { text: codeError })
     ),
 
