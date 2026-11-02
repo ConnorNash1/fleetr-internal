@@ -12819,9 +12819,7 @@ function StaffPage({ embedded, onChanged } = {}) {
         React.createElement("button", {
           type: "button", disabled: !!rotating, onClick: () => rotate(c.locationId),
           style: { display: "block", background: "none", border: "none", padding: 0, marginTop: "8px", color: "#6F6E69", fontSize: "0.8rem", fontFamily: "inherit", cursor: rotating ? "default" : "pointer" },
-        }, rotating === c.locationId ? "Generating…" : "Generate new code"),
-        c.setAt && React.createElement("div", { style: { opacity: 0.6, fontSize: "0.8rem", marginTop: "8px" } },
-          `Set ${new Date(c.setAt).toLocaleDateString("en-CA")}`))),
+        }, rotating === c.locationId ? "Generating…" : "Generate new code"))),
       React.createElement(FieldError, { text: codeError })
     ),
 
@@ -19139,7 +19137,9 @@ function SignupScreen({ onDone, onCancel }) {
               // Back to the login screen rather than signed in here. The
               // account is real at this point, so the first thing the person
               // does is the thing they will do every shift after.
-              onDone(res.username);
+              // firstExec: the company had no Exec yet, so fleetr approves
+              // this person (first_exec_signup.sql in fleetr-infra).
+              onDone(res.username, !!res.firstExec);
               return;
             }
             setMessage(SIGNUP_FINISH_MESSAGES[res && res.reason] ||
@@ -19350,9 +19350,11 @@ function App() {
     if (signingUp) {
       return React.createElement(SignupScreen, {
         onCancel: () => setSigningUp(false),
-        onDone:   (username) => {
+        onDone:   (username, firstExec) => {
           setSigningUp(false);
-          setSignupNotice(`Account ${username} created. An Admin at your company needs to approve it before you can sign in.`);
+          setSignupNotice(firstExec
+            ? `Account ${username} created. fleetr will approve your account shortly.`
+            : `Account ${username} created. An Admin at your company needs to approve it before you can sign in.`);
         },
       });
     }
