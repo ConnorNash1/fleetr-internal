@@ -11356,13 +11356,17 @@ function VehicleClassPicker({ disabled, onAdded }) {
     el(FieldError, { text: error }));
 }
 
-// The contract acknowledgements, edited where they stand. Every save is a new
-// version; the earlier ones are listed below and never change.
-const CONTRACT_ACK_MAX = 4000;
-function ContractAcknowledgementsCard({ versions, busy, onSave, error }) {
+// The contract terms: fleetr's standard terms, or the company's own, one term
+// per row. Every save is a new version; the earlier ones are listed below and
+// never change.
+function ContractAcknowledgementsCard({ versions, busy, onSave, onUseStandard, error }) {
   const current = versions[0] || null;
-  const [startError, setStartError] = React.useState("");
-  const [started, setStarted] = React.useState(null);   // the text to begin from
+  // Before anything is saved the choice is only on screen.
+  const [unsaved, setUnsaved] = React.useState("standard");
+  const choice = current ? (current.standard ? "standard" : "own") : unsaved;
+  const [standardBody, setStandardBody] = React.useState("");
+  const [loadError, setLoadError] = React.useState("");
+  const [editing, setEditing] = React.useState(null);   // { at, text }, at -1 for a new term
   const [shownVersion, setShownVersion] = React.useState(null);
   const el = React.createElement;
   const when = (iso) => {
@@ -11370,34 +11374,77 @@ function ContractAcknowledgementsCard({ versions, busy, onSave, error }) {
     return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString("en-CA", { year: "numeric", month: "short", day: "numeric" });
   };
   const body = (text) => el("div", { className: "closeRentalSummary", style: { whiteSpace: "pre-line" } }, text);
-  // A company with no terms yet starts from fleetr's, or from its own.
-  const startStandard = async () => {
-    setStartError("");
-    const { data, error } = await supabase.rpc("standard_contract_terms");
-    if (error || typeof data !== "string") { setStartError("fleetr's standard terms could not be loaded. Try again."); return; }
-    setStarted(data);
+  const termsOf = (text) => String(text || "").split("\n").map((line) => line.trim()).filter(Boolean);
+
+  // The chosen version is what customers read. Before that, as it would be now.
+  const onStandard = !!(current && current.standard);
+  React.useEffect(() => {
+    if (onStandard || choice !== "standard") return undefined;
+    let live = true;
+    setLoadError("");
+    supabase.rpc("standard_contract_terms").then(({ data, error: err }) => {
+      if (!live) return;
+      if (err || typeof data !== "string") setLoadError("fleetr's standard terms could not be loaded. Try again.");
+      else setStandardBody(data);
+    });
+    return () => { live = false; };
+  }, [onStandard, choice, current && current.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const choose = (next) => {
+    setEditing(null);
+    if (next === choice) return;
+    if (!current) { setUnsaved(next); return; }
+    if (next === "standard") onUseStandard();
+    else onSave(current.body);
   };
-  const insurerNote = el("p", { className: "closeRentalHint" },
-    "fleetr's standard terms are a starting template, not legal advice. Review them with your own insurer before you use them.");
-  const save = async ({ terms }) => { if (await onSave(terms)) setStarted(null); };
+  const ownTerms = choice === "own" && current ? termsOf(current.body) : [];
+  const saveTerms = async (terms) => { if (await onSave(terms.join("\n"))) setEditing(null); };
+  const commit = () => {
+    const text = editing.text.trim();
+    if (!text) return;
+    saveTerms(editing.at < 0 ? [...ownTerms, text] : ownTerms.map((t, i) => (i === editing.at ? text : t)));
+  };
+  const small = { width: "auto", padding: "6px 10px" };
+  const smallBtn = (label, onClick, off) => el("button", { type: "button", className: "loginBtn", style: small, disabled: busy || off, onClick }, label);
+  const editor = (label) => el("div", { className: "termRow" },
+    el("input", {
+      className: "resFormInput", value: editing.text, disabled: busy, autoFocus: true, "aria-label": label,
+      onChange: (e) => { const text = e.target.value; setEditing((p) => ({ ...p, text })); },
+      onKeyDown: (e) => {
+        if (e.key === "Enter") { e.preventDefault(); commit(); }
+        if (e.key === "Escape") { e.preventDefault(); setEditing(null); }
+      },
+    }),
+    smallBtn("Save", commit, !editing.text.trim()),
+    smallBtn("Cancel", () => setEditing(null)));
+  const option = (value, label) => el("label", { className: "termChoice" },
+    el("input", { type: "radio", name: "contract-terms-choice", checked: choice === value, disabled: busy, onChange: () => choose(value) }),
+    label);
 
   return el(React.Fragment, null,
-    !current && started === null && el(React.Fragment, null,
-      insurerNote,
-      el("div", { className: "termStart" },
-        el("button", { type: "button", className: "resModalSubmit", disabled: busy, onClick: startStandard }, "Use fleetr's standard terms"),
-        el("button", { type: "button", className: "resModalCancel", disabled: busy, onClick: () => setStarted("") }, "Paste your own")),
-      el(FieldError, { text: startError })),
+    el("div", { className: "termChoices" }, option("standard", "Use fleetr's standard terms"), option("own", "Use my own terms")),
+    current && el("p", { className: "closeRentalHint" }, `Version ${current.version}, saved ${when(current.createdAt)}.`),
 
-    (current || started !== null) && el(React.Fragment, null,
-      current
-        ? el("p", { className: "closeRentalHint" }, `Version ${current.version}, saved ${when(current.createdAt)}.`)
-        : insurerNote,
-      el(InPlaceText, {
-        key: current ? current.id : "new", busy, error, onSave: save,
-        fields: [{ key: "terms", value: current ? current.body : "", start: started || undefined, rows: 10, max: CONTRACT_ACK_MAX,
-          placeholder: "One statement per line" }],
-      })),
+    choice === "standard" && el(React.Fragment, null,
+      el("ul", { className: "termList termList--standard" },
+        termsOf(onStandard ? current.body : standardBody).map((t, i) => el("li", { key: i, className: "termRow" }, t))),
+      el(FieldError, { text: loadError }),
+      el("p", { className: "closeRentalHint" },
+        "fleetr's standard terms are a starting template, not legal advice. Review them with your own insurer or lawyer before you use them."),
+      !current && el("button", { type: "button", className: "resModalSubmit", disabled: busy || !standardBody, onClick: onUseStandard }, "Use these terms")),
+
+    choice === "own" && el(React.Fragment, null,
+      el("ul", { className: "termList" }, ownTerms.map((t, i) => (editing && editing.at === i
+        ? el("li", { key: i }, editor(`Term ${i + 1}`))
+        : el("li", { key: i, className: "termRow" },
+            el("span", { className: "termRow__text" }, t),
+            smallBtn("Edit", () => setEditing({ at: i, text: t })),
+            smallBtn("Remove", () => saveTerms(ownTerms.filter((_, n) => n !== i))))))),
+      editing && editing.at < 0
+        ? editor("New term")
+        : el("button", { type: "button", className: "miniBtn", disabled: busy, onClick: () => setEditing({ at: -1, text: "" }) }, "+ Add a term")),
+
+    el(FieldError, { text: error }),
 
     versions.length > 1 && el(React.Fragment, null,
       el("div", { className: "gasSettingSubhead", style: { marginTop: "18px" } }, "Version history"),
@@ -11405,7 +11452,7 @@ function ContractAcknowledgementsCard({ versions, busy, onSave, error }) {
         el("button", {
           type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
           onClick: () => setShownVersion(shownVersion === v.id ? null : v.id),
-        }, `${shownVersion === v.id ? "\u25be" : "\u25b8"} Version ${v.version}, saved ${when(v.createdAt)}`),
+        }, `${shownVersion === v.id ? "▾" : "▸"} Version ${v.version}, saved ${when(v.createdAt)}`),
         shownVersion === v.id && body(v.body))))
   );
 }
@@ -11447,7 +11494,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
       supabase.from("protection_prices").select("productId,vehicleClassId,sourceId,amount").eq("operatorId", op),
       supabase.from("protection_default_prices").select("productId,vehicleClassId,amount").eq("operatorId", op),
       supabase.from("protection_price_blocks").select("productId,sourceId").eq("operatorId", op).order("createdAt"),
-      supabase.from("contract_acknowledgements").select("id,version,body,createdAt").eq("operatorId", op)
+      supabase.from("contract_acknowledgements").select("id,version,body,createdAt,standard").eq("operatorId", op)
         .order("version", { ascending: false }),
     ]);
     if (!pp.error)  setPrices(pp.data || []);
@@ -12056,11 +12103,12 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
 
     // ── Contract acknowledgements ──
     acknowledgements: section("Contract acknowledgements",
-      "What the customer acknowledges on the rental contract. Every save is a new version, and earlier versions are kept unchanged.",
+      "What the customer acknowledges on the rental contract.",
       "acknowledgements",
       el(ContractAcknowledgementsCard, {
         versions: ackVersions, busy, error: errAt("acknowledgements:save"),
         onSave: (text) => act("acknowledgements:save", "save_contract_acknowledgements", { p_body: text }),
+        onUseStandard: () => act("acknowledgements:save", "use_standard_contract_terms", {}),
       })),
   };
   if (layout) return layout(parts);
@@ -21005,8 +21053,14 @@ select.resFormInput.listAdd__payer--empty{ color: #9B9A96; }
 .inPlaceText textarea{ width: 100%; box-sizing: border-box; color: #1F1E1D; }
 .inPlaceText textarea::placeholder{ color: #9B9A96; }
 .inPlaceText__save{ width: auto; margin-top: 8px; }
-.termStart{ display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; margin-top: 10px; }
-.termStart button{ flex: 0 0 auto; width: auto; min-height: 42px; margin: 0; }
+.termChoices{ display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 10px 0; }
+.termChoice{ display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; }
+.termChoice input{ width: 18px; height: 18px; accent-color: #F4845F; }
+.termList{ list-style: none; margin: 0 0 12px; padding: 0; }
+.termList--standard{ color: #6F6E69; }
+.termRow{ display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid #E3E2DE; }
+.termRow__text{ flex: 1 1 240px; }
+.termRow .resFormInput{ flex: 1 1 240px; width: auto; }
 .protCard{ margin-bottom: 10px; border: 1px solid #E3E2DE; border-radius: 12px; background: #FFFFFF; }
 .protCard__head{ display: flex; align-items: center; gap: 6px; padding: 6px 10px; }
 .protCard__toggleHead{ display: flex; flex: 1; justify-content: space-between; align-items: center; gap: 10px; min-height: 36px; padding: 0 4px; border: 0; background: none; color: #1F1E1D; font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
