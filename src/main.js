@@ -1307,6 +1307,23 @@ function QuarterTimePicker({ hour, minute, meridiem, onChange, disabled, label, 
     sel("AM or PM", mer, [["AM", "AM"], ["PM", "PM"]], (v) => onChange(h, m, v), !h));
 }
 
+// A time as one dropdown, every quarter hour of the day ("9:00 AM", "9:15
+// AM"...), for a branch's hours. value and onChange are 24-hour, "14:15". A
+// saved time on other minutes shows rounded down to the quarter hour.
+const QUARTER_TIMES = Array.from({ length: 96 }, (_, i) => {
+  const h24 = Math.floor(i / 4), m = QUARTER_MINUTES[i % 4];
+  return [`${String(h24).padStart(2, "0")}:${m}`, `${h24 % 12 || 12}:${m} ${h24 >= 12 ? "PM" : "AM"}`];
+});
+function QuarterTimeSelect({ value, onChange, disabled, label, className }) {
+  const p = time24Parts(value);
+  const v = partsTime24(p.hour, p.minute, p.meridiem);
+  return React.createElement("select", {
+    className, style: { width: "auto", flex: "0 0 auto" }, value: v, disabled: !!disabled, "aria-label": label,
+    onChange: (e) => onChange(e.target.value),
+  }, !v && React.createElement("option", { value: "" }, "Time"),
+    QUARTER_TIMES.map(([t, text]) => React.createElement("option", { key: t, value: t }, text)));
+}
+
 // "14:07" (24-hour, as a time field stores it) to and from the picker's parts.
 function time24Parts(value) {
   const t = /^(\d{1,2}):(\d{2})/.exec(String(value || ""));
@@ -10690,17 +10707,26 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   };
 
   // ── Inline editing: one part at a time ──
+  // Each day open or closed, with its times. A branch with no hours yet starts
+  // Monday to Friday, 9:00 AM to 5:00 PM, and closed at the weekend; a day
+  // switched on later starts at those times too.
+  const savedHours = () => (l.hours && typeof l.hours === "object" ? l.hours : {});
   const hoursDraft = () => {
-    const hours = l.hours && typeof l.hours === "object" ? l.hours : {};
+    const hours = savedHours();
+    const fresh = !listingHasHours(hours);
     return Object.fromEntries(LISTING_DAYS.map(([k]) => {
       const d = hours[k];
-      return [k, d && d.open && d.close ? { open: String(d.open).slice(0, 5), close: String(d.close).slice(0, 5) } : { open: "", close: "" }];
+      if (d && d.open && d.close) return [k, { on: true, open: String(d.open).slice(0, 5), close: String(d.close).slice(0, 5) }];
+      return [k, { on: fresh && !["sat", "sun"].includes(k), open: "09:00", close: "17:00" }];
     }));
   };
+  // Hours as autosave compares them: each open day's times, a closed day null.
+  const hoursKey = (h) => JSON.stringify(LISTING_DAYS.map(([k]) => (h[k] && (h.__draft ? h[k].on : h[k].open && h[k].close)
+    ? [String(h[k].open).slice(0, 5), String(h[k].close).slice(0, 5)] : null)));
   const draftFor = (part) => ({
     places:       { citiesServed: (l.citiesServed || []).length ? l.citiesServed : (l.city ? [l.city] : []), airportCodes: (l.airportCodes || []).join(", ") },
     perks:        { airportPickup: !!l.airportPickup, delivery: !!l.delivery, afterHoursDropoff: !!l.afterHoursDropoff, airportCodes: (l.airportCodes || []).join(", ") },
-    hours:        { hours: hoursDraft(), sameOpen: "", sameClose: "" },
+    hours:        { hours: hoursDraft() },
   }[part] || null);
   const startEdit = (part, where) => {
     if (busy) return;
@@ -10749,8 +10775,8 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
       const hours = {};
       for (const [k, name] of LISTING_DAYS) {
         const x = d.hours[k];
-        if (!x.open && !x.close) continue;
-        if (!x.open || !x.close) return fail("Enter the opening and closing times.", `hours:${k}`);
+        if (!x.on) continue;
+        if (!x.open || !x.close) return fail("Choose the opening and closing times.", `hours:${k}`);
         if (x.close <= x.open) return fail("The closing time has to be after the opening time.", `hours:${k}`);
         hours[k] = { open: x.open, close: x.close };
       }
@@ -10761,14 +10787,17 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   // The part being edited saves as it is changed, and stays open, where it
   // is, until Close, which saves anything not saved yet first.
   const codesKey = (codes) => splitList(codes).map((x) => x.toUpperCase()).join(",");
-  const editKey = (part, d) => (!part || !d ? "" : JSON.stringify(part === "hours" ? d.hours
-    : part === "places" ? [d.citiesServed, codesKey(d.airportCodes)] : [d.airportPickup, d.delivery, d.afterHoursDropoff, codesKey(d.airportCodes)]));
-  const editAuto = useAutosave(editKey(editing, draft), editKey(editing, editing ? draftFor(editing) : null), async (final) => {
+  const editKey = (part, d) => (!part || !d ? "" : part === "hours" ? hoursKey({ ...d.hours, __draft: true })
+    : JSON.stringify(part === "places" ? [d.citiesServed, codesKey(d.airportCodes)] : [d.airportPickup, d.delivery, d.afterHoursDropoff, codesKey(d.airportCodes)]));
+  // What is saved. For hours that is the listing's own, so a new branch's
+  // starting hours are saved once the editor is open.
+  const savedEditKey = (part) => (!part ? "" : part === "hours" ? hoursKey(savedHours()) : editKey(part, draftFor(part)));
+  const editAuto = useAutosave(editKey(editing, draft), savedEditKey(editing), async (final) => {
     const fields = fieldsFor(editing, draft, final);
     return fields ? save(editing, fields) : false;
   });
   const finishEdit = async () => {
-    if (editKey(editing, draft) !== editKey(editing, draftFor(editing))) {
+    if (editKey(editing, draft) !== savedEditKey(editing)) {
       const fields = fieldsFor(editing, draft);
       if (!fields || !(await save(editing, fields))) return;
     }
@@ -10958,29 +10987,31 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
         d.airportPickup && field("Airport codes", input("airportCodes", { placeholder: "YYT" }), "airportCodes"));
     } else if (part === "hours") {
       const setDay = (k, f, v) => setDraft((p) => ({ ...p, hours: { ...p.hours, [k]: { ...p.hours[k], [f]: v } } }));
-      const fill = () => {
-        if (!d.sameOpen || !d.sameClose) { fail("Enter an opening and a closing time to fill every day.", "sameHours"); return; }
+      // Monday's times on every day that is open.
+      const copyMonday = () => {
         setError(""); setErrField("");
-        setDraft((p) => ({ ...p, hours: Object.fromEntries(LISTING_DAYS.map(([k]) => [k, { open: p.sameOpen, close: p.sameClose }])) }));
+        setDraft((p) => ({ ...p, hours: Object.fromEntries(LISTING_DAYS.map(([k]) => [k,
+          p.hours[k].on ? { ...p.hours[k], open: p.hours.mon.open, close: p.hours.mon.close } : p.hours[k]])) }));
       };
-      const picker = (value, label, onChange) => el(QuarterTimePicker, { ...time24Parts(value), className: "faiInput faiSelect", disabled: !!busy, label,
-        onChange: (h, m, mer) => onChange(partsTime24(h, m, mer)) });
+      const picker = (value, label, onChange) => el(QuarterTimeSelect, { value, label, className: "faiInput faiSelect", disabled: !!busy, onChange });
       body = el(React.Fragment, null,
-        el("div", { className: "faiHoursRow faiHoursRow--same" },
-          el("span", null, "Every day"),
-          picker(d.sameOpen, "Opening time for every day", (v) => setD("sameOpen", v)),
-          el("span", null, "to"),
-          picker(d.sameClose, "Closing time for every day", (v) => setD("sameClose", v)),
-          el("button", { type: "button", className: "faiBtn faiBtn--ghost", disabled: !!busy, onClick: fill }, "Fill every day")),
-        errField === "sameHours" && el(FieldError, { text: error }),
-        LISTING_DAYS.map(([k, name]) => el(React.Fragment, { key: k },
-          el("div", { className: "faiHoursRow", ...invalid(errField === `hours:${k}` && !!error) },
-            el("span", null, name),
-            picker(d.hours[k].open, `${name} opening time`, (v) => setDay(k, "open", v)),
-            el("span", null, "to"),
-            picker(d.hours[k].close, `${name} closing time`, (v) => setDay(k, "close", v))),
-          errField === `hours:${k}` && el(FieldError, { text: error }))),
-        el("p", { className: "faiHint" }, "Leave a day blank if the branch is closed that day."));
+        LISTING_DAYS.map(([k, name]) => {
+          const x = d.hours[k];
+          return el(React.Fragment, { key: k },
+            el("div", { className: `faiHoursRow${x.on ? "" : " faiHoursRow--closed"}`, ...invalid(errField === `hours:${k}` && !!error) },
+              el("label", { className: "reqSwitch faiHoursDay" },
+                el("input", { type: "checkbox", role: "switch", checked: x.on, disabled: !!busy, "aria-label": `${name} open`,
+                  onChange: (e) => { setDay(k, "on", e.target.checked); if (errField === `hours:${k}`) { setError(""); setErrField(""); } } }),
+                el("span", { "aria-hidden": "true" }),
+                el("b", null, name),
+                el("em", null, x.on ? "Open" : "Closed")),
+              x.on && el(React.Fragment, null,
+                picker(x.open, `${name} opening time`, (v) => setDay(k, "open", v)),
+                el("span", null, "to"),
+                picker(x.close, `${name} closing time`, (v) => setDay(k, "close", v)),
+                k === "mon" && el("button", { type: "button", className: "faiBtn faiBtn--ghost faiHoursCopy", disabled: !!busy, onClick: copyMonday }, "Copy to all open days"))),
+            errField === `hours:${k}` && el(FieldError, { text: error }));
+        }));
     }
     return el("div", { className: "faiEditor", onKeyDown: (e) => { if (e.key === "Escape") finishEdit(); } },
       body,
@@ -23788,6 +23819,12 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .faiCheck input{ accent-color: #F4845F; width: 16px; height: 16px; }
 .faiHoursRow{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .faiHoursRow > span:first-child{ width: 96px; font-weight: 600; }
+/* A day: its Open/Closed switch, its name, then its times while open. */
+.faiHoursDay{ width: 190px; font-size: 14px; }
+.faiHoursDay b{ width: 92px; }
+.faiHoursDay em{ font-style: normal; font-size: 12px; color: var(--ink-55, rgba(31, 30, 29, 0.55)); }
+.faiHoursRow--closed .faiHoursDay b{ opacity: 0.5; }
+.faiHoursCopy{ padding: 4px 10px; font-size: 12px; }
 .faiHoursRow--same{ padding-bottom: 10px; border-bottom: 1px solid var(--rule); }
 .faiBtn{ font: inherit; font-size: 14px; font-weight: 600; padding: 9px 16px; border-radius: 10px; border: 1px solid transparent; cursor: pointer; }
 .faiBtn:disabled{ opacity: .55; cursor: default; }
