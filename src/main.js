@@ -8832,14 +8832,22 @@ function CompanyPage() {
         el("span", { className: "setupProgress__pct" }, `${Math.round((progressDone / progress.length) * 100)}%`)),
       el("div", { className: "setupProgress__bar", role: "progressbar", "aria-label": "Setup progress",
         "aria-valuemin": 0, "aria-valuemax": progress.length, "aria-valuenow": progressDone },
-        progress.map((p, i) => el("span", { key: p.key, title: `${i + 1}. ${p.title}: ${STEP_STATE_WORDS[p.state]}`,
-          className: `setupProgress__seg setupProgress__seg--${p.state}` })))),
+        // Filled left to right by how many are done, not by which.
+        progress.map((p, i) => el("span", { key: p.key,
+          className: `setupProgress__seg${i < progressDone ? " setupProgress__seg--done" : ""}` })))),
     error  && el("div", { className: "loginError" }, error),
     el(CompanyDefaults.Provider, { value: confirmed }, el(CompanyListsSections, {
       branches, onChanged: changed, openSections: false, ownInsurance, onOwnInsuranceOff: refreshAll,
-      layout: (parts) => el(React.Fragment, null, COMPANY_STEPS.map((st, i) => el(CompanyStep, {
+      layout: (parts) => el(React.Fragment, null,
+        // Signing up, the first step the bar counts, done and nothing to open.
+        !launched && el("section", { className: "companyStep companyStep--signup" },
+          el("div", { className: "companyStep__head companyStep__head--static" },
+            el("span", { className: "companyStep__num companyStep__num--done", "aria-hidden": "true" }, "\u2713"),
+            el("span", { className: "companyStep__title" }, "Sign up"),
+            el("span", { className: "companyStep__state companyStep__state--done" }, STEP_STATE_WORDS.done))),
+        COMPANY_STEPS.map((st, i) => el(CompanyStep, {
         key: st.key, id: `company-step-${st.key}`, stepKey: st.key,
-        n: launched ? null : i + 1,
+        n: launched ? null : i + 2,
         title: launched && st.after ? st.after : st.title,
         state: stepState(st),
         current: !launched && st.key === nextKey,
@@ -19614,6 +19622,8 @@ body, * {
   cursor: pointer;
 }
 .companyStep__head:hover{ background: var(--cs-paper); }
+.companyStep__head--static{ cursor: default; }
+.companyStep__head--static:hover{ background: none; }
 .companyStep__head:focus-visible{ outline: 2px solid var(--cs-terra); outline-offset: -2px; }
 .companyStep__num{
   flex: 0 0 auto;
