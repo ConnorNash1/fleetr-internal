@@ -11373,6 +11373,35 @@ function ListPriceCell({ value, disabled, onSave, suffix, muted, title, error, l
   ), React.createElement(FieldError, { text: error, style: { whiteSpace: "normal", minWidth: "140px" } }));
 }
 
+// Same price for every class: one price, put on every class when Enter is
+// pressed or the box is left. It empties again afterwards; the classes show
+// what was set.
+function SameClassPriceField({ label, disabled, error, onApply }) {
+  const el = React.createElement;
+  const [draft, setDraft] = React.useState("");
+  const applying = React.useRef(false);
+  const apply = async () => {
+    if (applying.current || draft.trim() === "") return;
+    applying.current = true;
+    const ok = await onApply(draft.trim());
+    applying.current = false;
+    if (ok) setDraft("");
+  };
+  return el("div", { className: "protCard__same" },
+    el("span", { className: "resFormLabel" }, "Same price for every class"),
+    el("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" } },
+      el("span", { style: { opacity: 0.7 } }, "$"),
+      el("input", {
+        className: "resFormInput", style: { width: "80px", padding: "4px 6px" }, inputMode: "decimal", maxLength: 8,
+        value: draft, disabled, placeholder: "0.00", "aria-label": label, ...invalid(!!error),
+        onChange: (e) => setDraft(numberTyped(e.target.value, { digits: 5, decimals: 2 })),
+        onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } },
+        onBlur: apply,
+      }),
+      el("span", { style: { opacity: 0.7 } }, "/day")),
+    el(FieldError, { text: error }));
+}
+
 // An entry's name, renamed where it stands: click it and type. Enter or
 // leaving the box saves it; Escape puts it back.
 function ListInlineName({ name, disabled, onSave, error }) {
@@ -12486,9 +12515,32 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
             subHeading("Price per day"),
             activeClasses.length === 0
               ? el("p", { className: "closeRentalHint" }, "Prices need at least one vehicle class switched on.")
-              : column(defaultOf,
-                  (c, amount) => act(`protection:${pr.id}:${c.id}`, "set_protection_default_price", { p_product_id: pr.id, p_class_id: c.id, p_amount: amount }),
-                  (c) => `protection:${pr.id}:${c.id}`),
+              : el(React.Fragment, null,
+                  // One price put on every class at once; each can still be
+                  // changed below.
+                  el(SameClassPriceField, {
+                    label: `${pr.name}: same price for every class`, disabled: busy, error: errAt(`protection:same:${pr.id}`),
+                    onApply: async (typed) => {
+                      const parsed = parsePrice(`protection:same:${pr.id}`, typed);
+                      if (!parsed.ok || parsed.amount == null) return false;
+                      setBusy(true); setError(null);
+                      for (const c of activeClasses) {
+                        const { data, error: err } = await supabase.rpc("set_protection_default_price",
+                          { p_product_id: pr.id, p_class_id: c.id, p_amount: parsed.amount });
+                        if (err || !(data && data.ok)) { setError({ at: `protection:same:${pr.id}`, text: refusal(data, err) }); break; }
+                      }
+                      await reload();
+                      setBusy(false);
+                      if (onChanged) await onChanged();
+                      return true;
+                    },
+                  }),
+                  el("div", { className: "protCard__allSources" },
+                    el("span", { style: { fontWeight: 600 } }, "All sources"),
+                    el("span", { className: "closeRentalHint", style: { margin: 0 } }, "Applies to every source unless a source has its own prices.")),
+                  column(defaultOf,
+                    (c, amount) => act(`protection:${pr.id}:${c.id}`, "set_protection_default_price", { p_product_id: pr.id, p_class_id: c.id, p_amount: amount }),
+                    (c) => `protection:${pr.id}:${c.id}`)),
             blocks.map((b) => {
               const x = sources.find((y) => y.id === b.sourceId);
               if (!x) return null;
@@ -21489,6 +21541,8 @@ select.resFormInput.listAdd__payer--empty{ color: #9B9A96; }
 .protCard__body{ display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 8px 16px 16px; border-top: 1px solid #EEEDE9; }
 .protCard__line{ display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 6px; }
 .protCard__toggle{ display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.protCard__same{ display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; }
+.protCard__allSources{ display: flex; flex-direction: column; gap: 2px; margin: 0 0 6px; }
 .protCard__block{ max-width: 340px; padding-top: 8px; border-top: 1px solid #EEEDE9; }
 .protCard__blockHead{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
 .protCard__add{ align-self: flex-start; }
