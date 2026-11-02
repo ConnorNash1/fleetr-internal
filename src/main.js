@@ -8434,6 +8434,10 @@ function CompanyPage() {
   // Whether anything of a fleetr.ai listing has been saved yet, beyond the
   // address the Business details step keeps on the same row.
   const [listingStarted, setListingStarted] = React.useState(false);
+  // Whether any branch requires renters to bring their own insurance, and
+  // whether the Exec has asked to see the switched off products anyway.
+  const [ownInsurance, setOwnInsurance] = React.useState(false);
+  const [showProducts, setShowProducts] = React.useState(false);
 
   const [newName, setNewName] = React.useState("");
 
@@ -8456,6 +8460,8 @@ function CompanyPage() {
       const has = (v) => v != null && v !== "" && !(Array.isArray(v) && v.length === 0)
         && !(typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0);
       setListingStarted((bl.data || []).some((row) => LISTING_FIELDS.some((k) => has(row[k]))));
+      setOwnInsurance((bl.data || []).some((row) => row.ownInsuranceRequired));
+      setShowProducts(false);
     }
     if (!bs.error) setBranchSetup(Object.fromEntries((bs.data || []).map((b) => [b.id, b])));
     if (!bs.error) {
@@ -8687,7 +8693,11 @@ function CompanyPage() {
           done: !!setup.items.find((i) => i.key === "vehicles" && i.done) }, el(VehiclesStep, { onAdded: changed })));
       // Sources, then the daily rates for each of them, before launch and after.
       case "rates": return el(React.Fragment, null, parts.sources, parts.seasons, parts.rates);
-      case "protection": return parts.protection;
+      case "protection": return ownInsurance && !showProducts
+        ? el("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" } },
+            el("span", null, "You require renters to bring their own insurance."),
+            el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, onClick: () => setShowProducts(true) }, "Change"))
+        : parts.protection;
       case "contract": return only(parts.acknowledgements);
       case "listing": return only(el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "listing", onSaved: refreshAll }));
       case "staff": return el(StaffPage, { embedded: true, onChanged: refreshSetup });
@@ -8716,7 +8726,7 @@ function CompanyPage() {
     error  && el("div", { className: "loginError" }, error),
     notice && el("div", { style: { color: "#3fbf7f", fontSize: "0.85rem", marginBottom: "12px" } }, notice),
     el(CompanyListsSections, {
-      branches, onChanged: changed, openSections: false,
+      branches, onChanged: changed, openSections: false, ownInsurance, onOwnInsuranceOff: refreshAll,
       layout: (parts) => el(React.Fragment, null, COMPANY_STEPS.map((st, i) => el(CompanyStep, {
         key: st.key, id: `company-step-${st.key}`, stepKey: st.key,
         n: launched ? null : i + 1,
@@ -10886,6 +10896,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
 // the forms, the validator and the AI prompt read, so the rest of the app has
 // the change the next time it draws, without a reload.
 const LIST_REASONS = {
+  own_insurance_required: "Own insurance is required, so protection products cannot be switched on.",
   exec_only:        "Only an Exec can change these lists.",
   not_signed_in:    "You are signed out. Sign in again and retry.",
   feature_off:      "That isn't switched on for this company.",
@@ -11426,7 +11437,7 @@ function ContractAcknowledgementsCard({ versions, busy, onSave, error }) {
 // layout receives each part (pickup, classes, sources, rates, protection,
 // acknowledgements) to place where it belongs.
 // onChanged runs after every change that saved. openSections opens them all.
-function CompanyListsSections({ branches, layout, onChanged, openSections }) {
+function CompanyListsSections({ branches, layout, onChanged, openSections, ownInsurance, onOwnInsuranceOff }) {
   const { currentUser, setup } = React.useContext(AppContext);
   const [ready,  setReady]  = React.useState(false);
   const [busy,   setBusy]   = React.useState(false);
@@ -11470,10 +11481,12 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
     setDrawn((n) => n + 1);
   }, [currentUser]);
 
-  React.useEffect(() => { reload(); }, [reload]);
+  // Requiring own insurance switches the products off, so they are read again.
+  React.useEffect(() => { reload(); }, [reload, ownInsurance]);
 
   const refusal = (data, err) =>
-    err ? LIST_REASONS.network
+    err && /own_insurance_required/.test(err.message) ? LIST_REASONS.own_insurance_required
+    : err ? LIST_REASONS.network
     : data && data.reason === "overlaps" && data.season
       ? seasonOverlapText(data.season, companyLists ? companyLists.seasons : [])
       : (LIST_REASONS[data && data.reason] || "That did not work.");
@@ -11701,6 +11714,20 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
   const saveClass   = (c, order) => ["save_vehicle_class", { p_id: c.id, p_name: c.name, p_sort: order }];
   const saveSource  = (x, order) => ["save_source",
     { p_id: x.id, p_name: x.name, p_billing_type: x.billingType, p_sort: order }];
+  // A product can only go on once own insurance is off. Asks first; false if
+  // the Exec says no or it could not be turned off.
+  const endOwnInsurance = async (at) => {
+    if (!ownInsurance) return true;
+    if (!(await appConfirm({
+      title: "Turn off own insurance?",
+      message: "Renters will no longer need to bring their own insurance at any branch, and you can sell protection products instead.",
+      confirmLabel: "Turn it off",
+    }))) return false;
+    const { data, error: err } = await supabase.rpc("end_own_insurance");
+    if (err || !data || !data.ok) { setError({ at, text: refusal(data, err) }); return false; }
+    await onOwnInsuranceOff();
+    return true;
+  };
   const saveProduct = (pr, order) => ["save_protection_product", { p_id: pr.id, p_name: pr.name, p_sort: order }];
   const savePickup  = (pl, order) => ["save_pickup_location",
     { p_id: pl.id, p_location_id: pl.locationId, p_name: pl.name, p_sort: order }];
@@ -11989,7 +12016,10 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
               }),
               el("label", { className: "protCard__toggle" },
                 el("input", { type: "checkbox", checked: !!pr.active, disabled: busy,
-                  onChange: () => act(`protection:row:${pr.id}`, "set_reference_active", { p_kind: "protection_product", p_id: pr.id, p_active: !pr.active }) }),
+                  onChange: async () => {
+                    if (!pr.active && !(await endOwnInsurance(`protection:row:${pr.id}`))) return;
+                    act(`protection:row:${pr.id}`, "set_reference_active", { p_kind: "protection_product", p_id: pr.id, p_active: !pr.active });
+                  } }),
                 pr.active ? "On" : "Off"),
               confirming !== key && btn("Delete", () => setConfirming(key))),
             confirming === key && el("div", { className: "protCard__confirm" },
@@ -12045,7 +12075,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections }) {
       }),
       el(ListAddRow, {
         placeholder: "New protection product", label: "Add", disabled: busy, error: errAt("protection:add"),
-        onAdd: (name) => act("protection:add", "save_protection_product", { p_id: null, p_name: name, p_sort: null }),
+        onAdd: async (name) => (await endOwnInsurance("protection:add")) && act("protection:add", "save_protection_product", { p_id: null, p_name: name, p_sort: null }),
       })),
 
     // ── Contract acknowledgements ──
