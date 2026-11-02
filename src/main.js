@@ -12284,6 +12284,47 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
         const off = day ? Math.round((1 - v / day) * 100) : 0;
         return `= $${shown} per ${col === "week" ? "week" : "30 days"}${off > 0 ? `, ${off}% off` : ""}`;
       };
+      // Same as another source: every daily, weekly and monthly rate of the
+      // period on screen, copied into this source, to change cell by cell
+      // afterwards. Offered from fleetr.ai, and from Walk-in or phone for any
+      // third source; never into fleetr.ai, whose rates stay whole dollars.
+      // A season rate worked out from the normal rates is copied as blank, so
+      // it is worked out here too.
+      const setIn = (x, c, col) => {
+        if (season) {
+          const v = season.rates[x.name] && season.rates[x.name][c.name];
+          return v && v[col] != null && !(v.auto && v.auto[col]) ? Number(v[col]) : null;
+        }
+        if (col === "day") return rates[x.name] && rates[x.name][c.name] != null ? Number(rates[x.name][c.name]) : null;
+        const pr = periodRates[x.name] && periodRates[x.name][c.name];
+        return pr && pr[col] != null ? Number(pr[col]) : null;
+      };
+      const copySources = !src || src.standardKey === "fleetr_ai" ? []
+        : rateSources.filter((x) => x.id !== src.id
+            && (x.standardKey === "fleetr_ai" || String(x.name).trim().toLowerCase() === "walk-in or phone"));
+      const copyFrom = async (from) => {
+        const changes = activeClasses.flatMap((c) => COLS.map(([col]) => ({ c, col, to: setIn(from, c, col), was: setIn(src, c, col) })))
+          .filter((x) => x.to !== x.was);
+        if (!changes.length) return;
+        if (changes.some((x) => x.was != null) && !(await appConfirm({
+          title: `Same as ${from.name}?`,
+          message: `This replaces the ${label} rates already set for ${src.name} with ${from.name}'s. You can change any of them afterwards.`,
+          confirmLabel: "Replace",
+        }))) return;
+        setBusy(true); setError(null);
+        for (const { c, col, to } of changes) {
+          const [fn, args] = season
+            ? ["set_season_rate", { p_season_id: season.id, p_class_id: c.id, p_source_id: src.id, p_amount: to, p_period: col }]
+            : col === "day"
+              ? ["set_daily_rate", { p_class_id: c.id, p_source_id: src.id, p_amount: to }]
+              : ["set_period_rate", { p_period: col, p_class_id: c.id, p_source_id: src.id, p_amount: to }];
+          const { data, error: err } = await supabase.rpc(fn, args);
+          if (err || !(data && data.ok)) { setError({ at: "rates", text: refusal(data, err) }); break; }
+        }
+        await reload();
+        setBusy(false);
+        if (onChanged) await onChanged();
+      };
       const warn = [];
       activeClasses.forEach((c) => {
         const d = cellOf(c, "day").value, w = cellOf(c, "week").value, m = cellOf(c, "month").value;
@@ -12301,6 +12342,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
           picker("Period", season ? season.id : "normal", setRateView,
             [["normal", "Normal"], ...seasons.map((x) => [x.id, `${x.name}, ${seasonRange(x)}${x.active ? "" : " (off)"}`])]),
           src && picker("Source", src.id, setRateSource, rateSources.map((x) => [x.id, x.name]))),
+        activeClasses.length > 0 && copySources.length > 0 && el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", margin: "0 0 10px" } },
+          copySources.map((x) => el(React.Fragment, { key: x.id }, btn(`Same as ${x.name}`, () => copyFrom(x))))),
         (!activeClasses.length || !src)
           ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Rates need at least one vehicle class and one source switched on.")
           // Keyed by period and source, so a cell's draft never carries from
