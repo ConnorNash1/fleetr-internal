@@ -8288,20 +8288,6 @@ function AutosaveNote({ state }) {
     state === "saving" ? "Saving…" : state === "saved" ? "Saved" : "");
 }
 
-// The steps the Exec has finished with Done, by company, on this device. A
-// solid Done on a step that fleetr's defaults could complete means the Exec
-// pressed it.
-const SETUP_CONFIRMED_KEY = "fleetr_setup_confirmed";
-const confirmedSteps = (op) => {
-  try { return (JSON.parse(window.localStorage.getItem(`${SETUP_CONFIRMED_KEY}:${op}`)) || []); } catch { return []; }
-};
-const confirmStep = (op, key) => {
-  const list = confirmedSteps(op);
-  if (list.includes(key)) return list;
-  const next = [...list, key];
-  try { window.localStorage.setItem(`${SETUP_CONFIRMED_KEY}:${op}`, JSON.stringify(next)); } catch { /* kept for this visit only */ }
-  return next;
-};
 // The steps finished with Done, for the sections inside them: one that only
 // fleetr's defaults complete shows Ready, using defaults until its step is.
 const CompanyDefaults = React.createContext([]);
@@ -8471,8 +8457,11 @@ function CompanyPage() {
   // branch's booking rules are still the ones each starts with.
   const [addressDone, setAddressDone] = React.useState(false);
   const [rulesDefault, setRulesDefault] = React.useState(true);
-  // The steps the Exec has finished with Done.
-  const [confirmed, setConfirmed] = React.useState(() => confirmedSteps(currentUser?.operatorId));
+  // The steps an Exec of the company has finished with Done, kept in the
+  // database (my_setup_confirmations, setup_confirmations.sql in
+  // fleetr-infra), so every device and every Exec sees the same. A solid
+  // Done on a step that fleetr's defaults could complete means it was pressed.
+  const [confirmed, setConfirmed] = React.useState([]);
   // Whether any branch requires renters to bring their own insurance, and
   // whether the Exec has asked to see the switched off products anyway.
   const [ownInsurance, setOwnInsurance] = React.useState(false);
@@ -8487,12 +8476,14 @@ function CompanyPage() {
   }, []);
 
   const refresh = React.useCallback(async () => {
-    const [ov, gs, act, tx, bs, bl] = await Promise.all([
+    const [ov, gs, act, tx, bs, bl, sc] = await Promise.all([
       call("company_overview"), call("company_gas_settings"), call("my_acting_location"),
       call("company_sales_taxes"),
       supabase.from("locations").select("id,timeZone,salesTaxesSetAt"),
       supabase.from("branch_listings").select("*").eq("operatorId", currentUser?.operatorId ?? null),
+      call("my_setup_confirmations"),
     ]);
+    if (sc.ok) setConfirmed(Array.isArray(sc.steps) ? sc.steps : []);
     if (!bl.error) {
       const LISTING_FIELDS = ["hours", "citiesServed", "airportCodes", "minimumAge", "deposit", "paymentMethods",
         "logoPath", "photoPath"];
@@ -8640,9 +8631,17 @@ function CompanyPage() {
     if (node) node.scrollIntoView({ block: "start", behavior: "smooth" });
   }, 150);
   // Done pressed: the step is the Exec's, it folds, and the next unfinished
-  // one opens. Saving never does this; only Done.
+  // one opens. Saving never does this; only Done. It is recorded for the
+  // company, and taken back if that does not work.
   const advance = (key) => {
-    setConfirmed(confirmStep(currentUser?.operatorId, key));
+    if (!confirmed.includes(key)) {
+      setConfirmed((c) => (c.includes(key) ? c : [...c, key]));
+      call("confirm_setup_step", { p_step: key }).then((res) => {
+        if (res.ok) return;
+        setConfirmed((c) => c.filter((k) => k !== key));
+        setFieldError({ at: `skip:${key}`, text: COMPANY_REASONS[res.reason] || "That did not work. Try again." });
+      });
+    }
     const at = COMPANY_STEPS.findIndex((st) => st.key === key);
     const next = COMPANY_STEPS.slice(at + 1).find((st) => st.key === "launch" || unfinished(st)) || COMPANY_STEPS[COMPANY_STEPS.length - 1];
     setOpenSteps((o) => ({ ...o, [key]: false, [next.key]: true }));
