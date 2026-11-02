@@ -8298,12 +8298,14 @@ const CompanyDefaults = React.createContext([]);
 // hold the settings. Every section stays folded until it is clicked.
 const COMPANY_STEPS = [
   { key: "business",   title: "Business details",           items: ["branch", "fuel_rate"] },
-  { key: "vehicles",   title: "Vehicles",                   items: ["vehicle_classes", "vehicles"] },
+  { key: "vehicles",   title: "Vehicle classes",            items: ["vehicle_classes"] },
   { key: "rates",      title: "Rates",                      items: ["rates"] },
   { key: "protection", title: "Protections", items: ["protection"], skippable: true },
   { key: "contract",   title: "Contract terms",             items: ["contract"] },
   { key: "listing",    title: "fleetr.ai listing",          items: ["listing"], skippable: true },
   { key: "staff",      title: "Staff",                      items: ["staff"], doneLabel: "Done, I'll add staff later" },
+  // Last before Launch, and best on a phone: walking the lot, scanning VINs.
+  { key: "fleet",      title: "Add your vehicles",          items: ["vehicles"], phone: true },
   { key: "launch",     title: "Launch", after: "Status" },
 ];
 // Not started until something in a step is saved, In progress after that,
@@ -8331,7 +8333,7 @@ const jumpTo = (step, ...targets) => {
 // the section. Only the outermost CompanySection reads it.
 const CompanySectionFlat = React.createContext(false);
 
-function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, onDone, doneLabel, next, onNext, skipError, busy, showState, children }) {
+function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, onDone, doneLabel, next, onNext, skipError, busy, showState, setup, phone, children }) {
   const el = React.createElement;
   return el("section", { id, className: `companyStep companyStep--${stepKey}${open ? " companyStep--open" : ""}${current ? " companyStep--current" : ""}` },
     el("button", {
@@ -8341,6 +8343,7 @@ function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, sk
         showState && state === "done" ? "\u2713" : showState && state === "skipped" ? "\u2013" : String(n)),
       el("span", { className: "companyStep__title" }, title),
       showState && el("span", { className: `companyStep__state companyStep__state--${state}` }, STEP_STATE_WORDS[state]),
+      setup && el("span", { className: "companyStep__where" }, phone ? "Best on your phone" : "Best on a computer"),
       el("span", { className: "companyStep__chevron", "aria-hidden": "true" }, open ? "\u25be" : "\u25b8")),
     open && el("div", { className: "companyStep__body" },
       children,
@@ -8357,10 +8360,51 @@ function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, sk
       el(FieldError, { text: skipError })));
 }
 
-// What the Vehicles step shows: how many there are, and the add form.
+// What Add your vehicles shows: on a computer, a QR code that opens this step
+// in the staff app on a phone, then the add form.
 function VehiclesStep({ onAdded }) {
   const el = React.createElement;
-  return el(FleetAdditionsPage, { embedded: true, onAdded });
+  return el(React.Fragment, null,
+    onComputer() && el(PhoneHandoffQr),
+    el(FleetAdditionsPage, { embedded: true, onAdded }));
+}
+
+// A computer: a mouse or trackpad that hovers, not a finger.
+const onComputer = () => !!(window.matchMedia && window.matchMedia("(hover: hover) and (pointer: fine)").matches);
+
+// Where the QR code goes: this step, in the staff app, with the username
+// filled in on the sign-in screen (?as=), so the Exec only types their
+// password on the phone, and lands back here once signed in.
+const PHONE_HANDOFF_STEP = "/company?section=fleet";
+function phoneHandoffUrl() {
+  const session = supabase.auth.session();
+  const email = (session && session.user && session.user.email) || "";
+  const username = email.endsWith(`@${AUTH_EMAIL_DOMAIN}`) ? email.slice(0, -AUTH_EMAIL_DOMAIN.length - 1) : "";
+  const base = `${window.location.origin}${window.location.pathname}`;
+  return `${base}#${PHONE_HANDOFF_STEP}${username ? `&as=${encodeURIComponent(username)}` : ""}`;
+}
+
+// The QR code itself, drawn by the qrcode library, loaded only when shown.
+function PhoneHandoffQr() {
+  const el = React.createElement;
+  const [src, setSrc] = React.useState("");
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => {
+    let live = true;
+    import("https://esm.sh/qrcode@1.5.3")
+      .then((mod) => (mod.default || mod).toDataURL(phoneHandoffUrl(), { margin: 1, width: 360, color: { dark: "#1F1E1D", light: "#F9F9F7" } }))
+      .then((url) => { if (live) setSrc(url); })
+      .catch(() => { if (live) setFailed(true); });
+    return () => { live = false; };
+  }, []);
+  if (failed) return null;
+  return el("div", { className: "phoneHandoff" },
+    src ? el("img", { className: "phoneHandoff__qr", src, alt: "QR code that opens this step on your phone" })
+      : el("div", { className: "phoneHandoff__qr skelBox" }),
+    el("div", null,
+      el("div", { className: "phoneHandoff__title" }, "Scan to continue on your phone"),
+      el("p", { className: "closeRentalHint", style: { margin: "4px 0 0" } },
+        "It opens this step in the staff app. Sign in with your password, then add each vehicle as you walk the lot.")));
 }
 
 // The last step: what is left, and the Launch button. The checklist is the
@@ -8532,7 +8576,8 @@ function CompanyPage() {
     switch (st.key) {
       case "business": return unitsSet() || Number(companyFuelRate) > 0
         || Object.values(branchSetup).some((b) => b.salesTaxesSetAt || b.timeZone);
-      case "vehicles": return (fleet || []).length > 0 || (lists.vehicleClasses || []).some((c) => c.active);
+      case "vehicles": return (lists.vehicleClasses || []).some((c) => c.active);
+      case "fleet": return (fleet || []).length > 0;
       case "rates": return Object.keys(lists.rates || {}).length > 0 || (lists.seasons || []).length > 0
         || (lists.sources || []).some((x) => !x.standardKey);
       case "protection": return (lists.protectionProducts || []).length > 0;
@@ -8560,7 +8605,9 @@ function CompanyPage() {
       }
       case "vehicles": return [
         { title: "Vehicle classes", target: "company-section-classes", done: classes.length > 0 },
-        { title: "Add vehicles", target: "company-section-vehicles", done: !!(itemOf("vehicles") && itemOf("vehicles").done) },
+      ];
+      case "fleet": return [
+        { title: "A vehicle at your default branch", target: "company-step-fleet", done: !!(itemOf("vehicles") && itemOf("vehicles").done) },
       ];
       case "rates": {
         const priced = (x) => classes.every((c) => lists.rates && lists.rates[x.name] && lists.rates[x.name][c.name] != null);
@@ -8798,10 +8845,8 @@ function CompanyPage() {
           el(FieldError, { text: errorFor("create") })
         ),
         launched && parts.pickup);
-      case "vehicles": return el(React.Fragment, null,
-        parts.classes,
-        el(CompanySection, { id: "company-section-vehicles", title: "Add vehicles", style: { marginTop: "24px" },
-          done: !!setup.items.find((i) => i.key === "vehicles" && i.done) }, el(VehiclesStep, { onAdded: changed })));
+      case "vehicles": return only(parts.classes);
+      case "fleet": return el(VehiclesStep, { onAdded: changed });
       // Sources, then the daily rates for each of them, before launch and after.
       case "rates": return el(React.Fragment, null, parts.sources, parts.seasons, parts.rates);
       case "protection": return ownInsurance && !showProducts
@@ -8863,6 +8908,7 @@ function CompanyPage() {
         onNext: () => goTo(st, nextPart(st)),
         busy: stepBusy,
         showState: !launched && st.key !== "launch",
+        setup: !launched, phone: !!st.phone,
       }, stepBody(st.key, parts))),
       // After launch, an Exec's Billing, below Status, as one more section.
       launched && isExec && el(CompanyStep, {
@@ -19052,8 +19098,16 @@ function SignupScreen({ onDone, onCancel }) {
   );
 }
 
+// A sign-in reached from the phone QR code (#/company?section=fleet&as=name):
+// the username it carries, filled in.
+const handoffUsername = () => {
+  const hash = window.location.hash || "";
+  if (!hash.startsWith(`#${PHONE_HANDOFF_STEP}`)) return "";
+  return (new URLSearchParams(hash.split("?")[1] || "").get("as") || "").toLowerCase();
+};
+
 function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
-  const [username, setUsername] = React.useState("");
+  const [username, setUsername] = React.useState(handoffUsername);
   const [pin,      setPin]      = React.useState("");
   const [error,    setError]    = React.useState("");
   // The field the error is under: the username, or the password below it.
@@ -19216,7 +19270,8 @@ function App() {
       onForgot: () => { setSignupNotice(""); setForgot(true); },
       onSuccess: (user) => {
         storeSession(user);
-        window.location.hash = "/";
+        // Signed in from the phone QR code: straight on to Add your vehicles.
+        window.location.hash = handoffUsername() ? PHONE_HANDOFF_STEP : "/";
         setCurrentUser(user);
       },
     });
@@ -19706,6 +19761,13 @@ body, * {
 .companyStep__state--done{ background: var(--cs-ink); border-color: var(--cs-ink); color: var(--cs-paper); }
 .companyStep__state--skipped{ border-style: dashed; }
 /* Ready, using defaults and Optional: grey, never the solid Done. */
+/* Where a step is best done, small and grey beside its state. */
+.companyStep__where{ flex: 0 0 auto; font-size: 12px; color: var(--cs-muted); }
+@media (max-width: 600px){ .companyStep__where{ display: none; } }
+/* Add your vehicles on a computer: the QR code that opens it on a phone. */
+.phoneHandoff{ display: flex; gap: 18px; align-items: center; padding: 16px; margin-bottom: 18px; border: 1px solid var(--cs-line); border-radius: 12px; background: var(--cs-card); }
+.phoneHandoff__qr{ width: 140px; height: 140px; flex: 0 0 auto; border-radius: 8px; }
+.phoneHandoff__title{ font-weight: 700; font-size: 15px; }
 .companyStep__state--defaults,
 .companyStep__state--optional{ background: transparent; color: var(--cs-muted); }
 .companyDefaults{ margin-left: 10px; font-size: 12px; font-weight: 600; color: var(--cs-muted); }
