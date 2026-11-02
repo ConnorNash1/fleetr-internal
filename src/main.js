@@ -8437,7 +8437,7 @@ function CompanyPage() {
     ]);
     if (!bl.error) {
       const LISTING_FIELDS = ["hours", "citiesServed", "airportCodes", "minimumAge", "deposit", "paymentMethods",
-        "minNoticeHours", "maxRentalDays", "turnaroundHours", "logoPath", "photoPath"];
+        "logoPath", "photoPath"];
       const has = (v) => v != null && v !== "" && !(Array.isArray(v) && v.length === 0)
         && !(typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0);
       setListingStarted((bl.data || []).some((row) => LISTING_FIELDS.some((k) => has(row[k]))));
@@ -9089,9 +9089,6 @@ const LISTING_NEEDS = {
   cities_or_airports: "the cities or airport codes it serves",
   minimum_age:        "a minimum age",
   payment_methods:    "the payment methods it takes",
-  minimum_notice:     "a minimum notice",
-  maximum_length:     "a maximum rental length",
-  turnaround:         "a turnaround buffer",
   retail_rate:        "a fleetr.ai daily rate (in the Rates section)",
 };
 const listingNeedsList = (keys) => {
@@ -9099,10 +9096,11 @@ const listingNeedsList = (keys) => {
   return words.length === 1 ? words[0] : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
 };
 // A listing's Missing list, each item a link to where it is filled in: the
-// address and pin under Business details, the daily rate under Rates, the
-// booking rules below the preview, and the rest in the preview's own editors.
+// address and pin under Business details, the daily rate under Rates, and the
+// rest in the preview's own editors.
 const LISTING_NEED_EDITORS = { hours: "hours", cities_or_airports: "places", minimum_age: "requirements", payment_methods: "payment" };
-const LISTING_NEED_RULES = { minimum_notice: "minNoticeHours", maximum_length: "maxRentalDays", turnaround: "turnaroundHours" };
+// A branch with no listing saved yet shows the rules every branch starts with.
+const LISTING_RULE_DEFAULTS = { minNoticeHours: 2, maxRentalDays: 30, turnaroundHours: 1 };
 function ListingMissingLinks({ keys, branchId, onEdit }) {
   const el = React.createElement;
   const go = (k) => {
@@ -9112,9 +9110,7 @@ function ListingMissingLinks({ keys, branchId, onEdit }) {
       return;
     }
     if (k === "retail_rate") { jumpTo("rates", "company-section-rates"); return; }
-    if (LISTING_NEED_EDITORS[k]) { onEdit(LISTING_NEED_EDITORS[k]); return; }
-    const field = LISTING_NEED_RULES[k] && document.getElementById(`listing-rule-${branchId}-${LISTING_NEED_RULES[k]}`);
-    if (field) { field.scrollIntoView({ block: "center", behavior: "smooth" }); field.focus({ preventScroll: true }); }
+    if (LISTING_NEED_EDITORS[k]) onEdit(LISTING_NEED_EDITORS[k]);
   };
   return el(React.Fragment, null, " Missing: ",
     keys.map((k, i) => el(React.Fragment, { key: k },
@@ -9211,9 +9207,6 @@ function listingMissingKeys(listing, timeZone) {
   if (!(l.citiesServed || []).length && !(l.airportCodes || []).length) missing.push("cities_or_airports");
   if (!has(l.minimumAge)) missing.push("minimum_age");
   if (!(l.paymentMethods || []).length) missing.push("payment_methods");
-  if (!has(l.minNoticeHours)) missing.push("minimum_notice");
-  if (!has(l.maxRentalDays)) missing.push("maximum_length");
-  if (!has(l.turnaroundHours)) missing.push("turnaround");
   if (!listingHasRetailRate()) missing.push("retail_rate");
   return missing;
 }
@@ -9492,9 +9485,9 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
       minimumAge:        num(l && l.minimumAge),
       deposit:           num(l && l.deposit),
       paymentMethods:    (l && l.paymentMethods) || [],
-      minNoticeHours:    num(l && l.minNoticeHours),
-      maxRentalDays:     num(l && l.maxRentalDays),
-      turnaroundHours:   num(l && l.turnaroundHours),
+      minNoticeHours:    num(l ? l.minNoticeHours : LISTING_RULE_DEFAULTS.minNoticeHours),
+      maxRentalDays:     num(l ? l.maxRentalDays : LISTING_RULE_DEFAULTS.maxRentalDays),
+      turnaroundHours:   num(l ? l.turnaroundHours : LISTING_RULE_DEFAULTS.turnaroundHours),
     };
   };
   const [draft, setDraft] = React.useState(() => toDraft(listing));
@@ -10381,7 +10374,7 @@ function ListingPreviewEditor({ branch, operatorId, company, taxes, listing, tim
   const [chosenId, setChosenId] = React.useState(null);
   const files = { logo: React.useRef(null), photo: React.useRef(null) };
   const num = (v) => (v == null ? "" : String(Number(v)));
-  const rulesOf = (x) => ({ minNoticeHours: num(x.minNoticeHours), maxRentalDays: num(x.maxRentalDays), turnaroundHours: num(x.turnaroundHours) });
+  const rulesOf = (x) => { const r = { ...LISTING_RULE_DEFAULTS, ...x }; return { minNoticeHours: num(r.minNoticeHours), maxRentalDays: num(r.maxRentalDays), turnaroundHours: num(r.turnaroundHours) }; };
   const [rules, setRules] = React.useState(() => rulesOf(l));
   const savedKey = JSON.stringify(listing);
   React.useEffect(() => { setRules(rulesOf(listing || {})); }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
