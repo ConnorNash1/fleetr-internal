@@ -9345,7 +9345,7 @@ const listingNeedsList = (keys) => {
 // A listing's Missing list, each item a link to where it is filled in: the
 // address and pin under Business details, the daily rate under Rates, and the
 // rest in the preview's own editors.
-const LISTING_NEED_EDITORS = { hours: "hours", cities_or_airports: "places", minimum_age: "requirements", payment_methods: "payment" };
+const LISTING_NEED_EDITORS = { hours: "hours", minimum_age: "requirements", payment_methods: "payment" };
 // A branch with no listing saved yet shows the rules every branch starts with.
 const LISTING_RULE_DEFAULTS = { minNoticeHours: 2, maxRentalDays: 30, turnaroundHours: 1 };
 function ListingMissingLinks({ keys, branchId, onEdit }) {
@@ -9451,7 +9451,6 @@ function listingMissingKeys(listing, timeZone) {
   if (!listingHasHours(l.hours)) missing.push("hours");
   // The time zone comes from the pin, so a missing pin is said once.
   if (!timeZone && has(l.latitude) && has(l.longitude)) missing.push("time_zone");
-  if (!(l.citiesServed || []).length && !(l.airportCodes || []).length) missing.push("cities_or_airports");
   if (!has(l.minimumAge)) missing.push("minimum_age");
   if (!(l.paymentMethods || []).length) missing.push("payment_methods");
   if (!listingHasRetailRate()) missing.push("retail_rate");
@@ -10253,7 +10252,6 @@ function faiSampleTrip() {
   const rt = new Date(pu); rt.setDate(rt.getDate() + FAI_SAMPLE_DAYS);
   return { pu, rt, range: `${faiShort(pu)} 10:00 AM – ${faiShort(rt)} 10:00 AM` };
 }
-const faiCityOf = (l) => ((l.citiesServed || [])[0]) || ((l.airportCodes || [])[0]) || "";
 // The airport perk: a free ride from the airport, as the branch picks the
 // renter up or covers their taxi or Uber. The same words as fleetr-website's
 // perksOf; if they change there, change them here.
@@ -10509,58 +10507,6 @@ function ListingCropDialog({ kind, src, cors, start, error, onCancel, onDone }) 
 }
 
 // One branch's listing as the preview.
-// Places from the map search fleetr.ai itself uses (OpenStreetMap's Nominatim,
-// Canada and the US), named as a renter would: "Mount Pearl".
-async function placeMatches(q) {
-  try {
-    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=6&countrycodes=ca,us&q=${encodeURIComponent(q)}`,
-      { headers: { "Accept-Language": "en-CA" } });
-    const out = await res.json();
-    const seen = new Set();
-    return (Array.isArray(out) ? out : []).map((r) => {
-      const a = r.address || {};
-      const name = a.city || a.town || a.village || a.municipality || a.hamlet || a.suburb || r.name || "";
-      return { name, where: a.state || a.province || "" };
-    }).filter((p) => p.name && !seen.has(`${p.name}|${p.where}`) && seen.add(`${p.name}|${p.where}`));
-  } catch (e) {
-    return [];
-  }
-}
-
-// Cities served: picked from the map search, shown as chips to remove.
-function PlacePicker({ value, onChange, disabled }) {
-  const el = React.createElement;
-  const [q, setQ] = React.useState("");
-  const [hits, setHits] = React.useState([]);
-  const [looking, setLooking] = React.useState(false);
-  React.useEffect(() => {
-    const term = q.trim();
-    if (term.length < 2) { setHits([]); setLooking(false); return undefined; }
-    let live = true;
-    setLooking(true);
-    // Nominatim asks for no more than one lookup a second.
-    const t = setTimeout(() => placeMatches(term).then((found) => { if (live) { setHits(found); setLooking(false); } }), 450);
-    return () => { live = false; clearTimeout(t); };
-  }, [q]);
-  const pick = (p) => {
-    if (!value.some((x) => x.toLowerCase() === p.name.toLowerCase())) onChange([...value, p.name]);
-    setQ(""); setHits([]);
-  };
-  return el("div", { className: "placePicker" },
-    value.length > 0 && el("div", { className: "placePicker__chips" }, value.map((name) => el("span", { key: name, className: "placePicker__chip" },
-      name,
-      el("button", { type: "button", "aria-label": `Remove ${name}`, disabled, onClick: () => onChange(value.filter((x) => x !== name)) }, "\u00d7")))),
-    el("input", {
-      className: "faiInput", value: q, disabled, placeholder: "Search for a place", "aria-label": "Search for a place", autoComplete: "off",
-      onChange: (e) => setQ(e.target.value),
-      onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); if (hits[0]) pick(hits[0]); } },
-    }),
-    (hits.length > 0 || (looking && q.trim().length >= 2)) && el("div", { className: "placePicker__list", role: "listbox" },
-      hits.length === 0 ? el("div", { className: "placePicker__note" }, "Searching\u2026")
-        : hits.map((p) => el("button", { key: `${p.name}|${p.where}`, type: "button", role: "option", "aria-selected": false, disabled, onClick: () => pick(p) },
-            el("b", null, p.name), p.where && el("span", null, p.where)))));
-}
-
 // The four requirement cards. Each opens and saves on its own, in place, and
 // its errors show under its field.
 const REQ_OTHER_MAX = 40;
@@ -10785,7 +10731,6 @@ function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listin
   const hoursKey = (h) => JSON.stringify(LISTING_DAYS.map(([k]) => (h[k] && (h.__draft ? h[k].on : h[k].open && h[k].close)
     ? [String(h[k].open).slice(0, 5), String(h[k].close).slice(0, 5)] : null)));
   const draftFor = (part) => ({
-    places:       { citiesServed: (l.citiesServed || []).length ? l.citiesServed : (l.city ? [l.city] : []), airportCodes: (l.airportCodes || []).join(", ") },
     perks:        { airportPickup: !!l.airportPickup, airportRideType: l.airportRideType || "pickup", delivery: !!l.delivery, afterHoursDropoff: !!l.afterHoursDropoff, airportCodes: (l.airportCodes || []).join(", ") },
     hours:        { hours: hoursDraft() },
   }[part] || null);
@@ -10822,11 +10767,6 @@ function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listin
   // says what is wrong.
   const fieldsFor = (part, d, final = true) => {
     const fail = final ? failLoud : quiet;
-    if (part === "places") {
-      const airportCodes = airportsOf(d.airportCodes);
-      if (!airportCodes) return fail("Airport codes are 3 or 4 letters, separated by commas, for example YYT.", "airportCodes");
-      return { citiesServed: d.citiesServed, airportCodes };
-    }
     if (part === "perks") {
       const airportCodes = airportsOf(d.airportCodes);
       if (!airportCodes) return fail("Airport codes are 3 or 4 letters, separated by commas, for example YYT.", "airportCodes");
@@ -10850,7 +10790,7 @@ function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listin
   // is, until Close, which saves anything not saved yet first.
   const codesKey = (codes) => splitList(codes).map((x) => x.toUpperCase()).join(",");
   const editKey = (part, d) => (!part || !d ? "" : part === "hours" ? hoursKey({ ...d.hours, __draft: true })
-    : JSON.stringify(part === "places" ? [d.citiesServed, codesKey(d.airportCodes)] : [d.airportPickup, d.airportPickup ? d.airportRideType || "pickup" : null, d.delivery, d.afterHoursDropoff, codesKey(d.airportCodes)]));
+    : JSON.stringify([d.airportPickup, d.airportPickup ? d.airportRideType || "pickup" : null, d.delivery, d.afterHoursDropoff, codesKey(d.airportCodes)]));
   // What is saved. For hours that is the listing's own, so a new branch's
   // starting hours are saved once the editor is open.
   const savedEditKey = (part) => (!part ? "" : part === "hours" ? hoursKey(savedHours()) : editKey(part, draftFor(part)));
@@ -11021,7 +10961,6 @@ function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listin
   const lowest = classes.length ? Math.min(...classes.map((c) => Number(c.dailyRate))) : null;
   const trip = faiSampleTrip();
   const perks = faiPerksOf(l);
-  const city = faiCityOf(l);
   const hours = listingHasHours(l.hours) ? l.hours : null;
   const tk = faiTodayKey(timeZone);
   const lat = l.latitude != null ? Number(l.latitude) : NaN, lng = l.longitude != null ? Number(l.longitude) : NaN;
@@ -11038,12 +10977,7 @@ function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listin
       onChange: (e) => { setD(k, limit ? numberTyped(e.target.value, limit) : e.target.value); if (errField === k) { setError(""); setErrField(""); } },
       onBlur: editAuto.flush, "data-autosave": true, ...props });
     let body = null;
-    if (part === "places") {
-      body = el(React.Fragment, null,
-        el("div", { className: "faiField" }, el("span", null, "Cities served"),
-          el(PlacePicker, { value: d.citiesServed || [], disabled: !!busy, onChange: (v) => setD("citiesServed", v) })),
-        field("Airport codes", input("airportCodes", { placeholder: "YYT" }), "airportCodes"));
-    } else if (part === "perks") {
+    if (part === "perks") {
       body = el(React.Fragment, null,
         el("div", { className: "faiChecks" },
           check(AIRPORT_RIDE, d.airportPickup, (v) => setD("airportPickup", v)),
@@ -11098,9 +11032,10 @@ function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listin
     logoBlock("card-mark", "card"),
     el("div", { className: "card-body" },
       el("div", { className: "card-name" }, companyName),
-      editable("places", "the cities and airports served",
-        el("div", { className: "card-sub" }, [company ? branch.name : null, city].filter(Boolean).join(" \u00b7 "),
-          !city && el(React.Fragment, null, company ? " \u00b7 " : "", add("Add the cities you serve"))), "places@card"),
+      // The branch's address, from Business details. fleetr.ai finds a branch
+      // by how far it is from the place searched.
+      el("div", { className: "card-sub" }, [company ? branch.name : null, l.address].filter(Boolean).join(" \u00b7 "),
+        !l.address && el("span", { className: "faiMuted" }, `${company ? " \u00b7 " : ""}Add the address under Business details.`)),
       editable("perks", "what this branch offers", perks.length
         ? el("div", { className: "tags" }, perks.map((p) => el("span", { key: p.name, className: "tag" }, p.name)))
         : el("div", { className: "tags" }, add("Add perks")), "perks@card")),
