@@ -19074,16 +19074,20 @@ function ForgotScreen({ onCancel }) {
 
 // A sign-up field: its name above it and, for a password or PIN, a button
 // inside it that shows or hides what was typed.
-function SignupField({ label, secret, type, error, ...props }) {
+// hint, when given, stays under the field while it is typed in: what the
+// field needs, rather than a placeholder that is gone at the first letter.
+function SignupField({ label, secret, type, error, hint, ...props }) {
   const el = React.createElement;
   const id = React.useId();
+  const hintId = `${id}-hint`;
   const [shown, setShown] = React.useState(false);
   // "password" in a sentence, but PIN stays PIN.
   const what = label === label.toUpperCase() ? label : label.toLowerCase();
   return el("div", { className: "signupField" },
     el("label", { className: "signupField__label", htmlFor: id }, label),
     el("div", { className: secret ? "signupField__box signupField__box--secret" : "signupField__box" },
-      el("input", { id, className: "loginInput", spellCheck: false, ...props, ...invalid(!!error), type: secret ? (shown ? "text" : "password") : type }),
+      el("input", { id, className: "loginInput", spellCheck: false, ...props, ...invalid(!!error), type: secret ? (shown ? "text" : "password") : type,
+        "aria-describedby": hint ? hintId : undefined }),
       secret && el("button", {
         type: "button", className: "signupField__eye", onClick: () => setShown((v) => !v),
         "aria-label": shown ? `Hide ${what}` : `Show ${what}`, "aria-pressed": shown,
@@ -19091,7 +19095,53 @@ function SignupField({ label, secret, type, error, ...props }) {
         el("path", { d: "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" }),
         el("circle", { cx: 12, cy: 12, r: 3 }),
         shown && el("path", { d: "M3 3l18 18" })))),
+    hint && el("div", { id: hintId }, hint),
     el(FieldError, { text: error }));
+}
+
+// Whether a password has appeared in a known data breach, by Have I Been
+// Pwned's range search, the same list the sign-up's own check uses. Only the
+// first five characters of the password's SHA-1 leave the device, never the
+// password. true, false, or null when it could not be checked; the sign-up
+// checks again either way.
+const breachAnswers = new Map();
+async function passwordBreached(password) {
+  if (breachAnswers.has(password)) return breachAnswers.get(password);
+  try {
+    const bytes = new Uint8Array(await crypto.subtle.digest("SHA-1", new TextEncoder().encode(password)));
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+    const res = await fetch(`https://api.pwnedpasswords.com/range/${hex.slice(0, 5)}`, { headers: { "Add-Padding": "true" } });
+    if (!res.ok) return null;
+    const rest = hex.slice(5);
+    const found = (await res.text()).split("\n").some((line) => {
+      const [suffix, count] = line.trim().split(":");
+      return suffix === rest && Number(count) > 0;
+    });
+    breachAnswers.set(password, found);
+    return found;
+  } catch (e) {
+    return null;
+  }
+}
+
+// What a new password needs, under the field from the start, each ticked as
+// it is met: its length, and not being one seen in a data breach, checked as
+// it is typed.
+function PasswordRules({ password, breach }) {
+  const el = React.createElement;
+  const longEnough = password.length >= PASSWORD_MIN && password.length <= PASSWORD_MAX;
+  const rule = (state, text) => el("li", { className: `pwRules__rule pwRules__rule--${state}` },
+    el("span", { className: "pwRules__mark", "aria-hidden": "true" }, state === "met" ? "\u2713" : state === "failed" ? "\u2715" : "\u2022"),
+    el("span", null, text),
+    el("span", { className: "pwRules__said" }, state === "met" ? " (done)" : state === "failed" ? " (not met)" : ""));
+  const breachState = !longEnough ? "todo" : breach === true ? "failed" : breach === false ? "met" : "todo";
+  const breachText = breach === true ? "Found in a data breach. Choose a different one."
+    : breach === "checking" ? "Checking it isn't in a known data breach\u2026"
+    : breach === false ? "Not in any known data breach"
+    : "Not one that has appeared in a data breach";
+  return el("ul", { className: "pwRules", "aria-live": "polite" },
+    rule(longEnough ? "met" : "todo", `${PASSWORD_MIN} to ${PASSWORD_MAX} characters`),
+    rule(breachState, breachText));
 }
 
 // The sign-up field each refusal belongs under.
@@ -19108,6 +19158,19 @@ function SignupScreen({ onDone, onCancel }) {
   const [email,    setEmail]    = React.useState("");
   const [joinCode, setJoinCode] = React.useState("");
   const [password, setPassword] = React.useState("");
+  // Whether the password is in a known data breach: true, false, "checking",
+  // or null before it is long enough or when it could not be checked.
+  const [breach,   setBreach]   = React.useState(null);
+  React.useEffect(() => {
+    setBreach(null);
+    if (password.length < PASSWORD_MIN || password.length > PASSWORD_MAX) return undefined;
+    let live = true;
+    const t = setTimeout(() => {
+      setBreach("checking");
+      passwordBreached(password).then((found) => { if (live) setBreach(found); });
+    }, 500);
+    return () => { live = false; clearTimeout(t); };
+  }, [password]);
   const [pin,      setPin]      = React.useState("");
   const [message,  setMessage]  = React.useState("");
   const [messageAt, setMessageAt] = React.useState("");
@@ -19129,6 +19192,7 @@ function SignupScreen({ onDone, onCancel }) {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) { say("email", "Enter a valid email address."); return; }
     if (!password) { say("password", "Choose a password."); return; }
     if (password.length < PASSWORD_MIN) { say("password", `A password is at least ${PASSWORD_MIN} characters.`); return; }
+    if (breach === true) { say("password", "That password has appeared in a data breach, so it can't be used. Choose a different one."); return; }
     if (!/^[0-9]{4}$/.test(pin)) { setMessage("Your PIN must be 4 digits."); setMessageAt("pin"); return; }
     setLoading(true);
     setMessage(""); setMessageAt("");
@@ -19208,7 +19272,9 @@ function SignupScreen({ onDone, onCancel }) {
                 value: username, onChange: (e) => { setUsername(e.target.value.toLowerCase()); setMessage(""); } }),
         field({ label: "Email", error: errorOf("email"), type: "email", placeholder: "Email", maxLength: 120, autoComplete: "email",
                 value: email, onChange: (e) => { setEmail(e.target.value); setMessage(""); } }),
-        field({ label: "Password", error: errorOf("password"), secret: true, placeholder: "Password", minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX, autoComplete: "new-password",
+        field({ label: "Password", error: errorOf("password"), secret: true, placeholder: `${PASSWORD_MIN} to ${PASSWORD_MAX} characters`,
+                minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX, autoComplete: "new-password",
+                hint: React.createElement(PasswordRules, { password, breach }),
                 value: password, onChange: (e) => { setPassword(e.target.value); setMessage(""); } }),
         // Separate from the password on purpose, and the reason is written on
         // the screen: a second secret nobody explains is a second secret people
@@ -19536,6 +19602,15 @@ body, * {
   border: 0; border-radius: 6px; background: none; color: #6B6A66; cursor: pointer;
 }
 .signupField__eye:hover{ color: #1F1E1D; }
+/* A new password's requirements, under the field from the start: grey until
+   met, a green tick once met, red if it cannot be used. */
+.pwRules{ list-style: none; margin: 2px 0 0; padding: 0; display: grid; gap: 3px; font-size: 12.5px; line-height: 1.4; color: #6B6A66; }
+.pwRules__rule{ display: flex; align-items: baseline; gap: 6px; }
+.pwRules__mark{ width: 12px; flex: 0 0 auto; text-align: center; font-weight: 700; }
+.pwRules__rule--met{ color: #2E7D3A; }
+.pwRules__rule--failed{ color: #c0392b; font-weight: 500; }
+/* Done or not, for a screen reader; the tick says it on screen. */
+.pwRules__said{ position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .signupField__eye:focus-visible{ outline: 2px solid #F4845F; outline-offset: 0; }
 
 /* ── PIN field ──────────────────────────────────────────────────────────────
