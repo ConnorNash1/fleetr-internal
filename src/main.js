@@ -8649,8 +8649,10 @@ function CompanyPage() {
       case "business": {
         const open = taxes.filter((t) => t.active);
         return [
-          { title: "Address", target: "company-section-address", done: addressDone },
-          { title: "Units", target: "company-section-units", done: unitsSet() },
+          // The address comes from HQ and the units from its country: done
+          // before the Exec has looked, so only defaults until Done.
+          { title: "Address", target: "company-section-address", done: addressDone, defaults: addressDone },
+          { title: "Units", target: "company-section-units", done: unitsSet(), defaults: unitsSet() },
           { title: "Post-pay fuel rate", target: "company-section-fuel", done: Number(companyFuelRate) > 0 },
           { title: "Sales tax", target: "company-section-tax",
             done: open.length > 0 && open.every((t) => !!branchSetup[t.locationId]?.salesTaxesSetAt) },
@@ -8813,11 +8815,15 @@ function CompanyPage() {
   const only = (node) => el(CompanySectionFlat.Provider, { value: true }, node);
   // Every step's body, before launch and after. The list parts come from
   // CompanyListsSections, drawn once so its data is shared across steps.
+  // Sections fleetr or HQ filled in, the address, units and first branch, read
+  // Ready, using defaults rather than done until Business details is finished
+  // with Done, as a step does.
+  const businessDefaults = !launched && !confirmed.includes("business");
   const stepBody = (key, parts) => {
     switch (key) {
       case "business": return el(React.Fragment, null,
-        el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "address", onSaved: refreshAll }),
-        el(CompanyUnitsSection, { onSaved: changed }),
+        el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "address", onSaved: refreshAll, defaults: businessDefaults }),
+        el(CompanyUnitsSection, { onSaved: changed, defaults: businessDefaults }),
         el(PostPayFuelRateSection, { key: `rate-${fuelUnit()}`, gas, companyRate: companyFuelRate, busy, onSave: run, errorFor }),
         React.createElement(
           CompanySection, { id: "company-section-tax", title: "Sales tax",
@@ -8836,7 +8842,7 @@ function CompanyPage() {
           )
         ),
         React.createElement(
-          CompanySection, { id: "company-section-branches", title: "Branches", style: { marginBottom: "24px" }, done: branches.some((b) => b.active) },
+          CompanySection, { id: "company-section-branches", title: "Branches", style: { marginBottom: "24px" }, done: branches.some((b) => b.active), defaults: businessDefaults },
           React.createElement(
             "div", { style: { overflowX: "auto" } },
             React.createElement(
@@ -9257,7 +9263,7 @@ const UNITS_REASONS = {
   network:           "Could not reach the server.",
 };
 
-function CompanyUnitsSection({ onSaved }) {
+function CompanyUnitsSection({ onSaved, defaults }) {
   const [fuel,     setFuel]     = React.useState(() => fuelUnit() || "");
   const [distance, setDistance] = React.useState(() => distanceUnit() || "");
   // Follows the units once they are read or saved. Kept mounted, so saving
@@ -9293,7 +9299,7 @@ function CompanyUnitsSection({ onSaved }) {
         options.map((o) => React.createElement("option", { key: o.value, value: o.value }, o.label))));
 
   return React.createElement(
-    CompanySection, { id: "company-section-units", title: "Units", done: unitsSet() },
+    CompanySection, { id: "company-section-units", title: "Units", done: unitsSet(), defaults },
     React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
       "How every branch reads and enters fuel and distance: tank sizes, fuel prices, odometer readings, PM intervals and charges. Figures already on file are converted for display, never changed."),
     React.createElement("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "flex-end" } },
@@ -9611,7 +9617,7 @@ function ListingMapPin({ lat, lng, disabled, onPlace }) {
 // part "address" is the branch's address and map pin, under Branch; part
 // "listing" is everything else fleetr.ai shows, under fleetr.ai listing. Each
 // saves only its own fields, so neither can overwrite the other's.
-function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, defaultOpen }) {
+function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, defaultOpen, defaults }) {
   const { currentUser } = React.useContext(AppContext);
   const [listings, setListings] = React.useState(null);
   const [loadError, setLoadError] = React.useState("");
@@ -9713,7 +9719,7 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
       done: part === "address" && !!listings && open.length > 0 && open.every((b) => {
         const l = listings.find((x) => x.locationId === b.id);
         return !!l && branchAddressComplete(l) && l.latitude != null && l.longitude != null;
-      }) },
+      }), defaults: part === "address" && !!defaults },
     React.createElement("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, part === "address"
       ? "Each branch's full address. It places the map pin, which sets the branch's local time, and shows on fleetr.ai and in customer texts."
       : "What fleetr.ai shows for each branch, and the rules for booking it online. While List on fleetr.ai is on, a branch shows once its listing is complete. Photos and logos are public. The address comes from Branch."),
