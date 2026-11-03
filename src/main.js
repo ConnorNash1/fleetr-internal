@@ -8394,7 +8394,7 @@ function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, sk
         showState && state === "done" ? "\u2713" : showState && state === "skipped" ? "\u2013" : String(n)),
       el("span", { className: "companyStep__title" }, title),
       showState && el("span", { className: `companyStep__state companyStep__state--${state}` }, STEP_STATE_WORDS[state]),
-      setup && el("span", { className: "companyStep__where" }, phone ? "Best on your phone" : "Best on a computer"),
+      setup && phone && el("span", { className: "companyStep__where" }, "Best on your phone"),
       el("span", { className: "companyStep__chevron", "aria-hidden": "true" }, open ? "\u25be" : "\u25b8")),
     open && el("div", { className: "companyStep__body" },
       children,
@@ -8918,9 +8918,8 @@ function CompanyPage() {
 
 
   if (!setup) return el(PageSkeleton, { path: "/company" });
-  // Setup's steps, counting signing up as the first, already done.
-  const progress = [{ key: "signup", title: "Sign up", state: "done" },
-    ...COMPANY_STEPS.map((st) => ({ key: st.key, title: st.title, state: stepState(st) }))];
+  // Setup's steps, as the list shows them.
+  const progress = COMPANY_STEPS.map((st) => ({ key: st.key, title: st.title, state: stepState(st) }));
   const progressDone = progress.filter((p) => p.state === "done").length;
   return el("div", { className: "page companySetup" },
     el("h1", { className: "companySetup__title" }, "Company"),
@@ -8937,15 +8936,9 @@ function CompanyPage() {
     el(CompanyDefaults.Provider, { value: confirmed }, el(CompanyListsSections, {
       branches, onChanged: changed, openSections: false, ownInsurance, onOwnInsuranceOff: refreshAll,
       layout: (parts) => el(React.Fragment, null,
-        // Signing up, the first step the bar counts, done and nothing to open.
-        !launched && el("section", { className: "companyStep companyStep--signup" },
-          el("div", { className: "companyStep__head companyStep__head--static" },
-            el("span", { className: "companyStep__num companyStep__num--done", "aria-hidden": "true" }, "\u2713"),
-            el("span", { className: "companyStep__title" }, "Sign up"),
-            el("span", { className: "companyStep__state companyStep__state--done" }, STEP_STATE_WORDS.done))),
         COMPANY_STEPS.map((st, i) => el(CompanyStep, {
         key: st.key, id: `company-step-${st.key}`, stepKey: st.key,
-        n: launched ? null : i + 2,
+        n: launched ? null : i + 1,
         title: launched && st.after ? st.after : st.title,
         state: stepState(st),
         current: !launched && st.key === nextKey,
@@ -14455,8 +14448,8 @@ function SetupBar() {
   const link = (href, text) => React.createElement("a", { href, className: "setupBar__link" }, text);
   let text, action = null;
   if (!setup.launched) {
-    text = "Setup mode: not live yet. fleetr.ai does not show your branches and no texts go to customers. Anything entered now is a test record, removed when the company launches.";
-    if (isExec) action = link("#/company", "Continue setup");
+    text = "Setup mode: not live yet.";
+    if (isExec) action = React.createElement("a", { href: "#/company", className: "setupBar__btn" }, "Continue setup");
   } else if (setup.suspended) {
     text = "Suspended by fleetr. Your branches are hidden from fleetr.ai and take no online bookings. Texts for existing reservations and rentals still go. Contact fleetr to lift it.";
   } else if (setup.paused) {
@@ -19826,6 +19819,16 @@ body, * {
   font-size: 0.85rem;
   line-height: 1.4;
 }
+.setupBar__btn{
+  padding: 4px 12px;
+  border-radius: 8px;
+  background: #F4845F;
+  color: #FFFFFF;
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
 .setupBar__link{
   color: #F9F9F7;
   font-weight: 600;
@@ -19915,8 +19918,6 @@ body, * {
   cursor: pointer;
 }
 .companyStep__head:hover{ background: var(--cs-paper); }
-.companyStep__head--static{ cursor: default; }
-.companyStep__head--static:hover{ background: none; }
 .companyStep__num{
   flex: 0 0 auto;
   width: 28px;
@@ -21719,8 +21720,8 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
    check once it is done. */
 .setupProgress{ margin: 0 0 18px; }
 .setupProgress__top{ display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; color: #5C5B57; margin-bottom: 8px; }
-.setupProgress__bar{ display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 4px; }
-.setupProgress__seg{ height: 8px; border-radius: 999px; background: #E3E2DE; }
+.setupProgress__bar{ display: flex; flex-wrap: nowrap; gap: 4px; }
+.setupProgress__seg{ flex: 1 1 0; min-width: 0; height: 8px; border-radius: 999px; background: #E3E2DE; }
 .setupProgress__seg--done{ background: #F4845F; }
 .setupProgress__seg--progress{ background: rgba(244, 132, 95, 0.45); }
 .setupProgress__seg--defaults{ background: rgba(244, 132, 95, 0.45); }
