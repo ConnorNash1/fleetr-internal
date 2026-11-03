@@ -19098,6 +19098,8 @@ function SignupField({ label, secret, type, error, ...props }) {
 const SIGNUP_FIELD_OF = {
   bad_code: "joinCode", no_location: "joinCode", branch_closed: "joinCode", username_taken: "username", bad_username: "username",
   bad_email: "email", bad_password: "password", bad_pin: "pin", rate_limited: "joinCode",
+  // A password GoTrue will not take: on a data breach list, or too weak.
+  password_breached: "password", weak_password: "password",
 };
 
 function SignupScreen({ onDone, onCancel }) {
