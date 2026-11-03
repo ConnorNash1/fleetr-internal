@@ -8918,20 +8918,26 @@ function CompanyPage() {
 
 
   if (!setup) return el(PageSkeleton, { path: "/company" });
-  // Setup's steps, as the list shows them.
-  const progress = COMPANY_STEPS.map((st) => ({ key: st.key, title: st.title, state: stepState(st) }));
+  // Setup's steps, counting signing up as the first, already done, though the
+  // list does not show it. Launch counts once the company is ready to launch.
+  const progress = [{ key: "signup", state: "done" },
+    ...COMPANY_STEPS.map((st) => ({ key: st.key, state: st.key === "launch" && setup.ready ? "done" : stepState(st) }))];
   const progressDone = progress.filter((p) => p.state === "done").length;
+  const progressPct = Math.round((progressDone / progress.length) * 100);
   return el("div", { className: "page companySetup" },
     el("h1", { className: "companySetup__title" }, "Company"),
     !launched && el("div", { className: "setupProgress" },
       el("div", { className: "setupProgress__top" },
-        el("span", { className: "setupProgress__count" }, `${progressDone} of ${progress.length} steps done`),
-        el("span", { className: "setupProgress__pct" }, `${Math.round((progressDone / progress.length) * 100)}%`)),
-      el("div", { className: "setupProgress__bar", role: "progressbar", "aria-label": "Setup progress",
+        el("span", { className: "setupProgress__count" },
+          progressPct === 100 ? "Ready to launch" : `${progressDone} of ${progress.length} steps done`),
+        el("span", { className: "setupProgress__pct" }, `${progressPct}%`)),
+      // A road, filled from the left by how many are done, with the car at the
+      // leading edge of the fill.
+      el("div", { className: "setupProgress__road", role: "progressbar", "aria-label": "Setup progress",
         "aria-valuemin": 0, "aria-valuemax": progress.length, "aria-valuenow": progressDone },
-        // Filled left to right by how many are done, not by which.
-        progress.map((p, i) => el("span", { key: p.key,
-          className: `setupProgress__seg${i < progressDone ? " setupProgress__seg--done" : ""}` })))),
+        el("span", { className: "setupProgress__fill", style: { width: `${progressPct}%` } }),
+        el("img", { src: "/fleetr-icon-terracotta-on-white.svg", alt: "", draggable: false, className: "setupProgress__car",
+          style: { left: `${progressPct}%`, transform: `translateX(-${progressPct}%)` } }))),
     error  && el("div", { className: "loginError" }, error),
     el(CompanyDefaults.Provider, { value: confirmed }, el(CompanyListsSections, {
       branches, onChanged: changed, openSections: false, ownInsurance, onOwnInsuranceOff: refreshAll,
@@ -14443,13 +14449,15 @@ function Layout() {
 // pointed at what to do about it.
 function SetupBar() {
   const { setup, currentUser } = React.useContext(AppContext);
+  const location = useLocation();
   if (!setup) return null;
   const isExec = roleAtLeast(currentUser?.role, "Exec");
   const link = (href, text) => React.createElement("a", { href, className: "setupBar__link" }, text);
   let text, action = null;
   if (!setup.launched) {
-    text = "Setup mode: not live yet.";
-    if (isExec) action = React.createElement("a", { href: "#/company", className: "setupBar__btn" }, "Continue setup");
+    text = "Setup mode: not live yet";
+    // Not shown on the Company page, where setup already is.
+    if (isExec && location.pathname !== "/company") action = React.createElement("a", { href: "#/company", className: "setupBar__continue" }, "Continue setup \u2192");
   } else if (setup.suspended) {
     text = "Suspended by fleetr. Your branches are hidden from fleetr.ai and take no online bookings. Texts for existing reservations and rentals still go. Contact fleetr to lift it.";
   } else if (setup.paused) {
@@ -14458,7 +14466,7 @@ function SetupBar() {
   } else {
     return null;
   }
-  return React.createElement("div", { className: "setupBar", role: "status" },
+  return React.createElement("div", { className: `setupBar${setup.launched ? "" : " setupBar--setup"}`, role: "status" },
     React.createElement("span", null, text), action);
 }
 
@@ -19819,13 +19827,15 @@ body, * {
   font-size: 0.85rem;
   line-height: 1.4;
 }
-.setupBar__btn{
-  padding: 4px 12px;
-  border-radius: 8px;
-  background: #F4845F;
-  color: #FFFFFF;
+.setupBar--setup{
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  padding: 6px 16px;
+  line-height: 1.3;
+}
+.setupBar__continue{
+  color: #F4845F;
   font-weight: 600;
-  font-size: 0.8rem;
   text-decoration: none;
   white-space: nowrap;
 }
@@ -21719,13 +21729,12 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 /* Setup: the bar across the top, one piece per step, and a sub-section's own
    check once it is done. */
 .setupProgress{ margin: 0 0 18px; }
-.setupProgress__top{ display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; color: #5C5B57; margin-bottom: 8px; }
-.setupProgress__bar{ display: flex; flex-wrap: nowrap; gap: 4px; }
-.setupProgress__seg{ flex: 1 1 0; min-width: 0; height: 8px; border-radius: 999px; background: #E3E2DE; }
-.setupProgress__seg--done{ background: #F4845F; }
-.setupProgress__seg--progress{ background: rgba(244, 132, 95, 0.45); }
-.setupProgress__seg--defaults{ background: rgba(244, 132, 95, 0.45); }
-.setupProgress__seg--skipped{ background: repeating-linear-gradient(90deg, #E3E2DE 0 4px, rgba(244, 132, 95, 0.45) 4px 8px); }
+.setupProgress__top{ display: flex; justify-content: space-between; gap: 12px; font-size: 13px; font-weight: 600; color: #5C5B57; margin-bottom: 18px; }
+.setupProgress__road{ position: relative; height: 10px; border-radius: 999px; background: #E3E2DE; }
+.setupProgress__road::after{ content: ""; position: absolute; left: 8px; right: 8px; top: 50%; height: 0; border-top: 1px dashed #F9F9F7; transform: translateY(-50%); }
+.setupProgress__fill{ position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: #F4845F; transition: width 0.5s ease; }
+.setupProgress__car{ position: absolute; bottom: 8px; width: 22px; height: auto; z-index: 1; filter: drop-shadow(0 0 1px #FFFFFF) drop-shadow(0 0 1px #FFFFFF); transition: left 0.5s ease, transform 0.5s ease; }
+@media (prefers-reduced-motion: reduce){ .setupProgress__fill, .setupProgress__car{ transition: none; } }
 .companySection__done{
   display: inline-grid; place-items: center; width: 18px; height: 18px; margin-left: 8px; vertical-align: 2px;
   border-radius: 999px; background: #1F1E1D; color: #F9F9F7; font-size: 11px; font-weight: 700;
