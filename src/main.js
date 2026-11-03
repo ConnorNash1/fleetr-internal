@@ -8931,13 +8931,11 @@ function CompanyPage() {
         el("span", { className: "setupProgress__count" },
           progressPct === 100 ? "Ready to launch" : `${progressDone} of ${progress.length} steps done`),
         el("span", { className: "setupProgress__pct" }, `${progressPct}%`)),
-      // A road, filled from the left by how many are done, with the car at the
-      // leading edge of the fill.
-      el("div", { className: "setupProgress__road", role: "progressbar", "aria-label": "Setup progress",
+      el("div", { className: "setupProgress__bar", role: "progressbar", "aria-label": "Setup progress",
         "aria-valuemin": 0, "aria-valuemax": progress.length, "aria-valuenow": progressDone },
-        el("span", { className: "setupProgress__fill", style: { width: `${progressPct}%` } }),
-        el("img", { src: "/fleetr-icon-terracotta-on-white.svg", alt: "", draggable: false, className: "setupProgress__car",
-          style: { left: `${progressPct}%`, transform: `translateX(-${progressPct}%)` } }))),
+        // Filled left to right by how many are done, not by which.
+        progress.map((p, i) => el("span", { key: p.key,
+          className: `setupProgress__seg${i < progressDone ? " setupProgress__seg--done" : ""}` })))),
     error  && el("div", { className: "loginError" }, error),
     el(CompanyDefaults.Provider, { value: confirmed }, el(CompanyListsSections, {
       branches, onChanged: changed, openSections: false, ownInsurance, onOwnInsuranceOff: refreshAll,
@@ -21729,12 +21727,10 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 /* Setup: the bar across the top, one piece per step, and a sub-section's own
    check once it is done. */
 .setupProgress{ margin: 0 0 18px; }
-.setupProgress__top{ display: flex; justify-content: space-between; gap: 12px; font-size: 13px; font-weight: 600; color: #5C5B57; margin-bottom: 18px; }
-.setupProgress__road{ position: relative; height: 10px; border-radius: 999px; background: #E3E2DE; }
-.setupProgress__road::after{ content: ""; position: absolute; left: 8px; right: 8px; top: 50%; height: 0; border-top: 1px dashed #F9F9F7; transform: translateY(-50%); }
-.setupProgress__fill{ position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: #F4845F; transition: width 0.5s ease; }
-.setupProgress__car{ position: absolute; bottom: 8px; width: 22px; height: auto; z-index: 1; filter: drop-shadow(0 0 1px #FFFFFF) drop-shadow(0 0 1px #FFFFFF); transition: left 0.5s ease, transform 0.5s ease; }
-@media (prefers-reduced-motion: reduce){ .setupProgress__fill, .setupProgress__car{ transition: none; } }
+.setupProgress__top{ display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; color: #5C5B57; margin-bottom: 8px; }
+.setupProgress__bar{ display: flex; flex-wrap: nowrap; gap: 4px; }
+.setupProgress__seg{ flex: 1 1 0; min-width: 0; height: 8px; border-radius: 999px; background: #E3E2DE; }
+.setupProgress__seg--done{ background: #F4845F; }
 .companySection__done{
   display: inline-grid; place-items: center; width: 18px; height: 18px; margin-left: 8px; vertical-align: 2px;
   border-radius: 999px; background: #1F1E1D; color: #F9F9F7; font-size: 11px; font-weight: 700;
