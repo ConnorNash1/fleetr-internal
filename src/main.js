@@ -11405,7 +11405,7 @@ function InPlaceText({ fields, onSave, error }) {
 // shared draft would let typing in one cell save into another. Saves when the
 // cell is left, and only if it changed. Blank means no price.
 // muted shows a value worked out rather than typed.
-function ListPriceCell({ value, disabled, onSave, suffix, muted, title, error, label }) {
+function ListPriceCell({ value, disabled, onSave, suffix, muted, title, error, label, placeholder }) {
   const shown = value == null ? "" : String(value);
   const [draft, setDraft] = React.useState(shown);
   React.useEffect(() => { setDraft(shown); }, [shown]);
@@ -11415,7 +11415,7 @@ function ListPriceCell({ value, disabled, onSave, suffix, muted, title, error, l
     // Whole dollars, up to $99,999, the most any price here can be.
     React.createElement("input", {
       className: "resFormInput", style: { width: "62px", padding: "4px 6px", ...(muted ? { opacity: 0.55 } : null) },
-      inputMode: "numeric", value: draft, disabled, title, maxLength: 5, ...invalid(!!error),
+      inputMode: "numeric", value: draft, disabled, title, placeholder, maxLength: 5, ...invalid(!!error),
       "data-grid-cell": true, "aria-label": label,
       onChange: (e) => setDraft(numberTyped(e.target.value, { digits: 5 })),
       onKeyDown: gridKey,
@@ -12404,6 +12404,15 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
     seasons: (() => {
       const fai = activeSources.find((x) => x.standardKey === "fleetr_ai");
       const normalRate = (c) => (fai && rates[fai.name] && rates[fai.name][c.name] != null ? Number(rates[fai.name][c.name]) : null);
+      // The weekly and monthly a period's daily rate gives, as the database
+      // works them out: the normal ratio to the daily rate, to the dollar.
+      const tierNote = (c, amount) => {
+        const normal = normalRate(c);
+        const p = fai && periodRates[fai.name] && periodRates[fai.name][c.name];
+        if (amount == null || !normal || !p) return null;
+        const at = (tier) => (p[tier] != null ? Math.round((amount * Number(p[tier])) / normal) : null);
+        return [at("week") != null && `Weekly $${at("week")}/day`, at("month") != null && `Monthly $${at("month")}/day`].filter(Boolean).join(" \u00b7 ") || null;
+      };
       const rateAt = (x, c) => `seasons:rate:${x.id}:${c.id}`;
       const ratesOf = (x) => el("tr", { key: `${x.id}:rates`, style: x.active ? null : { opacity: 0.5 } },
         el("td", { colSpan: 4, className: "datePricing__cell" },
@@ -12413,14 +12422,18 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
                 el("div", { "data-grid": true, style: { overflowX: "auto" } },
                   el("table", { className: "datePricing__table" },
                     el("colgroup", null, el("col", { style: { width: "180px" } }), el("col", { style: { width: "160px" } }), el("col", { style: { width: "160px" } })),
-                    el("thead", null, el("tr", null, ["Class", "Normal daily rate", `${x.name} daily rate`].map((h) => el("th", { key: h }, h)))),
+                    el("thead", null, el("tr", null, ["Class", "Normal daily rate", "Daily rate"].map((h) => el("th", { key: h }, h)))),
                     el("tbody", null, activeClasses.map((c) => {
                       const normal = normalRate(c);
+                      const note = tierNote(c, x.rates[c.id] != null ? x.rates[c.id] : null);
                       return el("tr", { key: c.id },
                         el("td", { className: "datePricing__class" }, c.name),
                         el("td", { className: "datePricing__normal" }, normal != null ? `$${normal}/day` : "No rate yet"),
+                        // Never disabled while saving, so Enter and the arrow
+                        // keys keep the field they move to (gridKey).
                         el("td", null, el(ListPriceCell, {
-                          value: x.rates[c.id] != null ? x.rates[c.id] : null, suffix: "/day", disabled: busy,
+                          value: x.rates[c.id] != null ? x.rates[c.id] : null, suffix: "/day",
+                          placeholder: normal != null ? String(normal) : undefined,
                           label: `${x.name} daily rate for ${c.name}`,
                           onSave: (typed) => {
                             const parsed = parsePrice(rateAt(x, c), typed);
@@ -12428,7 +12441,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
                               ? act(rateAt(x, c), "set_season_class_rate", { p_season_id: x.id, p_class_id: c.id, p_amount: parsed.amount })
                               : Promise.resolve(false);
                           },
-                        })));
+                        }),
+                          note && el("div", { className: "datePricing__tiers" }, note)));
                     })))),
                 // Below the table, so a message never moves a row.
                 activeClasses.map((c) => errAt(rateAt(x, c)) && el(FieldError, { key: c.id, text: `${c.name}: ${errAt(rateAt(x, c))}` })))));
@@ -21656,6 +21670,7 @@ select.resFormInput.listAdd__payer--empty{ color: #9B9A96; }
 .datePricing__table td{ padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
 .datePricing__class{ font-weight: 600; }
 .datePricing__normal{ color: #8A8984; }
+.datePricing__tiers{ margin-top: 2px; font-size: 0.75rem; color: #8A8984; }
 .protCard__allSources{ display: flex; flex-direction: column; gap: 2px; margin: 0 0 6px; }
 .protCard__block{ max-width: 340px; padding-top: 8px; border-top: 1px solid #EEEDE9; }
 .protCard__blockHead{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
