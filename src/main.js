@@ -19060,6 +19060,10 @@ function ForgotScreen({ onCancel }) {
 
 // A sign-up field: its name above it and, for a password or PIN, a button
 // inside it that shows or hides what was typed.
+// Tells 1Password, LastPass, Bitwarden and Dashlane to leave a field alone,
+// where the browser's autocomplete="off" alone is not enough.
+const NO_AUTOFILL = { "data-1p-ignore": "true", "data-lpignore": "true", "data-bwignore": "true", "data-form-type": "other" };
+
 function SignupField({ label, secret, type, error, ...props }) {
   const el = React.createElement;
   const id = React.useId();
@@ -19217,7 +19221,10 @@ function SignupScreen({ onDone, onCancel }) {
                 value: joinCode, onChange: (e) => { setJoinCode(e.target.value.toUpperCase()); setMessage(""); } }),
         field({ label: "Name", error: errorOf("name"), type: "text", placeholder: "First and last name", maxLength: 60, autoComplete: "name",
                 value: name, onChange: (e) => { setName(e.target.value); setMessage(""); } }),
-        field({ label: "Username", error: errorOf("username"), type: "text", placeholder: "6+ letters or numbers", minLength: USERNAME_MIN, maxLength: USERNAME_MAX, autoComplete: "username",
+        // Never autofilled: no login-like name, and password managers told to
+        // leave it, so an email never lands here.
+        field({ label: "Username", error: errorOf("username"), type: "text", placeholder: "6+ letters or numbers", minLength: USERNAME_MIN, maxLength: USERNAME_MAX,
+                autoComplete: "off", name: "fleetr-handle", autoCapitalize: "none", ...NO_AUTOFILL,
                 value: username, onChange: (e) => { setUsername(e.target.value.toLowerCase()); setMessage(""); } }),
         field({ label: "Email", error: errorOf("email"), type: "email", placeholder: "you@company.com", maxLength: 120, autoComplete: "email",
                 value: email, onChange: (e) => { setEmail(e.target.value); setMessage(""); } }),
@@ -19230,7 +19237,7 @@ function SignupScreen({ onDone, onCancel }) {
         // the screen: a second secret nobody explains is a second secret people
         // set to the same string as the first.
         field({ label: "PIN", error: errorOf("pin"), secret: true, placeholder: "4 digits, to confirm actions", inputMode: "numeric", maxLength: 4,
-                autoComplete: "new-password",
+                autoComplete: "off", name: "fleetr-confirm-digits", ...NO_AUTOFILL,
                 value: pin, onChange: (e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setMessage(""); } }),
         React.createElement("button", { type: "submit", className: "loginBtn authBtn", disabled: loading },
           loading ? "Creating\u2026" : "Create account"),
