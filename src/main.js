@@ -8338,12 +8338,13 @@ const CompanyDefaults = React.createContext([]);
 // hold the settings. Every section stays folded until it is clicked.
 const COMPANY_STEPS = [
   { key: "business",   title: "Business details",           items: ["branch", "fuel_rate"] },
+  // Optional, early: staff can be added while the rest is set up.
+  { key: "staff",      title: "Staff",                      items: ["staff"], doneLabel: "Done, I'll add staff later" },
   { key: "vehicles",   title: "Vehicle classes",            items: ["vehicle_classes"] },
   { key: "rates",      title: "Rates",                      items: ["rates"] },
   { key: "protection", title: "Protections", items: ["protection"], skippable: true },
   { key: "contract",   title: "Contract terms",             items: ["contract"] },
   { key: "listing",    title: "fleetr.ai listing",          items: ["listing"], skippable: true },
-  { key: "staff",      title: "Staff",                      items: ["staff"], doneLabel: "Done, I'll add staff later" },
   // Last before Launch, and best on a phone: walking the lot, scanning VINs.
   { key: "fleet",      title: "Add your vehicles",          items: ["vehicles"], phone: true },
   { key: "launch",     title: "Launch", after: "Status" },
