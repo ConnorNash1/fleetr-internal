@@ -11662,7 +11662,6 @@ function VehicleClassPicker({ busy, act, errAt, onAdded }) {
   const [list, setList]       = React.useState(null);
   const [adding, setAdding]   = React.useState("");
   const [error, setError]     = React.useState("");
-  const [editing, setEditing] = React.useState("");
   // Each class's vehicles at every branch of the company, by name, from the
   // database (my_vehicle_class_counts, vehicle_class_off_guard.sql in
   // fleetr-infra): the fleet loaded here can be one branch's. Read again
@@ -11709,7 +11708,6 @@ function VehicleClassPicker({ busy, act, errAt, onAdded }) {
     setError("");
     if (entry && entry.active) {
       if (vehiclesIn(entry.name) > 0) return;
-      if (editing === entry.id) setEditing("");
       act(`classes:row:${entry.id}`, "set_reference_active", { p_kind: "vehicle_class", p_id: entry.id, p_active: false });
       return;
     }
@@ -11736,8 +11734,7 @@ function VehicleClassPicker({ busy, act, errAt, onAdded }) {
     const shown = on ? entry : std;
     const n = on ? vehiclesIn(entry.name) : 0;
     const facts = [shown.seats != null && `${shown.seats} seats`, shown.bags != null && `${shown.bags} bag${shown.bags === 1 ? "" : "s"}`].filter(Boolean).join(" \u00b7 ");
-    const open = on && editing === entry.id;
-    const err = entry ? errAt(`classes:row:${entry.id}`) || errAt(`classes:details:${entry.id}`) : "";
+    const err = entry ? errAt(`classes:row:${entry.id}`) : "";
     return el("div", {
       key: std.name, className: `classCard${on ? " classCard--on" : ""}${n > 0 ? " classCard--held" : ""}`,
       role: "button", tabIndex: 0, "aria-pressed": on, "aria-disabled": n > 0 || undefined,
@@ -11752,9 +11749,6 @@ function VehicleClassPicker({ busy, act, errAt, onAdded }) {
       adding === std.name && el("span", { className: "classCard__note" }, "Adding\u2026"),
       n > 0 && el("span", { className: "classCard__note" },
         `${n} vehicle${n === 1 ? " is" : "s are"} in this class. Move or remove ${n === 1 ? "it" : "them"} before turning it off.`),
-      on && !open && el("button", { type: "button", className: "classCard__edit",
-        onClick: (e) => { e.stopPropagation(); setEditing(entry.id); } }, "Edit"),
-      open && el(VehicleClassEditor, { entry, act, onClose: () => setEditing("") }),
       err && el(FieldError, { text: err }));
   };
 
@@ -11778,46 +11772,6 @@ function VehicleClassPicker({ busy, act, errAt, onAdded }) {
         el("div", { className: "classCards" }, cards.map(card)));
     }),
     el(FieldError, { text: error }));
-}
-
-// A class's seats and bags, open under its card, saved as they are typed. The
-// example models show here too, as the standard list has them.
-function VehicleClassEditor({ entry, act, onClose }) {
-  const el = React.createElement;
-  const shown = (v) => (v == null ? "" : String(v));
-  const [seats, setSeats] = React.useState(shown(entry.seats));
-  const [bags,  setBags]  = React.useState(shown(entry.bags));
-  const [problem, setProblem] = React.useState({ key: "", text: "" });
-  const whole = (t, min, max) => {
-    if (t.trim() === "") return { ok: true, value: null };
-    const n = Number(t);
-    return Number.isInteger(n) && n >= min && n <= max ? { ok: true, value: n } : { ok: false };
-  };
-  const auto = useAutosave(`${seats.trim()}|${bags.trim()}`, `${shown(entry.seats)}|${shown(entry.bags)}`, (final) => {
-    const s = whole(seats, 1, 20), b = whole(bags, 0, 20);
-    if (!s.ok) { if (final) setProblem({ key: "seats", text: "Seats has to be a whole number from 1 to 20." }); return false; }
-    if (!b.ok) { if (final) setProblem({ key: "bags", text: "Bags has to be a whole number from 0 to 20." }); return false; }
-    return act(`classes:details:${entry.id}`, "save_vehicle_class_details", {
-      p_id: entry.id, p_seats: s.value, p_bags: b.value, p_example_models: entry.exampleModels || null,
-    });
-  });
-  const num = (key, label, value, set) => el("label", { className: "classEditor__field" },
-    el("span", { className: "resFormLabel" }, label),
-    el("input", {
-      className: "resFormInput", style: { width: "70px" }, inputMode: "numeric", maxLength: 2, value,
-      "aria-label": `${entry.name} ${label.toLowerCase()}`, ...invalid(problem.key === key),
-      onChange: (e) => { set(numberTyped(e.target.value, { digits: 2 })); setProblem({ key: "", text: "" }); },
-      onBlur: auto.flush, "data-autosave": true,
-    }));
-  return el("div", { className: "classEditor", onClick: (e) => e.stopPropagation(), onKeyDown: (e) => e.stopPropagation() },
-    el("div", { className: "classEditor__row" },
-      num("seats", "Seats", seats, setSeats),
-      num("bags", "Bags", bags, setBags),
-      el(AutosaveNote, { state: auto.state })),
-    el(FieldError, { text: problem.text }),
-    el("div", { className: "closeRentalHint", style: { margin: "6px 0 0" } },
-      `Example model: ${entry.exampleModels || "none"}. It comes from the standard list, which fleetr.ai matches on.`),
-    el("button", { type: "button", className: "classCard__edit", onClick: () => { auto.flush(); onClose(); } }, "Close"));
 }
 
 // The contract terms: fleetr's standard terms, or the company's own, one term
@@ -24050,10 +24004,6 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .classCard__name{ font-weight: 600; padding-right: 18px; }
 .classCard__model, .classCard__facts, .classCard__note{ font-size: 13px; color: rgba(31, 30, 29, 0.62); }
 .classCard__note{ margin-top: 4px; }
-.classCard__edit{ align-self: flex-start; margin-top: 6px; background: none; border: none; padding: 0; font: inherit; font-size: 13px; font-weight: 600; color: #C9603D; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
-.classEditor{ margin-top: 8px; padding-top: 8px; border-top: 1px solid #EEEDE9; cursor: default; }
-.classEditor__row{ display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
-.classEditor__field{ display: flex; flex-direction: column; gap: 4px; }
 .lowWarn{ margin-top: 18px; padding-top: 14px; border-top: 1px solid #EEEDE9; }
 .lowWarn__title{ margin: 0 0 4px; font-size: 14px; font-weight: 700; }
 .lowWarn__row{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; }
