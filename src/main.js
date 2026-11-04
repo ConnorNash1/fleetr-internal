@@ -11227,7 +11227,7 @@ const LIST_REASONS = {
   bad_dates:        "Pick a start and an end date that every year has. Feb 29 cannot be used.",
   name_taken:       "There is already a date pricing period with that name.",
   bad_season:       "That date pricing period is not part of this company.",
-  bad_percent:      "Enter a whole percentage from -90 to +300, for example 20 or -15.",
+  bad_percent:      "Enter a whole number from 0 to 1000, for example 20.",
   bad_period:       "Choose weekly or monthly.",
   fleetr_ai_source: "The fleetr.ai source is what the website books at, so it cannot be deleted. Turn off List on fleetr.ai instead.",
   nothing_picked:   "Tick at least one vehicle class.",
@@ -11454,28 +11454,25 @@ function SameClassPriceField({ label, disabled, error, onApply }) {
     el(FieldError, { text: error }));
 }
 
-// Date pricing percentages: a whole number from -90 to +300, typed with or
-// without its sign. percentTyped keeps a sign and three digits; percentValue
-// is the number, null for blank, or undefined when it is out of range.
-const percentTyped = (raw) => {
-  const t = String(raw ?? "").replace(/[^0-9+-]/g, "");
-  return (/^[+-]/.test(t) ? t[0] : "") + t.replace(/[+-]/g, "").slice(0, 3);
-};
+// Date pricing percentages: how much more, a plain whole number from 0 to
+// 1000. percentTyped keeps four digits; percentValue is the number, null for
+// blank, or undefined when it is out of range.
+const percentTyped = (raw) => numberTyped(raw, { digits: 4 });
 const percentValue = (raw) => {
   const t = String(raw ?? "").trim();
   if (t === "") return null;
-  if (!/^[+-]?[0-9]{1,3}$/.test(t)) return undefined;
+  if (!/^[0-9]{1,4}$/.test(t)) return undefined;
   const n = Number(t);
-  return n >= -90 && n <= 300 ? n : undefined;
+  return n <= 1000 ? n : undefined;
 };
-const percentShown = (n) => (n == null ? "" : `${n > 0 ? "+" : ""}${n}`);
+const percentShown = (n) => (n == null ? "" : String(n));
 // A rate changed by a percentage, to the nearest whole dollar, as the
 // database works it out (date_pricing.sql in fleetr-infra).
 const percentRate = (rate, pct) => Math.round((Number(rate) * (100 + pct)) / 100);
 
-// One class's percentage for a date pricing period, saved when Enter is
+// One class's increase for a date pricing period, saved when Enter is
 // pressed or the box is left. Beside it, in grey, what it makes the class's
-// fleetr.ai daily rate: "+20% → $48/day".
+// fleetr.ai daily rate: "→ $48/day".
 function DatePercentCell({ value, rate, label, disabled, error, onSave }) {
   const el = React.createElement;
   const shown = percentShown(value);
@@ -11490,6 +11487,7 @@ function DatePercentCell({ value, rate, label, disabled, error, onSave }) {
         el("input", {
           className: "resFormInput", style: { width: "58px", padding: "4px 6px" }, inputMode: "numeric", maxLength: 4,
           value: draft, disabled, placeholder: "0", "aria-label": label, ...invalid(!!(error || problem)),
+          // Digits only: no sign, as date pricing only adds.
           onChange: (e) => { setDraft(percentTyped(e.target.value)); setProblem(""); },
           onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } },
           onBlur: async () => {
@@ -11499,9 +11497,8 @@ function DatePercentCell({ value, rate, label, disabled, error, onSave }) {
             if (!(await onSave(n))) setDraft(shown);
           },
         }),
-        el("span", { style: { opacity: 0.7 } }, "%")),
-      pct != null && el("span", { className: "datePricing__result" },
-        rate != null ? `${percentShown(pct)}% \u2192 $${percentRate(rate, pct)}/day` : `${percentShown(pct)}%, no fleetr.ai rate yet`)),
+        el("span", { style: { opacity: 0.7 } }, "% more")),
+      pct != null && rate != null && el("span", { className: "datePricing__result" }, `\u2192 $${percentRate(rate, pct)}/day`)),
     el(FieldError, { text: problem || error }));
 }
 
@@ -11527,12 +11524,12 @@ function SamePercentField({ label, disabled, error, onApply }) {
     el("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" } },
       el("input", {
         className: "resFormInput", style: { width: "70px", padding: "4px 6px" }, inputMode: "numeric", maxLength: 4,
-        value: draft, disabled, placeholder: "+20", "aria-label": label, ...invalid(!!(error || problem)),
+        value: draft, disabled, placeholder: "20", "aria-label": label, ...invalid(!!(error || problem)),
         onChange: (e) => { setDraft(percentTyped(e.target.value)); setProblem(""); },
         onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } },
         onBlur: apply,
       }),
-      el("span", { style: { opacity: 0.7 } }, "%")),
+      el("span", { style: { opacity: 0.7 } }, "% more")),
     el(FieldError, { text: problem || error }));
 }
 
@@ -11582,7 +11579,7 @@ function ListInlineName({ name, disabled, onSave, error }) {
 // Months and days are picked from lists, and a day every year has: no Feb 29.
 // A period being changed saves by itself, and Close closes it.
 const SEASON_MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-function SeasonForm({ season, label, disabled, onSave, onCancel, error }) {
+function SeasonForm({ season, label, disabled, onSave, onCancel, onDelete, error }) {
   const [name, setName] = React.useState(season ? season.name : "");
   const [d, setD] = React.useState(season
     ? { sm: season.startMonth, sd: season.startDay, em: season.endMonth, ed: season.endDay }
@@ -11626,6 +11623,12 @@ function SeasonForm({ season, label, disabled, onSave, onCancel, error }) {
     onCancel && el("button", {
       className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled, onClick: () => { auto.flush(); onCancel(); },
     }, season ? "Close" : "Cancel"),
+    season && onDelete && el("button", {
+      type: "button", className: "companyStep__textBtn", disabled,
+      onClick: async () => {
+        if (await appConfirm({ title: `Delete ${season.name}?`, message: "Its percentages are removed.", confirmLabel: "Delete", danger: true })) onDelete();
+      },
+    }, "Delete"),
     error && el("div", { style: { flexBasis: "100%" } }, el(FieldError, { text: error })));
 }
 
@@ -12481,18 +12484,18 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
             ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem", margin: 0 } }, "Turn on a vehicle class to set its percentage.")
             : el(React.Fragment, null,
                 el(SamePercentField, {
-                  label: `${x.name}, same percentage for every class`, disabled: busy, error: errAt(`seasons:all:${x.id}`),
+                  label: `${x.name}, same increase for every class`, disabled: busy, error: errAt(`seasons:all:${x.id}`),
                   onApply: (n) => act(`seasons:all:${x.id}`, "set_season_percent_all", { p_season_id: x.id, p_percent: n }),
                 }),
                 el("div", { className: "datePricing__grid" }, activeClasses.map((c) => el("div", { key: c.id, className: "datePricing__row" },
                   el("span", { className: "datePricing__class" }, c.name),
                   el(DatePercentCell, {
                     value: x.percents[c.id] != null ? x.percents[c.id] : null, rate: faiRate(c),
-                    label: `${x.name}, ${c.name} percentage`, disabled: busy, error: errAt(`seasons:pct:${x.id}:${c.id}`),
+                    label: `${x.name}, ${c.name} increase`, disabled: busy, error: errAt(`seasons:pct:${x.id}:${c.id}`),
                     onSave: (n) => act(`seasons:pct:${x.id}:${c.id}`, "set_season_percent", { p_season_id: x.id, p_class_id: c.id, p_percent: n }),
                   })))))));
       return section("Date pricing",
-        "Charge more or less on certain dates, like summer or a slow November.",
+        "Set your normal rates for your slowest time of year, then charge more on busy dates, like summer.",
         "seasons",
         seasons.length > 0 && table("520px", ["Period", "Dates", "On", ""],
           seasons.flatMap((x) => [el("tr", { key: x.id, style: x.active ? null : { opacity: 0.5 } },
@@ -12500,6 +12503,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
               ? el("td", { colSpan: 4 }, el(SeasonForm, {
                   season: x, disabled: busy, error: errAt(`seasons:edit:${x.id}`),
                   onCancel: () => setEditSeason(""),
+                  onDelete: async () => { if (await act(`seasons:edit:${x.id}`, "delete_rate_season", { p_id: x.id })) setEditSeason(""); },
                   onSave: async (f) => {
                     return act(`seasons:edit:${x.id}`, "save_rate_season", {
                       p_id: x.id, p_name: f.name, p_start_month: f.sm, p_start_day: f.sd, p_end_month: f.em, p_end_day: f.ed,
