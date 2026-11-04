@@ -19213,27 +19213,27 @@ function SignupScreen({ onDone, onCancel }) {
       React.createElement(
         "form", { className: "loginForm", onSubmit: submit, noValidate: true },
         // Ten letters and digits. The old dash is still accepted, so one more.
-        field({ label: "Join code", error: errorOf("joinCode"), type: "text", placeholder: "Join code", maxLength: 11, autoCapitalize: "characters",
+        field({ label: "Join code", error: errorOf("joinCode"), type: "text", placeholder: "10-character code", maxLength: 11, autoCapitalize: "characters",
                 value: joinCode, onChange: (e) => { setJoinCode(e.target.value.toUpperCase()); setMessage(""); } }),
-        field({ label: "Name", error: errorOf("name"), type: "text", placeholder: "Full name", maxLength: 60, autoComplete: "name",
+        field({ label: "Name", error: errorOf("name"), type: "text", placeholder: "First and last name", maxLength: 60, autoComplete: "name",
                 value: name, onChange: (e) => { setName(e.target.value); setMessage(""); } }),
-        field({ label: "Username", error: errorOf("username"), type: "text", placeholder: "Username", minLength: USERNAME_MIN, maxLength: USERNAME_MAX, autoComplete: "username",
+        field({ label: "Username", error: errorOf("username"), type: "text", placeholder: "6+ letters or numbers", minLength: USERNAME_MIN, maxLength: USERNAME_MAX, autoComplete: "username",
                 value: username, onChange: (e) => { setUsername(e.target.value.toLowerCase()); setMessage(""); } }),
-        field({ label: "Email", error: errorOf("email"), type: "email", placeholder: "Email", maxLength: 120, autoComplete: "email",
+        field({ label: "Email", error: errorOf("email"), type: "email", placeholder: "you@company.com", maxLength: 120, autoComplete: "email",
                 value: email, onChange: (e) => { setEmail(e.target.value); setMessage(""); } }),
         // Checked when the field is left, and again on Create Account.
-        field({ label: "Password", error: errorOf("password"), secret: true, placeholder: PASSWORD_HINT,
+        field({ label: "Password", error: errorOf("password"), secret: true, placeholder: "6+ characters, 1 number",
                 minLength: PASSWORD_MIN, maxLength: PASSWORD_MAX, autoComplete: "new-password",
                 value: password, onChange: (e) => { setPassword(e.target.value); setMessage(""); },
                 onBlur: () => { if (!password) return; newPasswordCheck(password).then((p) => { if (p) { setMessage(p); setMessageAt("password"); } }); } }),
         // Separate from the password on purpose, and the reason is written on
         // the screen: a second secret nobody explains is a second secret people
         // set to the same string as the first.
-        field({ label: "PIN", error: errorOf("pin"), secret: true, placeholder: "4-digit PIN", inputMode: "numeric", maxLength: 4,
+        field({ label: "PIN", error: errorOf("pin"), secret: true, placeholder: "4 digits, to confirm actions", inputMode: "numeric", maxLength: 4,
                 autoComplete: "new-password",
                 value: pin, onChange: (e) => { setPin(e.target.value.replace(/\D/g, "").slice(0, 4)); setMessage(""); } }),
         React.createElement("button", { type: "submit", className: "loginBtn authBtn", disabled: loading },
-          loading ? "Creating\u2026" : "Create Account"),
+          loading ? "Creating\u2026" : "Create account"),
         messageAt === "" && message && React.createElement("div", { className: "loginError" }, message),
         React.createElement("button", {
           type: "button", className: "loginLink", onClick: onCancel,
