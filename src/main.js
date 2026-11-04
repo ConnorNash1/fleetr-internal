@@ -8374,7 +8374,7 @@ const jumpTo = (step, ...targets) => {
 // the section. Only the outermost CompanySection reads it.
 const CompanySectionFlat = React.createContext(false);
 
-function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, onDone, doneLabel, left, skipError, busy, showState, setup, phone, children }) {
+function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, onDone, doneLabel, left, skipError, busy, showState, setup, children }) {
   const el = React.createElement;
   return el("section", { id, className: `companyStep companyStep--${stepKey}${open ? " companyStep--open" : ""}${current ? " companyStep--current" : ""}` },
     el("button", {
@@ -8384,7 +8384,6 @@ function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, sk
         showState && state === "done" ? "\u2713" : showState && state === "skipped" ? "\u2013" : String(n)),
       el("span", { className: "companyStep__title" }, title),
       showState && el("span", { className: `companyStep__state companyStep__state--${state}` }, STEP_STATE_WORDS[state]),
-      setup && phone && el("span", { className: "companyStep__where" }, "Best on your phone"),
       el("span", { className: "companyStep__chevron", "aria-hidden": "true" }, open ? "\u25be" : "\u25b8")),
     open && el("div", { className: "companyStep__body" },
       children,
@@ -8404,6 +8403,12 @@ function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, sk
 function VehiclesStep({ onAdded }) {
   const el = React.createElement;
   return el(React.Fragment, null,
+    el("div", { className: "bestOnPhone" },
+      el("svg", { className: "bestOnPhone__icon", viewBox: "0 0 24 24", width: 28, height: 28, fill: "none", stroke: "currentColor",
+        strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+        el("rect", { x: 6.5, y: 2.5, width: 11, height: 19, rx: 2.2 }),
+        el("path", { d: "M11 18.5h2" })),
+      el("div", { className: "bestOnPhone__text" }, "Best on your phone")),
     onComputer() && el(PhoneHandoffQr),
     el(FleetAdditionsPage, { embedded: true, onAdded }));
 }
@@ -8725,7 +8730,10 @@ function CompanyPage() {
       });
     }
     const at = COMPANY_STEPS.findIndex((st) => st.key === key);
-    const next = COMPANY_STEPS.slice(at + 1).find((st) => st.key === "launch" || unfinished(st)) || COMPANY_STEPS[COMPANY_STEPS.length - 1];
+    // Business details goes on to Staff, optional as it is; every other step
+    // to the next one not finished.
+    const next = key === "business" ? COMPANY_STEPS.find((st) => st.key === "staff")
+      : COMPANY_STEPS.slice(at + 1).find((st) => st.key === "launch" || unfinished(st)) || COMPANY_STEPS[COMPANY_STEPS.length - 1];
     setOpenSteps((o) => ({ ...o, [key]: false, [next.key]: true }));
     scrollToStep(next.key);
   };
@@ -8940,7 +8948,7 @@ function CompanyPage() {
         left: !!nextPart(st),
         busy: stepBusy,
         showState: !launched && st.key !== "launch",
-        setup: !launched, phone: !!st.phone,
+        setup: !launched,
       }, stepBody(st.key, parts))),
       // After launch, an Exec's Billing, below Status, as one more section.
       launched && isExec && el(CompanyStep, {
@@ -15987,8 +15995,7 @@ function DamageCamera({ title, onPhoto, onClose }) {
 
   return el("div", { className: "damageCamera", role: "dialog", "aria-modal": "true", "aria-label": title || "Damage photos" },
     el("div", { className: "damageCamera__top" },
-      el("span", { className: "damageCamera__title" }, title || "Damage photos"),
-      el("button", { type: "button", className: "damageCamera__done", onClick: done }, taken ? "Done" : "Cancel")),
+      el("span", { className: "damageCamera__title" }, title || "Damage photos")),
     el("div", { className: "closeRentalCamera damageCamera__stage" },
       el("video", {
         ref: videoRef, className: "closeRentalCamera__video", playsInline: true, muted: true, autoPlay: true,
@@ -16000,9 +16007,11 @@ function DamageCamera({ title, onPhoto, onClose }) {
         el("button", { type: "button", className: "resModalSubmit", style: { marginTop: 12 }, onClick: () => setAttempt((n) => n + 1) }, "Try again"))),
     el("div", { className: "damageCamera__count", role: "status" },
       captureError || (taken ? `${taken} photo${taken === 1 ? "" : "s"} added` : "Take as many as you need, then Done.")),
-    el("div", { className: "closeRentalCameraControls" },
+    el("div", { className: "closeRentalCameraControls damageCamera__controls" },
       el("button", { type: "button", className: "closeRentalShutter", onClick: takePhoto, disabled: camera !== "live" || busy },
-        busy ? "Taking photo..." : "Take photo")));
+        busy ? "Taking photo..." : "Take photo"),
+      // Directly under Take photo.
+      el("button", { type: "button", className: "damageCamera__done", onClick: done }, taken ? "Done" : "Cancel")));
 }
 
 // Damage, photo first, wherever it is recorded: one section that folds, with
@@ -19911,9 +19920,10 @@ body, * {
 .companyStep__state--skipped{ border-style: dashed; }
 /* Ready, using defaults and Optional: grey, never the solid Done. */
 /* Where a step is best done, small and grey beside its state. */
-.companyStep__where{ flex: 0 0 auto; font-size: 12px; color: var(--cs-muted); }
-@media (max-width: 600px){ .companyStep__where{ display: none; } }
 /* Add your vehicles on a computer: the QR code that opens it on a phone. */
+.bestOnPhone{ display: flex; flex-direction: column; align-items: center; gap: 4px; margin: 0 0 14px; text-align: center; color: var(--cs-ink); }
+.bestOnPhone__icon{ color: var(--cs-terra); }
+.bestOnPhone__text{ font-size: 13px; font-weight: 600; }
 .phoneHandoff{ display: flex; gap: 18px; align-items: center; padding: 16px; margin-bottom: 18px; border: 1px solid var(--cs-line); border-radius: 12px; background: var(--cs-card); }
 .phoneHandoff__qr{ width: 140px; height: 140px; flex: 0 0 auto; border-radius: 8px; }
 .phoneHandoff__title{ font-weight: 700; font-size: 15px; }
@@ -19978,8 +19988,8 @@ body, * {
   letter-spacing: -0.01em;
   color: var(--cs-ink);
 }
-.companyStep__body .dashboardSection > h2[role="button"]:hover,
-.staffPage .dashboardSection > h2[role="button"]:hover{ color: #C9603D; }
+.companyStep__body .dashboardSection > h2[role="button"][aria-expanded="false"]:hover,
+.staffPage .dashboardSection > h2[role="button"][aria-expanded="false"]:hover{ color: #C9603D; }
 .companyStep__body .dashboardSection > h2:not([aria-expanded="false"]),
 .staffPage .dashboardSection > h2:not([aria-expanded="false"]){
   border-bottom: 1px solid var(--cs-line);
@@ -21323,7 +21333,8 @@ body, * {
 .damageCamera{ position: fixed; inset: 0; z-index: 1000; display: flex; flex-direction: column; gap: 10px; padding: 14px; background: #1F1E1D; color: #F9F9F7; }
 .damageCamera__top{ display: flex; align-items: center; justify-content: space-between; }
 .damageCamera__title{ font-weight: 600; }
-.damageCamera__done{ background: none; border: none; color: #F9F9F7; font: inherit; font-weight: 600; cursor: pointer; padding: 6px 10px; }
+.damageCamera__controls{ flex-direction: column; }
+.damageCamera__done{ border: 1px solid rgba(249, 249, 247, 0.4); border-radius: 10px; background: none; color: #F9F9F7; font: inherit; font-weight: 600; cursor: pointer; }
 .closeRentalCamera.damageCamera__stage{ flex: 1 1 auto; min-height: 0; max-width: none; aspect-ratio: auto; }
 .damageCamera__count{ text-align: center; font-size: 13px; opacity: 0.8; }
 .damagePhotoViewer__close{
