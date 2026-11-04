@@ -8807,6 +8807,7 @@ function CompanyPage() {
     switch (key) {
       case "business": return el(React.Fragment, null,
         el(ListingSection, { branches, branchSetup, onTimeZoneSet: refreshAll, part: "address", onSaved: refreshAll, defaults: businessDefaults }),
+        el(CompanyLogoSection, { branches }),
         el(CompanyUnitsSection, { onSaved: changed, defaults: businessDefaults }),
         el(PostPayFuelRateSection, { key: `rate-${fuelUnit()}`, gas, companyRate: companyFuelRate, busy, onSave: run, errorFor }),
         React.createElement(
@@ -9316,6 +9317,7 @@ const LISTING_REASONS = {
   bad_time_zone: "That time zone is not recognised.",
   bad_value:     "One of the values is out of range. Check the numbers and try again.",
   network:       "Could not reach the server.",
+  bad_path:      "That image is not part of this company. Upload it again.",
 };
 
 // What save_branch_listing's listing_problem keys mean, in words, in the order
@@ -9605,8 +9607,10 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
   const { currentUser } = React.useContext(AppContext);
   const [listings, setListings] = React.useState(null);
   const [loadError, setLoadError] = React.useState("");
-  // The company's name, which the listing preview shows as fleetr.ai does.
+  // The company's name and logo, which the listing preview shows as
+  // fleetr.ai does.
   const [company, setCompany] = React.useState("");
+  const companyLogo = useCompanyLogo();
   const [taxes, setTaxes] = React.useState({});
 
   const reload = React.useCallback(async () => {
@@ -9665,7 +9669,7 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
   if (part === "listing") {
     const el = React.createElement;
     const editors = (view) => listings && open.map((b) => el(ListingPreviewEditor, {
-      key: b.id, view, branch: b, operatorId: currentUser?.operatorId, company, taxes: taxes[b.id] || [],
+      key: b.id, view, branch: b, operatorId: currentUser?.operatorId, company, companyLogo, taxes: taxes[b.id] || [],
       listing: listings.find((l) => l.locationId === b.id) || null,
       timeZone: (branchSetup && branchSetup[b.id]?.timeZone) || null, onSaved: saved, multi: open.length > 1,
     }));
@@ -10340,6 +10344,88 @@ function faiCropOf(path) {
 
 // The crop step, like a profile photo: drag to move, the slider, a pinch or
 // the wheel to zoom, framed to the shape the image shows in.
+// ─── The company's logo ──────────────────────────────────────────────────────
+// One for the whole company (operators."logoPath", company_logo.sql in
+// fleetr-infra), shown for every branch on fleetr.ai. Read wherever it shows,
+// and read again when it changes here.
+const COMPANY_LOGO_EVENT = "fleetr:company-logo";
+function useCompanyLogo() {
+  const { currentUser } = React.useContext(AppContext);
+  const op = currentUser?.operatorId ?? null;
+  const [path, setPath] = React.useState(null);
+  React.useEffect(() => {
+    let live = true;
+    const load = () => supabase.from("operators").select("logoPath").eq("id", op).maybeSingle()
+      .then(({ data }) => { if (live) setPath((data && data.logoPath) || null); });
+    if (op) load();
+    window.addEventListener(COMPANY_LOGO_EVENT, load);
+    return () => { live = false; window.removeEventListener(COMPANY_LOGO_EVENT, load); };
+  }, [op]);
+  return path;
+}
+
+// Business details' Logo: upload, crop, replace or remove the company's logo.
+// The file goes in the company's folder under its default branch, which the
+// listing-photos bucket requires.
+function CompanyLogoSection({ branches }) {
+  const el = React.createElement;
+  const { currentUser } = React.useContext(AppContext);
+  const op = currentUser?.operatorId ?? null;
+  const path = useCompanyLogo();
+  const [crop, setCrop] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const fileRef = React.useRef(null);
+  const home = (branches || []).find((b) => b.isDefault) || (branches || [])[0] || null;
+  const url = listingPhotoUrl(path);
+  const changed = () => window.dispatchEvent(new CustomEvent(COMPANY_LOGO_EVENT));
+  const setLogo = async (next) => {
+    const { data, error: err } = await supabase.rpc("set_company_logo", { p_path: next });
+    if (err || !data || !data.ok) { setError(err ? LISTING_REASONS.network : (LISTING_REASONS[data && data.reason] || "That did not work.")); return false; }
+    return true;
+  };
+  const picked = (file) => {
+    if (!file) return;
+    if (!/^image\//.test(file.type || "")) { setError("Choose a JPEG, PNG or WebP image."); return; }
+    setError("");
+    setCrop({ src: URL.createObjectURL(file) });
+  };
+  const closeCrop = () => { if (crop) URL.revokeObjectURL(crop.src); setCrop(null); };
+  const cropped = async (out) => {
+    if (!out) { setError("The image could not be prepared. Try again."); return false; }
+    if (out.blob.size > LISTING_PHOTO_MAX_BYTES) { setError("That image is still over 5 MB once cropped. Choose a smaller one."); return false; }
+    if (!op || !home) { setError(LISTING_REASONS.not_signed_in); return false; }
+    setBusy(true); setError("");
+    const next = `${op}/${home.id}/logo-${Date.now()}.${out.ext}`;
+    const up = await supabase.storage.from(LISTING_BUCKET).upload(next, out.blob, { contentType: out.type, cacheControl: "3600", upsert: false });
+    if (up.error) { setBusy(false); setError("The image could not be uploaded. Try again."); return false; }
+    const before = path;
+    if (!(await setLogo(next))) { await supabase.storage.from(LISTING_BUCKET).remove([next]); setBusy(false); return false; }
+    if (before) await supabase.storage.from(LISTING_BUCKET).remove([before]);
+    setBusy(false); closeCrop(); changed();
+    return true;
+  };
+  const remove = async () => {
+    if (!path || busy) return;
+    setBusy(true);
+    if (await setLogo(null)) { await supabase.storage.from(LISTING_BUCKET).remove([path]); changed(); }
+    setBusy(false);
+  };
+  return el(CompanySection, { id: "company-section-logo", title: "Logo", done: !!path },
+    el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Your company's logo, shown for every branch on fleetr.ai."),
+    el("div", { className: "companyLogo" },
+      el("div", { className: `companyLogo__tile${url ? "" : " companyLogo__tile--empty"}` },
+        url ? el("img", { src: url, alt: "Company logo" }) : "No logo"),
+      el("div", { className: "companyLogo__actions" },
+        el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "8px 14px" }, disabled: busy,
+          onClick: () => fileRef.current && fileRef.current.click() }, busy ? "Saving\u2026" : url ? "Replace logo" : "Upload logo"),
+        url && el("button", { type: "button", className: "companyStep__textBtn", disabled: busy, onClick: remove }, "Remove"))),
+    el(FieldError, { text: error }),
+    el("input", { ref: fileRef, type: "file", accept: "image/*", style: { display: "none" },
+      onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; picked(f); } }),
+    crop && el(ListingCropDialog, { kind: "logo", src: crop.src, cors: false, start: null, error, onCancel: () => { setError(""); closeCrop(); }, onDone: cropped }));
+}
+
 function ListingCropDialog({ kind, src, cors, start, error, onCancel, onDone }) {
   const el = React.createElement;
   const spec = FAI_IMAGE[kind];
@@ -10641,7 +10727,7 @@ function RequirementCards({ listing: l, busy, save, error, errField, clearError,
 
 // view is the section it is drawn in: "show" (whether it shows on fleetr.ai
 // and what is missing), "rules" (its booking rules) or "preview".
-function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listing, timeZone, onSaved, multi }) {
+function ListingPreviewEditor({ view, branch, operatorId, company, companyLogo, taxes, listing, timeZone, onSaved, multi }) {
   const el = React.createElement;
   const l = listing || {};
   const [busy, setBusy] = React.useState("");
@@ -10918,18 +11004,19 @@ function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listin
     if (listingPhotoUrl(l[fieldOf(kind)])) setMenu((m) => (m === key ? "" : key)); else choose(kind);
   };
   const companyName = company || branch.name;
-  // The logo in its rounded square, as a result and the branch page show it.
-  const logoBlock = (cls, where) => {
-    const logo = listingPhotoUrl(l.logoPath);
+  // The company's logo in its rounded square, as a result and the branch page
+  // show it. It is set in Business details, which a click opens.
+  const openLogo = (e) => { e.stopPropagation(); jumpTo("business", "company-section-logo"); };
+  const logoBlock = (cls) => {
+    const logo = listingPhotoUrl(companyLogo);
     // Until there is a logo, a neutral grey square with the company's initials.
     return el("div", {
       className: `${cls} faiImage faiLogo${logo ? "" : " faiLogo--empty"}`, role: "button", tabIndex: 0,
-      "aria-label": logo ? "Change the logo" : "Add your logo",
-      onClick: openImage("logo", where), onKeyDown: keyClick(openImage("logo", where)),
+      "aria-label": logo ? "Change the logo in Business details" : "Add your logo in Business details",
+      onClick: openLogo, onKeyDown: keyClick(openLogo),
     }, logo ? el("img", { src: logo, alt: `${companyName} logo` })
-        : el("span", { className: "faiLogo__initials" }, busy === "logo" ? "\u2026" : companyInitials(companyName)),
-      el("span", { className: `faiImage__badge${logo ? "" : " faiImage__badge--add"}`, "aria-hidden": "true" }, logo ? cardPencil() : "+"),
-      imageMenu("logo", where));
+        : el("span", { className: "faiLogo__initials" }, companyInitials(companyName)),
+      el("span", { className: `faiImage__badge${logo ? "" : " faiImage__badge--add"}`, "aria-hidden": "true" }, logo ? cardPencil() : "+"));
   };
   // The location photo, beside the map in Where you'll pick up.
   const photoBlock = () => {
@@ -11204,7 +11291,7 @@ function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listin
       // A logo or photo that could not be used or saved, under the preview it is in.
       !editing && !crop && errField === "" && el(FieldError, { text: error })),
 
-    ["logo", "photo"].map((kind) => el("input", {
+    ["photo"].map((kind) => el("input", {
       key: kind, ref: files[kind], type: "file", accept: "image/*", style: { display: "none" },
       onChange: (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; picked(kind, f); },
     })),
@@ -23934,6 +24021,12 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .faiBtn--ghost{ background: #fff; border-color: rgba(31, 30, 29, 0.16); color: #1F1E1D; }
 .faiBtn--ghost:hover:not(:disabled){ background: #F1F0EC; }
 .faiRules{ margin-bottom: 20px; }
+.companyLogo{ display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.companyLogo__tile{ width: 88px; height: 88px; border-radius: 16px; border: 1px solid #E2DFD9; background: #FFFFFF; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; font-size: 12px; color: #8A8984; }
+.companyLogo__tile img{ width: 100%; height: 100%; object-fit: contain; }
+.companyLogo__tile--empty{ background: #EEEDE9; }
+.companyLogo__actions{ display: flex; align-items: center; gap: 12px; }
 /* A number inside a sentence: a small bordered box sized to the number, so
    it reads as something to click and change. */
 .inlineNumber{ box-sizing: content-box; font: inherit; font-size: 14px; text-align: center; color: #1F1E1D; background: #FFFFFF;
