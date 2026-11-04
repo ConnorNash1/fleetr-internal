@@ -8384,7 +8384,7 @@ const jumpTo = (step, ...targets) => {
 // the section. Only the outermost CompanySection reads it.
 const CompanySectionFlat = React.createContext(false);
 
-function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, onDone, doneLabel, next, onNext, skipError, busy, showState, setup, phone, children }) {
+function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, onDone, doneLabel, left, skipError, busy, showState, setup, phone, children }) {
   const el = React.createElement;
   return el("section", { id, className: `companyStep companyStep--${stepKey}${open ? " companyStep--open" : ""}${current ? " companyStep--current" : ""}` },
     el("button", {
@@ -8401,13 +8401,11 @@ function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, sk
       showState && state === "skipped" && el("p", { className: "closeRentalHint" },
         "Skipped for now. Finish it any time, or ",
         el("button", { type: "button", className: "companyStep__textBtn", disabled: busy, onClick: onUnskip }, "take it back into setup"), "."),
-      // One button: what is left, until the step is complete, then Done.
+      // One button, Done: greyed out until everything in the step is complete.
       // Skip for now, small and grey, only while something is left.
       showState && onDone && el("div", { className: "companyStep__foot" },
-        next
-          ? el("button", { type: "button", className: "resModalSubmit", onClick: onNext }, `Next: ${next}`)
-          : el("button", { type: "button", className: "resModalSubmit", onClick: onDone }, doneLabel || "Done"),
-        next && skippable && state !== "skipped" && el("button", { type: "button", className: "companyStep__textBtn", disabled: busy, onClick: onSkip }, "Skip for now")),
+        el("button", { type: "button", className: "resModalSubmit", disabled: left, onClick: onDone }, doneLabel || "Done"),
+        left && skippable && state !== "skipped" && el("button", { type: "button", className: "companyStep__textBtn companyStep__skip", disabled: busy, onClick: onSkip }, "Skip for now")),
       el(FieldError, { text: skipError })));
 }
 
@@ -8750,10 +8748,6 @@ function CompanyPage() {
     scrollToStep(next.key);
   };
   // Next pressed: the part that is left opens and comes into view.
-  const goTo = (st, part) => {
-    if (part.rates) window.dispatchEvent(new CustomEvent(RATES_VIEW_EVENT, { detail: part.rates }));
-    jumpTo(st.key, part.target);
-  };
   // A link to a step, or to a section or field inside one.
   React.useEffect(() => {
     const onJump = (e) => {
@@ -8960,8 +8954,7 @@ function CompanyPage() {
         skipError: errorFor(`skip:${st.key}`),
         onDone: () => advance(st.key),
         doneLabel: st.key === "staff" && !(itemOf("staff") && itemOf("staff").done) ? st.doneLabel : null,
-        next: nextPart(st) && nextPart(st).title,
-        onNext: () => goTo(st, nextPart(st)),
+        left: !!nextPart(st),
         busy: stepBusy,
         showState: !launched && st.key !== "launch",
         setup: !launched, phone: !!st.phone,
@@ -19980,6 +19973,8 @@ body, * {
   color: var(--cs-muted); text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
 }
 .companyStep__textBtn:disabled{ cursor: default; opacity: 0.6; }
+.companyStep__skip{ text-decoration: none; }
+.companyStep__foot .resModalSubmit:disabled{ background: #D9D8D3; color: #6F6E69; opacity: 1; cursor: not-allowed; }
 /* Where a Save button used to be: Saving, then Saved. */
 .autosaveNote{ display: inline-block; min-width: 4.5em; font-size: 12px; color: var(--cs-muted); }
 .companyStep--current .companyStep__state--todo{ background: var(--cs-terra-soft); border-color: var(--cs-terra); color: var(--cs-ink); }
