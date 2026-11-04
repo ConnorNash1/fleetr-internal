@@ -8881,8 +8881,9 @@ function CompanyPage() {
         launched && parts.pickup);
       case "vehicles": return only(parts.classes);
       case "fleet": return el(VehiclesStep, { onAdded: changed });
-      // Sources, then the daily rates for each of them, before launch and after.
-      case "rates": return el(React.Fragment, null, parts.sources, parts.seasons, parts.rates);
+      // Sources, then the rates for each of them, then Date pricing, before
+      // launch and after.
+      case "rates": return el(React.Fragment, null, parts.sources, parts.rates, parts.seasons);
       case "protection": return ownInsurance && !showProducts
         ? el("div", { style: { display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" } },
             el("span", null, "You require renters to bring their own insurance."),
@@ -12667,8 +12668,8 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
       })),
   };
   if (layout) return layout(parts);
-  return el(React.Fragment, null, parts.pickup, parts.classes, parts.sources, parts.seasons,
-    parts.rates, parts.protection, parts.acknowledgements);
+  return el(React.Fragment, null, parts.pickup, parts.classes, parts.sources, parts.rates,
+    parts.seasons, parts.protection, parts.acknowledgements);
 }
 
 // embedded draws only the join code and the sign-ups waiting for approval, for
