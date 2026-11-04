@@ -350,7 +350,7 @@ async function loadCompanyLists(user) {
       own("daily_rates",         "vehicleClassId,sourceId,amount"),
       own("protection_products", "id,name,active,sortOrder,customerWording,declineWording,required"),
       own("rate_seasons",        "id,name,startMonth,startDay,endMonth,endDay,active"),
-      own("season_rates",        "seasonId,vehicleClassId,sourceId,period,amount,auto"),
+      own("season_percents",     "seasonId,vehicleClassId,percent"),
       own("period_rates",        "vehicleClassId,sourceId,period,amount"),
     ]);
     const failed = results.find((r) => r.error);
@@ -359,7 +359,7 @@ async function loadCompanyLists(user) {
       console.warn("Fleetr: company lists could not be loaded:", failed.error.message);
       return;
     }
-    const [pl, vc, so, sd, dr, pp, rs, sr, pr] = results.map((r) => r.data || []);
+    const [pl, vc, so, sd, dr, pp, rs, sp, pr] = results.map((r) => r.data || []);
 
     // The branch a new reservation belongs to: the one an Exec is acting in,
     // or the staff member's own.
@@ -380,8 +380,7 @@ async function loadCompanyLists(user) {
       (rates[src] = rates[src] || {})[cls] = amount;
     });
     // Weekly and monthly rates as { source: { class: { week, month } } }, and
-    // each season's as { source: { class: { day, week, month, auto } } }, auto
-    // holding which of week and month were worked out from the normal rates.
+    // each date pricing period's percentages as { classId: percent }.
     const periodRates = {};
     pr.forEach((r) => {
       const src = sourceNames[r.sourceId];
@@ -393,20 +392,10 @@ async function loadCompanyLists(user) {
     });
     const seasons = [...rs]
       .sort((a, b) => (a.startMonth - b.startMonth) || (a.startDay - b.startDay) || String(a.name).localeCompare(String(b.name)))
-      .map((x) => {
-        const seasonRates = {};
-        sr.filter((r) => r.seasonId === x.id).forEach((r) => {
-          const src = sourceNames[r.sourceId];
-          const cls = classNames[r.vehicleClassId];
-          const amount = Number(r.amount);
-          if (!src || !cls || !Number.isFinite(amount)) return;
-          const bySrc = (seasonRates[src] = seasonRates[src] || {});
-          const cell = (bySrc[cls] = bySrc[cls] || { auto: {} });
-          cell[r.period || "day"] = amount;
-          if (r.auto) cell.auto[r.period] = true;
-        });
-        return { ...x, rates: seasonRates };
-      });
+      .map((x) => ({
+        ...x,
+        percents: Object.fromEntries(sp.filter((r) => r.seasonId === x.id).map((r) => [r.vehicleClassId, Number(r.percent)])),
+      }));
 
     companyLists = {
       branchId,
@@ -8664,19 +8653,11 @@ function CompanyPage() {
       ];
       case "rates": {
         const priced = (x) => classes.every((c) => lists.rates && lists.rates[x.name] && lists.rates[x.name][c.name] != null);
-        const seasonSourcePriced = (season, x) => classes.every((c) => {
-          const v = season.rates && season.rates[x.name] && season.rates[x.name][c.name];
-          return !!v && v.day != null;
-        });
-        const seasonPriced = (season) => sources.every((x) => seasonSourcePriced(season, x));
         return [
           { title: "Sources", target: "company-section-sources", done: sources.length > 0,
             defaults: sources.length > 0 && sources.every((x) => x.standardKey) },
           ...sources.map((x) => ({ title: `${x.name} rates`, target: "company-section-rates",
             rates: { period: "normal", source: x.id }, done: classes.length > 0 && priced(x) })),
-          ...(lists.seasons || []).filter((x) => x.active).map((x) => ({ title: `${x.name} season`, target: "company-section-rates",
-            rates: { period: x.id, source: (sources.find((y) => !seasonSourcePriced(x, y)) || {}).id },
-            done: classes.length > 0 && seasonPriced(x) })),
         ];
       }
       case "protection": {
@@ -11242,8 +11223,9 @@ const LIST_REASONS = {
   name_fixed:       "It keeps the name it has in the standard list.",
   whole_dollars:    "A fleetr.ai rate is whole dollars only, for example 55.",
   bad_dates:        "Pick a start and an end date that every year has. Feb 29 cannot be used.",
-  name_taken:       "There is already a season with that name.",
-  bad_season:       "That season is not part of this company.",
+  name_taken:       "There is already a date pricing period with that name.",
+  bad_season:       "That date pricing period is not part of this company.",
+  bad_percent:      "Enter a whole percentage from -90 to +300, for example 20 or -15.",
   bad_period:       "Choose weekly or monthly.",
   fleetr_ai_source: "The fleetr.ai source is what the website books at, so it cannot be deleted. Turn off List on fleetr.ai instead.",
   nothing_picked:   "Tick at least one vehicle class.",
@@ -11470,6 +11452,88 @@ function SameClassPriceField({ label, disabled, error, onApply }) {
     el(FieldError, { text: error }));
 }
 
+// Date pricing percentages: a whole number from -90 to +300, typed with or
+// without its sign. percentTyped keeps a sign and three digits; percentValue
+// is the number, null for blank, or undefined when it is out of range.
+const percentTyped = (raw) => {
+  const t = String(raw ?? "").replace(/[^0-9+-]/g, "");
+  return (/^[+-]/.test(t) ? t[0] : "") + t.replace(/[+-]/g, "").slice(0, 3);
+};
+const percentValue = (raw) => {
+  const t = String(raw ?? "").trim();
+  if (t === "") return null;
+  if (!/^[+-]?[0-9]{1,3}$/.test(t)) return undefined;
+  const n = Number(t);
+  return n >= -90 && n <= 300 ? n : undefined;
+};
+const percentShown = (n) => (n == null ? "" : `${n > 0 ? "+" : ""}${n}`);
+// A rate changed by a percentage, to the nearest whole dollar, as the
+// database works it out (date_pricing.sql in fleetr-infra).
+const percentRate = (rate, pct) => Math.round((Number(rate) * (100 + pct)) / 100);
+
+// One class's percentage for a date pricing period, saved when Enter is
+// pressed or the box is left. Beside it, in grey, what it makes the class's
+// fleetr.ai daily rate: "+20% → $48/day".
+function DatePercentCell({ value, rate, label, disabled, error, onSave }) {
+  const el = React.createElement;
+  const shown = percentShown(value);
+  const [draft, setDraft] = React.useState(shown);
+  const [problem, setProblem] = React.useState("");
+  React.useEffect(() => { setDraft(shown); }, [shown]);
+  const typed = percentValue(draft);
+  const pct = typed === undefined ? value : typed;
+  return el("div", null,
+    el("span", { style: { display: "inline-flex", alignItems: "center", gap: "6px", flexWrap: "wrap" } },
+      el("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" } },
+        el("input", {
+          className: "resFormInput", style: { width: "58px", padding: "4px 6px" }, inputMode: "numeric", maxLength: 4,
+          value: draft, disabled, placeholder: "0", "aria-label": label, ...invalid(!!(error || problem)),
+          onChange: (e) => { setDraft(percentTyped(e.target.value)); setProblem(""); },
+          onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } },
+          onBlur: async () => {
+            const n = percentValue(draft);
+            if (n === undefined) { setProblem(LIST_REASONS.bad_percent); return; }
+            if (percentShown(n) === shown) { setDraft(shown); return; }
+            if (!(await onSave(n))) setDraft(shown);
+          },
+        }),
+        el("span", { style: { opacity: 0.7 } }, "%")),
+      pct != null && el("span", { className: "datePricing__result" },
+        rate != null ? `${percentShown(pct)}% \u2192 $${percentRate(rate, pct)}/day` : `${percentShown(pct)}%, no fleetr.ai rate yet`)),
+    el(FieldError, { text: problem || error }));
+}
+
+// Same % for every class: one percentage, put on every class that is on when
+// Enter is pressed or the box is left. It empties again afterwards; the
+// classes show what was set, and each can still be changed.
+function SamePercentField({ label, disabled, error, onApply }) {
+  const el = React.createElement;
+  const [draft, setDraft] = React.useState("");
+  const [problem, setProblem] = React.useState("");
+  const applying = React.useRef(false);
+  const apply = async () => {
+    if (applying.current || draft.trim() === "") return;
+    const n = percentValue(draft);
+    if (n == null) { setProblem(LIST_REASONS.bad_percent); return; }
+    applying.current = true;
+    const ok = await onApply(n);
+    applying.current = false;
+    if (ok) setDraft("");
+  };
+  return el("div", { className: "protCard__same" },
+    el("span", { className: "resFormLabel" }, "Same % for every class"),
+    el("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" } },
+      el("input", {
+        className: "resFormInput", style: { width: "70px", padding: "4px 6px" }, inputMode: "numeric", maxLength: 4,
+        value: draft, disabled, placeholder: "+20", "aria-label": label, ...invalid(!!(error || problem)),
+        onChange: (e) => { setDraft(percentTyped(e.target.value)); setProblem(""); },
+        onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } },
+        onBlur: apply,
+      }),
+      el("span", { style: { opacity: 0.7 } }, "%")),
+    el(FieldError, { text: problem || error }));
+}
+
 // An entry's name, renamed where it stands: click it and type. Enter or
 // leaving the box saves it; Escape puts it back.
 function ListInlineName({ name, disabled, onSave, error }) {
@@ -11512,9 +11576,9 @@ function ListInlineName({ name, disabled, onSave, error }) {
   ), React.createElement(FieldError, { text: error }));
 }
 
-// A season's name and dates, for adding one or changing one. Months and days
-// are picked from lists, and a day every year has: no Feb 29. A season being
-// changed saves by itself, and Close closes it.
+// A date pricing period's name and dates, for adding one or changing one.
+// Months and days are picked from lists, and a day every year has: no Feb 29.
+// A period being changed saves by itself, and Close closes it.
 const SEASON_MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 function SeasonForm({ season, label, disabled, onSave, onCancel, error }) {
   const [name, setName] = React.useState(season ? season.name : "");
@@ -11902,16 +11966,13 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
   // The one protection card open, and the one choosing a source to price.
   const [openProduct, setOpenProduct] = React.useState("");
   const [pickSource, setPickSource] = React.useState("");
-  // The rate table on screen: Normal or a season's id, and a source's id.
-  // And the season being changed.
-  const [rateView, setRateView] = React.useState("normal");
+  // The rate table's source, and the date pricing period being changed.
   const [rateSource, setRateSource] = React.useState("");
   const [editSeason, setEditSeason] = React.useState("");
-  // The Rates step's Next shows the table that is left.
+  // A link into Rates can name the source to show.
   React.useEffect(() => {
     const onView = (e) => {
-      const { period, source } = e.detail || {};
-      if (period) setRateView(period);
+      const { source } = e.detail || {};
       if (source) setRateSource(source);
     };
     window.addEventListener(RATES_VIEW_EVENT, onView);
@@ -12118,7 +12179,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
   // While loading, or if the lists could not be read, every part is the
   // same notice, so a layout still has something to place.
   // While loading, each part is its skeleton: the closed dropdown it opens as.
-  const LIST_TITLES = { pickup: "Pickup locations", classes: "Vehicle classes", sources: "Sources", rates: "Rates", seasons: "Seasons",
+  const LIST_TITLES = { pickup: "Pickup locations", classes: "Vehicle classes", sources: "Sources", rates: "Rates", seasons: "Date pricing",
     protection: "Protection products", acknowledgements: "Contract acknowledgements" };
   if (!ready && layout) {
     return layout(Object.fromEntries(Object.keys(LIST_TITLES).map((k) => [k, el(SkeletonFrame, { key: k },
@@ -12296,32 +12357,25 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
       })),
 
     // ── Rates ──
-    // One table: a period (Normal or a season) and a source, a row per vehicle
-    // class, and the daily, weekly and monthly rate, each a rate a day.
+    // One table of normal rates for a source: a row per vehicle class, and the
+    // daily, weekly and monthly rate, each a rate a day. Date pricing changes
+    // them by a percentage on its dates.
     rates: (() => {
       const rateSources = [...activeSources].sort((a, b) =>
         (b.standardKey === "fleetr_ai") - (a.standardKey === "fleetr_ai"));
       const src = rateSources.find((x) => x.id === rateSource) || rateSources[0] || null;
-      const season = rateView === "normal" ? null : seasons.find((x) => x.id === rateView) || null;
-      const label = season ? season.name : "normal";
       const whole = !!src && src.standardKey === "fleetr_ai";
       const COLS = [["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]];
       const cellOf = (c, col) => {
-        if (!src) return { value: null, auto: false };
-        if (season) {
-          const v = season.rates[src.name] && season.rates[src.name][c.name];
-          return { value: v && v[col] != null ? v[col] : null, auto: !!(v && v.auto && v.auto[col]) };
-        }
-        if (col === "day") return { value: rates[src.name] && rates[src.name][c.name] != null ? rates[src.name][c.name] : null, auto: false };
+        if (!src) return { value: null };
+        if (col === "day") return { value: rates[src.name] && rates[src.name][c.name] != null ? rates[src.name][c.name] : null };
         const p = periodRates[src.name] && periodRates[src.name][c.name];
-        return { value: p && p[col] != null ? p[col] : null, auto: false };
+        return { value: p && p[col] != null ? p[col] : null };
       };
       const cellAt = (c, col) => `rates:${c.id}:${col}`;
-      const save = (c, col, amount) => (season
-        ? act(cellAt(c, col), "set_season_rate", { p_season_id: season.id, p_class_id: c.id, p_source_id: src.id, p_amount: amount, p_period: col })
-        : col === "day"
-          ? act(cellAt(c, col), "set_daily_rate", { p_class_id: c.id, p_source_id: src.id, p_amount: amount })
-          : act(cellAt(c, col), "set_period_rate", { p_period: col, p_class_id: c.id, p_source_id: src.id, p_amount: amount }));
+      const save = (c, col, amount) => (col === "day"
+        ? act(cellAt(c, col), "set_daily_rate", { p_class_id: c.id, p_source_id: src.id, p_amount: amount })
+        : act(cellAt(c, col), "set_period_rate", { p_period: col, p_class_id: c.id, p_source_id: src.id, p_amount: amount }));
       // What a weekly or monthly rate comes to, and how much less it is than
       // the row's daily rate: "= $315 per week, 25% off".
       const noteFor = (c, col) => {
@@ -12335,17 +12389,11 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
         const off = day ? Math.round((1 - v / day) * 100) : 0;
         return `= $${shown} per ${col === "week" ? "week" : "30 days"}${off > 0 ? `, ${off}% off` : ""}`;
       };
-      // Same as another source: every daily, weekly and monthly rate of the
-      // period on screen, copied into this source, to change cell by cell
-      // afterwards. Offered from fleetr.ai, and from Walk-in or phone for any
-      // third source; never into fleetr.ai, whose rates stay whole dollars.
-      // A season rate worked out from the normal rates is copied as blank, so
-      // it is worked out here too.
+      // Same as another source: every daily, weekly and monthly rate, copied
+      // into this source, to change cell by cell afterwards. Offered from
+      // fleetr.ai, and from Walk-in or phone for any third source; never into
+      // fleetr.ai, whose rates stay whole dollars.
       const setIn = (x, c, col) => {
-        if (season) {
-          const v = season.rates[x.name] && season.rates[x.name][c.name];
-          return v && v[col] != null && !(v.auto && v.auto[col]) ? Number(v[col]) : null;
-        }
         if (col === "day") return rates[x.name] && rates[x.name][c.name] != null ? Number(rates[x.name][c.name]) : null;
         const pr = periodRates[x.name] && periodRates[x.name][c.name];
         return pr && pr[col] != null ? Number(pr[col]) : null;
@@ -12359,16 +12407,14 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
         if (!changes.length) return;
         if (changes.some((x) => x.was != null) && !(await appConfirm({
           title: `Same as ${from.name}?`,
-          message: `This replaces the ${label} rates already set for ${src.name} with ${from.name}'s. You can change any of them afterwards.`,
+          message: `This replaces the rates already set for ${src.name} with ${from.name}'s. You can change any of them afterwards.`,
           confirmLabel: "Replace",
         }))) return;
         setBusy(true); setError(null);
         for (const { c, col, to } of changes) {
-          const [fn, args] = season
-            ? ["set_season_rate", { p_season_id: season.id, p_class_id: c.id, p_source_id: src.id, p_amount: to, p_period: col }]
-            : col === "day"
-              ? ["set_daily_rate", { p_class_id: c.id, p_source_id: src.id, p_amount: to }]
-              : ["set_period_rate", { p_period: col, p_class_id: c.id, p_source_id: src.id, p_amount: to }];
+          const [fn, args] = col === "day"
+            ? ["set_daily_rate", { p_class_id: c.id, p_source_id: src.id, p_amount: to }]
+            : ["set_period_rate", { p_period: col, p_class_id: c.id, p_source_id: src.id, p_amount: to }];
           const { data, error: err } = await supabase.rpc(fn, args);
           if (err || !(data && data.ok)) { setError({ at: "rates", text: refusal(data, err) }); break; }
         }
@@ -12379,7 +12425,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
       const warn = [];
       activeClasses.forEach((c) => {
         const d = cellOf(c, "day").value, w = cellOf(c, "week").value, m = cellOf(c, "month").value;
-        if (d != null && w != null && w > d) warn.push(`${c.name}: the weekly daily rate is higher than the ${label} daily rate.`);
+        if (d != null && w != null && w > d) warn.push(`${c.name}: the weekly daily rate is higher than the normal daily rate.`);
         if (w != null && m != null && m > w) warn.push(`${c.name}: the monthly daily rate is higher than the weekly daily rate.`);
       });
       const picker = (text, value, onChange, options) => el("label", { style: { display: "inline-flex", gap: "6px", alignItems: "center" } },
@@ -12390,16 +12436,14 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
         "Each cell is a rate per day: Weekly is 7 to 27 days, Monthly 28 or more, and a blank uses the rate to its left.",
         "rates",
         el("div", { style: { display: "flex", gap: "16px", alignItems: "center", flexWrap: "wrap", margin: "4px 0 10px" } },
-          picker("Period", season ? season.id : "normal", setRateView,
-            [["normal", "Normal"], ...seasons.map((x) => [x.id, `${x.name}, ${seasonRange(x)}${x.active ? "" : " (off)"}`])]),
           src && picker("Source", src.id, setRateSource, rateSources.map((x) => [x.id, x.name]))),
         activeClasses.length > 0 && copySources.length > 0 && el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", margin: "0 0 10px" } },
           copySources.map((x) => el(React.Fragment, { key: x.id }, btn(`Same as ${x.name}`, () => copyFrom(x))))),
         (!activeClasses.length || !src)
           ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Rates need at least one vehicle class and one source switched on.")
-          // Keyed by period and source, so a cell's draft never carries from
-          // one table into another.
-          : el("div", { key: `${rateView}:${src.id}`, "data-grid": true, style: { overflow: "auto", maxHeight: "70vh" } },
+          // Keyed by source, so a cell's draft never carries from one table
+          // into another.
+          : el("div", { key: src.id, "data-grid": true, style: { overflow: "auto", maxHeight: "70vh" } },
               el("table", { className: "dashboardTable", style: { minWidth: "480px" } },
                 el("thead", null, el("tr", null,
                   el("th", { style: { ...held, top: 0, left: 0, zIndex: 3, padding: "6px 10px" } }, "Vehicle class"),
@@ -12411,8 +12455,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
                     const note = noteFor(c, col);
                     return el("td", { key: col, style: { padding: "4px 8px", verticalAlign: "top" } },
                       el(ListPriceCell, {
-                        value: cell.value, suffix: "/day", muted: cell.auto, label: `${c.name} ${col}`, error: errAt(cellAt(c, col)),
-                        title: cell.auto ? "Worked out from the normal rates. Type a value to set your own." : undefined,
+                        value: cell.value, suffix: "/day", label: `${c.name} ${col}`, error: errAt(cellAt(c, col)),
                         onSave: (typed) => {
                           const parsed = parsePrice(cellAt(c, col), typed, whole);
                           return parsed.ok ? save(c, col, parsed.amount) : Promise.resolve(false);
@@ -12424,41 +12467,64 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
           warn.map((w) => el("div", { key: w }, w))));
     })(),
 
-    // ── Seasons ──
-    seasons: section("Seasons",
-      "Optional. A season has a name and dates that repeat every year, like Summer, Jun 15 to Sep 15, and its own rates, set in Rates. A rental is priced day by day, so one that runs into a season pays the season's rate only for those days. Seasons cannot overlap. A booking keeps the rates it was made at.",
-      "seasons",
-      seasons.length > 0 && table("520px", ["Season", "Dates", "On", ""],
-        seasons.map((x) => el("tr", { key: x.id, style: x.active ? null : { opacity: 0.5 } },
-          editSeason === x.id
-            ? el("td", { colSpan: 4 }, el(SeasonForm, {
-                season: x, disabled: busy, error: errAt(`seasons:edit:${x.id}`),
-                onCancel: () => setEditSeason(""),
-                onSave: async (f) => {
-                  return act(`seasons:edit:${x.id}`, "save_rate_season", {
-                    p_id: x.id, p_name: f.name, p_start_month: f.sm, p_start_day: f.sd, p_end_month: f.em, p_end_day: f.ed,
-                  });
-                },
-              }))
-            : [
-                el("td", { key: "n", style: { fontWeight: 600 } }, x.name, el(FieldError, { text: errAt(`seasons:row:${x.id}`) })),
-                el("td", { key: "d" }, seasonRange(x)),
-                el("td", { key: "o" },
-                  el("label", { style: { display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer" } },
-                    el("input", {
-                      type: "checkbox", checked: !!x.active, disabled: busy,
-                      onChange: () => act(`seasons:row:${x.id}`, "set_rate_season_active", { p_id: x.id, p_active: !x.active }),
-                    }),
-                    x.active ? "On" : "Off")),
-                el("td", { key: "e" }, btn("Change", () => setEditSeason(x.id))),
-              ]))),
-      subHeading("Add a season"),
-      el(SeasonForm, {
-        label: "Add season", disabled: busy, error: errAt("seasons:add"),
-        onSave: (f) => act("seasons:add", "save_rate_season", {
-          p_id: null, p_name: f.name, p_start_month: f.sm, p_start_day: f.sd, p_end_month: f.em, p_end_day: f.ed,
-        }),
-      })),
+    // ── Date pricing ──
+    // Each period: its name and dates, then a percentage per vehicle class
+    // that is on, with what it makes the class's fleetr.ai daily rate.
+    seasons: (() => {
+      const fai = activeSources.find((x) => x.standardKey === "fleetr_ai");
+      const faiRate = (c) => (fai && rates[fai.name] && rates[fai.name][c.name] != null ? Number(rates[fai.name][c.name]) : null);
+      const percentsOf = (x) => el("tr", { key: `${x.id}:percents`, style: x.active ? null : { opacity: 0.5 } },
+        el("td", { colSpan: 4, className: "datePricing__classes" },
+          activeClasses.length === 0
+            ? el("p", { style: { opacity: 0.8, fontSize: "0.9rem", margin: 0 } }, "Turn on a vehicle class to set its percentage.")
+            : el(React.Fragment, null,
+                el(SamePercentField, {
+                  label: `${x.name}, same percentage for every class`, disabled: busy, error: errAt(`seasons:all:${x.id}`),
+                  onApply: (n) => act(`seasons:all:${x.id}`, "set_season_percent_all", { p_season_id: x.id, p_percent: n }),
+                }),
+                el("div", { className: "datePricing__grid" }, activeClasses.map((c) => el("div", { key: c.id, className: "datePricing__row" },
+                  el("span", { className: "datePricing__class" }, c.name),
+                  el(DatePercentCell, {
+                    value: x.percents[c.id] != null ? x.percents[c.id] : null, rate: faiRate(c),
+                    label: `${x.name}, ${c.name} percentage`, disabled: busy, error: errAt(`seasons:pct:${x.id}:${c.id}`),
+                    onSave: (n) => act(`seasons:pct:${x.id}:${c.id}`, "set_season_percent", { p_season_id: x.id, p_class_id: c.id, p_percent: n }),
+                  })))))));
+      return section("Date pricing",
+        "Charge more or less on certain dates, like summer or a slow November.",
+        "seasons",
+        seasons.length > 0 && table("520px", ["Period", "Dates", "On", ""],
+          seasons.flatMap((x) => [el("tr", { key: x.id, style: x.active ? null : { opacity: 0.5 } },
+            editSeason === x.id
+              ? el("td", { colSpan: 4 }, el(SeasonForm, {
+                  season: x, disabled: busy, error: errAt(`seasons:edit:${x.id}`),
+                  onCancel: () => setEditSeason(""),
+                  onSave: async (f) => {
+                    return act(`seasons:edit:${x.id}`, "save_rate_season", {
+                      p_id: x.id, p_name: f.name, p_start_month: f.sm, p_start_day: f.sd, p_end_month: f.em, p_end_day: f.ed,
+                    });
+                  },
+                }))
+              : [
+                  el("td", { key: "n", style: { fontWeight: 600 } }, x.name, el(FieldError, { text: errAt(`seasons:row:${x.id}`) })),
+                  el("td", { key: "d" }, seasonRange(x)),
+                  el("td", { key: "o" },
+                    el("label", { style: { display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer" } },
+                      el("input", {
+                        type: "checkbox", checked: !!x.active, disabled: busy,
+                        onChange: () => act(`seasons:row:${x.id}`, "set_rate_season_active", { p_id: x.id, p_active: !x.active }),
+                      }),
+                      x.active ? "On" : "Off")),
+                  el("td", { key: "e" }, btn("Change", () => setEditSeason(x.id))),
+                ]),
+            percentsOf(x)])),
+        subHeading("Add a date pricing period"),
+        el(SeasonForm, {
+          label: "Add period", disabled: busy, error: errAt("seasons:add"),
+          onSave: (f) => act("seasons:add", "save_rate_season", {
+            p_id: null, p_name: f.name, p_start_month: f.sm, p_start_day: f.sd, p_end_month: f.em, p_end_day: f.ed,
+          }),
+        }));
+    })(),
 
     // ── Protection products ──
     // A card for each product, one open at a time.
@@ -21630,6 +21696,11 @@ select.resFormInput.listAdd__payer--empty{ color: #9B9A96; }
 .protCard__line{ display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 6px; }
 .protCard__toggle{ display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
 .protCard__same{ display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; }
+.datePricing__classes{ padding: 4px 10px 14px; }
+.datePricing__grid{ display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 20px; }
+.datePricing__row{ display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.datePricing__class{ flex: 0 0 110px; padding-top: 6px; font-weight: 600; overflow-wrap: anywhere; }
+.datePricing__result{ font-size: 0.8rem; color: #8A8984; white-space: nowrap; }
 .protCard__allSources{ display: flex; flex-direction: column; gap: 2px; margin: 0 0 6px; }
 .protCard__block{ max-width: 340px; padding-top: 8px; border-top: 1px solid #EEEDE9; }
 .protCard__blockHead{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
