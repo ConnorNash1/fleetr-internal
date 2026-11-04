@@ -9674,7 +9674,6 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
         loadError && el("div", { className: "loginError" }, loadError),
         editors("show")),
       el(CompanySection, { id: "company-section-listing-rules", title: "Booking rules", style: { marginTop: "24px" } },
-        el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "How online bookings are checked. Renters only see these when a search breaks one."),
         editors("rules")),
       el(CompanySection, { id: "company-section-listing-preview", title: "Preview", style: { marginTop: "24px" } },
         el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } }, "Each branch as renters see it on fleetr.ai. Click any part to change it."),
@@ -10662,7 +10661,6 @@ function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listin
     setRules((p) => (rulesSent.current === null || JSON.stringify(p) === rulesSent.current ? rulesOf(listing || {}) : p));
     rulesSent.current = null;
   }, [savedKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const confirmed = React.useContext(CompanyDefaults);
   React.useEffect(() => {
     if (!menu) return undefined;
     const close = () => setMenu("");
@@ -11148,7 +11146,7 @@ function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listin
   if (view === "rules") {
     const rule = (k, before, after, digits) => el("label", { key: k, className: "faiRule" },
       el("span", null, before),
-      el("input", { id: `listing-rule-${branch.id}-${k}`, className: "faiInput faiRule__input", inputMode: "numeric", maxLength: digits, value: rules[k],
+      el("input", { id: `listing-rule-${branch.id}-${k}`, className: "inlineNumber", style: { width: `${digits}ch` }, inputMode: "numeric", maxLength: digits, value: rules[k],
         "aria-label": `${before} ${after}`.trim(), ...invalid(errField === k && !!error),
         onChange: (e) => { const v = numberTyped(e.target.value, { digits }); setRules((p) => ({ ...p, [k]: v })); if (errField === k) { setError(""); setErrField(""); } },
         onBlur: rulesAuto.flush, "data-autosave": true }),
@@ -11156,9 +11154,7 @@ function ListingPreviewEditor({ view, branch, operatorId, company, taxes, listin
       errField === k && el(FieldError, { text: error }));
     const n = (k) => Number(rules[k]);
     return el("div", { className: "faiRules" },
-      el("div", { className: "gasSettingSubhead" }, multi ? branch.name : "Rules",
-        rulesKey(rulesOf(l)) === rulesKey(rulesOf({})) && !confirmed.includes("listing")
-          && el("span", { className: "companyDefaults" }, "Ready, using defaults")),
+      subhead,
       // Each stops at its longest allowed value's length: 720 hours, 365 days,
       // 72 hours.
       rule("minNoticeHours", "Bookings must be made at least", `${n("minNoticeHours") === 1 ? "hour" : "hours"} before pickup`, 3),
@@ -11623,7 +11619,7 @@ function LowWarningsForm({ classes, errAt, onSave }) {
         el("span", { className: "lowWarn__name" }, c.name),
         el("span", { className: "closeRentalHint", style: { margin: 0 } }, "Fewer than"),
         el("input", {
-          className: "resFormInput", style: { width: "64px", padding: "5px 8px" }, inputMode: "numeric", placeholder: "Off", maxLength: 2,
+          className: "inlineNumber", style: { width: "3ch" }, inputMode: "numeric", placeholder: "Off", maxLength: 2,
           value: draftOf(c), "aria-label": `${c.name}: warn when fewer than this many are free`, ...invalid(!!error),
           "data-grid-cell": true, onKeyDown: gridKey, onBlur: () => save(c),
           onChange: (e) => { const v = numberTyped(e.target.value, { digits: 2 }); setDrafts((p) => ({ ...p, [c.id]: v })); setProblem({ id: "", text: "" }); },
@@ -23903,7 +23899,13 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .faiBtn--primary:hover:not(:disabled){ background: #E06D47; }
 .faiBtn--ghost{ background: #fff; border-color: rgba(31, 30, 29, 0.16); color: #1F1E1D; }
 .faiBtn--ghost:hover:not(:disabled){ background: #F1F0EC; }
-.faiRules{ border: 1px solid rgba(31, 30, 29, 0.12); border-radius: 14px; padding: 16px 18px; margin-bottom: 28px; }
+.faiRules{ margin-bottom: 20px; }
+/* A number inside a sentence: a small bordered box sized to the number, so
+   it reads as something to click and change. */
+.inlineNumber{ box-sizing: content-box; font: inherit; font-size: 14px; text-align: center; color: #1F1E1D; background: #FFFFFF;
+  border: 1px solid #E3E2DE; border-radius: 7px; padding: 5px 8px; margin: 0; }
+.inlineNumber:focus{ outline: none; border-color: #F4845F; box-shadow: 0 0 0 1px #F4845F; }
+.inlineNumber::placeholder{ color: #A3A29D; }
 .faiRules .faiField{ color: rgba(31, 30, 29, 0.7); }
 .faiBranch{ margin-bottom: 8px; }
 
@@ -23936,7 +23938,6 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .perkCard__text{ font-size: 15px; color: #1F1E1D; }
 /* Booking rules, as sentences. */
 .faiRule{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 15px; }
-.faiRule__input{ width: 72px; text-align: center; }
 .faiShowSwitch{ font-weight: 600; font-size: 15px; }
 .reqCard__head{ display: flex; align-items: center; gap: 10px; }
 .reqCard__value{ font-size: 24px; font-weight: 700; color: #1F1E1D; line-height: 1.2; }
