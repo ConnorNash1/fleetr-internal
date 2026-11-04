@@ -9857,7 +9857,7 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     };
     const checks = {
       minimumAge:      optional(draft.minimumAge, 16, 99, "Minimum age", true),
-      deposit:         optional(draft.deposit, 0, 99999, "Deposit"),
+      deposit:         optional(draft.deposit, 0, 99999, "Deposit", true),
       minNoticeHours:  required(draft.minNoticeHours, 0, 720, "Minimum notice"),
       maxRentalDays:   required(draft.maxRentalDays, 1, 365, "Maximum rental length"),
       turnaroundHours: required(draft.turnaroundHours, 0, 72, "Turnaround buffer"),
@@ -10130,7 +10130,8 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     el("div", { className: "gasSettingSubhead", style: { marginTop: "14px" } }, "Requirements"),
     row(
       field("Minimum age", input("minimumAge", { inputMode: "numeric", style: { width: "110px" } })),
-      field("Deposit ($)", input("deposit", { inputMode: "decimal", style: { width: "120px" } }))),
+      field("Deposit ($)", input("deposit", { inputMode: "numeric", maxLength: 5, style: { width: "120px" },
+        onChange: (e) => set("deposit", numberTyped(e.target.value, { digits: 5 })) }))),
     el("span", { className: "resFormLabel" }, "Accepted payment"),
     el("div", { style: { display: "flex", gap: "16px", flexWrap: "wrap", margin: "6px 0 12px" } },
       LISTING_PAYMENT_METHODS.map((m) => el("span", { key: m },
@@ -11222,7 +11223,7 @@ const LIST_REASONS = {
   bad_name:         "Give it a name of 1 to 60 characters.",
   use_standard_list: "Pick that one from the standard list.",
   name_fixed:       "It keeps the name it has in the standard list.",
-  whole_dollars:    "A fleetr.ai rate is whole dollars only, for example 55.",
+  whole_dollars:    "Prices are whole dollars only, for example 55.",
   bad_dates:        "Pick a start and an end date that every year has. Feb 29 cannot be used.",
   name_taken:       "There is already a date pricing period with that name.",
   bad_season:       "That date pricing period is not part of this company.",
@@ -11407,12 +11408,12 @@ function ListPriceCell({ value, disabled, onSave, suffix, muted, title, error, l
   return React.createElement(React.Fragment, null, React.createElement(
     "span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" } },
     React.createElement("span", { style: { opacity: 0.7 } }, "$"),
-    // Up to $99,999.99, the most any price here can be.
+    // Whole dollars, up to $99,999, the most any price here can be.
     React.createElement("input", {
       className: "resFormInput", style: { width: "62px", padding: "4px 6px", ...(muted ? { opacity: 0.55 } : null) },
-      inputMode: "decimal", value: draft, disabled, title, maxLength: 8, ...invalid(!!error),
+      inputMode: "numeric", value: draft, disabled, title, maxLength: 5, ...invalid(!!error),
       "data-grid-cell": true, "aria-label": label,
-      onChange: (e) => setDraft(numberTyped(e.target.value, { digits: 5, decimals: 2 })),
+      onChange: (e) => setDraft(numberTyped(e.target.value, { digits: 5 })),
       onKeyDown: gridKey,
       onBlur: async () => {
         const typed = draft.trim();
@@ -11443,9 +11444,9 @@ function SameClassPriceField({ label, disabled, error, onApply }) {
     el("span", { style: { display: "inline-flex", alignItems: "center", gap: "3px" } },
       el("span", { style: { opacity: 0.7 } }, "$"),
       el("input", {
-        className: "resFormInput", style: { width: "80px", padding: "4px 6px" }, inputMode: "decimal", maxLength: 8,
-        value: draft, disabled, placeholder: "0.00", "aria-label": label, ...invalid(!!error),
-        onChange: (e) => setDraft(numberTyped(e.target.value, { digits: 5, decimals: 2 })),
+        className: "resFormInput", style: { width: "80px", padding: "4px 6px" }, inputMode: "numeric", maxLength: 5,
+        value: draft, disabled, placeholder: "0", "aria-label": label, ...invalid(!!error),
+        onChange: (e) => setDraft(numberTyped(e.target.value, { digits: 5 })),
         onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); } },
         onBlur: apply,
       }),
@@ -12005,6 +12006,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
 
   const refusal = (data, err) =>
     err && /own_insurance_required/.test(err.message) ? LIST_REASONS.own_insurance_required
+    : err && /whole_dollars|whole dollars/.test(err.message) ? LIST_REASONS.whole_dollars
     : err ? LIST_REASONS.network
     : data && data.reason === "overlaps" && data.season
       ? seasonOverlapText(data.season, companyLists ? companyLists.seasons : [])
@@ -12071,15 +12073,15 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
     window.addEventListener("pointercancel", finish);
   };
 
-  const parsePrice = (at, typed, wholeDollars) => {
+  const parsePrice = (at, typed) => {
     if (typed === "") return { ok: true, amount: null };
     const n = Number(typed);
     if (!Number.isFinite(n) || n < 0 || n > 99999) {
       setError({ at, text: LIST_REASONS.bad_amount });
       return { ok: false };
     }
-    // A fleetr.ai daily rate is what fleetr.ai quotes, in whole dollars.
-    if (wholeDollars && !Number.isInteger(n)) {
+    // Every price a company sets is whole dollars.
+    if (!Number.isInteger(n)) {
       setError({ at, text: LIST_REASONS.whole_dollars });
       return { ok: false };
     }
@@ -12365,7 +12367,6 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
       const rateSources = [...activeSources].sort((a, b) =>
         (b.standardKey === "fleetr_ai") - (a.standardKey === "fleetr_ai"));
       const src = rateSources.find((x) => x.id === rateSource) || rateSources[0] || null;
-      const whole = !!src && src.standardKey === "fleetr_ai";
       const COLS = [["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]];
       const cellOf = (c, col) => {
         if (!src) return { value: null };
@@ -12458,7 +12459,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
                       el(ListPriceCell, {
                         value: cell.value, suffix: "/day", label: `${c.name} ${col}`, error: errAt(cellAt(c, col)),
                         onSave: (typed) => {
-                          const parsed = parsePrice(cellAt(c, col), typed, whole);
+                          const parsed = parsePrice(cellAt(c, col), typed);
                           return parsed.ok ? save(c, col, parsed.amount) : Promise.resolve(false);
                         },
                       }),
