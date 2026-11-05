@@ -12808,12 +12808,17 @@ function StaffPage({ embedded, onChanged } = {}) {
   // afterwards is the kind of thing this log exists for.
   const runStaffAction = (row, actionKey, rpc, args, describe, prompt) => {
     guardAction(actionKey, async () => {
-      setBusyId(row.id);
+      setBusyId(row.id); setError("");
       try {
         const { data, error: err } = await supabase.rpc(rpc, args);
         if (err) throw new Error(err.message);
         if (!data || !data.ok) throw new Error(STAFF_REASONS[data && data.reason] || "Refused.");
         await loadStaff();
+      } catch (e) {
+        // The PIN prompt has closed by now, so a refusal, such as the last
+        // Exec, is said on the page. Thrown on, so it is logged as refused.
+        setError(e.message || "That did not work. Try again.");
+        throw e;
       } finally {
         setBusyId("");
       }
@@ -12826,8 +12831,10 @@ function StaffPage({ embedded, onChanged } = {}) {
   };
   const who = (row) => row.name || row.username;
 
-  const changeRole = (row) => {
-    const next = row.role === "Admin" ? "Agent" : "Admin";
+  // An Exec picks any role; an Admin toggles between Agent and Admin.
+  const changeRole = (row, picked) => {
+    const next = picked || (row.role === "Admin" ? "Agent" : "Admin");
+    if (next === row.role) return;
     // Leaving Exec needs somewhere to land: users_location_by_role refuses a
     // non-Exec with no branch, so without this the write fails on a constraint
     // rather than on anything the person could act on.
@@ -12838,7 +12845,9 @@ function StaffPage({ embedded, onChanged } = {}) {
     }
     runStaffAction(row, "staff.role", "set_staff_role", args,
       `${row.username}: ${row.role} to ${next}`,
-      { warning: `Change ${who(row)} from ${row.role} to ${next}?` });
+      { warning: next === "Exec"
+          ? `Make ${who(row)} an Exec? They'll be able to change company settings and manage all staff.`
+          : `Change ${who(row)} from ${row.role} to ${next}?` });
   };
 
   const toggleActive = (row) => runStaffAction(
@@ -12990,12 +12999,22 @@ function StaffPage({ embedded, onChanged } = {}) {
               isSelf
                 ? React.createElement("span", { style: { opacity: 0.6, fontSize: "0.85rem" } }, "You")
                 : React.createElement(React.Fragment, null,
-                    React.createElement("button", {
-                      className: "loginBtn",
-                      style: { width: "auto", padding: "6px 10px" },
-                      disabled: busyId === row.id,
-                      onClick: () => changeRole(row),
-                    }, roleToggleLabel(row.role)),
+                    // An Exec picks Agent, Admin or Exec; the database still
+                    // refuses removing the last Exec. An Admin keeps the
+                    // Agent and Admin toggle, at their branch.
+                    isExec
+                      ? React.createElement("select", {
+                          className: "resFormInput", style: { width: "auto", padding: "6px 8px" },
+                          "aria-label": `${who(row)}'s role`, value: row.role,
+                          disabled: busyId === row.id,
+                          onChange: (e) => changeRole(row, e.target.value),
+                        }, ["Agent", "Admin", "Exec"].map((r) => React.createElement("option", { key: r, value: r }, r)))
+                      : React.createElement("button", {
+                          className: "loginBtn",
+                          style: { width: "auto", padding: "6px 10px" },
+                          disabled: busyId === row.id,
+                          onClick: () => changeRole(row),
+                        }, roleToggleLabel(row.role)),
                     React.createElement("button", {
                       className: "loginBtn",
                       style: { width: "auto", padding: "6px 10px" },
