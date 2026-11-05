@@ -19313,7 +19313,10 @@ function SignupScreen({ onDone, onCancel }) {
               // account is real at this point, so the first thing the person
               // does is the thing they will do every shift after.
               // firstExec: the company had no Exec yet, so fleetr approves
-              // this person (first_exec_signup.sql in fleetr-infra).
+              // this person (first_exec_signup.sql in fleetr-infra). fleetr
+              // is emailed now rather than at the Worker's next run; a nudge
+              // that fails changes nothing here.
+              if (res.firstExec) fetch(`${SIGNUP_URL}/first-exec`, { method: "POST" }).catch(() => {});
               onDone(res.username, !!res.firstExec);
               return;
             }
