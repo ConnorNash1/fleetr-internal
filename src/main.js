@@ -17511,7 +17511,147 @@ function sourceCatsFor(current) {
 
 // ─── CustomerPage ─────────────────────────────────────────────────────────────
 
+// ─── Unsaved changes ──────────────────────────────────────────────────────────
+// A page's form as the database has it, and what its Save writes, so the page
+// can tell whether anything has changed since it was opened or last saved.
+function customerFormsFrom(rec) {
+  const np = normalizeTo12h(rec.time || rec.pickupTime || "", rec.pickupMeridiem || "AM");
+  const nr = normalizeTo12h(rec.returnTime || "", rec.returnMeridiem || "AM");
+  return {
+    resInfoForm: {
+      firstName:      rec.firstName      || "",
+      lastName:       rec.lastName       || "",
+      phone:          rec.phone          || "",
+      email:          rec.email          || "",
+      pickupDate:     rec.date           || "",
+      pickupTime:     np.digits,
+      pickupMeridiem: np.meridiem,
+      returnDate:     rec.returnDate     || "",
+      returnTime:     nr.digits,
+      returnMeridiem: nr.meridiem,
+      licenseNumber:  rec.licenseNum     || rec.licenseNumber || "",
+      licenseCountry: rec.licenseCountry || "",
+      licenseState:   rec.licenseProvince || rec.licenseState || "",
+      licenseExpiry:  rec.licenseExpiry  || "",
+    },
+    // One vehicle class for the whole reservation: the one it was booked with.
+    ratesForm: {
+      source: rec.sourceDetail ? `${rec.source}${LIST_SEP}${rec.sourceDetail}` : (rec.source || ""),
+      vehicleClass: rec.vehicleClass || "",
+    },
+    billToForm: {
+      adjusterName:  rec.adjusterName  || "",
+      fileNumber:    rec.fileNumber    || "",
+      claimNumber:   rec.claimNumber   || "",
+      dailyRate:     rec.dailyRate     || "",
+      authNumber:    rec.authNumber    || "",
+      poNumber:      rec.poNumber      || "",
+      paymentMethod: rec.paymentMethod || "Credit Card",
+    },
+    customerVehicleForm: {
+      year:  rec.vehicleYear  || "",
+      make:  rec.vehicleMake  || "",
+      model: rec.vehicleModel || "",
+    },
+  };
+}
+// The reservation fields Save writes (form to Supabase field names).
+function customerCandidate({ resInfoForm, ratesForm, billToForm, customerVehicleForm }) {
+  const srcParts = splitList(ratesForm.source).length > 1
+    ? splitList(ratesForm.source) : [ratesForm.source, ""];
+  return {
+    firstName:       resInfoForm.firstName,
+    lastName:        resInfoForm.lastName,
+    phone:           resInfoForm.phone,
+    email:           resInfoForm.email,
+    date:            resInfoForm.pickupDate,
+    time:            `${toDisplayTime(resInfoForm.pickupTime)} ${resInfoForm.pickupMeridiem}`.trim(),
+    pickupTime:      resInfoForm.pickupTime,
+    pickupMeridiem:  resInfoForm.pickupMeridiem,
+    returnDate:      resInfoForm.returnDate,
+    returnTime:      resInfoForm.returnTime,
+    returnMeridiem:  resInfoForm.returnMeridiem,
+    licenseNum:      resInfoForm.licenseNumber,
+    licenseCountry:  resInfoForm.licenseCountry,
+    licenseProvince: resInfoForm.licenseState,
+    licenseExpiry:   resInfoForm.licenseExpiry,
+    source:          srcParts[0] || "",
+    sourceDetail:    srcParts[1] || "",
+    vehicleClass:    ratesForm.vehicleClass,
+    dailyRate:       billToForm.dailyRate,
+    vehicleYear:     customerVehicleForm.year,
+    vehicleMake:     customerVehicleForm.make,
+    vehicleModel:    customerVehicleForm.model,
+  };
+}
+
+// The bar at the foot of the screen while a page has unsaved changes:
+// Unsaved changes, Discard and Save; then Saved ✓ for a moment once saved.
+// state: "dirty", "saving", "saved" or "error"; anything else hides it.
+function UnsavedBar({ state, onSave, onDiscard }) {
+  const el = React.createElement;
+  const shown = ["dirty", "saving", "saved", "error"].includes(state);
+  return el("div", { className: `unsavedBar${shown ? " unsavedBar--shown" : ""}${state === "saved" ? " unsavedBar--saved" : ""}`,
+    role: "status", "aria-live": "polite", "aria-hidden": !shown || undefined },
+    state === "saved"
+      ? el("span", { className: "unsavedBar__text" }, "Saved \u2713")
+      : el(React.Fragment, null,
+          el("span", { className: "unsavedBar__text" }, state === "error" ? "Couldn't save. Try again." : "Unsaved changes"),
+          el("div", { className: "unsavedBar__actions" },
+            el("button", { type: "button", className: "unsavedBar__discard", disabled: state === "saving" || !shown, onClick: onDiscard }, "Discard"),
+            el("button", { type: "button", className: "unsavedBar__save", disabled: state === "saving" || !shown, onClick: onSave },
+              state === "saving" ? "Saving\u2026" : "Save"))));
+}
+
+// Asks "Leave without saving?" before leaving a page with unsaved changes:
+// an in-app link, the browser's Back, and closing or reloading the tab, which
+// gets the browser's own question. The routes are a HashRouter, which cannot
+// block a navigation itself, so links are caught as they are clicked and a
+// Back is put back while the question is asked.
+function useLeaveGuard(dirty) {
+  const dirtyRef = React.useRef(dirty);
+  dirtyRef.current = dirty;
+  React.useEffect(() => {
+    let restoring = false;
+    const ask = () => appConfirm({ title: "Leave without saving?", message: "Your changes on this page will be lost.", confirmLabel: "Leave", danger: true });
+    const onUnload = (e) => { if (!dirtyRef.current) return; e.preventDefault(); e.returnValue = ""; };
+    const onClick = (e) => {
+      if (!dirtyRef.current || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = e.target && e.target.closest && e.target.closest("a[href]");
+      if (!a || (a.target && a.target !== "_self")) return;
+      const href = a.getAttribute("href") || "";
+      if (!href.startsWith("#/") || href === window.location.hash) return;
+      e.preventDefault(); e.stopPropagation();
+      ask().then((ok) => { if (ok) { dirtyRef.current = false; window.location.hash = href; } });
+    };
+    // Ahead of the router's own listener, so a Back it is asked about never
+    // reaches it until the answer is Leave.
+    const onPop = (e) => {
+      if (restoring) { restoring = false; e.stopImmediatePropagation(); return; }
+      if (!dirtyRef.current) return;
+      e.stopImmediatePropagation();
+      restoring = true;
+      window.history.go(1);
+      ask().then((ok) => { if (ok) { dirtyRef.current = false; window.history.back(); } });
+    };
+    window.addEventListener("beforeunload", onUnload);
+    document.addEventListener("click", onClick, true);
+    window.addEventListener("popstate", onPop, true);
+    return () => {
+      window.removeEventListener("beforeunload", onUnload);
+      document.removeEventListener("click", onClick, true);
+      window.removeEventListener("popstate", onPop, true);
+    };
+  }, []);
+}
+
+// Discard starts the page over from what is saved: a fresh page, read again.
 function CustomerPage() {
+  const [round, setRound] = React.useState(0);
+  return React.createElement(CustomerPageView, { key: round, onDiscard: () => setRound((n) => n + 1) });
+}
+
+function CustomerPageView({ onDiscard }) {
   const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, guardAction, logAudit, damageClaims, setDamageClaims, currentUser } = React.useContext(AppContext);
   const navigate = useNavigate();
   const location = useLocation();
@@ -17693,43 +17833,11 @@ function CustomerPage() {
   // Hydrate all form states whenever localRecord changes (initial load or post-save re-fetch)
   React.useEffect(() => {
     if (!localRecord) return;
-    const np = normalizeTo12h(localRecord.time || localRecord.pickupTime || "", localRecord.pickupMeridiem || "AM");
-    const nr = normalizeTo12h(localRecord.returnTime || "", localRecord.returnMeridiem || "AM");
-    setResInfoForm({
-      firstName:      localRecord.firstName      || "",
-      lastName:       localRecord.lastName       || "",
-      phone:          localRecord.phone          || "",
-      email:          localRecord.email          || "",
-      pickupDate:     localRecord.date           || "",
-      pickupTime:     np.digits,
-      pickupMeridiem: np.meridiem,
-      returnDate:     localRecord.returnDate     || "",
-      returnTime:     nr.digits,
-      returnMeridiem: nr.meridiem,
-      licenseNumber:  localRecord.licenseNum     || localRecord.licenseNumber || "",
-      licenseCountry: localRecord.licenseCountry || "",
-      licenseState:   localRecord.licenseProvince || localRecord.licenseState || "",
-      licenseExpiry:  localRecord.licenseExpiry  || "",
-    });
-    const srcStr = localRecord.sourceDetail
-      ? `${localRecord.source}${LIST_SEP}${localRecord.sourceDetail}`
-      : (localRecord.source || "");
-    // One vehicle class for the whole reservation: the one it was booked with.
-    setRatesForm({ source: srcStr, vehicleClass: localRecord.vehicleClass || "" });
-    setBillToForm({
-      adjusterName:  localRecord.adjusterName  || "",
-      fileNumber:    localRecord.fileNumber    || "",
-      claimNumber:   localRecord.claimNumber   || "",
-      dailyRate:     localRecord.dailyRate     || "",
-      authNumber:    localRecord.authNumber    || "",
-      poNumber:      localRecord.poNumber      || "",
-      paymentMethod: localRecord.paymentMethod || "Credit Card",
-    });
-    setCustomerVehicleForm({
-      year:  localRecord.vehicleYear  || "",
-      make:  localRecord.vehicleMake  || "",
-      model: localRecord.vehicleModel || "",
-    });
+    const forms = customerFormsFrom(localRecord);
+    setResInfoForm(forms.resInfoForm);
+    setRatesForm(forms.ratesForm);
+    setBillToForm(forms.billToForm);
+    setCustomerVehicleForm(forms.customerVehicleForm);
     setCustomerNotesLog(parseNotesLog(localRecord.notesLog));
   }, [localRecord]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -17824,39 +17932,21 @@ function CustomerPage() {
     });
   }, [rentalPrice]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [saveStatus, setSaveStatus] = React.useState("idle"); // "idle" | "saving" | "error"
+  const [saveStatus, setSaveStatus] = React.useState("idle"); // "idle" | "saving" | "saved" | "error"
+  // Charges and payments are changed by hand; the reservation's fields are
+  // compared with what is saved.
+  const [chargesEdited, setChargesEdited] = React.useState(false);
+  const dirty = !!localRecord && (chargesEdited
+    || JSON.stringify(customerCandidate({ resInfoForm, ratesForm, billToForm, customerVehicleForm }))
+       !== JSON.stringify(customerCandidate(customerFormsFrom(localRecord))));
+  useLeaveGuard(dirty && saveStatus !== "saving");
 
   const handleSave = async () => {
-    if (!resCode) return;
+    if (!resCode || saveStatus === "saving") return;
     setSaveStatus("saving");
     try {
-      const srcParts = splitList(ratesForm.source).length > 1
-        ? splitList(ratesForm.source) : [ratesForm.source, ""];
       // Build the full candidate payload (form → Supabase field names)
-      const candidate = {
-        firstName:       resInfoForm.firstName,
-        lastName:        resInfoForm.lastName,
-        phone:           resInfoForm.phone,
-        email:           resInfoForm.email,
-        date:            resInfoForm.pickupDate,
-        time:            `${toDisplayTime(resInfoForm.pickupTime)} ${resInfoForm.pickupMeridiem}`.trim(),
-        pickupTime:      resInfoForm.pickupTime,
-        pickupMeridiem:  resInfoForm.pickupMeridiem,
-        returnDate:      resInfoForm.returnDate,
-        returnTime:      resInfoForm.returnTime,
-        returnMeridiem:  resInfoForm.returnMeridiem,
-        licenseNum:      resInfoForm.licenseNumber,
-        licenseCountry:  resInfoForm.licenseCountry,
-        licenseProvince: resInfoForm.licenseState,
-        licenseExpiry:   resInfoForm.licenseExpiry,
-        source:          srcParts[0] || "",
-        sourceDetail:    srcParts[1] || "",
-        vehicleClass:    ratesForm.vehicleClass,
-        dailyRate:       billToForm.dailyRate,
-        vehicleYear:     customerVehicleForm.year,
-        vehicleMake:     customerVehicleForm.make,
-        vehicleModel:    customerVehicleForm.model,
-      };
+      const candidate = customerCandidate({ resInfoForm, ratesForm, billToForm, customerVehicleForm });
       // Diff against localRecord — only write fields that actually changed
       const patch = Object.fromEntries(
         Object.entries(candidate).filter(
@@ -17901,11 +17991,13 @@ function CustomerPage() {
           prev.map((r) => r.resCode !== resCode ? r : { ...r, ...candidate })
         );
       }
-      navigate(-1);
+      // Stays on the page: the bar says Saved, then goes.
+      setChargesEdited(false);
+      setSaveStatus("saved");
+      setTimeout(() => setSaveStatus((s) => (s === "saved" ? "idle" : s)), 1600);
     } catch (e) {
       console.warn("reservations save error:", e);
       setSaveStatus("error");
-      setTimeout(() => setSaveStatus("idle"), 3000);
     }
   };
 
@@ -18381,8 +18473,10 @@ function CustomerPage() {
 
   const fmtMoney = (n) => `$${n.toFixed(2)}`;
 
-  const updateLineItem = (key, field, value) =>
+  const updateLineItem = (key, field, value) => {
+    setChargesEdited(true);
     setLineItems((prev) => prev.map((it) => it.key === key ? { ...it, [field]: value } : it));
+  };
 
   // Protection lines, the accepted products and any old fixed lines, are the
   // customer's to pay unless marked covered by the bill-to.
@@ -18416,14 +18510,20 @@ function CustomerPage() {
   const billToBalance   = billToDue - billToPaid;
   const customerBalance = customerDue - customerPaid;
 
-  const addPayment = () =>
+  const addPayment = () => {
+    setChargesEdited(true);
     setPayments((prev) => [...prev, { id: Date.now(), type: "Visa", last4: "", cardholderName: "", amount: "", paidBy: "Bill-To" }]);
+  };
 
-  const updatePayment = (id, field, value) =>
+  const updatePayment = (id, field, value) => {
+    setChargesEdited(true);
     setPayments((prev) => prev.map((p) => p.id === id ? { ...p, [field]: value } : p));
+  };
 
-  const removePayment = (id) =>
+  const removePayment = (id) => {
+    setChargesEdited(true);
     setPayments((prev) => prev.filter((p) => p.id !== id));
+  };
 
   const isCardType = (type) => ["Visa", "Mastercard", "Amex"].includes(type);
 
@@ -18745,20 +18845,23 @@ function CustomerPage() {
 
   return React.createElement(
     "div",
-    { className: "page" },
+    { className: `page${dirty || saveStatus !== "idle" ? " page--unsavedBar" : ""}` },
     React.createElement("div", { className: "customerPageTopBar" },
       React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate(-1) }, "\u2190 Back"),
-      React.createElement("button", {
+      // Greyed out until something changes; then the bar at the foot of the
+      // screen has Save instead.
+      !dirty && saveStatus === "idle" && React.createElement("button", {
         type: "button",
         className: "customerPageSaveBtn",
-        disabled: saveStatus === "saving",
-        onClick: handleSave,
-      },
-        saveStatus === "saving" ? "Saving\u2026"
-        : saveStatus === "error" ? "Error \u00b7 Retry"
-        : "Save"
-      )
+        disabled: true,
+        title: "Nothing to save yet",
+      }, "Save")
     ),
+    React.createElement(UnsavedBar, {
+      state: saveStatus === "saving" || saveStatus === "saved" || saveStatus === "error" ? saveStatus : dirty ? "dirty" : "idle",
+      onSave: handleSave,
+      onDiscard,
+    }),
     React.createElement("h1", { className: "page__title" }, name),
     resCode && React.createElement(
       "div",
@@ -22946,6 +23049,29 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 .customerPageSaveBtn:hover:not(:disabled) {
   background: #EE7550;
 }
+.page--unsavedBar{ padding-bottom: 96px; }
+.unsavedBar{
+  position: fixed; z-index: 900; left: 50%;
+  bottom: calc(var(--mobileBottomBarH, 0px) + 16px + env(safe-area-inset-bottom, 0px));
+  width: min(640px, calc(100% - 32px)); box-sizing: border-box;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px 10px 16px; background: #1F1E1D; color: #F9F9F7;
+  border-radius: 12px; box-shadow: 0 8px 28px rgba(31, 30, 29, 0.25);
+  font-family: 'Inter', sans-serif; font-size: 14px;
+  transform: translate(-50%, calc(100% + 40px)); opacity: 0; pointer-events: none;
+  transition: transform 0.22s ease, opacity 0.22s ease;
+}
+.unsavedBar--shown{ transform: translate(-50%, 0); opacity: 1; pointer-events: auto; }
+.unsavedBar--saved{ justify-content: center; }
+.unsavedBar__text{ font-weight: 600; min-width: 0; }
+.unsavedBar__actions{ display: flex; gap: 8px; flex: 0 0 auto; }
+.unsavedBar__discard, .unsavedBar__save{ font: inherit; font-weight: 600; border-radius: 8px; padding: 8px 14px; cursor: pointer; white-space: nowrap; }
+.unsavedBar__discard{ background: none; color: #F9F9F7; border: 1px solid rgba(249, 249, 247, 0.35); }
+.unsavedBar__discard:hover:not(:disabled){ background: rgba(249, 249, 247, 0.08); }
+.unsavedBar__save{ background: #F4845F; color: #1F1E1D; border: none; }
+.unsavedBar__save:hover:not(:disabled){ background: #E06D47; }
+.unsavedBar__discard:disabled, .unsavedBar__save:disabled{ opacity: 0.6; cursor: default; }
+@media (prefers-reduced-motion: reduce){ .unsavedBar{ transition: none; } }
 .customerPageSaveBtn:disabled {
   opacity: 0.6;
   cursor: default;
