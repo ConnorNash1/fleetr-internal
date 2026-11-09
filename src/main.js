@@ -12806,13 +12806,14 @@ function StaffPage({ embedded, onChanged } = {}) {
   // Both mutations go through guardAction, so they are PIN gated and land in
   // the audit log with the target named. A role change nobody can point at
   // afterwards is the kind of thing this log exists for.
-  const runStaffAction = (row, actionKey, rpc, args, describe, prompt) => {
+  const runStaffAction = (row, actionKey, rpc, args, describe, prompt, after) => {
     guardAction(actionKey, async () => {
       setBusyId(row.id); setError("");
       try {
         const { data, error: err } = await supabase.rpc(rpc, args);
         if (err) throw new Error(err.message);
         if (!data || !data.ok) throw new Error(STAFF_REASONS[data && data.reason] || "Refused.");
+        if (after) after();
         await loadStaff();
       } catch (e) {
         // The PIN prompt has closed by now, so a refusal, such as the last
@@ -12865,7 +12866,11 @@ function StaffPage({ embedded, onChanged } = {}) {
     row, "staff.active", "set_staff_active",
     { target_id: row.id, is_active: true },
     `${row.username}: approved`,
-    { warning: `Approve ${who(row)}? They can sign in and use the app.` });
+    { warning: `Approve ${who(row)}? They can sign in and use the app.` },
+    // Their approval email, now rather than at the Worker's next run
+    // (approval_emails.sql in fleetr-infra). A nudge that fails changes
+    // nothing: the approval is saved and the email still goes.
+    () => { fetch(`${CLAUDE_API_URL}/approvals/notify`, { method: "POST" }).catch(() => {}); });
 
   const decline = (row) => runStaffAction(row, "staff.active", "decline_staff",
     { target_id: row.id }, `${row.username}: declined`,
