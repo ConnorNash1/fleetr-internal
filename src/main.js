@@ -7189,7 +7189,7 @@ function AddVehicleForm({ onAdded, stayOnForm }) {
     const branchId = companyLists && companyLists.branchId;
     if (!branchId) return undefined;
     let live = true;
-    supabase.from("branch_listings").select("province").eq("locationId", branchId).maybeSingle().then(({ data }) => {
+    supabase.from("branch_listings").select("province").eq("locationId", branchId).limit(1).then(oneOrNone).then(({ data }) => {
       const code = provinceCodeOf(data && data.province);
       if (!live || !code) return;
       setBranchProvince(code);
@@ -14919,7 +14919,7 @@ function ContractAcknowledgementRecord({ rentalAgreementId }) {
   React.useEffect(() => {
     if (!ackId) { setVersion(undefined); return undefined; }
     let live = true;
-    supabase.from("contract_acknowledgements").select("version,body,createdAt").eq("id", ackId).maybeSingle()
+    supabase.from("contract_acknowledgements").select("version,body,createdAt").eq("id", ackId).limit(1).then(oneOrNone)
       .then(({ data, error }) => { if (live) setVersion(error ? null : data || null); });
     return () => { live = false; };
   }, [ackId]);
@@ -16452,11 +16452,23 @@ function OpenRentalSearch({ rows, onSelect }) {
 // pickedUpAt, and neither Close Rental nor another Switch Out may touch it:
 // there is nothing to close, and no vehicle the customer is actually on to
 // switch away from.
+//
+// Read as a list of at most one, not with maybeSingle: supabase-js v1 knows
+// "no row" only by PostgREST's old wording ("Results contain 0 rows"), and
+// PostgREST now says "The result contains 0 rows", so maybeSingle turned every
+// rental with nothing waiting into an error, and Close Rental into "Could not
+// check". A list of none is simply none.
+// The row a list of at most one holds, or null, as maybeSingle would give it
+// if supabase-js v1 still recognised PostgREST's "no row" wording.
+const oneOrNone = (res) => (res.error ? { data: null, error: res.error }
+  : { data: (Array.isArray(res.data) && res.data[0]) || null, error: null });
+
 async function fetchPendingPickup(rentalAgreementId) {
   const { data, error } = await supabase.from("rental_agreement_vehicles")
     .select("id, vehicleId").eq("rentalAgreementId", rentalAgreementId)
-    .is("endedAt", null).is("pickedUpAt", null).maybeSingle();
-  return { leg: data || null, error: error || null };
+    .is("endedAt", null).is("pickedUpAt", null).limit(1);
+  if (error) console.warn("pending pickup check failed:", error);
+  return { leg: (Array.isArray(data) && data[0]) || null, error: error || null };
 }
 
 // The same check for the agreement a flow has selected, so a pending pickup is
@@ -16659,10 +16671,13 @@ function CloseRentalPage() {
         // readings supersede. Only an agreement with neither, one opened here
         // by a status change, gets a leg inserted, so a close never leaves a
         // second row beside the first.
-        const existingLeg = await supabase.from("rental_agreement_vehicles")
+        // A list of at most one, for the reason fetchPendingPickup gives: with
+        // supabase-js v1, maybeSingle reads "no leg" as an error.
+        const legRows = await supabase.from("rental_agreement_vehicles")
           .select("id").eq("rentalAgreementId", ra.id)
           .or("endedAt.is.null,endReason.eq.returned")
-          .order("startedAt", { ascending: false }).limit(1).maybeSingle();
+          .order("startedAt", { ascending: false }).limit(1);
+        const existingLeg = legRows.error ? legRows : { data: (Array.isArray(legRows.data) && legRows.data[0]) || null, error: null };
         // A failed lookup writes nothing: inserting blind could be the duplicate
         // this is here to prevent. The done screen reports it as not saved.
         let legRes;
@@ -17210,8 +17225,8 @@ function SwitchOutPage() {
         // fails the switch stops there, before any photo, claim, vehicle status
         // or agreement write, so a failure leaves nothing half switched. undo
         // puts the old leg back as it was if the new one cannot be opened.
-        const openLeg = await supabase.from("rental_agreement_vehicles")
-          .select("id").eq("rentalAgreementId", ra.id).is("endedAt", null).maybeSingle();
+        const openLeg = oneOrNone(await supabase.from("rental_agreement_vehicles")
+          .select("id").eq("rentalAgreementId", ra.id).is("endedAt", null).limit(1));
         let closeError = openLeg?.error || null;
         let undoClose  = null;
         if (!closeError && openLeg?.data?.id) {
@@ -17821,8 +17836,8 @@ function CustomerPageView({ onDiscard }) {
     if (!resCode) return;
     setRecordLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("reservations").select("*").eq("resCode", resCode).maybeSingle();
+      const { data, error } = oneOrNone(await supabase
+        .from("reservations").select("*").eq("resCode", resCode).limit(1));
       if (!error && data) setLocalRecord(data);
       if (!error && !data) setRecordMissing(true);
     } catch (e) {
