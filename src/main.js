@@ -16522,6 +16522,48 @@ async function pendingPickupRefusal(rentalAgreementId, fleet, messageFor) {
   return messageFor(plate);
 }
 
+// Close Rental's final charges: each charge line, the subtotal, taxes and
+// total, then what has been paid and what is still owing, as the closing
+// invoice has them (chargeTotals). A balance owing is said plainly before
+// Complete Close.
+function CloseChargesSummary({ charges }) {
+  const el = React.createElement;
+  const money = (n) => `$${(Math.round(n * 100) / 100).toFixed(2)}`;
+  const row = (label, value, opts = {}) => el("div", { key: opts.key || label, className: `closeCharges__row${opts.strong ? " closeCharges__row--strong" : ""}` },
+    el("span", null, label), el("span", null, value));
+  if (!charges) {
+    return el("div", { className: "closeCharges" },
+      el("h3", { className: "closeCharges__title" }, "Final charges"),
+      el("p", { className: "closeRentalHint" }, "Working out the final charges\u2026"));
+  }
+  const { lines, totals, extraDays, dueDate, billToCategory } = charges;
+  const shown = lines.filter((it) => it.applies && lineItemAmount(it) !== 0);
+  const unit = (it) => { const u = chargeQtyUnit(it); return u === "days" ? ` day${Number(it.qty) === 1 ? "" : "s"}` : u ? ` ${u}` : ""; };
+  const lineLabel = (it) => (it.key === "vehicle:cap" ? it.label
+    : `${it.label} \u00b7 ${it.qty}${unit(it)} \u00d7 ${rateDayMoney(Number(it.amount))}`);
+  const due = dueDate ? new Date(`${dueDate}T12:00:00`).toLocaleDateString("en-CA", { month: "short", day: "numeric" }) : "";
+  const retail = billToCategory === "Retail";
+  return el("div", { className: "closeCharges" },
+    el("h3", { className: "closeCharges__title" }, "Final charges"),
+    shown.length === 0 && el("p", { className: "closeRentalHint" }, "No charges on this rental."),
+    shown.map((it) => row(lineLabel(it), money(lineItemAmount(it)), { key: it.key })),
+    extraDays > 0 && el("p", { className: "closeRentalHint", style: { margin: "4px 0 0" } },
+      `Includes ${extraDays} extra day${extraDays === 1 ? "" : "s"} past the due date${due ? ` (${due})` : ""}.`),
+    el("div", { className: "closeCharges__rule" }),
+    row("Subtotal", money(totals.subTotal)),
+    (retail ? totals.allTaxLines : [...totals.billToTaxLines.map((t) => ({ ...t, label: `${t.label} (bill-to)` })),
+      ...totals.customerTaxLines.filter((t) => t.amount).map((t) => ({ ...t, label: `${t.label} (customer)` }))])
+      .map((t, i) => row(t.label, money(t.amount), { key: `tax${i}` })),
+    row("Total", money(totals.grandTotal), { strong: true }),
+    el("div", { className: "closeCharges__rule" }),
+    row("Paid", money(totals.totalPaid)),
+    !retail && row("Bill-to owes", money(Math.max(0, totals.billToBalance))),
+    !retail && row("Customer owes", money(Math.max(0, totals.customerBalance))),
+    row("Balance owing", money(totals.owing), { strong: true }),
+    totals.owing > 0 && el("div", { className: "closeRentalWarning", style: { marginTop: 10 } },
+      `${money(totals.owing)} is still owing on this rental. Completing the close does not take payment: record it under Charges & Payments on the reservation.`));
+}
+
 function CloseRentalPage() {
   const { reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, syncRAStatus, setDamageClaims, guardAction, currentUser } =
     React.useContext(AppContext);
@@ -16634,6 +16676,57 @@ function CloseRentalPage() {
     const d = new Date(ra.returnedAt);
     return Number.isNaN(d.getTime()) ? null : d.toISOString();
   }, [row?.selfReturn, ra?.returnedAt]);
+
+  // ── Final charges ──
+  // The closing invoice as the reservation page will show it: the agreement's
+  // charge lines, the vehicle and protection days counted to the close (extra
+  // days included), at the rates the rental was booked at, the fuel from the
+  // closing gas level on the Gas line, the taxes, the payments and what is
+  // still owing. Worked out by the same functions as Charges & Payments.
+  const closeRes = (reservations || []).find((r) => r.resCode === ra?.resCode) || null;
+  const closeAt = React.useMemo(() => (final ? new Date(returnedAtIso || Date.now()) : null), [final, returnedAtIso]);
+  const closeStamp = closeAt ? returnedStamp({ returnedAt: closeAt.toISOString() }) : null;
+  // undefined while asked, null for days times the daily rate.
+  const [closePrice, setClosePrice] = React.useState(undefined);
+  React.useEffect(() => {
+    let live = true;
+    setClosePrice(undefined);
+    if (!closeRes || !closeStamp) return undefined;
+    const pickup = rateStamp(closeRes.date, closeRes.time || closeRes.pickupTime, closeRes.pickupMeridiem, false);
+    if (!closeRes.rateSnapshot || !pickup || closeStamp <= pickup) { setClosePrice(null); return undefined; }
+    supabase.rpc("price_rental", { p_snap: closeRes.rateSnapshot, p_pickup: pickup, p_return: closeStamp })
+      .then(({ data, error }) => { if (live) setClosePrice(!error && data ? data : null); });
+    return () => { live = false; };
+  }, [closeRes?.resCode, closeStamp]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The agreement's taxes, else its branch's current ones, as the page reads them.
+  const [closeBranchTaxes, setCloseBranchTaxes] = React.useState([]);
+  React.useEffect(() => {
+    let live = true;
+    setCloseBranchTaxes([]);
+    if (!ra?.locationId || Array.isArray(ra?.salesTaxes)) return undefined;
+    supabase.from("locations").select("salesTaxes").eq("id", ra.locationId).limit(1).then(oneOrNone)
+      .then(({ data }) => { if (live && Array.isArray(data?.salesTaxes)) setCloseBranchTaxes(data.salesTaxes); });
+    return () => { live = false; };
+  }, [ra?.locationId, ra?.salesTaxes]);
+  const closeCharges = React.useMemo(() => {
+    if (!final || !ra || !closeRes || !closeAt || closePrice === undefined) return null;
+    const days = chargeDays(closeRes.date, closeAt.toLocaleDateString("en-CA"));
+    const rate = closeRes.dailyRate ?? "";
+    const saved = Array.isArray(ra.lineItems) && ra.lineItems.length > 0 ? ra.lineItems : DEFAULT_LINE_ITEMS;
+    let lines = withAcceptedProtection(saved.filter((it) => it.key !== "winter"), ra.protectionChoices, days);
+    lines = withRentalPrice(withVehicleRate(withRentalDays(lines, days), rate), closePrice, { days, dailyRate: rate });
+    lines = withFuelCharge(lines, agreementOutcome.reason === "fuel_short"
+      ? fuelChargeLine({ pickupGas: ra.fuelAtPickup, returnGas: final.closingGasLevel, tankSizeLiters: vehicle?.tankSizeLiters, ratePerLitre: branchRate })
+      : null);
+    const salesTaxes = (Array.isArray(ra.salesTaxes) ? ra.salesTaxes : closeBranchTaxes)
+      .filter((t) => t && String(t.name ?? "").trim() !== "" && Number(t.rate) > 0).slice(0, 2);
+    const billToCategory = billToCategoryOf(closeRes.sourceDetail ? `${closeRes.source}${LIST_SEP}${closeRes.sourceDetail}` : closeRes.source);
+    return {
+      lines, days, billToCategory, dueDate: closeRes.returnDate || null,
+      extraDays: Math.max(0, days - chargeDays(closeRes.date, closeRes.returnDate)),
+      totals: chargeTotals({ lineItems: lines, payments: Array.isArray(ra.payments) ? ra.payments : [], salesTaxes, billToCategory }),
+    };
+  }, [final, ra, closeRes, closeAt, closePrice, closeBranchTaxes, agreementOutcome.reason, vehicle, branchRate]);
 
   const completeClose = async () => {
     if (!final || !ra) return;
@@ -16770,6 +16863,14 @@ function CloseRentalPage() {
           } else {
             setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, gasOwed: gasCharge } : a)));
           }
+        }
+
+        // The charges the confirm step showed, kept on the agreement, so its
+        // reservation page shows the same closing invoice.
+        if (closeCharges) {
+          const chargesRes = await supabase.from("rental_agreements").update({ lineItems: closeCharges.lines }).eq("id", ra.id);
+          if (chargesRes?.error) console.warn("close rental: charges write failed:", chargesRes.error);
+          else setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, lineItems: closeCharges.lines } : a)));
         }
 
         // When the vehicle came back goes on the agreement, the same time the
@@ -16926,7 +17027,7 @@ function CloseRentalPage() {
           "region needs a fuel price. It will have to be entered by hand on Gas Collections."),
       vehicle && line("Vehicle moves to", vehicleStatus.status),
       vehicle && vehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, vehicleStatus.message),
-      React.createElement("p", { className: "page__body" }, "Final charges are coming soon."),
+      React.createElement(CloseChargesSummary, { charges: closeCharges }),
       refusal && React.createElement("div", { className: "closeRentalWarning" }, refusal),
       React.createElement("div", { className: "closeRentalActions" },
         React.createElement("button", {
@@ -17486,6 +17587,143 @@ function withAcceptedProtection(items, choices, days) {
   return added.length ? [...items, ...added] : items;
 }
 
+// ─── Charges: one calculation for the reservation page and Close Rental ─────
+// What a rental's charges come to, worked out the same way wherever they are
+// shown: the reservation page's Charges & Payments, and Close Rental's confirm
+// step. Pure functions over the charge lines; neither screen keeps its own.
+
+// Calendar days from the pickup date to the end date, as the invoice counts
+// the vehicle and protection days. Never below 0.
+function chargeDays(pickupDate, endDate) {
+  if (!pickupDate || !endDate) return 0;
+  const diff = Math.round((new Date(`${endDate}T00:00:00`) - new Date(`${pickupDate}T00:00:00`)) / (1000 * 60 * 60 * 24));
+  return diff > 0 ? diff : 0;
+}
+
+// The moment a returned rental came back, as price_rental takes it
+// ("YYYY-MM-DD HH:MM", local), or null while it is still out.
+function returnedStamp(ra) {
+  if (!ra?.returnedAt) return null;
+  const d = new Date(ra.returnedAt);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.toLocaleDateString("en-CA")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+// Every day-charged line, the vehicle and each protection, for that many days.
+const withRentalDays = (items, days) => items.map((item) =>
+  item.key === "vehicle" || isProtectionLine(item) ? { ...item, qty: String(days) } : item);
+
+// The vehicle line at the daily rate.
+const withVehicleRate = (items, dailyRate) => items.map((item) =>
+  item.key === "vehicle" ? { ...item, amount: dailyRate } : item);
+
+// A rental priced from the rates it was booked at (seasons, weekly or monthly
+// rates) has its vehicle charged by price_rental: a line for each group of
+// days, and the cap when it applies, in place of the days times the daily
+// rate. With no such price, back to one line: the days times the daily rate.
+function withRentalPrice(items, rentalPrice, { days, dailyRate }) {
+  const isVehicle = (it) => it.key === "vehicle" || String(it.key).startsWith("vehicle:");
+  if (!rentalPrice) {
+    if (!items.some((it) => String(it.key).startsWith("vehicle:")) && !items.some((it) => it.key === "vehicle" && it.label !== "Vehicle Cost")) return items;
+    return items.filter((it) => !String(it.key).startsWith("vehicle:")).map((it) => it.key === "vehicle"
+      ? { ...it, label: "Vehicle Cost", qty: String(days), amount: dailyRate } : it);
+  }
+  const at = Math.max(0, items.findIndex(isVehicle));
+  const was = items.find((it) => it.key === "vehicle");
+  const applies = was ? was.applies : true;
+  const lines = rateGroups(rentalPrice).map((l, i) => {
+    // A rate in whole cents shows as it is; a pro-rated one carries enough
+    // places that the days times it come to the line's amount.
+    const exact = Math.round(l.perDay * l.days * 100) === Math.round(l.amount * 100);
+    return {
+      key: i === 0 ? "vehicle" : `vehicle:${i}`,
+      label: "Vehicle",
+      applies, qty: String(l.days), qtyPlaceholder: "Days",
+      amount: String(exact ? l.perDay : Math.round((l.amount / l.days) * 1e6) / 1e6),
+    };
+  });
+  if (rentalPrice.cap) {
+    lines.push({ key: "vehicle:cap", label: rateCapText(rentalPrice.cap), applies, qty: "1", qtyPlaceholder: "", amount: String(rentalPrice.cap.amount) });
+  }
+  const rest = items.filter((it) => !isVehicle(it));
+  return [...rest.slice(0, at), ...lines, ...rest.slice(at)];
+}
+
+// The fuel a vehicle came back short, as the Gas line takes it: the amount
+// short in the company's fuel unit and the post-pay rate per unit. Null when
+// it cannot be worked out, as gasChargeForReturn says.
+function fuelChargeLine({ pickupGas, returnGas, tankSizeLiters, ratePerLitre }) {
+  if (gasChargeForReturn({ pickupGas, returnGas, vehicle: { tankSizeLiters }, ratePerLitre }) === null) return null;
+  const litres = ((FUEL_LABELS.indexOf(pickupGas) - FUEL_LABELS.indexOf(returnGas)) / 8) * parseFloat(tankSizeLiters);
+  const gal = fuelUnit() === "gal";
+  return {
+    qty: String(Math.round((gal ? litres / L_PER_GAL : litres) * 100) / 100),
+    amount: String(gal ? Math.round(parseFloat(ratePerLitre) * L_PER_GAL * 10000) / 10000 : parseFloat(ratePerLitre)),
+  };
+}
+
+// The Gas line charging that fuel, unless staff have already put a charge on
+// it, which is left as it is.
+function withFuelCharge(items, fuel) {
+  if (!fuel) return items;
+  const gas = items.find((it) => it.key === "gas");
+  if (gas && gas.applies && lineItemAmount(gas) > 0) return items;
+  const line = { ...(gas || DEFAULT_LINE_ITEMS[1]), key: "gas", applies: true, qty: fuel.qty, amount: fuel.amount };
+  return gas ? items.map((it) => (it.key === "gas" ? line : it)) : [...items, line];
+}
+
+// The four billing labels the charges have always branched on, by the
+// source's billing type, whatever the company calls the source.
+const billToCategoryOf = (source) => ({
+  retail:              "Retail",
+  bodyshop_dealership: "Bodyshop/Dealership",
+  insurance:           "Insurance",
+  corporate:           "Corporate",
+}[sourceBillingType(source)] || null);
+
+// What a charge line comes to.
+const lineItemAmount = (item) => (parseFloat(item.qty) || 0) * (parseFloat(item.amount) || 0);
+
+// The invoice's totals. Protection lines are the customer's to pay unless
+// covered by the bill-to; every other line is the bill-to's. Each tax on a
+// subtotal, to the cent; when someone else pays, each side is taxed on its own
+// charges, so the two sides add up to what is shown. billToCategory is the
+// source's: "Retail", "Bodyshop/Dealership", "Insurance" or "Corporate".
+function chargeTotals({ lineItems, payments, salesTaxes, billToCategory }) {
+  const billToItems   = lineItems.filter((it) => !isProtectionLine(it) || it.coveredByBillTo);
+  const customerItems = lineItems.filter((it) => isProtectionLine(it) && !it.coveredByBillTo);
+  const sumLines      = (items) => items.reduce((s, it) => s + (it.applies ? lineItemAmount(it) : 0), 0);
+  const billToTotal   = sumLines(billToItems);
+  const customerTotal = sumLines(customerItems);
+  const taxLinesFor = (subtotal) => (salesTaxes || []).map((t) => ({
+    label: `${String(t.name).trim()} ${Number(t.rate)}%`,
+    amount: Math.round(subtotal * Number(t.rate)) / 100,
+  }));
+  const sumTax = (lines) => lines.reduce((s, l) => s + l.amount, 0);
+  const subTotal         = billToTotal + customerTotal;
+  const allTaxLines      = taxLinesFor(subTotal);
+  const billToTaxLines   = taxLinesFor(billToTotal);
+  const customerTaxLines = taxLinesFor(customerTotal);
+  const billToDue        = billToTotal + sumTax(billToTaxLines);
+  const customerDue      = customerTotal + sumTax(customerTaxLines);
+  const retail           = billToCategory === "Retail";
+  const grandTotal       = retail ? subTotal + sumTax(allTaxLines) : billToDue + customerDue;
+  const paid = (who) => (payments || []).filter((p) => (who === "Bill-To" ? (p.paidBy || "Bill-To") === "Bill-To" : p.paidBy === who))
+    .reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+  const billToPaid      = paid("Bill-To");
+  const customerPaid    = paid("Customer");
+  const totalPaid       = billToPaid + customerPaid;
+  const billToBalance   = billToDue - billToPaid;
+  const customerBalance = customerDue - customerPaid;
+  return {
+    billToItems, customerItems, billToTotal, customerTotal, subTotal, allTaxLines, billToTaxLines, customerTaxLines,
+    billToDue, customerDue, grandTotal, billToPaid, customerPaid, totalPaid, billToBalance, customerBalance,
+    // What is still owing: one balance for retail, else the larger of the two
+    // sides, as the closing invoice is settled (gas_invoice_owing).
+    owing: Math.max(0, Math.round((retail ? grandTotal - totalPaid : Math.max(billToBalance, customerBalance)) * 100) / 100),
+  };
+}
+
 // What a charge line's quantity counts. Gas and mileage follow the company's
 // units; every other line is charged by the day. Worked out from the key, not
 // the saved line, so a line saved before the units changed shows the unit the
@@ -17871,13 +18109,7 @@ function CustomerPageView({ onDiscard }) {
     if (!ra?.id || ra.id === raHydratedId.current) return;
     raHydratedId.current = ra.id;
     const saved = Array.isArray(ra.lineItems) && ra.lineItems.length > 0 ? ra.lineItems : null;
-    const startDays = (() => {
-      const d1 = resInfoForm.pickupDate ? new Date(`${resInfoForm.pickupDate}T00:00:00`) : null;
-      const d2 = billEndDate ? new Date(`${billEndDate}T00:00:00`) : null;
-      if (!d1 || !d2) return 0;
-      const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
-      return diff > 0 ? diff : 0;
-    })();
+    const startDays = chargeDays(resInfoForm.pickupDate, billEndDate);
     // An other driver is never charged for, so adds no line. Winter tires are
     // not charged for either: a line saved for them before is left off.
     setLineItems((prev) => withAcceptedProtection((saved || prev).filter((it) => it.key !== "winter"), ra.protectionChoices, startDays));
@@ -17887,22 +18119,12 @@ function CustomerPageView({ onDiscard }) {
   }, [ra]); // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
-    const d1 = resInfoForm.pickupDate ? new Date(`${resInfoForm.pickupDate}T00:00:00`) : null;
-    const d2 = billEndDate ? new Date(`${billEndDate}T00:00:00`) : null;
-    if (!d1 || !d2) return;
-    const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
-    const days = diff > 0 ? diff : 0;
-    setLineItems((prev) => prev.map((item) =>
-      item.key === "vehicle" || isProtectionLine(item)
-        ? { ...item, qty: String(days) }
-        : item
-    ));
+    if (!resInfoForm.pickupDate || !billEndDate) return;
+    setLineItems((prev) => withRentalDays(prev, chargeDays(resInfoForm.pickupDate, billEndDate)));
   }, [resInfoForm.pickupDate, billEndDate]);
 
   React.useEffect(() => {
-    setLineItems((prev) => prev.map((item) =>
-      item.key === "vehicle" ? { ...item, amount: billToForm.dailyRate } : item
-    ));
+    setLineItems((prev) => withVehicleRate(prev, billToForm.dailyRate));
   }, [billToForm.dailyRate]);
 
   // A reservation with rates kept from when it was made (seasons, weekly or
@@ -17912,44 +18134,15 @@ function CustomerPageView({ onDiscard }) {
   const rentalPrice = useRentalPrice({
     source: ratesForm.source, vehicleClass: ratesForm.vehicleClass, dailyRate: billToForm.dailyRate,
     pickup: rateStamp(resInfoForm.pickupDate, toDisplayTime(resInfoForm.pickupTime), resInfoForm.pickupMeridiem, false),
-    ret: rateStamp(billEndDate, toDisplayTime(resInfoForm.returnTime), resInfoForm.returnMeridiem, true),
+    // A rental that has come back is priced to the moment it did, as Close
+    // Rental prices it; one still out, to its scheduled return.
+    ret: returnedStamp(ra) || rateStamp(billEndDate, toDisplayTime(resInfoForm.returnTime), resInfoForm.returnMeridiem, true),
     saved: localRecord,
   });
   React.useEffect(() => {
-    const isVehicle = (it) => it.key === "vehicle" || String(it.key).startsWith("vehicle:");
-    if (!rentalPrice) {
-      // Back to one line: the days times the daily rate.
-      setLineItems((prev) => {
-        if (!prev.some((it) => String(it.key).startsWith("vehicle:")) && !prev.some((it) => it.key === "vehicle" && it.label !== "Vehicle Cost")) return prev;
-        const d1 = resInfoForm.pickupDate ? new Date(`${resInfoForm.pickupDate}T00:00:00`) : null;
-        const d2 = billEndDate ? new Date(`${billEndDate}T00:00:00`) : null;
-        const diff = d1 && d2 ? Math.round((d2 - d1) / (1000 * 60 * 60 * 24)) : 0;
-        return prev.filter((it) => !String(it.key).startsWith("vehicle:")).map((it) => it.key === "vehicle"
-          ? { ...it, label: "Vehicle Cost", qty: String(diff > 0 ? diff : 0), amount: billToForm.dailyRate } : it);
-      });
-      return;
-    }
-    setLineItems((prev) => {
-      const at = Math.max(0, prev.findIndex(isVehicle));
-      const was = prev.find((it) => it.key === "vehicle");
-      const applies = was ? was.applies : true;
-      const lines = rateGroups(rentalPrice).map((l, i) => {
-        // A rate in whole cents shows as it is; a pro-rated one carries enough
-        // places that the days times it come to the line's amount.
-        const exact = Math.round(l.perDay * l.days * 100) === Math.round(l.amount * 100);
-        return {
-          key: i === 0 ? "vehicle" : `vehicle:${i}`,
-          label: "Vehicle",
-          applies, qty: String(l.days), qtyPlaceholder: "Days",
-          amount: String(exact ? l.perDay : Math.round((l.amount / l.days) * 1e6) / 1e6),
-        };
-      });
-      if (rentalPrice.cap) {
-        lines.push({ key: "vehicle:cap", label: rateCapText(rentalPrice.cap), applies, qty: "1", qtyPlaceholder: "", amount: String(rentalPrice.cap.amount) });
-      }
-      const rest = prev.filter((it) => !isVehicle(it));
-      return [...rest.slice(0, at), ...lines, ...rest.slice(at)];
-    });
+    setLineItems((prev) => withRentalPrice(prev, rentalPrice, {
+      days: chargeDays(resInfoForm.pickupDate, billEndDate), dailyRate: billToForm.dailyRate,
+    }));
   }, [rentalPrice]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [saveStatus, setSaveStatus] = React.useState("idle"); // "idle" | "saving" | "saved" | "error"
@@ -18415,12 +18608,7 @@ function CustomerPageView({ onDiscard }) {
 
   // Decided by the source's billing type. The four labels are what the rules
   // below have always branched on, whatever the company calls the source.
-  const btSrcCat = {
-    retail:              "Retail",
-    bodyshop_dealership: "Bodyshop/Dealership",
-    insurance:           "Insurance",
-    corporate:           "Corporate",
-  }[sourceBillingType(ratesForm.source)] || null;
+  const btSrcCat = billToCategoryOf(ratesForm.source);
   const btSrcName = splitList(ratesForm.source).length > 1
     ? splitList(ratesForm.source)[1] : ratesForm.source;
 
@@ -18487,8 +18675,7 @@ function CustomerPageView({ onDiscard }) {
   const billedToName  = btSrcCat === "Retail" ? name
     : btSrcName || name;
 
-  const lineItemAmt = (item) =>
-    (parseFloat(item.qty) || 0) * (parseFloat(item.amount) || 0);
+  const lineItemAmt = lineItemAmount;
   const totalCharges  = lineItems.reduce((s, it) => s + (it.applies ? lineItemAmt(it) : 0), 0);
 
   const fmtMoney = (n) => `$${n.toFixed(2)}`;
@@ -18506,29 +18693,11 @@ function CustomerPageView({ onDiscard }) {
       ? (item.coveredByBillTo ? billedToName : name)
       : billedToName;
 
-  const billToItems   = lineItems.filter((it) => !isProtectionLine(it) || it.coveredByBillTo);
-  const customerItems = lineItems.filter((it) => isProtectionLine(it) && !it.coveredByBillTo);
-  const billToTotal   = billToItems.reduce((s, it) => s + (it.applies ? lineItemAmt(it) : 0), 0);
-  const customerTotal = customerItems.reduce((s, it) => s + (it.applies ? lineItemAmt(it) : 0), 0);
-  // Each tax on a subtotal, to the cent. When someone else pays, each side is
-  // taxed on its own charges, so the two sides add up to what is shown.
-  const taxLinesFor = (subtotal) => salesTaxes.map((t) => ({
-    label: `${String(t.name).trim()} ${Number(t.rate)}%`,
-    amount: Math.round(subtotal * Number(t.rate)) / 100,
-  }));
-  const sumTax = (lines) => lines.reduce((s, l) => s + l.amount, 0);
-  const subTotal         = billToTotal + customerTotal;
-  const allTaxLines      = taxLinesFor(subTotal);
-  const billToTaxLines   = taxLinesFor(billToTotal);
-  const customerTaxLines = taxLinesFor(customerTotal);
-  const billToDue        = billToTotal + sumTax(billToTaxLines);
-  const customerDue      = customerTotal + sumTax(customerTaxLines);
-  const grandTotal       = btSrcCat === "Retail" ? subTotal + sumTax(allTaxLines) : billToDue + customerDue;
-  const billToPaid      = payments.filter((p) => (p.paidBy || "Bill-To") === "Bill-To").reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
-  const customerPaid    = payments.filter((p) => p.paidBy === "Customer").reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
-  const totalPaid       = billToPaid + customerPaid;
-  const billToBalance   = billToDue - billToPaid;
-  const customerBalance = customerDue - customerPaid;
+  // The invoice's totals, from the same calculation Close Rental uses.
+  const {
+    billToItems, customerItems, billToTotal, customerTotal, subTotal, allTaxLines, billToTaxLines, customerTaxLines,
+    billToDue, customerDue, grandTotal, billToPaid, customerPaid, totalPaid, billToBalance, customerBalance,
+  } = chargeTotals({ lineItems, payments, salesTaxes, billToCategory: btSrcCat });
 
   const addPayment = () => {
     setChargesEdited(true);
@@ -23070,6 +23239,13 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   background: #EE7550;
 }
 .page--unsavedBar{ padding-bottom: 96px; }
+.closeCharges{ margin: 16px 0; padding: 14px 16px; border: 1px solid #E3E2DE; border-radius: 10px; background: #FFFFFF; max-width: 520px; }
+.closeCharges__title{ margin: 0 0 8px; font-size: 15px; font-weight: 700; color: #1F1E1D; }
+.closeCharges__row{ display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; font-size: 14px; color: #1F1E1D; }
+.closeCharges__row > span:first-child{ min-width: 0; overflow-wrap: anywhere; }
+.closeCharges__row > span:last-child{ white-space: nowrap; font-variant-numeric: tabular-nums; }
+.closeCharges__row--strong{ font-weight: 700; }
+.closeCharges__rule{ border-top: 1px solid #EEEDE9; margin: 6px 0; }
 .unsavedBar{
   position: fixed; z-index: 900; left: 50%;
   bottom: calc(var(--mobileBottomBarH, 0px) + 16px + env(safe-area-inset-bottom, 0px));
