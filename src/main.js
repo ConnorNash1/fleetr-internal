@@ -16335,7 +16335,10 @@ function useOpenRentalRows({ includeSelfReturns = false } = {}) {
         return {
           id:         ra.id,
           customer:   res.customer || "-",
+          firstName:  res.firstName || (parts.length > 1 ? parts[0] : ""),
           lastName:   res.lastName || (parts.length > 1 ? parts[parts.length - 1] : ""),
+          resCode:    ra.resCode || "",
+          returnedAt: ra.returnedAt || null,
           plate:      rowPlate,
           province:   vehicle?.province || "",
           vehicle:    [vehicle?.year, vehicle?.make, vehicle?.model].filter(Boolean).join(" ")
@@ -16365,8 +16368,10 @@ function useOpenRentalRows({ includeSelfReturns = false } = {}) {
 // One box: plate or last name, searched together. Nothing is listed until two
 // characters are typed, so the screen never opens on a wall of every open
 // rental. Plates match ignoring case, spaces and dashes; last names ignoring
-// case. A plate typed in full puts its rental first.
-function OpenRentalSearch({ rows, onSelect }) {
+// case. A plate typed in full puts its rental first. With byNameOrCode (Close
+// Rental), first names, full names and reservation codes match too, codes
+// ignoring case and spaces.
+function OpenRentalSearch({ rows, onSelect, byNameOrCode = false }) {
   const isMobile = useMobile();
   const [text, setText] = React.useState("");
 
@@ -16381,10 +16386,15 @@ function OpenRentalSearch({ rows, onSelect }) {
   const typed      = text.trim();
   const plateQuery = normalizePlate(typed);
   const nameQuery  = typed.toLowerCase().replace(/\s+/g, " ");
+  const codeQuery  = typed.toUpperCase().replace(/\s+/g, "");
   const matches = typed.length < 2 ? [] : rows
     .filter((row) =>
       (plateQuery !== "" && normalizePlate(row.plate).includes(plateQuery))
-      || String(row.lastName || "").toLowerCase().includes(nameQuery))
+      || String(row.lastName || "").toLowerCase().includes(nameQuery)
+      || (byNameOrCode && (
+        String(row.firstName || "").toLowerCase().includes(nameQuery)
+        || String(row.customer || "").toLowerCase().replace(/\s+/g, " ").includes(nameQuery)
+        || (codeQuery !== "" && String(row.resCode || "").toUpperCase().replace(/\s+/g, "").includes(codeQuery)))))
     .sort((x, y) =>
       (normalizePlate(y.plate) === plateQuery) - (normalizePlate(x.plate) === plateQuery));
 
@@ -16436,14 +16446,61 @@ function OpenRentalSearch({ rows, onSelect }) {
   return React.createElement(React.Fragment, null,
     React.createElement("div", { className: "resvSearchBar" },
       React.createElement("input", {
-        className: "resvSearchInput", type: "text", placeholder: "Plate or last name",
-        "aria-label": "Plate or last name",
+        className: "resvSearchInput", type: "text",
+        placeholder: byNameOrCode ? "Plate, name or reservation code" : "Plate or last name",
+        "aria-label": byNameOrCode ? "Plate, name or reservation code" : "Plate or last name",
         autoFocus: true, autoComplete: "off", spellCheck: false,
         value: text, onChange: (e) => setText(e.target.value),
       })
     ),
     results
   );
+}
+
+// Close Rental's list of rentals the customer has already returned through the
+// app, waiting for staff to close: the self-returns among the rows, oldest
+// return first (one with no return time on record last). Tapping one starts
+// its close, as picking it from the search does.
+function ReturnsWaitingToClose({ rows, onSelect }) {
+  const isMobile = useMobile();
+  const el = React.createElement;
+  const at = (row) => { const t = row.returnedAt ? new Date(row.returnedAt).getTime() : NaN; return Number.isNaN(t) ? Infinity : t; };
+  const waiting = rows.filter((row) => row.selfReturn).sort((x, y) => at(x) - at(y));
+  const fmtReturned = (iso) => {
+    const d = iso ? new Date(iso) : null;
+    return !d || Number.isNaN(d.getTime()) ? "-"
+      : d.toLocaleString("en-CA", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+  };
+  const plateText = (row) => [row.plate || "-", row.province].filter(Boolean).join(" \u00b7 ");
+  const list = waiting.length === 0
+    ? el("div", { className: "resvEmpty" }, "No returns waiting to close.")
+    : isMobile
+      ? waiting.map((row) => el("button", {
+          key: row.id, type: "button", className: "dashCard closeRentalCard", onClick: () => onSelect(row.id),
+        },
+          el("div", { className: "dashCard__header" },
+            el("span", null, row.customer),
+            el("span", { className: "dashCard__resCode" }, plateText(row))),
+          el("div", { className: "dashCard__meta" },
+            el("span", { className: "dashCard__chip" }, row.vehicle),
+            el("span", { className: "dashCard__chip" }, `Returned ${fmtReturned(row.returnedAt)}`))))
+      : el("section", { className: "dashboardSection" },
+          el("div", { className: "dashboardSection__body" },
+            el("table", { className: "dashboardTable" },
+              el("thead", null, el("tr", null,
+                ["Customer", "Plate", "Vehicle", "Returned"].map((col) => el("th", { key: col }, col)))),
+              el("tbody", null, waiting.map((row) => el("tr", {
+                key: row.id, className: "closeRentalRow", tabIndex: 0,
+                onClick: () => onSelect(row.id),
+                onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(row.id); } },
+              },
+                el("td", null, row.customer),
+                el("td", null, plateText(row)),
+                el("td", null, row.vehicle),
+                el("td", null, fmtReturned(row.returnedAt))))))));
+  return el(React.Fragment, null,
+    el("h2", { className: "closeRentalStepTitle", style: { marginTop: 20 } }, "Returns waiting to close"),
+    list);
 }
 
 // ─── Pending pickups ─────────────────────────────────────────────────────────
@@ -17072,7 +17129,8 @@ function CloseRentalPage() {
     React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate("/dashboard") }, "\u2190 Home"),
     React.createElement("h1", { className: "page__title" }, "Close Rental"),
     React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement(OpenRentalSearch, { rows: openRows, onSelect: setSelectedId })
+    React.createElement(OpenRentalSearch, { rows: openRows, onSelect: setSelectedId, byNameOrCode: true }),
+    React.createElement(ReturnsWaitingToClose, { rows: openRows, onSelect: setSelectedId })
   );
 }
 
