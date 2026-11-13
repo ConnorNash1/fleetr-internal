@@ -16742,14 +16742,17 @@ function CloseRentalPage() {
   // still owing. Worked out by the same functions as Charges & Payments.
   const closeRes = (reservations || []).find((r) => r.resCode === ra?.resCode) || null;
   const closeAt = React.useMemo(() => (final ? new Date(returnedAtIso || Date.now()) : null), [final, returnedAtIso]);
-  const closeStamp = closeAt ? returnedStamp({ returnedAt: closeAt.toISOString() }) : null;
+  // The pickup and the return on the branch's clock, as the days are counted.
+  const closeTimeZone = useBranchTimeZone(ra?.locationId || closeRes?.locationId || null);
+  const closeStamp = closeAt ? branchStamp(closeAt, closeTimeZone) : null;
+  const closePickup = closeRes ? rateStamp(closeRes.date, closeRes.time || closeRes.pickupTime, closeRes.pickupMeridiem, false) : null;
   // undefined while asked, null for days times the daily rate.
   const [closePrice, setClosePrice] = React.useState(undefined);
   React.useEffect(() => {
     let live = true;
     setClosePrice(undefined);
     if (!closeRes || !closeStamp) return undefined;
-    const pickup = rateStamp(closeRes.date, closeRes.time || closeRes.pickupTime, closeRes.pickupMeridiem, false);
+    const pickup = closePickup;
     if (!closeRes.rateSnapshot || !pickup || closeStamp <= pickup) { setClosePrice(null); return undefined; }
     supabase.rpc("price_rental", { p_snap: closeRes.rateSnapshot, p_pickup: pickup, p_return: closeStamp })
       .then(({ data, error }) => { if (live) setClosePrice(!error && data ? data : null); });
@@ -16767,7 +16770,7 @@ function CloseRentalPage() {
   }, [ra?.locationId, ra?.salesTaxes]);
   const closeCharges = React.useMemo(() => {
     if (!final || !ra || !closeRes || !closeAt || closePrice === undefined) return null;
-    const days = chargeDays(closeRes.date, closeAt.toLocaleDateString("en-CA"));
+    const days = chargeDays(closePickup, closeStamp);
     const rate = closeRes.dailyRate ?? "";
     const saved = Array.isArray(ra.lineItems) && ra.lineItems.length > 0 ? ra.lineItems : DEFAULT_LINE_ITEMS;
     let lines = withAcceptedProtection(saved.filter((it) => it.key !== "winter"), ra.protectionChoices, days);
@@ -16780,10 +16783,10 @@ function CloseRentalPage() {
     const billToCategory = billToCategoryOf(closeRes.sourceDetail ? `${closeRes.source}${LIST_SEP}${closeRes.sourceDetail}` : closeRes.source);
     return {
       lines, days, billToCategory, dueDate: closeRes.returnDate || null,
-      extraDays: Math.max(0, days - chargeDays(closeRes.date, closeRes.returnDate)),
+      extraDays: Math.max(0, days - chargeDays(closePickup, rateStamp(closeRes.returnDate, closeRes.returnTime, closeRes.returnMeridiem, true))),
       totals: chargeTotals({ lineItems: lines, payments: Array.isArray(ra.payments) ? ra.payments : [], salesTaxes, billToCategory }),
     };
-  }, [final, ra, closeRes, closeAt, closePrice, closeBranchTaxes, agreementOutcome.reason, vehicle, branchRate]);
+  }, [final, ra, closeRes, closeAt, closeStamp, closePickup, closePrice, closeBranchTaxes, agreementOutcome.reason, vehicle, branchRate]);
 
   const completeClose = async () => {
     if (!final || !ra) return;
@@ -17650,21 +17653,60 @@ function withAcceptedProtection(items, choices, days) {
 // shown: the reservation page's Charges & Payments, and Close Rental's confirm
 // step. Pure functions over the charge lines; neither screen keeps its own.
 
-// Calendar days from the pickup date to the end date, as the invoice counts
-// the vehicle and protection days. Never below 0.
-function chargeDays(pickupDate, endDate) {
-  if (!pickupDate || !endDate) return 0;
-  const diff = Math.round((new Date(`${endDate}T00:00:00`) - new Date(`${pickupDate}T00:00:00`)) / (1000 * 60 * 60 * 24));
-  return diff > 0 ? diff : 0;
+// The days a rental is charged for, as the database counts them
+// (booking_days, public_booking.sql) for fleetr.ai, check-in and the emails:
+// every started 24 hours from the pickup to the return, at least one, both
+// as wall-clock times on the branch's clock ("YYYY-MM-DD HH:MM", as rateStamp
+// and returnedStamp give them). 0 while either is not known.
+function chargeDays(pickupStamp, returnStamp) {
+  const at = (s) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(String(s || ""));
+    return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) : NaN;
+  };
+  const from = at(pickupStamp), to = at(returnStamp);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return 0;
+  return Math.max(1, Math.ceil((to - from) / 86400000));
 }
 
-// The moment a returned rental came back, as price_rental takes it
-// ("YYYY-MM-DD HH:MM", local), or null while it is still out.
-function returnedStamp(ra) {
-  if (!ra?.returnedAt) return null;
-  const d = new Date(ra.returnedAt);
-  if (Number.isNaN(d.getTime())) return null;
-  return `${d.toLocaleDateString("en-CA")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+// The branch's clock when none is set, as checkin_branch_tz has it.
+const DEFAULT_BRANCH_TIME_ZONE = "America/St_Johns";
+
+// A moment as wall-clock time on the branch's clock, "YYYY-MM-DD HH:MM", or
+// null when it is not a time.
+function branchStamp(value, timeZone) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (!value || Number.isNaN(d.getTime())) return null;
+  const parts = (tz) => Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(d).map((p) => [p.type, p.value]));
+  let p;
+  try { p = parts(timeZone || DEFAULT_BRANCH_TIME_ZONE); } catch (_) { p = parts(DEFAULT_BRANCH_TIME_ZONE); }
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+
+// The moment a returned rental came back, on the branch's clock, as
+// price_rental takes it, or null while it is still out.
+function returnedStamp(ra, timeZone) {
+  return ra?.returnedAt ? branchStamp(ra.returnedAt, timeZone) : null;
+}
+
+// A branch's time zone, as checkin_branch_tz reads it: its listing's, else
+// the branch's own, else the default. The default until it is read.
+function useBranchTimeZone(locationId) {
+  const [timeZone, setTimeZone] = React.useState(DEFAULT_BRANCH_TIME_ZONE);
+  React.useEffect(() => {
+    let live = true;
+    setTimeZone(DEFAULT_BRANCH_TIME_ZONE);
+    if (!locationId) return undefined;
+    Promise.all([
+      supabase.from("branch_listings").select("timeZone").eq("locationId", locationId).limit(1).then(oneOrNone).catch(() => ({})),
+      supabase.from("locations").select("timeZone").eq("id", locationId).limit(1).then(oneOrNone).catch(() => ({})),
+    ]).then(([listing, branch]) => {
+      if (live) setTimeZone(listing?.data?.timeZone || branch?.data?.timeZone || DEFAULT_BRANCH_TIME_ZONE);
+    });
+    return () => { live = false; };
+  }, [locationId]);
+  return timeZone;
 }
 
 // Every day-charged line, the vehicle and each protection, for that many days.
@@ -18157,9 +18199,13 @@ function CustomerPageView({ onDiscard }) {
     setCustomerNotesLog(parseNotesLog(localRecord.notesLog));
   }, [localRecord]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Rental days run to the day the vehicle actually came back once it has,
-  // and to the scheduled return until then.
-  const billEndDate = actualReturnDay(ra) || resInfoForm.returnDate;
+  // Rental days, as the database counts them (chargeDays): from the pickup to
+  // the moment the vehicle came back once it has, and to the scheduled return
+  // until then, on the branch's clock.
+  const billTimeZone = useBranchTimeZone(ra?.locationId || localRecord?.locationId || null);
+  const billPickup = rateStamp(resInfoForm.pickupDate, toDisplayTime(resInfoForm.pickupTime), resInfoForm.pickupMeridiem, false);
+  const billReturn = returnedStamp(ra, billTimeZone) || rateStamp(resInfoForm.returnDate, toDisplayTime(resInfoForm.returnTime), resInfoForm.returnMeridiem, true);
+  const billDays = chargeDays(billPickup, billReturn);
 
   // Hydrate lineItems and payments once from rental_agreements when the RA record first loads
   const raHydratedId = React.useRef(null);
@@ -18167,7 +18213,7 @@ function CustomerPageView({ onDiscard }) {
     if (!ra?.id || ra.id === raHydratedId.current) return;
     raHydratedId.current = ra.id;
     const saved = Array.isArray(ra.lineItems) && ra.lineItems.length > 0 ? ra.lineItems : null;
-    const startDays = chargeDays(resInfoForm.pickupDate, billEndDate);
+    const startDays = billDays;
     // An other driver is never charged for, so adds no line. Winter tires are
     // not charged for either: a line saved for them before is left off.
     setLineItems((prev) => withAcceptedProtection((saved || prev).filter((it) => it.key !== "winter"), ra.protectionChoices, startDays));
@@ -18177,9 +18223,9 @@ function CustomerPageView({ onDiscard }) {
   }, [ra]); // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
-    if (!resInfoForm.pickupDate || !billEndDate) return;
-    setLineItems((prev) => withRentalDays(prev, chargeDays(resInfoForm.pickupDate, billEndDate)));
-  }, [resInfoForm.pickupDate, billEndDate]);
+    if (!billDays) return;
+    setLineItems((prev) => withRentalDays(prev, billDays));
+  }, [billDays]);
 
   React.useEffect(() => {
     setLineItems((prev) => withVehicleRate(prev, billToForm.dailyRate));
@@ -18194,12 +18240,12 @@ function CustomerPageView({ onDiscard }) {
     pickup: rateStamp(resInfoForm.pickupDate, toDisplayTime(resInfoForm.pickupTime), resInfoForm.pickupMeridiem, false),
     // A rental that has come back is priced to the moment it did, as Close
     // Rental prices it; one still out, to its scheduled return.
-    ret: returnedStamp(ra) || rateStamp(billEndDate, toDisplayTime(resInfoForm.returnTime), resInfoForm.returnMeridiem, true),
+    ret: billReturn,
     saved: localRecord,
   });
   React.useEffect(() => {
     setLineItems((prev) => withRentalPrice(prev, rentalPrice, {
-      days: chargeDays(resInfoForm.pickupDate, billEndDate), dailyRate: billToForm.dailyRate,
+      days: billDays, dailyRate: billToForm.dailyRate,
     }));
   }, [rentalPrice]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -18722,13 +18768,7 @@ function CustomerPageView({ onDiscard }) {
   );
 
   // ── Charges & Payments body ───────────────────────────────────────────────
-  const totalDays = (() => {
-    if (!resInfoForm.pickupDate || !billEndDate) return 0;
-    const d1 = new Date(`${resInfoForm.pickupDate}T00:00:00`);
-    const d2 = new Date(`${billEndDate}T00:00:00`);
-    const diff = Math.round((d2 - d1) / (1000 * 60 * 60 * 24));
-    return diff > 0 ? diff : 0;
-  })();
+  const totalDays = billDays;
   const dailyRateNum  = parseFloat(billToForm.dailyRate) || 0;
   const billedToName  = btSrcCat === "Retail" ? name
     : btSrcName || name;
