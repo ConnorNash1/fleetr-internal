@@ -1414,6 +1414,15 @@ function normalizePlate(s) {
   return String(s || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 }
 
+// The one vehicle with this plate, spaces, dashes and case ignored, as the
+// database functions match plates; null for none, or for more than one.
+function vehicleForPlate(fleet, plate) {
+  const key = normalizePlate(plate);
+  if (!key) return null;
+  const found = (fleet || []).filter((v) => v && v.id != null && normalizePlate(v.plate) === key);
+  return found.length === 1 ? found[0] : null;
+}
+
 // ─── Damage claims ──────────────────────────────────────────────────────────────
 // damage_claims rows only carry plate, rentalAgreementId, and description. Vehicle
 // and customer/resCode are derived by joining rentalAgreements/reservations here so
@@ -1876,6 +1885,8 @@ function AppProvider({ children, currentUser, signOut }) {
   const [noShows,          setNoShowsState]          = React.useState([]);
   const [rentalAgreements, setRentalAgreementsState] = React.useState([]);
   const raRef = React.useRef([]); // mirror of rentalAgreements for sync callbacks
+  const fleetRef = React.useRef([]); // mirror of fleet, for the same
+  fleetRef.current = fleet;
 
   // ── Local UI state (seeded from constants; not synced to Supabase) ────────
   const [damageClaims, setDamageClaimsState] = React.useState([]);
@@ -2105,6 +2116,23 @@ function AppProvider({ children, currentUser, signOut }) {
   // this would otherwise fire was not awaited, so the two raced and the wrong
   // one could land last. That left a freshly damaged vehicle sitting in the
   // returns queue looking ready to hand out.
+  // The vehicle a rental's status moves, found by its plate with spaces,
+  // dashes and case ignored (vehicleForPlate), and written by its id, so an
+  // agreement that saved "hxt-204" still moves the vehicle saved "HXT 204".
+  // No single vehicle with that plate: nothing is moved, and the console says
+  // so, rather than a write that quietly matches nothing.
+  function moveVehicle(plate, newFleetStatus) {
+    const v = vehicleForPlate(fleetRef.current, plate);
+    if (!v) {
+      console.warn("fleet status sync: no single vehicle with plate", plate);
+      return;
+    }
+    setFleetState((prev) => prev.map((x) => (x.id === v.id ? { ...x, status: newFleetStatus } : x)));
+    supabase.from("fleet").update({ status: newFleetStatus }).eq("id", v.id)
+      .then((res) => console.log("fleet status sync:", res))
+      .catch((e) => console.warn("fleet status sync:", e));
+  }
+
   async function syncRAStatus(resCode, status, { skipFleet = false } = {}) {
     try {
       const existing = raRef.current.find((ra) => ra.resCode === resCode);
@@ -2136,14 +2164,7 @@ function AppProvider({ children, currentUser, signOut }) {
             status === "open_rental_agreement" ? "On Rent" :
             status === "customer_return"       ? "Ready Returns" :
             status === "close_pending"         ? "Ready Returns" : null;
-          if (newFleetStatus) {
-            setFleetState((prev) =>
-              prev.map((v) => v.plate === plate ? { ...v, status: newFleetStatus } : v)
-            );
-            supabase.from("fleet").update({ status: newFleetStatus }).eq("plate", plate)
-              .then((res) => console.log("fleet status sync:", res))
-              .catch((e) => console.warn("fleet status sync:", e));
-          }
+          if (newFleetStatus) moveVehicle(plate, newFleetStatus);
         }
       } else if (status && status !== "reservation") {
         const { data } = await supabase
@@ -2164,14 +2185,7 @@ function AppProvider({ children, currentUser, signOut }) {
             status === "open_rental_agreement" ? "On Rent" :
             status === "customer_return"       ? "Ready Returns" :
             status === "close_pending"         ? "Ready Returns" : null;
-          if (newFleetStatus) {
-            setFleetState((prev) =>
-              prev.map((v) => v.plate === plate ? { ...v, status: newFleetStatus } : v)
-            );
-            supabase.from("fleet").update({ status: newFleetStatus }).eq("plate", plate)
-              .then((res) => console.log("fleet status sync:", res))
-              .catch((e) => console.warn("fleet status sync:", e));
-          }
+          if (newFleetStatus) moveVehicle(plate, newFleetStatus);
         }
       }
     } catch (e) {
