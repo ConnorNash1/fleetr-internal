@@ -16915,13 +16915,45 @@ function CloseRentalPage() {
     guardAction("ra.advance", async () => {
       setBusy(true);
       try {
+        // When the vehicle came back: what a self-return stamped, else now.
+        const endedAt = returnedAtIso || new Date().toISOString();
+
+        // The charges the confirm step showed, the fuel charge and the return
+        // time, in one write to the agreement before anything else: the
+        // receipt, the fuel-paid rule and the reservation page all read them
+        // once the status moves, so a rental never closes without them. If
+        // they do not save, nothing else is written, the rental stays as it
+        // was, and staff are told.
+        //
+        // The fuel charge is what puts the rental on Gas Collections, which
+        // lists every agreement with a gasOwed above zero. Nothing is written
+        // when it could not be worked out: the row keeps whatever it had,
+        // which on a self-return is what complete_return calculated, and a
+        // blank stays blank for manual entry rather than a zero that reads as
+        // paid. The return time is written unless a self-return already put
+        // it there; the reservation keeps the scheduled return it was booked
+        // with.
+        const charges = {};
+        if (closeCharges) charges.lineItems = closeCharges.lines;
+        if (gasCharge) charges.gasOwed = gasCharge;
+        if (!ra.returnedAt) charges.returnedAt = endedAt;
+        if (Object.keys(charges).length) {
+          const chargesRes = await supabase.from("rental_agreements").update(charges).eq("id", ra.id);
+          if (chargesRes?.error) {
+            console.warn("close rental: charges write failed:", chargesRes.error);
+            setRefusal("The charges could not be saved, so the rental has not been closed. Check your connection and try again.");
+            return;
+          }
+          setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, ...charges } : a)));
+        }
+
         // The leg. Pickup readings come off the agreement's own record, which
         // is where the vehicle went out on them; the closing pair is what was
         // just entered. A non-null endedAt is what makes this leg finished and
         // lets the next one open, and it is when the vehicle came back rather
         // than when this ran, which differ on a self-return.
         const legClose = {
-          endedAt:           returnedAtIso || new Date().toISOString(),
+          endedAt,
           endReason:         "returned",
           closingMileage:    final.closingMileage,
           closingGas:        final.closingGasLevel,
@@ -17013,51 +17045,10 @@ function CloseRentalPage() {
         // skipFleet: the vehicle is this flow's to set, a few lines down, from
         // what the return actually found. Letting syncRAStatus move it to Ready
         // Returns as well put two writes on one row with no order between them.
+        // Last of the agreement's writes, once its charges are saved above.
         await syncRAStatus(ra.resCode, agreementOutcome.status, { skipFleet: true });
-
-        // The fuel charge, written onto the agreement so the rental shows up on
-        // Gas Collections. That screen lists every agreement with a gasOwed
-        // above zero, so writing the amount is the whole of putting it there.
-        //
-        // After syncRAStatus, which writes this same row: two updates to one
-        // row with no order between them is the race skipFleet was added to
-        // stop, and it would be no better here.
-        //
-        // Nothing is written when the charge could not be worked out. The row
-        // keeps whatever it had, which on a self-return is the amount
-        // complete_return already calculated, and a blank stays blank for
-        // manual entry rather than being overwritten with a zero that reads as
-        // paid.
-        let gasSaved = true;
-        if (gasCharge) {
-          const gasRes = await supabase.from("rental_agreements").update({ gasOwed: gasCharge }).eq("id", ra.id);
-          if (gasRes?.error) {
-            gasSaved = false;
-            console.warn("close rental: gas charge write failed:", gasRes.error);
-          } else {
-            setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, gasOwed: gasCharge } : a)));
-          }
-        }
-
-        // The charges the confirm step showed, kept on the agreement, so its
-        // reservation page shows the same closing invoice.
-        if (closeCharges) {
-          const chargesRes = await supabase.from("rental_agreements").update({ lineItems: closeCharges.lines }).eq("id", ra.id);
-          if (chargesRes?.error) console.warn("close rental: charges write failed:", chargesRes.error);
-          else setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, lineItems: closeCharges.lines } : a)));
-        }
-
-        // When the vehicle came back goes on the agreement, the same time the
-        // leg ended, unless a self-return has already put it there. The
-        // reservation keeps the scheduled return it was booked with.
-        if (!ra.returnedAt) {
-          const retRes = await supabase.from("rental_agreements").update({ returnedAt: legClose.endedAt }).eq("id", ra.id);
-          if (retRes?.error) {
-            console.warn("close rental: return time write failed:", retRes.error);
-          } else {
-            setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, returnedAt: legClose.endedAt } : a)));
-          }
-        }
+        // The fuel charge saved with the charges, or the close stopped there.
+        const gasSaved = true;
         setReservations((prev) => prev.map((r) => (
           r.resCode === ra.resCode ? { ...r, rentalAgreementStatus: agreementOutcome.status } : r
         )));
