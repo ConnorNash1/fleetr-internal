@@ -864,7 +864,7 @@ Damage claims operation rules:
 Gas collections:
 - Gas balances live on rental_agreements, in gasOwed (a dollar amount) and gasCollected (a boolean, true once fully paid). There is no separate partial-payment status field.
 - To change how much a customer owes, use table "rental_agreements", operation "update", match on id, and data containing the new gasOwed amount as a string, e.g. "25.00".
-- To mark a balance as fully paid, use table "rental_agreements", operation "update", match on id, and data containing gasCollected: true and gasOwed: "0".
+- To mark a balance as fully paid, use table "rental_agreements", operation "update", match on id, and data containing gasCollected: true. The app records it as a payment on the rental's charges and keeps the amount owed on record.
 - To mark a balance as unpaid again, use data containing gasCollected: false.
 - Use the rental agreements data passed in the user message to find records with an outstanding gasOwed balance and their ids.`;
 
@@ -7688,6 +7688,42 @@ function GasOwedInput({ value, onCommit }) {
   });
 }
 
+// ── Fuel paid on Gas Collections ──
+// Marking the fuel Paid records it as a payment on the agreement, so Charges
+// & Payments, the Rental Agreements page and the receipt see it paid as well,
+// and leaves gasOwed as it was, so what was owed stays on record. The payment
+// is the fuel's share of the invoice: the Gas line (else gasOwed) and each tax
+// on it, to the cent, paid by whoever chargeTotals bills the Gas line to.
+const FUEL_PAYMENT_TYPE = "Gas Collections";
+function fuelPaidPatch(ra, salesTaxes, now = new Date()) {
+  const gas = (Array.isArray(ra?.lineItems) ? ra.lineItems : []).find((it) => it && it.key === "gas" && it.applies);
+  const fuel = gas && lineItemAmount(gas) > 0 ? lineItemAmount(gas) : (parseFloat(ra?.gasOwed) || 0);
+  const taxes = (salesTaxes || []).filter((t) => t && String(t.name ?? "").trim() !== "" && Number(t.rate) > 0).slice(0, 2);
+  const amount = fuel + taxes.reduce((s, t) => s + Math.round(fuel * Number(t.rate)) / 100, 0);
+  const payments = (Array.isArray(ra?.payments) ? ra.payments : []).filter((p) => !p?.fuelPaid);
+  return {
+    gasCollected: true,
+    gasCollectedAt: now.toISOString(),
+    payments: fuel > 0
+      ? [...payments, { id: now.getTime(), type: FUEL_PAYMENT_TYPE, last4: "", cardholderName: "", amount: amount.toFixed(2), paidBy: "Bill-To", fuelPaid: true }]
+      : payments,
+  };
+}
+// Unpaid again: the fuel payment comes off with it.
+const fuelUnpaidPatch = (ra) => ({
+  gasCollected: false,
+  gasCollectedAt: null,
+  payments: (Array.isArray(ra?.payments) ? ra.payments : []).filter((p) => !p?.fuelPaid),
+});
+// The agreement's taxes, else its branch's, as Charges & Payments reads them.
+async function agreementTaxes(ra) {
+  if (Array.isArray(ra?.salesTaxes)) return ra.salesTaxes;
+  if (!ra?.locationId) return [];
+  const { data } = await supabase.from("locations").select("salesTaxes").eq("id", ra.locationId).limit(1).then(oneOrNone)
+    .catch(() => ({ data: null }));
+  return Array.isArray(data?.salesTaxes) ? data.salesTaxes : [];
+}
+
 function GasCollectionsPage() {
   // Note: gas balances live on rental_agreements (gasOwed, gasCollected), not
   // reservations. reservations has no gas fields at all, and rental_agreements
@@ -7718,13 +7754,22 @@ function GasCollectionsPage() {
   };
 
   const handleStatusChange = (id, value) => {
-    // Marking as Paid zeros out the balance → triggers auto-removal
-    updateRow(id, value === "Paid"
-      ? { gasCollected: true, gasOwed: "0" }
-      : { gasCollected: false }
-    , "gas.collected", value === "Paid"
-      ? `Mark the gas on ${codeOf(id)} as paid? The amount owed is written off to $0.`
-      : `Mark the gas on ${codeOf(id)} as unpaid?`);
+    const ra = rentalAgreements.find((a) => a.id === id);
+    if (!ra) return;
+    // Paid: recorded as a payment on the agreement (fuelPaidPatch), and the
+    // row leaves this list. The amount owed stays on record.
+    guardAction("gas.collected", async () => {
+      const patch = value === "Paid" ? fuelPaidPatch(ra, await agreementTaxes(ra)) : fuelUnpaidPatch(ra);
+      const { error } = await supabase.from("rental_agreements").update(patch).eq("id", id);
+      if (error) {
+        console.warn("rental_agreements update failed:", id, error);
+        appAlert("The fuel could not be marked. Check your connection and try again.", { title: "Not saved" });
+        return;
+      }
+      setRentalAgreements((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+    }, { warning: value === "Paid"
+      ? `Mark the gas on ${codeOf(id)} as paid? It is recorded as a payment on the rental's charges.`
+      : `Mark the gas on ${codeOf(id)} as unpaid?` });
   };
 
   return React.createElement("div", { className: "page" },
@@ -14231,6 +14276,16 @@ function FleetrCommandBar() {
         ({ error } = await supabase.from("fleet").update(data).eq("id", pmVehicle.id));
         if (!error) setFleet((prev) => prev.map((v) => (v.id === pmVehicle.id ? { ...v, ...data } : v)));
       } else if (operation === "update") {
+        // Fuel marked paid or unpaid goes through the same steps as the Gas
+        // Collections page: a payment on the agreement, the amount kept.
+        let data = plan.data;
+        if (table === "rental_agreements" && typeof data?.gasCollected === "boolean") {
+          const ra = rentalAgreements.find(isMatch);
+          if (ra) {
+            const { gasCollected, gasOwed, ...rest } = data;
+            data = { ...rest, ...(gasCollected ? fuelPaidPatch(ra, await agreementTaxes(ra)) : fuelUnpaidPatch(ra)) };
+          }
+        }
         let q = supabase.from(table).update(data);
         if (match) Object.entries(match).forEach(([k, v]) => { q = q.eq(k, v); });
         ({ error } = await q);
@@ -19045,7 +19100,8 @@ function CustomerPageView({ onDiscard }) {
                     value: p.type,
                     onChange: (e) => updatePayment(p.id, "type", e.target.value),
                   },
-                    ["Visa", "Mastercard", "Amex", "Debit", "Cash"].map((t) =>
+                    // Fuel paid on Gas Collections shows as such.
+                    [...["Visa", "Mastercard", "Amex", "Debit", "Cash"], ...(p.type === FUEL_PAYMENT_TYPE ? [FUEL_PAYMENT_TYPE] : [])].map((t) =>
                       React.createElement("option", { key: t, value: t }, t)
                     )
                   ),
