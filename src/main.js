@@ -15363,6 +15363,50 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
   const pickupDateDisplay = fmtInspectedDate(rentalAgreement.inspectedAt) || fmtDate(rentalAgreement.pickupDate);
   const pickupTimeDisplay = fmtInspectedTime(rentalAgreement.inspectedAt);
 
+  // ── Dates, rates, bill-to and charges, from the reservation and agreement ──
+  const res = rentalAgreement.reservation || {};
+  const timeZone = useBranchTimeZone(raRecord?.locationId || res.locationId || null);
+  const dueTime = res.returnTime ? normalizeTo12h(res.returnTime, res.returnMeridiem || "AM") : null;
+  const returnDateDisplay = res.returnDate
+    ? [fmtDate(res.returnDate), dueTime && dueTime.digits ? `${toDisplayTime(dueTime.digits)} ${dueTime.meridiem}` : ""].filter(Boolean).join(", ")
+    : "·";
+  const pickupStamp = rateStamp(res.date, res.time || res.pickupTime, res.pickupMeridiem, false);
+  const days = chargeDays(pickupStamp, returnedStamp(raRecord, timeZone) || rateStamp(res.returnDate, res.returnTime, res.returnMeridiem, true));
+  const money = (v) => {
+    const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, ""));
+    return Number.isFinite(n) ? `$${n.toFixed(2)}` : "·";
+  };
+  const sourceLabel = res.sourceDetail ? `${res.source}${LIST_SEP}${res.sourceDetail}` : (res.source || "");
+  const billToCategory = billToCategoryOf(sourceLabel);
+  const billToName = billToCategory === "Retail" ? (res.customer || rentalAgreement.customer) : (sourceLabel || res.customer || rentalAgreement.customer);
+  const insuranceCo = billToCategory === "Insurance" ? res.source : raRecord?.insuranceCompany;
+  // The agreement's taxes, else its branch's, as the reservation page reads them.
+  const [branchTaxes, setBranchTaxes] = React.useState([]);
+  const taxBranchId = Array.isArray(raRecord?.salesTaxes) ? null : (raRecord?.locationId || res.locationId || null);
+  React.useEffect(() => {
+    let live = true;
+    setBranchTaxes([]);
+    if (!taxBranchId) return undefined;
+    supabase.from("locations").select("salesTaxes").eq("id", taxBranchId).limit(1).then(oneOrNone)
+      .then(({ data }) => { if (live && Array.isArray(data?.salesTaxes)) setBranchTaxes(data.salesTaxes); });
+    return () => { live = false; };
+  }, [taxBranchId]);
+  // The charges saved on the agreement, totalled by chargeTotals as Charges &
+  // Payments and Close Rental total them. None saved yet: nothing to show.
+  const savedLines = Array.isArray(raRecord?.lineItems) && raRecord.lineItems.length > 0 ? raRecord.lineItems : null;
+  const charges = savedLines ? (() => {
+    const salesTaxes = (Array.isArray(raRecord.salesTaxes) ? raRecord.salesTaxes : branchTaxes)
+      .filter((t) => t && String(t.name ?? "").trim() !== "" && Number(t.rate) > 0).slice(0, 2);
+    const totals = chargeTotals({ lineItems: savedLines, payments: Array.isArray(raRecord.payments) ? raRecord.payments : [], salesTaxes, billToCategory });
+    const isVehicle = (it) => it.key === "vehicle" || String(it.key).startsWith("vehicle:");
+    const base = savedLines.reduce((s, it) => s + (it.applies && isVehicle(it) ? lineItemAmount(it) : 0), 0);
+    const taxLines = billToCategory === "Retail" ? totals.allTaxLines : [...totals.billToTaxLines, ...totals.customerTaxLines];
+    return {
+      base, additional: totals.subTotal - base, taxes: taxLines.reduce((s, l) => s + l.amount, 0),
+      total: totals.grandTotal, paid: totals.totalPaid, owing: totals.owing,
+    };
+  })() : null;
+
   const notesContent = React.createElement("div", { style: { padding: "14px" } },
     raNotesLog.length === 0
       ? React.createElement("p", { style: { color: "#6B6A66", fontStyle: "italic", margin: "0 0 12px" } }, "No notes yet.")
@@ -15433,28 +15477,28 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
     ),
     section("datesRates", "Dates & Rates",
       React.createElement("div", { className: "rentalAgreementFields" },
-        field("Pickup Date", pickupDateDisplay),
-        field("Return Date", "·"),
-        field("Daily Rate", "·"),
-        field("Duration", "·")
+        ...rentalStageTimes(raRecord).map(([label, at]) => field(label, branchMoment(at, timeZone))),
+        field("Return Date", returnDateDisplay),
+        field("Daily Rate", res.dailyRate ? money(res.dailyRate) : "·"),
+        field("Duration", days ? `${days} day${days === 1 ? "" : "s"}` : "·")
       )
     ),
     section("billTo", "Bill-To Information",
       React.createElement("div", { className: "rentalAgreementFields" },
-        field("Bill To", "·"),
-        field("PO Number", "·"),
-        field("Authorization #", "·"),
-        field("Insurance Co.", "·")
+        field("Bill To", billToName),
+        field("PO Number", res.poNumber),
+        field("Authorization #", res.authNumber),
+        field("Insurance Co.", insuranceCo)
       )
     ),
     section("charges", "Charges & Payments",
       React.createElement("div", { className: "rentalAgreementFields" },
-        field("Base Charge", "·"),
-        field("Additional Charges", "·"),
-        field("Taxes & Fees", "·"),
-        field("Total", "·"),
-        field("Amount Paid", "·"),
-        field("Balance Due", "·")
+        field("Base Charge", charges ? money(charges.base) : "·"),
+        field("Additional Charges", charges ? money(charges.additional) : "·"),
+        field("Taxes & Fees", charges ? money(charges.taxes) : "·"),
+        field("Total", charges ? money(charges.total) : "·"),
+        field("Amount Paid", charges ? money(charges.paid) : "·"),
+        field("Balance Due", charges ? money(charges.owing) : "·")
       )
     ),
     section("notes", "Notes", notesContent)
@@ -15529,6 +15573,7 @@ function RentalAgreementsPage() {
       returnDate:  selectedRes.returnDate,
       inspectedAt: matchingRa?.inspectedAt || null,
       notesLog:    matchingRa?.notesLog    || [],
+      reservation: selectedRes,
     };
     return React.createElement("div", { className: "page" },
       React.createElement(RentalAgreementDetail, { rentalAgreement: selectedRentalAgreement, onBack: () => setSelectedId(null), setRentalAgreements })
@@ -17690,6 +17735,28 @@ function returnedStamp(ra, timeZone) {
   return ra?.returnedAt ? branchStamp(ra.returnedAt, timeZone) : null;
 }
 
+// A moment on the branch's clock, "November 8, 2026, 10:00 AM", or "".
+function branchMoment(value, timeZone) {
+  const d = value ? new Date(value) : null;
+  if (!d || Number.isNaN(d.getTime())) return "";
+  const show = (tz) => `${d.toLocaleDateString("en-CA", { timeZone: tz, month: "long", day: "numeric", year: "numeric" })}, ${d.toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true })}`;
+  try { return show(timeZone || DEFAULT_BRANCH_TIME_ZONE); } catch (_) { return show(DEFAULT_BRANCH_TIME_ZONE); }
+}
+
+// When a rental went through each stage, each only once it has: picked up
+// (the pickup inspection, else when it opened), returned, Close Pending and
+// closed, as the agreement and the database's stamps (stage_times.sql,
+// rental_closed_at.sql) hold them.
+function rentalStageTimes(ra) {
+  if (!ra) return [];
+  return [
+    ["Picked up", ra.inspectedAt || ra.openedAt],
+    ["Returned", ra.returnedAt],
+    ["Close pending", ra.closePendingAt],
+    ["Closed", ra.closedAt],
+  ].filter(([, at]) => at && !Number.isNaN(new Date(at).getTime()));
+}
+
 // A branch's time zone, as checkin_branch_tz reads it: its listing's, else
 // the branch's own, else the default. The default until it is read.
 function useBranchTimeZone(locationId) {
@@ -19114,6 +19181,17 @@ function CustomerPageView({ onDiscard }) {
     React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
       datePickerField("Return Date", "returnDate"),
       timePickerField("Return Time", "returnTime", "returnMeridiem")
+    ),
+    // When the rental went through each stage, on the branch's clock, each
+    // only once it has happened.
+    rentalStageTimes(ra).length > 0 && React.createElement("div", { className: "resFormRow" },
+      ...rentalStageTimes(ra).map(([label, at]) => React.createElement("label", { className: "resFormGroup", key: label },
+        React.createElement("span", { className: "resFormLabel" }, label),
+        React.createElement("input", {
+          className: "resFormInput", type: "text", readOnly: true,
+          value: branchMoment(at, billTimeZone),
+          style: { color: "#6B6A66", background: "#F1F0EC" },
+        })))
     ),
     React.createElement("div", { className: "cdetailSubGroup" }, "Driver's License"),
     React.createElement("div", { className: "resFormRow" },
