@@ -2456,10 +2456,6 @@ const skPlate = skEl("button", { type: "button", tabIndex: -1, className: "plate
 const skLink = (text) => skEl("span", { className: "customerLinkWrap" }, skEl("button", { type: "button", tabIndex: -1, className: "customerLink" }, skT(text)));
 const skDay = new Date().toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
 
-const skStatTile = (title, note) => skEl("div", { key: title, className: "statTile" },
-  skEl("div", { className: "statTile__value" }, skT("0")),
-  skEl("div", { className: "statTile__title" }, skT(title)),
-  skEl("div", { className: "statTile__foot" }, skEl("span", { className: "statTile__note" }, skT(note))));
 const skCardHead = (title) => skEl("div", { className: "statCard__head" },
   skEl("span", { className: "statCard__title" }, skT(title)),
   skEl("span", { className: "statCard__chevron" }, "›"));
@@ -2468,13 +2464,11 @@ const skCardHead = (title) => skEl("div", { className: "statCard__head" },
 const PAGE_SKELETONS = {
   "/dashboard": () => skEl("div", { className: "page" },
     skTitle("Home"),
+    skStep("Availability, next 30 days"), skStep("Needs you"),
     skEl("div", { className: "dashboardCtaRow" }, skB("button", "closeRentalCta", "Close Rental", "c"), skB("button", "closeRentalCta", "Switch Out", "s")),
     skEl("div", { className: "dashboardGrid" },
       skStep("Reservations"), skStep("Vehicle Status"), isFeatureEnabled("non_drive_intake") && skStep("Non-Drive Intake")),
     skEl("div", { className: "dashStats" },
-      skEl("div", { className: "dashStats__tiles" },
-        skStatTile("Pickups remaining today", "of 0 booked for today"), skStatTile("Returns due today", "of 0 due back today"),
-        skStatTile("On rent", "0% of 00 vehicles"), skStatTile("Available", "0% of 00 vehicles")),
       skEl("div", { className: "dashStats__cards" },
         skEl("div", { className: "statCard statCard--lift" },
           skCardHead("Pickups, next 7 days"),
@@ -4119,14 +4113,6 @@ function CountUp({ value }) {
   return shown.toLocaleString("en-CA");
 }
 
-function StatTile({ title, value, note }) {
-  const el = React.createElement;
-  return el("div", { className: "statTile", role: "group", "aria-label": `${title}: ${value}` },
-    el("div", { className: "statTile__value" }, el(CountUp, { value })),
-    el("div", { className: "statTile__title" }, title),
-    note && el("div", { className: "statTile__foot" }, el("span", { className: "statTile__note" }, note)));
-}
-
 const dayShort = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-CA", { weekday: "short" });
 const dayMonth = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString("en-CA", { month: "short", day: "numeric" });
 
@@ -4214,8 +4200,157 @@ function ReturnsCurveCard({ days, upcoming, onOpen }) {
                 r.vehicleClass && el("div", { className: "nextPickups__what" }, r.vehicleClass)))))));
 }
 
+// ─── Home: availability, the next 30 days ────────────────────────────────────
+// Classes down the side, days across, each day's free vehicles in its cell,
+// shaded from plenty to sold out, from branch_availability (the same numbers
+// as Reports > Availability). A class with nothing free in the 30 days shows
+// the next day it has one instead.
+const HOME_AVAIL_DAYS = 30;
+const homeShade = (free, total, below) => (free <= 0 ? "sold"
+  : (below != null && free < below) || free === 1 ? "low"
+  : total > 0 && free / total < 0.5 ? "some" : "plenty");
+
+function useHomeBranch() {
+  const { currentUser } = React.useContext(AppContext);
+  const [branch, setBranch] = React.useState("");
+  React.useEffect(() => {
+    let live = true;
+    supabase.rpc("my_acting_location").then(({ data }) => {
+      if (live) setBranch((data && data.ok && data.locationId) || currentUser?.locationId || "");
+    });
+    return () => { live = false; };
+  }, [currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  return branch;
+}
+
+function HomeAvailability() {
+  const el = React.createElement;
+  const navigate = useNavigate();
+  const branch = useHomeBranch();
+  const [open, setOpen] = React.useState(true);
+  const [data, setData] = React.useState(null);
+  const [error, setError] = React.useState("");
+  React.useEffect(() => {
+    if (!branch) return undefined;
+    let live = true;
+    supabase.rpc("branch_availability", { p_location_id: branch }).then(({ data: out, error: err }) => {
+      if (!live) return;
+      if (err || !out || !out.ok) setError("Availability could not be loaded.");
+      else setData(out);
+    });
+    return () => { live = false; };
+  }, [branch]);
+  const days = data ? Array.from({ length: HOME_AVAIL_DAYS }, (_, i) => dayAfter(data.start, i)) : [];
+  const open30 = (c) => c.free.slice(0, HOME_AVAIL_DAYS).some((n) => n > 0);
+  const nextOpen = (c) => {
+    const i = c.free.findIndex((n, k) => k >= HOME_AVAIL_DAYS && n > 0);
+    return i < 0 ? null : dayAfter(data.start, i);
+  };
+  const go = (cls, from) => navigate(`/reports?${new URLSearchParams({ section: "availability", branch, class: cls, from }).toString()}`);
+  const columns = { gridTemplateColumns: `minmax(96px, 140px) repeat(${HOME_AVAIL_DAYS}, minmax(24px, 1fr))` };
+  return el(CompanyStep, { title: "Availability, next 30 days", open, onToggle: () => setOpen((o) => !o) },
+    open && el("div", { className: "dashboardSection__body" },
+      el(FieldError, { text: error }),
+      !data && !error && el("div", { className: "skelBox avail__skel", role: "status", "aria-label": "Loading availability" }),
+      data && data.classes.length === 0 && el("p", { className: "closeRentalHint" }, "No vehicles at this branch yet"),
+      data && data.classes.length > 0 && el(React.Fragment, null,
+        el("div", { className: "homeAvail__scroll" },
+          el("div", { className: "homeAvail", style: columns },
+            el("span", null),
+            days.map((d, i) => el("span", { key: d, className: "homeAvail__day", title: shortDay(d) },
+              (i === 0 || d.slice(8) === "01") && el("span", { className: "homeAvail__month" },
+                new Date(`${d}T12:00:00Z`).toLocaleDateString("en-CA", { month: "short", timeZone: "UTC" }).replace(".", "")),
+              Number(d.slice(8)))),
+            data.classes.map((c) => el(React.Fragment, { key: c.name },
+              el("span", { className: "avail__class", title: c.name }, c.name),
+              open30(c)
+                ? days.map((d, i) => {
+                    const free = c.free[i], total = c.total[i];
+                    const text = `${c.name}, ${shortDay(d)}: ${free} of ${total} free`;
+                    return el("button", { key: d, type: "button", title: text, "aria-label": text, onClick: () => go(c.name, d),
+                      className: `homeAvail__cell homeAvail__cell--${homeShade(free, total, c.below)}` }, free);
+                  })
+                : el("button", { type: "button", className: "homeAvail__cell homeAvail__cell--sold homeAvail__none",
+                    style: { gridColumn: `span ${HOME_AVAIL_DAYS}` }, onClick: () => go(c.name, nextOpen(c) || days[0]) },
+                    nextOpen(c) ? `Sold out for 30 days. Next open ${shortDay(nextOpen(c))}` : "Sold out for the next year"))))),
+        el("div", { className: "homeAvail__legend", "aria-hidden": "true" },
+          [["plenty", "Plenty"], ["some", "Fewer"], ["low", "Low"], ["sold", "Sold out"]].map(([k, label]) =>
+            el("span", { key: k }, el("span", { className: `homeAvail__swatch homeAvail__cell--${k}` }), label))))));
+}
+
+// ─── Home: Needs you ─────────────────────────────────────────────────────────
+// What staff at this branch have to act on, newest first, each opening its
+// rental (needs_you, fleetr-infra needs_you.sql). Most clear themselves where
+// they are dealt with; a payment problem or an incident is marked dealt with
+// here.
+const NEEDS_YOU_POLL_MS = 60 * 1000;
+const needsMoney = (n) => (n == null ? "" : `$${Number(n).toFixed(2)}`);
+function needsYouText(i) {
+  switch (i.kind) {
+    case "disputed":   return ["Disputed charge", `${needsMoney(i.amount)} card payment disputed${i.detail ? ` (${String(i.detail).replace(/_/g, " ")})` : ""}`];
+    case "failed":     return ["Failed payment", `${needsMoney(i.amount)} card payment failed${i.detail ? `: ${i.detail}` : ""}`];
+    case "damage":     return ["Damage claim to approve", `${i.detail || "Damage reported"}${i.status === "in_review" ? ", in review" : ""}`];
+    case "unreturned": return ["Not returned, no contact", `Due back ${i.due ? new Date(`${i.due}Z`).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" }) : ""}${i.phone ? `. Call ${i.phone}` : ""}`];
+    case "incident":   return [i.incident === "accident" ? "Accident" : "Breakdown", i.detail || "Reported at a switch out"];
+    case "id_problem": return ["ID problem", `Licence says ${i.licenceLastName || "?"}, the booking says ${i.reservationLastName || "?"}`];
+    default:           return ["Needs a look", ""];
+  }
+}
+
+function NeedsYou() {
+  const el = React.createElement;
+  const { setOpenCustomer } = React.useContext(AppContext);
+  const navigate = useNavigate();
+  const [open, setOpen] = React.useState(true);
+  const [items, setItems] = React.useState(null);
+  const [busy, setBusy] = React.useState("");
+  const [error, setError] = React.useState("");
+  const load = React.useCallback(async () => {
+    const { data, error: err } = await supabase.rpc("needs_you");
+    if (err || !data || !data.ok) { setItems((x) => x || []); return; }
+    setItems(data.items || []);
+  }, []);
+  React.useEffect(() => {
+    load();
+    const t = setInterval(() => { if (document.visibilityState === "visible") load(); }, NEEDS_YOU_POLL_MS);
+    return () => clearInterval(t);
+  }, [load]);
+  const follow = (i) => {
+    if (i.resCode) {
+      setOpenCustomer({ name: i.customer || "Customer", resCode: i.resCode });
+      navigate(customerPath(i.resCode));
+    } else if (i.plate) navigate(vehiclePath(i.plate));
+  };
+  const settle = async (i) => {
+    setBusy(i.id); setError("");
+    const { data, error: err } = i.kind === "incident"
+      ? await supabase.rpc("resolve_vehicle_incident", { p_id: i.id })
+      : await supabase.rpc("stripe_issue_resolve", { p_id: i.id }).then((r) => ({ ...r, data: r.error ? null : { ok: true } }));
+    if (err || !data || !data.ok) setError("That did not work. Try again.");
+    await load();
+    setBusy("");
+  };
+  const count = items ? items.length : 0;
+  return el(CompanyStep, { title: count ? `Needs you (${count})` : "Needs you", open, onToggle: () => setOpen((o) => !o) },
+    open && el("div", { className: "dashboardSection__body" },
+      items === null && el("div", { className: "skelBox avail__skel", role: "status", "aria-label": "Loading" }),
+      items && items.length === 0 && el("p", { className: "closeRentalHint" }, "Nothing needs you right now."),
+      items && items.length > 0 && el("ul", { className: "needsYou" }, items.map((i) => {
+        const [title, detail] = needsYouText(i);
+        return el("li", { key: `${i.kind}:${i.id}`, className: "needsYou__item" },
+          el("button", { type: "button", className: "needsYou__open", onClick: () => follow(i) },
+            el("span", { className: `needsYou__tag needsYou__tag--${i.kind}` }, title),
+            el("span", { className: "needsYou__who" }, [i.customer, i.resCode, i.plate].filter(Boolean).join(" · ")),
+            detail && el("span", { className: "needsYou__what" }, detail)),
+          ["disputed", "failed", "incident"].includes(i.kind) && el("button", {
+            type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px", flexShrink: 0 }, disabled: !!busy, onClick: () => settle(i),
+          }, busy === i.id ? "Saving…" : "Dealt with"));
+      })),
+      el(FieldError, { text: error })));
+}
+
 function DashboardStats() {
-  const { reservations, fleet } = React.useContext(AppContext);
+  const { reservations } = React.useContext(AppContext);
   const navigate = useNavigate();
   const el = React.createElement;
   const today = isoOffset(0);
@@ -4224,15 +4359,6 @@ function DashboardStats() {
   // (customer return, close pending, closed) are not due any more.
   const RETURNED = ["customer_return", "close_pending", "closed"];
   const returnsOn = (iso) => reservations.filter((r) => r.returnDate === iso && !RETURNED.includes(r.rentalAgreementStatus)).length;
-  // Today's pickups not picked up yet, and today's returns not back yet.
-  const bookedToday = reservations.filter((r) => r.date === today);
-  const pickupsLeft = bookedToday.filter((r) => (r.rentalAgreementStatus || "reservation") === "reservation").length;
-  const dueToday = reservations.filter((r) => r.returnDate === today && r.rentalAgreementStatus && r.rentalAgreementStatus !== "reservation");
-  const returnsLeft = dueToday.filter((r) => !RETURNED.includes(r.rentalAgreementStatus)).length;
-  const fleetSize = fleet.length;
-  const share = (n) => (fleetSize ? `${Math.round((n / fleetSize) * 100)}% of ${fleetSize} vehicles` : "No vehicles yet");
-  const onRent = fleet.filter((v) => v.status === "On Rent").length;
-  const available = fleet.filter((v) => v.status === "Available").length;
   const week = Array.from({ length: 7 }, (_, i) => {
     const iso = isoOffset(i);
     return { iso, label: i === 0 ? "Today" : dayShort(iso), count: pickupsOn(iso) };
@@ -4247,11 +4373,6 @@ function DashboardStats() {
     .sort((a, b) => (a.date !== b.date ? (a.date < b.date ? -1 : 1) : parseTimeToMinutes(a.time) - parseTimeToMinutes(b.time)))
     .slice(0, 3);
   return el("div", { className: "dashStats" },
-    el("div", { className: "dashStats__tiles" },
-      el(StatTile, { title: "Pickups remaining today", value: pickupsLeft, note: `of ${bookedToday.length} booked for today` }),
-      el(StatTile, { title: "Returns due today", value: returnsLeft, note: `of ${dueToday.length} due back today` }),
-      el(StatTile, { title: "On rent", value: onRent, note: share(onRent) }),
-      el(StatTile, { title: "Available", value: available, note: share(available) })),
     el("div", { className: "dashStats__cards" },
       el(WeekBarsCard, { title: "Pickups, next 7 days", days: week, onOpen: () => navigate("/reservations") }),
       el(ReturnsCurveCard, { days: fortnight, upcoming, onOpen: () => navigate("/rental-agreements") })));
@@ -4426,6 +4547,8 @@ function DashboardPage() {
     { className: "page" },
     React.createElement("h1", { className: "page__title" }, "Home"),
     React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement(HomeAvailability),
+    React.createElement(NeedsYou),
     React.createElement("div", { className: "dashboardCtaRow" },
       React.createElement("button", {
         type: "button", className: "closeRentalCta", onClick: () => navigate("/close-rental"),
@@ -17627,7 +17750,7 @@ function SwitchOutVehicleStep({ row, onBack, onNext }) {
 // Step 6. Everything the switch is about to change, then one button. The
 // vehicle statuses shown are the ones that will be written, PM override
 // included, so nothing is decided after the confirm.
-function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, oldVehicleStatus, refusal, onBack, onComplete, busy }) {
+function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, oldVehicleStatus, refusal, onBack, onComplete, busy, reason, onReason }) {
   const line = (label, value) =>
     React.createElement("p", { className: "page__body" }, `${label} `, React.createElement("strong", null, value));
   const describe = (v) => [v.year, v.make, v.model].filter(Boolean).join(" ") || v.vehicleClass || "-";
@@ -17649,6 +17772,13 @@ function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, oldVeh
     review.newDamageFound && line("New damage photos", String(photos.length)),
     line("Its new status", oldVehicleStatus.status),
     oldVehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, oldVehicleStatus.message),
+    // An accident or a breakdown goes on Home's Needs you list.
+    React.createElement("label", { className: "resFormGroup", style: { maxWidth: 320 } },
+      React.createElement("span", { className: "resFormLabel" }, "Why it is being switched"),
+      React.createElement("select", { className: "resFormInput", value: reason || "", onChange: (e) => onReason(e.target.value) },
+        React.createElement("option", { value: "" }, "Other reason"),
+        React.createElement("option", { value: "accident" }, "Accident"),
+        React.createElement("option", { value: "breakdown" }, "Breakdown"))),
     React.createElement("h2", { className: "closeRentalStepTitle", style: { marginTop: 18 } }, "Picked up next"),
     line("Replacement vehicle", `${describe(newVehicle)} (${newVehicle.plate})`),
     line("Its new status", "Ready for Pickup"),
@@ -17679,6 +17809,7 @@ function SwitchOutPage() {
   const [busy,        setBusy]        = React.useState(false);
   const [done,        setDone]        = React.useState(null);
   const [refusal,     setRefusal]     = React.useState(null);
+  const [switchReason, setSwitchReason] = React.useState("");
   const pendingPickup = usePendingPickup(selectedId);
 
   // As in Close Rental: photos are object URLs over blobs held in memory only,
@@ -17708,7 +17839,7 @@ function SwitchOutPage() {
   const resetFlow = () => {
     setSelectedId(null); setReadings(EMPTY_CLOSE_READINGS); setClosing(null);
     setDamageDraft(EMPTY_DAMAGE_DRAFT); setReview(null); setPhotosDone(false);
-    setNewVehicle(null); setRefusal(null);
+    setNewVehicle(null); setRefusal(null); setSwitchReason("");
     clearPhotos();
   };
 
@@ -17862,6 +17993,13 @@ function SwitchOutPage() {
         else setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, ...raPatch } : a)));
 
         clearPhotos();
+        if (switchReason === "accident" || switchReason === "breakdown") {
+          const { data: inc, error: incErr } = await supabase.rpc("report_vehicle_incident", {
+            p_agreement_id: ra.id, p_kind: switchReason, p_plate: row?.plate || null,
+            p_note: review.newDamageFound ? review.newDamageNote || null : null,
+          });
+          if (incErr || !inc || !inc.ok) console.warn("switch out: the incident was not recorded:", incErr || inc);
+        }
         setDone({
           oldPlate: row?.plate || null,
           oldDamageFound: !!review.newDamageFound,
@@ -17941,6 +18079,7 @@ function SwitchOutPage() {
   if (newVehicle) {
     return React.createElement(SwitchOutConfirmStep, {
       row, closing, review, photos, newVehicle, oldVehicleStatus, refusal, busy,
+      reason: switchReason, onReason: setSwitchReason,
       onBack: () => { setNewVehicle(null); setRefusal(null); },
       onComplete: completeSwitch,
     });
@@ -22674,6 +22813,30 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 .avail__cell--plenty{ background: #A8D8C4; }
 .avail__cell--low{ background: #F4845F; }
 .avail__cell--sold{ background: #1F1E1D; }
+.homeAvail__scroll{ overflow-x: auto; max-width: 100%; }
+.homeAvail{ display: grid; gap: 2px; align-items: stretch; min-width: 760px; }
+.homeAvail__day{ position: relative; padding-top: 14px; font-size: 11px; color: #6B6A66; text-align: center; }
+.homeAvail__month{ position: absolute; top: 0; left: 0; font-size: 11px; font-weight: 600; color: #1F1E1D; white-space: nowrap; }
+.homeAvail__cell{ min-width: 0; height: 26px; padding: 0; border: 0; border-radius: 3px; font-size: 12px; font-weight: 600; color: #1F1E1D; cursor: pointer; }
+.homeAvail__cell--plenty{ background: #A8D8C4; }
+.homeAvail__cell--some{ background: #D9EEE5; }
+.homeAvail__cell--low{ background: #F4845F; }
+.homeAvail__cell--sold{ background: #1F1E1D; color: #F9F9F7; }
+.homeAvail__none{ padding: 0 10px; text-align: left; }
+.homeAvail__legend{ display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 12px; color: #6B6A66; }
+.homeAvail__legend > span{ display: inline-flex; align-items: center; gap: 6px; }
+.homeAvail__swatch{ display: inline-block; width: 12px; height: 12px; border-radius: 3px; }
+.needsYou{ margin: 0; padding: 0; list-style: none; }
+.needsYou__item{ display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid #EEEDE9; }
+.needsYou__item:last-child{ border-bottom: 0; }
+.needsYou__open{ display: grid; grid-template-columns: minmax(150px, auto) 1fr; gap: 2px 12px; flex: 1; min-width: 0; padding: 0; border: 0; background: none; text-align: left; font: inherit; color: #1F1E1D; cursor: pointer; }
+.needsYou__open:hover .needsYou__who{ text-decoration: underline; }
+.needsYou__tag{ grid-row: span 2; align-self: start; justify-self: start; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #EEEDE9; }
+.needsYou__tag--disputed, .needsYou__tag--failed, .needsYou__tag--incident{ background: #F4845F; }
+.needsYou__tag--unreturned, .needsYou__tag--id_problem{ background: #FDE3D8; }
+.needsYou__who{ font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.needsYou__what{ font-size: 13px; color: #6B6A66; }
+@media (max-width: 640px){ .needsYou__open{ grid-template-columns: 1fr; } .needsYou__tag{ grid-row: auto; } }
 .avail__picked{ font-size: 14px; font-weight: 600; color: #1F1E1D; }
 .avail__list{ margin: 0; padding: 0; list-style: none; font-size: 14px; color: #1F1E1D; }
 .avail__list li{ padding: 6px 0; border-bottom: 1px solid #EEEDE9; }
