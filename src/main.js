@@ -5481,9 +5481,10 @@ function VehicleDetailPage() {
                 });
               },
             },
-            FLEET_STATUS_OPTS
-              .filter((o) => o.value !== "All")
-              .map((opt) => React.createElement("option", { key: opt.value, value: opt.value }, opt.label))
+            // In Transit is set and cleared by a transfer, never picked here.
+            [...FLEET_STATUS_OPTS.filter((o) => o.value !== "All"),
+             ...(vehicle.status === "In Transit" ? [{ value: "In Transit", label: "In Transit (being transferred)" }] : [])]
+              .map((opt) => React.createElement("option", { key: opt.value, value: opt.value, disabled: opt.value === "In Transit" }, opt.label))
           )
         ),
         (vehicle.status === "On Rent" || activeRa) && detailRow("Current Renter", activeRa?.customer || vehicle.currentRenter),
@@ -5927,8 +5928,174 @@ function FleetPage() {
             );
           })()
         )
-    )
+    ),
+    React.createElement(VehicleTransfers, { fleet, setFleet })
   );
+}
+
+// ─── Vehicle transfers ───────────────────────────────────────────────────────
+// A vehicle on the lot sent to another branch of the company that this branch
+// has a route to (an Exec sets routes on the Company page). While it is on
+// the road it is In Transit, which no branch can book; the receiving branch
+// taps Received and it is theirs, Available (vehicle_transfers.sql in
+// fleetr-infra, which also writes each one to the audit log).
+const TRANSFER_REASONS = {
+  not_found:       "That vehicle or transfer is not at this branch.",
+  not_on_lot:      "Only a vehicle on the lot, Available or Needs Cleaning, can be sent.",
+  bad_destination: "Pick another branch to send it to.",
+  no_route:        "These branches are not set up to transfer to each other. An Exec sets that on the Company page.",
+  not_in_transit:  "That transfer is already finished.",
+  no_branch:       "Pick a branch to work in first.",
+};
+const transferTime = (iso) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const today = new Date().toDateString() === d.toDateString();
+  return (today ? "" : d.toLocaleDateString("en-CA", { month: "short", day: "numeric" }) + ", ")
+    + d.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" });
+};
+const driveText = (m) => m < 60 ? `${m} min` : m % 60 === 0 ? `${m / 60} h` : `${Math.floor(m / 60)} h ${m % 60} min`;
+
+function VehicleTransfers({ fleet, setFleet }) {
+  const el = React.createElement;
+  const [data, setData] = React.useState(null);
+  const [open, setOpen] = React.useState(true);
+  const [vehicleId, setVehicleId] = React.useState("");
+  const [to, setTo] = React.useState("");
+  const [busy, setBusy] = React.useState("");
+  const [error, setError] = React.useState("");
+  const load = React.useCallback(async () => {
+    const { data: d, error: err } = await supabase.rpc("my_transfers");
+    setData(err || !d || !d.ok ? { routes: [], incoming: [], outgoing: [] } : d);
+  }, []);
+  React.useEffect(() => { load(); }, [load]);
+  if (!data || (!data.routes.length && !data.incoming.length && !data.outgoing.length)) return null;
+
+  const onLot = fleet.filter((v) => ["Available", "Needs Cleaning"].includes(v.status) && (!data.here || v.locationId === data.here))
+    .sort((a, b) => String(a.plate || "").localeCompare(String(b.plate || "")));
+  const fail = (d, err) => setError(err ? "That did not work. Try again." : TRANSFER_REASONS[d && d.reason] || "That did not work. Try again.");
+  const send = async () => {
+    setBusy("send"); setError("");
+    const { data: d, error: err } = await supabase.rpc("start_vehicle_transfer", { p_vehicle_id: vehicleId, p_to: to });
+    if (err || !d || !d.ok) fail(d, err);
+    else {
+      setFleet((prev) => prev.map((v) => v.id === vehicleId ? { ...v, status: "In Transit" } : v));
+      setVehicleId(""); setTo("");
+      await load();
+    }
+    setBusy("");
+  };
+  const receive = async (t) => {
+    setBusy(t.id); setError("");
+    const { data: d, error: err } = await supabase.rpc("receive_vehicle_transfer", { p_transfer_id: t.id });
+    if (err || !d || !d.ok) fail(d, err);
+    else {
+      const { data: rows } = await supabase.from("fleet").select("*").eq("id", t.vehicleId).limit(1);
+      if (rows && rows[0]) setFleet((prev) => [...prev.filter((v) => v.id !== t.vehicleId), rows[0]]);
+      await load();
+    }
+    setBusy("");
+  };
+  const cancel = async (t) => {
+    setBusy(t.id); setError("");
+    const { data: d, error: err } = await supabase.rpc("cancel_vehicle_transfer", { p_transfer_id: t.id });
+    if (err || !d || !d.ok) fail(d, err);
+    else {
+      setFleet((prev) => prev.map((v) => v.id === t.vehicleId ? { ...v, status: t.statusBefore || "Available" } : v));
+      await load();
+    }
+    setBusy("");
+  };
+  const smallBtn = { width: "auto", padding: "6px 10px" };
+  const table = (heads, rows) => el("table", { className: "dashboardTable" },
+    el("thead", null, el("tr", null, heads.map((h) => el("th", { key: h }, h)))),
+    el("tbody", null, rows));
+  return el(CompanyStep, { title: "Transfers", open, onToggle: () => setOpen((o) => !o) },
+    open && el("div", { className: "dashboardSection__body" },
+      data.routes.length > 0 && el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", marginBottom: "12px" } },
+        el("select", { className: "resFormInput", value: vehicleId, onChange: (e) => setVehicleId(e.target.value), "aria-label": "Vehicle to send", style: { flex: "1 1 220px" } },
+          el("option", { value: "" }, onLot.length ? "Vehicle to send" : "No vehicle on the lot"),
+          onLot.map((v) => el("option", { key: v.id, value: v.id }, `${v.plate} · ${[v.year, v.make, v.model].filter(Boolean).join(" ")}`))),
+        el("select", { className: "resFormInput", value: to, onChange: (e) => setTo(e.target.value), "aria-label": "Branch to send it to", style: { flex: "1 1 180px" } },
+          el("option", { value: "" }, "Send to"),
+          data.routes.map((r) => el("option", { key: r.toLocationId, value: r.toLocationId }, `${r.toName} (about ${driveText(r.driveMinutes)})`))),
+        el("button", { type: "button", className: "loginBtn", style: smallBtn, disabled: !vehicleId || !to || !!busy, onClick: send },
+          busy === "send" ? "Sending…" : "Send")),
+      el(FieldError, { text: error }),
+      data.incoming.length > 0 && el(React.Fragment, null,
+        el("h3", { className: "fleetGroupHeader" }, "On the way here"),
+        table(["Plate", "Vehicle", "From", "Expected", ""], data.incoming.map((t) => el("tr", { key: t.id },
+          el("td", null, t.plate),
+          el("td", null, t.vehicleLabel),
+          el("td", null, `${t.fromName}${t.sentByName ? `, sent by ${t.sentByName}` : ""}`),
+          el("td", null, transferTime(t.expectedAt)),
+          el("td", null, el("button", { type: "button", className: "loginBtn", style: smallBtn, disabled: !!busy, onClick: () => receive(t) },
+            busy === t.id ? "Saving…" : "Received")))))),
+      data.outgoing.length > 0 && el(React.Fragment, null,
+        el("h3", { className: "fleetGroupHeader" }, "On the way out"),
+        table(["Plate", "Vehicle", "To", "Expected", ""], data.outgoing.map((t) => el("tr", { key: t.id },
+          el("td", null, t.plate),
+          el("td", null, t.vehicleLabel),
+          el("td", null, t.toName),
+          el("td", null, transferTime(t.expectedAt)),
+          el("td", null, el("button", { type: "button", className: "loginBtn", style: smallBtn, disabled: !!busy, onClick: () => cancel(t) },
+            busy === t.id ? "Saving…" : "Call back"))))))));
+}
+
+// The Company page's routes: which branches can send each other vehicles, and
+// the usual drive between them. Exec only.
+function TransferRoutesSection() {
+  const el = React.createElement;
+  const [data, setData] = React.useState(undefined);
+  const [drafts, setDrafts] = React.useState({});
+  const [busy, setBusy] = React.useState("");
+  const [error, setError] = React.useState("");
+  const load = React.useCallback(async () => {
+    const { data: d, error: err } = await supabase.rpc("transfer_route_settings");
+    setData(err || !d || !d.ok ? { error: "Transfer routes could not be loaded." } : d);
+    setDrafts({});
+  }, []);
+  React.useEffect(() => { load(); }, [load]);
+  if (data === undefined) return el("p", { className: "closeRentalHint" }, "Loading…");
+  if (data.error) return el("div", { className: "loginError" }, data.error);
+  if (data.branches.length < 2) return el("p", { className: "closeRentalHint" }, "Transfers need two branches or more.");
+  const keyOf = (a, b) => [a, b].sort().join("|");
+  const saved = {};
+  data.routes.forEach((r) => { saved[keyOf(r.a, r.b)] = r.driveMinutes; });
+  const pairs = [];
+  data.branches.forEach((a, i) => data.branches.slice(i + 1).forEach((b) => pairs.push([a, b])));
+  const save = async (a, b, draft) => {
+    const k = keyOf(a.id, b.id);
+    setBusy(k); setError("");
+    const { data: d, error: err } = await supabase.rpc("set_transfer_route", {
+      p_a: a.id, p_b: b.id, p_allowed: draft.on, p_minutes: draft.on ? Number(draft.minutes) : null,
+    });
+    if (err || !d || !d.ok) setError(d && d.reason === "bad_minutes" ? "Drive time is 1 to 1440 minutes." : "That did not save. Try again.");
+    else await load();
+    setBusy("");
+  };
+  return el(React.Fragment, null,
+    el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+      "Pick which branches can send each other vehicles, and the usual drive between them. Staff at either branch can then send a vehicle from the Fleet page."),
+    el("table", { className: "dashboardTable" },
+      el("thead", null, el("tr", null, ["Branches", "Can transfer", "Drive time (minutes)", ""].map((h) => el("th", { key: h }, h)))),
+      el("tbody", null, pairs.map(([a, b]) => {
+        const k = keyOf(a.id, b.id);
+        const draft = drafts[k] || { on: saved[k] != null, minutes: saved[k] != null ? String(saved[k]) : "" };
+        const changed = draft.on !== (saved[k] != null) || (draft.on && Number(draft.minutes) !== saved[k]);
+        const set = (patch) => setDrafts((d) => ({ ...d, [k]: { ...draft, ...patch } }));
+        return el("tr", { key: k },
+          el("td", null, `${a.name} \u2194 ${b.name}`),
+          el("td", null, el("input", { type: "checkbox", checked: draft.on, onChange: (e) => set({ on: e.target.checked }),
+            "aria-label": `${a.name} and ${b.name} can transfer` })),
+          el("td", null, el("input", { className: "resFormInput", type: "text", inputMode: "numeric", maxLength: 4, disabled: !draft.on,
+            value: draft.minutes, placeholder: "30", style: { width: "90px" },
+            onChange: (e) => set({ minutes: numberTyped(e.target.value, { digits: 4 }) }) })),
+          el("td", null, el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" },
+            disabled: !changed || !!busy || (draft.on && !(Number(draft.minutes) > 0)), onClick: () => save(a, b, draft) },
+            busy === k ? "Saving…" : "Save")));
+      }))),
+    el(FieldError, { text: error }));
 }
 
 // ─── UnknownRepairDatePage ─────────────────────────────────────────────────────
@@ -9037,7 +9204,13 @@ function CompanyPage() {
         key: "payments", id: "company-step-payments", stepKey: "payments", n: null, title: "Card payments", state: "done",
         current: false, open: !!openSteps.payments, onToggle: () => setOpenSteps((o) => ({ ...o, payments: !o.payments })),
         busy: stepBusy, showState: false,
-      }, el(StripeSection))) })),
+      }, el(StripeSection)),
+      // An Exec picks which branches can transfer vehicles to each other.
+      isExec && el(CompanyStep, {
+        key: "transfers", id: "company-step-transfers", stepKey: "transfers", n: null, title: "Transfers between branches", state: "done",
+        current: false, open: !!openSteps.transfers, onToggle: () => setOpenSteps((o) => ({ ...o, transfers: !o.transfers })),
+        busy: stepBusy, showState: false,
+      }, el(TransferRoutesSection))) })),
   );
 }
 
@@ -13709,7 +13882,18 @@ function BranchSwitcher() {
 
 function Topbar() {
   const { signOut, currentUser } = React.useContext(AppContext);
-  const showBell = roleAtLeast(currentUser?.role, "Exec") && isFeatureEnabled("fleet_notifications");
+  // Staff at a branch with transfer routes see the bell too, for the vehicles
+  // sent to them (the only notifications they can read).
+  const [transferBell, setTransferBell] = React.useState(false);
+  React.useEffect(() => {
+    if (!currentUser) return undefined;
+    let live = true;
+    supabase.rpc("my_transfers").then(({ data }) => {
+      if (live) setTransferBell(!!(data && data.ok && (data.routes.length || data.incoming.length)));
+    });
+    return () => { live = false; };
+  }, [currentUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const showBell = (roleAtLeast(currentUser?.role, "Exec") && isFeatureEnabled("fleet_notifications")) || transferBell;
   return React.createElement(
     "header",
     { className: "topbar" },
