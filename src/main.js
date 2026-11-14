@@ -9430,8 +9430,74 @@ function CompanyPage() {
         key: "transfers", id: "company-step-transfers", stepKey: "transfers", n: null, title: "Transfers between branches", state: "done",
         current: false, open: !!openSteps.transfers, onToggle: () => setOpenSteps((o) => ({ ...o, transfers: !o.transfers })),
         busy: stepBusy, showState: false,
-      }, el(TransferRoutesSection))) })),
+      }, el(TransferRoutesSection)),
+      // An Exec's invoicing: the switch, and where each bill-to's invoices go.
+      isExec && el(CompanyStep, {
+        key: "invoicing", id: "company-step-invoicing", stepKey: "invoicing", n: null, title: "Invoicing", state: "done",
+        current: false, open: !!openSteps.invoicing, onToggle: () => setOpenSteps((o) => ({ ...o, invoicing: !o.invoicing })),
+        busy: stepBusy, showState: false,
+      }, el(InvoicingSection))) })),
   );
+}
+
+// ─── Invoicing ───────────────────────────────────────────────────────────────
+// A rental billed to an insurer or a company makes an invoice when it closes,
+// with a Stripe payment link, sent to the bill-to's invoice email with
+// reminders at 14 and 30 days (invoicing.sql, fleetr-infra). Off until an
+// Exec switches it on here, and fleetr's own switch is off for now.
+const INVOICE_REASONS = { bad_email: "That email address does not look right.", demo: "The demo company never sends invoices.", exec_only: "Only an Exec can change invoicing." };
+function InvoicingSection() {
+  const el = React.createElement;
+  const [data, setData] = React.useState(undefined);
+  const [emails, setEmails] = React.useState({});
+  const [busy, setBusy] = React.useState("");
+  const [error, setError] = React.useState("");
+  const load = React.useCallback(async () => {
+    const { data: d, error: err } = await supabase.rpc("invoicing_settings");
+    setData(err || !d || !d.ok ? { error: "Invoicing could not be loaded." } : d);
+    setEmails({});
+  }, []);
+  React.useEffect(() => { load(); }, [load]);
+  if (data === undefined) return el("p", { className: "closeRentalHint" }, "Loading…");
+  if (data.error) return el("div", { className: "loginError" }, data.error);
+  const run = async (key, call) => {
+    setBusy(key); setError("");
+    const { data: d, error: err } = await call;
+    if (err || !d || !d.ok) setError(INVOICE_REASONS[d && d.reason] || "That did not save. Try again.");
+    else await load();
+    setBusy("");
+  };
+  const smallBtn = { width: "auto", padding: "6px 10px" };
+  return el(React.Fragment, null,
+    el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+      "When a rental billed to an insurer or a company closes with something owing, an invoice is made with a card payment link. "
+      + "With sending on, it goes to that bill-to's invoice email, with reminders 14 and 30 days later if it is still unpaid."),
+    el("label", { style: { display: "flex", gap: "8px", alignItems: "center" } },
+      el("input", { type: "checkbox", checked: !!data.sendingOn, disabled: !!busy || data.isDemo,
+        onChange: (e) => run("switch", supabase.rpc("set_invoice_sending", { p_on: e.target.checked })) }),
+      "Send invoices and reminders automatically"),
+    el("p", { className: "closeRentalHint" },
+      data.isDemo ? "The demo company never sends invoices."
+      : !data.stripeReady ? "Connect Stripe under Card payments first: each invoice carries a payment link."
+      : "fleetr's own sending is switched off for now, so nothing goes out yet either way."),
+    el("p", { className: "closeRentalHint" },
+      `${data.counts.waiting} waiting to send, ${data.counts.sent} sent and unpaid, ${data.counts.paid} paid.`),
+    data.sources.length === 0
+      ? el("p", { className: "closeRentalHint" }, "No insurance or corporate sources yet.")
+      : el("table", { className: "dashboardTable" },
+          el("thead", null, el("tr", null, ["Bill-to", "Invoice email", ""].map((h) => el("th", { key: h }, h)))),
+          el("tbody", null, data.sources.map((src) => {
+            const value = emails[src.id] !== undefined ? emails[src.id] : src.invoiceEmail || "";
+            return el("tr", { key: src.id },
+              el("td", null, src.name),
+              el("td", null, el("input", { className: "resFormInput", type: "email", placeholder: "accounts@example.com", value,
+                "aria-label": `Invoice email for ${src.name}`, onChange: (e) => setEmails((m) => ({ ...m, [src.id]: e.target.value })) })),
+              el("td", null, el("button", { type: "button", className: "loginBtn", style: smallBtn,
+                disabled: !!busy || value === (src.invoiceEmail || ""),
+                onClick: () => run(src.id, supabase.rpc("set_source_invoice_email", { p_source_id: src.id, p_email: value })) },
+                busy === src.id ? "Saving…" : "Save")));
+          }))),
+    el(FieldError, { text: error }));
 }
 
 // ─── Card payments (Stripe Connect) ──────────────────────────────────────────
