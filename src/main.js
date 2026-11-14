@@ -9874,7 +9874,15 @@ async function downloadStatement(month) {
   const total = (label, value, bold) => { if (y > 730) { doc.addPage(); y = 64; } line(label, { bold, x: 330 }); line(value, { bold, right: true }); y += 16; };
   total(`Rentals closed`, String(sm.rentals));
   total(`Vehicle rental revenue`, billingMoney(sm.revenue));
-  total(`Revenue share (${billingPercents(sm.percents)})`, billingMoney(sm.owed));
+  // fleetr's share on card payments through Stripe was taken as each was
+  // paid, so it is not billed again here.
+  if (Number(sm.paidByCard) > 0) {
+    total(`Revenue share (${billingPercents(sm.percents)})`, billingMoney(Number(sm.owed) + Number(sm.paidByCard)));
+    total("Taken on card payments", `-${billingMoney(sm.paidByCard)}`);
+    total("Revenue share owed", billingMoney(sm.owed));
+  } else {
+    total(`Revenue share (${billingPercents(sm.percents)})`, billingMoney(sm.owed));
+  }
   if (data.hst) total(`HST ${Number(data.hst.rate)}% (${data.hst.number})`, billingMoney(data.hst.amount));
   total("Total due", billingMoney(data.total), true);
   doc.save(`fleetr-statement-${sm.month}.pdf`);
@@ -9903,7 +9911,8 @@ function BillingSection() {
   };
   return el(React.Fragment, null,
     el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-      `fleetr bills ${data.percent == null ? "a share" : `${Number(data.percent)}%`} of the vehicle rental revenue on agreements closed each month, before tax. Each month is due on the 15th of the month after.`),
+      `fleetr bills ${data.percent == null ? "a share" : `${Number(data.percent)}%`} of the vehicle rental revenue on agreements closed each month, before tax. Each month is due on the 15th of the month after. `
+      + "On card payments through Stripe the share is taken as they are paid, so it is not on the bill."),
     data.months.length === 0
       ? el("p", { className: "closeRentalHint" }, "Nothing billed yet. A month shows here once an agreement closes in it.")
       : el("div", { style: { overflowX: "auto" } },
