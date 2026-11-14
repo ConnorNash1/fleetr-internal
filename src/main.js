@@ -5334,6 +5334,100 @@ function OverdueRentalsPage() {
 
 // ─── VehicleDetailPage ──────────────────────────────────────────────────────────────────────────────
 
+// ─── Vehicle economics ───────────────────────────────────────────────────────
+// What a vehicle earns, costs and loses in value each month, and whether it
+// is ready to sell: renting it out no longer pays for the value it loses by
+// being kept (vehicle_economics, fleetr-infra vehicle_economics.sql). Purchase
+// price and date, market value and costs are entered here by an Admin or
+// above.
+const econMoney = (n) => (n == null || n === "" ? "\u00b7"
+  : `${Number(n) < 0 ? "-" : ""}$${Math.abs(Number(n)).toLocaleString("en-CA", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`);
+const ECON_REASONS = { not_allowed: "Only an Admin or above can change this.", bad_value: "Check the amount and date: no date after today." };
+const sellWords = (v) => v.readyToSell == null ? "Enter its market value to see this."
+  : v.readyToSell ? "Ready to sell: renting it out no longer covers the value it loses each month."
+  : v.monthsToSellPoint ? `Earning more than it loses, about ${v.monthsToSellPoint} month${v.monthsToSellPoint === 1 ? "" : "s"} from the point to sell at this trend.`
+  : "Earning more than it loses in value.";
+
+function VehicleEconomics({ vehicle }) {
+  const el = React.createElement;
+  const { currentUser } = React.useContext(AppContext);
+  const canEdit = roleAtLeast(currentUser?.role, "Admin");
+  const [econ, setEcon] = React.useState(undefined);
+  const [costs, setCosts] = React.useState([]);
+  const [form, setForm] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const today = new Date().toISOString().slice(0, 10);
+  const load = React.useCallback(async () => {
+    if (!vehicle.id) return;
+    const [e, c] = await Promise.all([
+      supabase.rpc("vehicle_economics", { p_location_id: vehicle.locationId || null }),
+      supabase.from("vehicle_costs").select("id,kind,amount,incurredOn,note").eq("vehicleId", vehicle.id).order("incurredOn", { ascending: false }).limit(8),
+    ]);
+    setEcon(e.error || !e.data || !e.data.ok ? null : (e.data.vehicles || []).find((x) => x.id === vehicle.id) || null);
+    setCosts(c.data || []);
+  }, [vehicle.id, vehicle.locationId]);
+  React.useEffect(() => { load(); }, [load]);
+  if (!vehicle.id) return null;
+  if (econ === undefined) return el("p", { className: "closeRentalHint" }, "Loading…");
+  if (econ === null) return el("p", { className: "closeRentalHint" }, "Economics could not be loaded.");
+  const row = (label, value) => el("div", { className: "vehicleDetailRow" },
+    el("span", { className: "vehicleDetailLabel" }, label), el("span", { className: "vehicleDetailValue" }, value));
+  const save = async () => {
+    setBusy(true); setError("");
+    const call = form.kind === "purchase"
+      ? supabase.rpc("set_vehicle_purchase", { p_vehicle_id: vehicle.id, p_price: Number(form.amount), p_date: form.date })
+      : form.kind === "value"
+        ? supabase.rpc("set_vehicle_market_value", { p_vehicle_id: vehicle.id, p_value: Number(form.amount), p_on: form.date })
+        : supabase.rpc("add_vehicle_cost", { p_vehicle_id: vehicle.id, p_kind: form.kind, p_amount: Number(form.amount), p_on: form.date, p_note: form.note || null });
+    const { data, error: err } = await call;
+    if (err || !data || !data.ok) setError(ECON_REASONS[data && data.reason] || "That did not save. Try again.");
+    else { setForm(null); await load(); }
+    setBusy(false);
+  };
+  const smallBtn = { width: "auto", padding: "6px 10px" };
+  const open = (kind) => setForm({ kind, amount: "", date: kind === "purchase" ? econ.purchaseDate || "" : today, note: "" });
+  return el(React.Fragment, null,
+    el("div", { className: econ.readyToSell ? "closeRentalWarning" : "closeRentalHint", style: { marginBottom: 10 } }, sellWords(econ)),
+    row("Purchase price", econMoney(econ.purchasePrice)),
+    row("Purchased", econ.purchaseDate || "\u00b7"),
+    row("Market value", econ.marketValue == null ? "\u00b7" : `${econMoney(econ.marketValue)} on ${econ.marketValueAt}`),
+    row("Depreciation so far", econMoney(econ.depreciationTotal)),
+    row("Value lost a month", econMoney(econ.valueLossMonthly)),
+    row("Rental income a month", econMoney(econ.incomeMonthly)),
+    row("Maintenance and damage a month", econMoney(econ.costsMonthly)),
+    row("Net a month", econMoney(econ.netMonthly)),
+    el("p", { className: "closeRentalHint" }, "Monthly figures are the last 90 days: vehicle rental charges on rentals that closed, before tax, less costs."),
+    canEdit && !form && el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", marginTop: 8 } },
+      el("button", { type: "button", className: "loginBtn", style: smallBtn, onClick: () => open("purchase") }, "Set purchase"),
+      el("button", { type: "button", className: "loginBtn", style: smallBtn, onClick: () => open("value") }, "Enter market value"),
+      el("button", { type: "button", className: "loginBtn", style: smallBtn, onClick: () => open("maintenance") }, "Add a cost")),
+    form && el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center", marginTop: 8 } },
+      ["maintenance", "damage"].includes(form.kind) && el("select", { className: "resFormInput", value: form.kind, "aria-label": "Kind of cost",
+        onChange: (e) => setForm({ ...form, kind: e.target.value }), style: { width: "auto" } },
+        el("option", { value: "maintenance" }, "Maintenance"), el("option", { value: "damage" }, "Damage repair")),
+      el("div", { className: "btDollarWrap" },
+        el("span", { className: "btDollarPrefix" }, "$"),
+        el("input", { className: "resFormInput btDollarInput", type: "text", inputMode: "decimal", placeholder: "0.00",
+          "aria-label": form.kind === "purchase" ? "Purchase price" : form.kind === "value" ? "Market value" : "Amount",
+          value: form.amount, onChange: (e) => setForm({ ...form, amount: numberTyped(e.target.value, { digits: 7, decimals: 2 }) }) })),
+      el("input", { className: "resFormInput", type: "date", max: today, value: form.date, "aria-label": "Date",
+        onChange: (e) => setForm({ ...form, date: e.target.value }), style: { width: "auto" } }),
+      ["maintenance", "damage"].includes(form.kind) && el("input", { className: "resFormInput", type: "text", placeholder: "What was done",
+        value: form.note, onChange: (e) => setForm({ ...form, note: e.target.value }), style: { flex: "1 1 180px" } }),
+      el("button", { type: "button", className: "loginBtn", style: smallBtn, disabled: busy || !(Number(form.amount) >= 0) || form.amount === "" || !form.date, onClick: save },
+        busy ? "Saving…" : "Save"),
+      el("button", { type: "button", className: "resModalCancel", onClick: () => { setForm(null); setError(""); } }, "Cancel")),
+    el(FieldError, { text: error }),
+    costs.length > 0 && el(React.Fragment, null,
+      el("div", { className: "vehicleDetailSubHeader" }, "Recent costs"),
+      el("table", { className: "dashboardTable" },
+        el("thead", null, el("tr", null, ["Date", "Kind", "Amount", "What"].map((h) => el("th", { key: h }, h)))),
+        el("tbody", null, costs.map((c) => el("tr", { key: c.id },
+          el("td", null, c.incurredOn), el("td", null, c.kind === "damage" ? "Damage repair" : "Maintenance"),
+          el("td", null, econMoney(c.amount)), el("td", null, c.note || "")))))));
+}
+
 function VehicleDetailPage() {
   const { fleet, setFleet, reservations, rentalAgreements, damageClaims, guardAction } = React.useContext(AppContext);
   const navigate = useNavigate();
@@ -5686,7 +5780,10 @@ function VehicleDetailPage() {
         React.createElement("p", { className: "aiTabDesc" }, "The two most recent inspections appear here, each showing the pickup and return walkaround separately. Data is pulled from PWA submission records in Supabase."),
         React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "12px 0" } }, "No inspection records found.")
       )
-    )
+    ),
+
+    // Section 8: what it earns, costs and loses in value.
+    mkSection("economics", "Economics", React.createElement(VehicleEconomics, { vehicle }))
   );
 }
 
