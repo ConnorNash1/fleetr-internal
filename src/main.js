@@ -9031,8 +9031,67 @@ function CompanyPage() {
         key: "billing", id: "company-step-billing", stepKey: "billing", n: null, title: "Billing", state: "done",
         current: false, open: !!openSteps.billing, onToggle: () => setOpenSteps((o) => ({ ...o, billing: !o.billing })),
         busy: stepBusy, showState: false,
-      }, el(BillingSection))) })),
+      }, el(BillingSection)),
+      // An Exec connects the company's Stripe account for card payments.
+      isExec && el(CompanyStep, {
+        key: "payments", id: "company-step-payments", stepKey: "payments", n: null, title: "Card payments", state: "done",
+        current: false, open: !!openSteps.payments, onToggle: () => setOpenSteps((o) => ({ ...o, payments: !o.payments })),
+        busy: stepBusy, showState: false,
+      }, el(StripeSection))) })),
   );
+}
+
+// ─── Card payments (Stripe Connect) ──────────────────────────────────────────
+// The company's own Stripe account: renters and bill-tos pay through payment
+// links made on it, the money goes straight to the company, and fleetr's
+// revenue share comes off each payment as Stripe's application fee
+// (stripe_payments.sql and /stripe/* in worker.js, fleetr-infra).
+async function stripeCall(route, body) {
+  const session = supabase.auth.session();
+  if (!session?.access_token) throw new Error("Your session has ended. Sign in again.");
+  const res = await fetch(`${CLAUDE_API_URL}/stripe/${route}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "authorization": `Bearer ${session.access_token}` },
+    body: JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data || !data.ok) throw new Error((data && (data.message || data.error)) || "The payment service could not be reached.");
+  return data;
+}
+
+function StripeSection() {
+  const el = React.createElement;
+  const [status, setStatus] = React.useState(undefined);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const load = React.useCallback(async () => {
+    const { data, error: err } = await supabase.rpc("stripe_status");
+    setStatus(err || !data ? { error: "Card payment status could not be loaded." } : data);
+  }, []);
+  React.useEffect(() => {
+    // Back from Stripe's onboarding: ask Stripe where the account stands.
+    const back = /[?&]stripe=(return|refresh)/.test(window.location.hash);
+    (back ? stripeCall("refresh").catch((e) => setError(e.message)) : Promise.resolve()).then(load);
+  }, [load]);
+  if (status === undefined) return el("p", { className: "closeRentalHint" }, "Loading…");
+  if (status.error) return el("div", { className: "loginError" }, status.error);
+  const connect = async () => {
+    setBusy(true); setError("");
+    try { const { url } = await stripeCall("connect"); window.location.href = url; }
+    catch (e) { setError(e.message); setBusy(false); }
+  };
+  const state = status.isDemo ? "The demo company does not take card payments."
+    : status.chargesEnabled ? "Connected. Renters and bill-tos can pay by card through payment links."
+    : status.connected ? "Stripe still needs a few details before this account can take payments."
+    : "Not connected.";
+  return el(React.Fragment, null,
+    el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
+      "Card payments go straight to your own Stripe account. fleetr's share is taken from each payment by Stripe as it is paid."),
+    el("p", null, state),
+    status.canConnect && !status.chargesEnabled && el("button", {
+      type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, disabled: busy, onClick: connect,
+    }, busy ? "Opening Stripe…" : status.connected ? "Finish Stripe setup" : "Connect Stripe"),
+    el(FieldError, { text: error }));
 }
 
 // ─── Billing ─────────────────────────────────────────────────────────────────
@@ -18167,6 +18226,43 @@ function CustomerPage() {
   return React.createElement(CustomerPageView, { key: round, onDiscard: () => setRound((n) => n + 1) });
 }
 
+// A Stripe payment link for what is owing on a saved agreement, for the renter
+// or the bill-to. The amount is the database's, from the saved charges, so
+// unsaved changes are saved first. The payment arrives on the agreement by
+// itself once it is paid.
+function StripePayLink({ agreementId, unsaved, retail }) {
+  const el = React.createElement;
+  const [busy, setBusy] = React.useState("");
+  const [link, setLink] = React.useState(null);
+  const [error, setError] = React.useState("");
+  const [copied, setCopied] = React.useState(false);
+  const make = async (paidBy) => {
+    setBusy(paidBy); setError(""); setLink(null); setCopied(false);
+    try {
+      const data = await stripeCall("pay-link", { agreementId, paidBy });
+      setLink({ url: data.url, amount: data.amount, paidBy });
+    } catch (e) { setError(e.message); }
+    setBusy("");
+  };
+  const copy = () => {
+    navigator.clipboard?.writeText(link.url).then(() => setCopied(true)).catch(() => setError("Copy the link from the box."));
+  };
+  const btn = (paidBy, label) => el("button", {
+    key: paidBy, type: "button", className: "addPaymentBtn", disabled: !!busy || unsaved, onClick: () => make(paidBy),
+  }, busy === paidBy ? "Making link…" : label);
+  return el("div", { className: "paymentsTotals" },
+    el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
+      retail ? btn("Customer", "Card payment link")
+        : [btn("Customer", "Customer payment link"), btn("Bill-To", "Bill-To payment link")]),
+    unsaved && el("p", { className: "closeRentalHint" }, "Save the charges first: the link asks for what is saved."),
+    link && el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginTop: "8px" } },
+      el("input", { className: "resFormInput", readOnly: true, value: link.url, style: { flex: "1 1 240px" }, onFocus: (e) => e.target.select() }),
+      el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, onClick: copy }, copied ? "Copied" : "Copy"),
+      el("a", { href: link.url, target: "_blank", rel: "noopener", className: "loginBtn", style: { width: "auto", padding: "6px 10px", textDecoration: "none" } }, "Open"),
+      el("span", { className: "closeRentalHint" }, `$${Number(link.amount).toFixed(2)} for the ${link.paidBy === "Bill-To" ? "bill-to" : "renter"}`)),
+    el(FieldError, { text: error }));
+}
+
 function CustomerPageView({ onDiscard }) {
   const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, guardAction, logAudit, damageClaims, setDamageClaims, currentUser } = React.useContext(AppContext);
   const navigate = useNavigate();
@@ -18976,7 +19072,8 @@ function CustomerPageView({ onDiscard }) {
   const isCardType = (type) => ["Visa", "Mastercard", "Amex"].includes(type);
 
   const fmtPayment = (p) => {
-    const card = isCardType(p.type) && p.last4 ? `${p.type} Ending in ${p.last4}` : p.type;
+    const card = p.type === "Stripe" ? (p.last4 ? `Card Ending in ${p.last4}, paid online` : "Card, paid online")
+      : isCardType(p.type) && p.last4 ? `${p.type} Ending in ${p.last4}` : p.type;
     const parts = [card, p.cardholderName, p.amount ? fmtMoney(parseFloat(p.amount) || 0) : ""].filter(Boolean);
     return parts.join(" · ");
   };
@@ -19130,8 +19227,12 @@ function CustomerPageView({ onDiscard }) {
       payments.length === 0
         ? React.createElement("div", { className: "customerPlaceholder" }, "No payments recorded yet.")
         : React.createElement("div", { className: "paymentsList" },
-            payments.map((p) =>
-              React.createElement("div", { key: p.id, className: "paymentRow" },
+            payments.map((p) => p.stripePaymentIntent
+              // Paid through a Stripe payment link: kept as Stripe recorded it.
+              ? React.createElement("div", { key: p.id, className: "paymentRow" },
+                  React.createElement("div", { className: "paymentDisplay" },
+                    fmtPayment(p) + (btSrcCat !== "Retail" ? ` · ${p.paidBy || "Bill-To"}` : "")))
+              : React.createElement("div", { key: p.id, className: "paymentRow" },
                 React.createElement("div", { className: "paymentDisplay" }, fmtPayment(p)),
                 React.createElement("div", { className: "paymentFields" },
                   React.createElement("select", {
@@ -19184,6 +19285,7 @@ function CustomerPageView({ onDiscard }) {
             )
           ),
       React.createElement("button", { type: "button", className: "addPaymentBtn", onClick: addPayment }, "+ Add Payment"),
+      ra?.id && React.createElement(StripePayLink, { agreementId: ra.id, unsaved: chargesEdited, retail: btSrcCat === "Retail" }),
       // A retail customer has one total paid and one balance, as at the top.
       btSrcCat === "Retail" && React.createElement("div", { className: "paymentsTotals" },
         React.createElement("div", { className: "chargesTotalRow" },
