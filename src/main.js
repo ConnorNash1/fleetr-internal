@@ -7706,20 +7706,31 @@ function GasOwedInput({ value, onCommit }) {
 // Marking the fuel Paid records it as a payment on the agreement, so Charges
 // & Payments, the Rental Agreements page and the receipt see it paid as well,
 // and leaves gasOwed as it was, so what was owed stays on record. The payment
-// is the fuel's share of the invoice: the Gas line (else gasOwed) and each tax
-// on it, to the cent, paid by whoever chargeTotals bills the Gas line to.
+// is the fuel's share of the invoice: the Gas line (else gasOwed) with its
+// tax, as charge_totals works it out, paid by the bill-to, who the Gas line is
+// billed to.
 const FUEL_PAYMENT_TYPE = "Gas Collections";
-function fuelPaidPatch(ra, salesTaxes, now = new Date()) {
+// The fuel the payment is for: the Gas line, else gasOwed as one line.
+function fuelLine(ra) {
   const gas = (Array.isArray(ra?.lineItems) ? ra.lineItems : []).find((it) => it && it.key === "gas" && it.applies);
-  const fuel = gas && lineItemAmount(gas) > 0 ? lineItemAmount(gas) : (parseFloat(ra?.gasOwed) || 0);
-  const taxes = (salesTaxes || []).filter((t) => t && String(t.name ?? "").trim() !== "" && Number(t.rate) > 0).slice(0, 2);
-  const amount = fuel + taxes.reduce((s, t) => s + Math.round(fuel * Number(t.rate)) / 100, 0);
+  if (gas && lineItemAmount(gas) > 0) return gas;
+  return parseFloat(ra?.gasOwed) > 0 ? { key: "gas", label: "Gas", applies: true, qty: "1", amount: String(ra.gasOwed) } : null;
+}
+// What the fuel comes to with its tax, from charge_totals: 0 when nothing is
+// owed, null when it could not be worked out.
+async function fuelShare(ra) {
+  const line = fuelLine(ra);
+  if (!line) return 0;
+  const { data, error } = await fetchChargeTotals({ lineItems: [line], payments: [], salesTaxes: await agreementTaxes(ra), billToCategory: "Retail" });
+  return !error && data ? Number(data.grandTotal) : null;
+}
+function fuelPaidPatch(ra, amount, now = new Date()) {
   const payments = (Array.isArray(ra?.payments) ? ra.payments : []).filter((p) => !p?.fuelPaid);
   return {
     gasCollected: true,
     gasCollectedAt: now.toISOString(),
-    payments: fuel > 0
-      ? [...payments, { id: now.getTime(), type: FUEL_PAYMENT_TYPE, last4: "", cardholderName: "", amount: amount.toFixed(2), paidBy: "Bill-To", fuelPaid: true }]
+    payments: amount > 0
+      ? [...payments, { id: now.getTime(), type: FUEL_PAYMENT_TYPE, last4: "", cardholderName: "", amount: Number(amount).toFixed(2), paidBy: "Bill-To", fuelPaid: true }]
       : payments,
   };
 }
@@ -7773,7 +7784,12 @@ function GasCollectionsPage() {
     // Paid: recorded as a payment on the agreement (fuelPaidPatch), and the
     // row leaves this list. The amount owed stays on record.
     guardAction("gas.collected", async () => {
-      const patch = value === "Paid" ? fuelPaidPatch(ra, await agreementTaxes(ra)) : fuelUnpaidPatch(ra);
+      const amount = value === "Paid" ? await fuelShare(ra) : 0;
+      if (amount === null) {
+        appAlert("What the fuel comes to could not be worked out. Check your connection and try again.", { title: "Not saved" });
+        return;
+      }
+      const patch = value === "Paid" ? fuelPaidPatch(ra, amount) : fuelUnpaidPatch(ra);
       const { error } = await supabase.from("rental_agreements").update(patch).eq("id", id);
       if (error) {
         console.warn("rental_agreements update failed:", id, error);
@@ -14297,7 +14313,9 @@ function FleetrCommandBar() {
           const ra = rentalAgreements.find(isMatch);
           if (ra) {
             const { gasCollected, gasOwed, ...rest } = data;
-            data = { ...rest, ...(gasCollected ? fuelPaidPatch(ra, await agreementTaxes(ra)) : fuelUnpaidPatch(ra)) };
+            const amount = gasCollected ? await fuelShare(ra) : 0;
+            if (amount === null) throw new Error("What the fuel comes to could not be worked out.");
+            data = { ...rest, ...(gasCollected ? fuelPaidPatch(ra, amount) : fuelUnpaidPatch(ra)) };
           }
         }
         let q = supabase.from(table).update(data);
@@ -15460,21 +15478,19 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
       .then(({ data }) => { if (live && Array.isArray(data?.salesTaxes)) setBranchTaxes(data.salesTaxes); });
     return () => { live = false; };
   }, [taxBranchId]);
-  // The charges saved on the agreement, totalled by chargeTotals as Charges &
+  // The charges saved on the agreement, totalled by charge_totals as Charges &
   // Payments and Close Rental total them. None saved yet: nothing to show.
   const savedLines = Array.isArray(raRecord?.lineItems) && raRecord.lineItems.length > 0 ? raRecord.lineItems : null;
-  const charges = savedLines ? (() => {
-    const salesTaxes = (Array.isArray(raRecord.salesTaxes) ? raRecord.salesTaxes : branchTaxes)
-      .filter((t) => t && String(t.name ?? "").trim() !== "" && Number(t.rate) > 0).slice(0, 2);
-    const totals = chargeTotals({ lineItems: savedLines, payments: Array.isArray(raRecord.payments) ? raRecord.payments : [], salesTaxes, billToCategory });
-    const isVehicle = (it) => it.key === "vehicle" || String(it.key).startsWith("vehicle:");
-    const base = savedLines.reduce((s, it) => s + (it.applies && isVehicle(it) ? lineItemAmount(it) : 0), 0);
-    const taxLines = billToCategory === "Retail" ? totals.allTaxLines : [...totals.billToTaxLines, ...totals.customerTaxLines];
-    return {
-      base, additional: totals.subTotal - base, taxes: taxLines.reduce((s, l) => s + l.amount, 0),
-      total: totals.grandTotal, paid: totals.totalPaid, owing: totals.owing,
-    };
-  })() : null;
+  const savedTotals = useChargeTotals({
+    lineItems: savedLines, payments: Array.isArray(raRecord?.payments) ? raRecord.payments : [],
+    salesTaxes: (Array.isArray(raRecord?.salesTaxes) ? raRecord.salesTaxes : branchTaxes)
+      .filter((t) => t && String(t.name ?? "").trim() !== "" && Number(t.rate) > 0).slice(0, 2),
+    billToCategory,
+  }, { enabled: !!savedLines });
+  const charges = savedLines && savedTotals ? {
+    base: savedTotals.vehicleTotal, additional: savedTotals.otherTotal, taxes: savedTotals.taxTotal,
+    total: savedTotals.grandTotal, paid: savedTotals.totalPaid, owing: savedTotals.owing,
+  } : null;
 
   const notesContent = React.createElement("div", { style: { padding: "14px" } },
     raNotesLog.length === 0
@@ -16898,9 +16914,15 @@ function CloseRentalPage() {
     return {
       lines, days, billToCategory, dueDate: closeRes.returnDate || null,
       extraDays: Math.max(0, days - chargeDays(closePickup, rateStamp(closeRes.returnDate, closeRes.returnTime, closeRes.returnMeridiem, true))),
-      totals: chargeTotals({ lineItems: lines, payments: Array.isArray(ra.payments) ? ra.payments : [], salesTaxes, billToCategory }),
+      salesTaxes, payments: Array.isArray(ra.payments) ? ra.payments : [],
     };
   }, [final, ra, closeRes, closeAt, closeStamp, closePickup, closePrice, closeBranchTaxes, agreementOutcome.reason, vehicle, branchRate]);
+  // Their totals, from charge_totals. The summary waits for them; the lines
+  // are what Complete Close saves.
+  const closeTotals = useChargeTotals({
+    lineItems: closeCharges?.lines, payments: closeCharges?.payments, salesTaxes: closeCharges?.salesTaxes, billToCategory: closeCharges?.billToCategory,
+  }, { enabled: !!closeCharges });
+  const closeChargesShown = closeCharges && closeTotals ? { ...closeCharges, totals: closeTotals } : null;
 
   const completeClose = async () => {
     if (!final || !ra) return;
@@ -17192,7 +17214,7 @@ function CloseRentalPage() {
           "region needs a fuel price. It will have to be entered by hand on Gas Collections."),
       vehicle && line("Vehicle moves to", vehicleStatus.status),
       vehicle && vehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, vehicleStatus.message),
-      React.createElement(CloseChargesSummary, { charges: closeCharges }),
+      React.createElement(CloseChargesSummary, { charges: closeChargesShown }),
       refusal && React.createElement("div", { className: "closeRentalWarning" }, refusal),
       React.createElement("div", { className: "closeRentalActions" },
         React.createElement("button", {
@@ -17911,44 +17933,53 @@ const billToCategoryOf = (source) => ({
 // What a charge line comes to.
 const lineItemAmount = (item) => (parseFloat(item.qty) || 0) * (parseFloat(item.amount) || 0);
 
-// The invoice's totals. Protection lines are the customer's to pay unless
-// covered by the bill-to; every other line is the bill-to's. Each tax on a
-// subtotal, to the cent; when someone else pays, each side is taxed on its own
-// charges, so the two sides add up to what is shown. billToCategory is the
-// source's: "Retail", "Bodyshop/Dealership", "Insurance" or "Corporate".
-function chargeTotals({ lineItems, payments, salesTaxes, billToCategory }) {
-  const billToItems   = lineItems.filter((it) => !isProtectionLine(it) || it.coveredByBillTo);
-  const customerItems = lineItems.filter((it) => isProtectionLine(it) && !it.coveredByBillTo);
-  const sumLines      = (items) => items.reduce((s, it) => s + (it.applies ? lineItemAmount(it) : 0), 0);
-  const billToTotal   = sumLines(billToItems);
-  const customerTotal = sumLines(customerItems);
-  const taxLinesFor = (subtotal) => (salesTaxes || []).map((t) => ({
-    label: `${String(t.name).trim()} ${Number(t.rate)}%`,
-    amount: Math.round(subtotal * Number(t.rate)) / 100,
-  }));
-  const sumTax = (lines) => lines.reduce((s, l) => s + l.amount, 0);
-  const subTotal         = billToTotal + customerTotal;
-  const allTaxLines      = taxLinesFor(subTotal);
-  const billToTaxLines   = taxLinesFor(billToTotal);
-  const customerTaxLines = taxLinesFor(customerTotal);
-  const billToDue        = billToTotal + sumTax(billToTaxLines);
-  const customerDue      = customerTotal + sumTax(customerTaxLines);
-  const retail           = billToCategory === "Retail";
-  const grandTotal       = retail ? subTotal + sumTax(allTaxLines) : billToDue + customerDue;
-  const paid = (who) => (payments || []).filter((p) => (who === "Bill-To" ? (p.paidBy || "Bill-To") === "Bill-To" : p.paidBy === who))
-    .reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
-  const billToPaid      = paid("Bill-To");
-  const customerPaid    = paid("Customer");
-  const totalPaid       = billToPaid + customerPaid;
-  const billToBalance   = billToDue - billToPaid;
-  const customerBalance = customerDue - customerPaid;
-  return {
-    billToItems, customerItems, billToTotal, customerTotal, subTotal, allTaxLines, billToTaxLines, customerTaxLines,
-    billToDue, customerDue, grandTotal, billToPaid, customerPaid, totalPaid, billToBalance, customerBalance,
-    // What is still owing: one balance for retail, else the larger of the two
-    // sides, as the closing invoice is settled (gas_invoice_owing).
-    owing: Math.max(0, Math.round((retail ? grandTotal - totalPaid : Math.max(billToBalance, customerBalance)) * 100) / 100),
-  };
+// Which side pays each line: protection is the customer's unless covered by
+// the bill-to; every other line is the bill-to's. Only which list a line goes
+// in, for showing them; what they come to is charge_totals'.
+const chargeSides = (lineItems) => ({
+  billToItems:   (lineItems || []).filter((it) => !isProtectionLine(it) || it.coveredByBillTo),
+  customerItems: (lineItems || []).filter((it) => isProtectionLine(it) && !it.coveredByBillTo),
+});
+
+// ── The invoice's totals, from the database ──
+// Every total a rental's charges come to is worked out by one calculation,
+// charge_totals (charge_totals.sql in fleetr-infra), which the check-in app,
+// the emails, the agreement page and the database's fuel-paid rule use too:
+// each tax once on a subtotal, to the cent; when someone else pays, each side
+// taxed on its own charges. billToCategory is the source's: "Retail",
+// "Bodyshop/Dealership", "Insurance" or "Corporate". { data, error }.
+async function fetchChargeTotals({ lineItems, payments, salesTaxes, billToCategory }) {
+  try {
+    return await supabase.rpc("charge_totals", {
+      p_line_items: lineItems || [], p_payments: payments || [], p_sales_taxes: salesTaxes || [], p_bill_to: billToCategory || null,
+    });
+  } catch (e) {
+    return { data: null, error: e };
+  }
+}
+// Zero, while the first answer is on its way.
+const NO_CHARGE_TOTALS = {
+  vehicleTotal: 0, otherTotal: 0, billToTotal: 0, customerTotal: 0, subTotal: 0, allTaxLines: [], billToTaxLines: [], customerTaxLines: [], taxTotal: 0,
+  billToDue: 0, customerDue: 0, grandTotal: 0, billToPaid: 0, customerPaid: 0, totalPaid: 0, billToBalance: 0, customerBalance: 0, owing: 0,
+};
+// The totals for these charges, asked for again a moment after they change;
+// the last answer stays up meanwhile. Null until the first answer, and while
+// not enabled.
+function useChargeTotals({ lineItems, payments, salesTaxes, billToCategory }, { enabled = true } = {}) {
+  const key = JSON.stringify([lineItems || [], payments || [], salesTaxes || [], billToCategory || null]);
+  const [totals, setTotals] = React.useState(null);
+  React.useEffect(() => {
+    if (!enabled) { setTotals(null); return undefined; }
+    let live = true;
+    const timer = setTimeout(async () => {
+      const { data, error } = await fetchChargeTotals({ lineItems, payments, salesTaxes, billToCategory });
+      if (!live) return;
+      if (error || !data) console.warn("charge_totals failed:", error);
+      else setTotals(data);
+    }, 150);
+    return () => { live = false; clearTimeout(timer); };
+  }, [key, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  return totals;
 }
 
 // What a charge line's quantity counts. Gas and mileage follow the company's
@@ -18918,11 +18949,14 @@ function CustomerPageView({ onDiscard }) {
       ? (item.coveredByBillTo ? billedToName : name)
       : billedToName;
 
-  // The invoice's totals, from the same calculation Close Rental uses.
+  // The invoice's totals, from charge_totals, the calculation Close Rental and
+  // everything else uses.
+  const chargeTotalsNow = useChargeTotals({ lineItems, payments, salesTaxes, billToCategory: btSrcCat });
+  const { billToItems, customerItems } = chargeSides(lineItems);
   const {
-    billToItems, customerItems, billToTotal, customerTotal, subTotal, allTaxLines, billToTaxLines, customerTaxLines,
+    billToTotal, customerTotal, subTotal, allTaxLines, billToTaxLines, customerTaxLines,
     billToDue, customerDue, grandTotal, billToPaid, customerPaid, totalPaid, billToBalance, customerBalance,
-  } = chargeTotals({ lineItems, payments, salesTaxes, billToCategory: btSrcCat });
+  } = chargeTotalsNow || NO_CHARGE_TOTALS;
 
   const addPayment = () => {
     setChargesEdited(true);
