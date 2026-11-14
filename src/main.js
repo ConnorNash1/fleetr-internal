@@ -2582,7 +2582,7 @@ const PAGE_SKELETONS = {
 
   "/reports": () => skEl("div", { className: "page companySetup" },
     skTitle("Reports"),
-    [["Daily Summary", "daily"], ["Rental Revenue", "revenue"], ["Fleet Utilization", "util"], ["No-Show Report", "noshow"], ["Overdue Rentals Report", "overdue"]]
+    [["Availability", "availability"], ["Utilisation", "util"], ["Revenue", "revenue"], ["Lost demand", "lost"], ["Money owed", "owed"], ["Vehicle economics", "economics"]]
       .map(([title, key]) => skStep(title, key))),
 
   "/audit-log": () => skEl("div", { className: "page" },
@@ -6178,10 +6178,14 @@ const driveText = (m) => m < 60 ? `${m} min` : m % 60 === 0 ? `${m / 60} h` : `$
 
 function VehicleTransfers({ fleet, setFleet }) {
   const el = React.createElement;
+  const location = useLocation();
+  const wanted = React.useMemo(() => new URLSearchParams(location.search), [location.search]);
   const [data, setData] = React.useState(null);
   const [open, setOpen] = React.useState(true);
   const [vehicleId, setVehicleId] = React.useState("");
-  const [to, setTo] = React.useState("");
+  const [to, setTo] = React.useState(wanted.get("transferTo") || "");
+  // From Reports: a class to send, so only its vehicles are offered.
+  const wantClass = wanted.get("transferClass") || "";
   const [busy, setBusy] = React.useState("");
   const [error, setError] = React.useState("");
   const load = React.useCallback(async () => {
@@ -6191,7 +6195,8 @@ function VehicleTransfers({ fleet, setFleet }) {
   React.useEffect(() => { load(); }, [load]);
   if (!data || (!data.routes.length && !data.incoming.length && !data.outgoing.length)) return null;
 
-  const onLot = fleet.filter((v) => ["Available", "Needs Cleaning"].includes(v.status) && (!data.here || v.locationId === data.here))
+  const onLot = fleet.filter((v) => ["Available", "Needs Cleaning"].includes(v.status) && (!data.here || v.locationId === data.here)
+      && (!wantClass || v.vehicleClass === wantClass))
     .sort((a, b) => String(a.plate || "").localeCompare(String(b.plate || "")));
   const fail = (d, err) => setError(err ? "That did not work. Try again." : TRANSFER_REASONS[d && d.reason] || "That did not work. Try again.");
   const send = async () => {
@@ -8263,15 +8268,14 @@ const availabilityLine = (r) => (r.kind === "sold_out"
   ? `${r.vehicleClass}: sold out ${rangeWords(r.from, r.to)}`
   : `${r.vehicleClass}: low ${rangeWords(r.from, r.to)}, ${r.amount} free`);
 
-function AvailabilityReport() {
+function AvailabilityReport({ branchPick }) {
   const { currentUser } = React.useContext(AppContext);
   const el = React.createElement;
   const location = useLocation();
   const isMobile = useMobile();
-  const isExec = roleAtLeast(currentUser?.role, "Exec");
   const asked = React.useMemo(() => new URLSearchParams(location.search), [location.search]);
-  const [branches, setBranches] = React.useState([]);
-  const [branch, setBranch] = React.useState(asked.get("branch") || currentUser?.locationId || "");
+  // The page's branch picker: a branch, or "company" for every branch added up.
+  const branch = branchPick || asked.get("branch") || currentUser?.locationId || "";
   const [cls, setCls] = React.useState(asked.get("class") || "");
   const [data, setData] = React.useState(null);
   const [error, setError] = React.useState("");
@@ -8280,21 +8284,10 @@ function AvailabilityReport() {
   const span = isMobile ? 14 : 90;
 
   React.useEffect(() => {
-    if (!isExec) return undefined;
-    let live = true;
-    Promise.all([supabase.rpc("company_overview"), supabase.rpc("my_acting_location")]).then(([ov, act]) => {
-      if (!live) return;
-      setBranches(ov.data && ov.data.ok ? (ov.data.branches || []).filter((b) => b.active) : []);
-      setBranch((b) => b || (act.data && act.data.ok ? act.data.locationId || "" : ""));
-    });
-    return () => { live = false; };
-  }, [isExec]);
-
-  React.useEffect(() => {
     if (!branch) return undefined;
     let live = true;
     setData(null); setError("");
-    supabase.rpc("branch_availability", { p_location_id: branch }).then(({ data: out, error: err }) => {
+    (branch === "company" ? supabase.rpc("company_availability") : supabase.rpc("branch_availability", { p_location_id: branch })).then(({ data: out, error: err }) => {
       if (!live) return;
       if (err || !out || !out.ok) { setError("Availability could not be loaded. Try again."); return; }
       setData(out);
@@ -8322,8 +8315,6 @@ function AvailabilityReport() {
 
   return el("div", { className: "avail" },
     el("div", { className: "avail__bar" },
-      isExec && branches.length > 1 && el("select", { className: "resFormInput avail__pick", "aria-label": "Branch", value: branch, onChange: (e) => setBranch(e.target.value) },
-        branches.map((b) => el("option", { key: b.id, value: b.id }, b.name))),
       data && el("select", { className: "resFormInput avail__pick", "aria-label": "Vehicle class", value: cls, onChange: (e) => setCls(e.target.value) },
         el("option", { value: "" }, "All classes"), data.classes.map((c) => el("option", { key: c.name, value: c.name }, c.name))),
       el("div", { className: "avail__move" },
@@ -8350,37 +8341,320 @@ function AvailabilityReport() {
       ranges.length > 0 && el("ul", { className: "avail__list" }, ranges.map((r) => el("li", { key: `${r.kind}:${r.vehicleClass}:${r.from}` }, availabilityLine(r))))));
 }
 
+// ─── Reports ───────────────────────────────────────────────────────────────────
+// Every report but Availability draws from report_data (fleetr-infra
+// reports.sql): the dates asked and the same number of days just before, to
+// compare. An Exec picks a branch or the whole company.
+const REPORT_PRESETS = [["7", "Last 7 days"], ["30", "Last 30 days"], ["90", "Last 90 days"], ["month", "This month"], ["lastMonth", "Last month"], ["custom", "Custom"]];
+const REPORT_SOURCE_LABEL = { walkin: "Walk-in", online: "Online (fleetr.ai)", insurance: "Insurance", bodyshop: "Body shop", corporate: "Corporate" };
+const REPORT_INK = "#1F1E1D", REPORT_MUTED = "#6B6A66", REPORT_GRID = "#EEEDE9", REPORT_MARK = "#E06D47", REPORT_PREV = "#8A8883";
+// Older owed money, darker: one hue, light to dark.
+const REPORT_AGE = [["b0", "0 to 30 days", "#F9C9B6"], ["b31", "31 to 60", "#F4A07F"], ["b61", "61 to 90", "#E06D47"], ["b91", "Over 90", "#A8492B"]];
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+function reportRange(preset, custom) {
+  const now = new Date();
+  const today = isoDay(now);
+  if (preset === "month") return { from: isoDay(new Date(now.getFullYear(), now.getMonth(), 1)), to: today };
+  if (preset === "lastMonth") return { from: isoDay(new Date(now.getFullYear(), now.getMonth() - 1, 1)), to: isoDay(new Date(now.getFullYear(), now.getMonth(), 0)) };
+  if (preset === "custom") return custom;
+  const n = Number(preset) || 30;
+  return { from: isoDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - n + 1)), to: today };
+}
+const reportPct = (n) => (n == null ? "·" : `${(Number(n) * 100).toFixed(1)}%`);
+const reportMoney = (n, cents) => (n == null ? "·" : `$${Number(n).toLocaleString("en-CA", { minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: cents ? 2 : 0 })}`);
+// The change from the previous period, as a share; points for a rate.
+function reportChange(now, prev, kind) {
+  if (now == null || prev == null) return null;
+  if (kind === "rate") return { text: `${now >= prev ? "+" : ""}${((now - prev) * 100).toFixed(1)} pts`, up: now >= prev };
+  if (!Number(prev)) return null;
+  const c = (now - prev) / Math.abs(prev);
+  return { text: `${c >= 0 ? "+" : ""}${(c * 100).toFixed(0)}%`, up: c >= 0 };
+}
+
+function ReportKpi({ title, value, change, note }) {
+  const el = React.createElement;
+  return el("div", { className: "statTile", role: "group", "aria-label": `${title}: ${value}` },
+    el("div", { className: "statTile__value", style: { fontSize: "30px" } }, value),
+    el("div", { className: "statTile__title" }, title),
+    el("div", { className: "statTile__foot" },
+      change && el("span", { className: `reportChange reportChange--${change.up ? "up" : "down"}` }, `${change.up ? "▲" : "▼"} ${change.text}`),
+      el("span", { className: "statTile__note" }, note || "vs the previous period")));
+}
+
+// This period's line over the previous period's, dashed; one axis from 0.
+// Hovering shows the day and both values.
+function ReportTrend({ series, prevSeries, valueKey, format, label }) {
+  const el = React.createElement;
+  const [hover, setHover] = React.useState(null);
+  const W = 640, H = 180, PL = 44, PR = 12, PT = 10, PB = 24;
+  const now = (series || []).map((p) => Number(p[valueKey]) || 0);
+  const prev = (prevSeries || []).map((p) => Number(p[valueKey]) || 0);
+  const n = Math.max(now.length, prev.length, 2);
+  const max = Math.max(1e-9, ...now, ...prev);
+  const top = valueKey === "rate" ? Math.min(1, Math.ceil(max * 10) / 10 || 1) : max * 1.1;
+  const x = (i) => PL + (i * (W - PL - PR)) / (n - 1);
+  const y = (v) => PT + (H - PT - PB) * (1 - v / top);
+  const path = (vals) => vals.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  const ticks = [0, 0.5, 1].map((f) => f * top);
+  const move = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const i = Math.round(((e.clientX - r.left) / r.width * W - PL) / ((W - PL - PR) / (n - 1)));
+    setHover(i >= 0 && i < n ? i : null);
+  };
+  if (!now.length) return el("p", { className: "closeRentalHint" }, "Nothing in these dates yet.");
+  return el("div", { className: "reportChart" },
+    el("div", { className: "reportLegend" },
+      el("span", null, el("span", { className: "reportLegend__line" }), "This period"),
+      el("span", null, el("span", { className: "reportLegend__line reportLegend__line--prev" }), "Previous period")),
+    el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": label, onMouseMove: move, onMouseLeave: () => setHover(null), style: { width: "100%", height: "auto", display: "block" } },
+      ticks.map((v) => el("g", { key: v },
+        el("line", { x1: PL, x2: W - PR, y1: y(v), y2: y(v), stroke: REPORT_GRID, strokeWidth: 1 }),
+        el("text", { x: PL - 6, y: y(v) + 4, textAnchor: "end", fontSize: 11, fill: REPORT_MUTED }, format(v, true)))),
+      el("text", { x: PL, y: H - 6, fontSize: 11, fill: REPORT_MUTED }, shortDay(series[0].day)),
+      el("text", { x: W - PR, y: H - 6, fontSize: 11, fill: REPORT_MUTED, textAnchor: "end" }, shortDay(series[series.length - 1].day)),
+      prev.length > 1 && el("path", { d: path(prev), fill: "none", stroke: REPORT_PREV, strokeWidth: 2, strokeDasharray: "5 4", strokeLinejoin: "round" }),
+      el("path", { d: path(now), fill: "none", stroke: REPORT_MARK, strokeWidth: 2, strokeLinejoin: "round" }),
+      hover != null && el("g", null,
+        el("line", { x1: x(hover), x2: x(hover), y1: PT, y2: H - PB, stroke: REPORT_MUTED, strokeWidth: 1 }),
+        hover < now.length && el("circle", { cx: x(hover), cy: y(now[hover]), r: 4, fill: REPORT_MARK, stroke: "#fff", strokeWidth: 2 }))),
+    hover != null && el("div", { className: "reportTip", role: "status" },
+      `${series[hover] ? shortDay(series[hover].day) : ""}: ${hover < now.length ? format(now[hover]) : "·"}`
+      + (hover < prev.length ? `, previous ${format(prev[hover])}` : "")));
+}
+
+// One bar a row, this period, with a tick at the previous period's value.
+function ReportBars({ rows, format, label }) {
+  const el = React.createElement;
+  if (!rows || !rows.length) return el("p", { className: "closeRentalHint" }, "Nothing in these dates yet.");
+  const max = Math.max(1e-9, ...rows.map((r) => Math.max(Number(r.value) || 0, Number(r.prev) || 0)));
+  return el("div", { className: "reportBars", role: "table", "aria-label": label },
+    rows.map((r) => el("div", { key: r.name, className: "reportBars__row", role: "row",
+      title: `${r.name}: ${format(r.value)}${r.prev != null ? `, previous ${format(r.prev)}` : ""}` },
+      el("span", { className: "reportBars__name", role: "cell" }, r.name),
+      el("span", { className: "reportBars__track", role: "cell" },
+        el("span", { className: "reportBars__bar", style: { width: `${(Number(r.value) || 0) / max * 100}%` } }),
+        r.prev != null && el("span", { className: "reportBars__prev", style: { left: `${(Number(r.prev) || 0) / max * 100}%` } })),
+      el("span", { className: "reportBars__value", role: "cell" }, format(r.value)))),
+    el("div", { className: "reportLegend" },
+      el("span", null, el("span", { className: "reportLegend__swatch" }), "This period"),
+      el("span", null, el("span", { className: "reportLegend__tick" }), "Previous period")));
+}
+
+function ReportRecommendations({ items, here }) {
+  const el = React.createElement;
+  const navigate = useNavigate();
+  const { currentUser } = React.useContext(AppContext);
+  const isExec = roleAtLeast(currentUser?.role, "Exec");
+  const [error, setError] = React.useState("");
+  if (!items || !items.length) return null;
+  const transfer = async (r) => {
+    const path = `/fleet?${new URLSearchParams({ transferTo: r.toLocationId, transferClass: r.vehicleClass }).toString()}`;
+    // The vehicle is sent from the other branch: an Exec works there first.
+    if (isExec && here !== r.fromLocationId) {
+      const { data, error: err } = await supabase.rpc("set_acting_location", { location_id: r.fromLocationId });
+      if (err || !data || !data.ok) { setError("Could not switch to that branch."); return; }
+      window.location.hash = `#${path}`;
+      window.location.reload();
+      return;
+    }
+    navigate(path);
+  };
+  return el("div", { className: "reportRecs" },
+    el("h2", { className: "closeRentalStepTitle", style: { marginTop: 0 } }, "Recommended"),
+    el("ul", { className: "needsYou" }, items.map((r, i) => el("li", { key: i, className: "needsYou__item" },
+      r.kind === "transfer"
+        ? el(React.Fragment, null,
+            el("div", { className: "needsYou__open", style: { cursor: "default" } },
+              el("span", { className: "needsYou__tag needsYou__tag--disputed" }, "Move a vehicle"),
+              el("span", { className: "needsYou__who" }, `${r.vehicleClass}: ${r.toName} is about to sell out`),
+              el("span", { className: "needsYou__what" },
+                `${r.freeAtTo <= 0 ? "None" : r.freeAtTo} free there from ${shortDay(r.firstShortDay)}, while ${r.fromName} has ${r.freeAtFrom} spare, about ${driveText(r.driveMinutes)} away.`)),
+            el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px", flexShrink: 0 },
+              disabled: !isExec && here !== r.fromLocationId, title: !isExec && here !== r.fromLocationId ? `Staff at ${r.fromName} send it` : undefined,
+              onClick: () => transfer(r) }, "Start transfer"))
+        : el(React.Fragment, null,
+            el("div", { className: "needsYou__open", style: { cursor: "default" } },
+              el("span", { className: "needsYou__tag" }, "Sell"),
+              el("span", { className: "needsYou__who" }, `${r.plate}${r.vehicle ? ` · ${r.vehicle}` : ""}${r.branch ? ` · ${r.branch}` : ""}`),
+              el("span", { className: "needsYou__what" }, `Renting it out is ${reportMoney(Math.abs(r.margin))} a month short of the value it loses.`)),
+            el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px", flexShrink: 0 },
+              onClick: () => navigate(vehiclePath(r.plate)) }, "Open vehicle"))))),
+    el(FieldError, { text: error }));
+}
+
+function UtilisationReport({ data }) {
+  const el = React.createElement;
+  const u = data.utilisation;
+  return el(React.Fragment, null,
+    el("div", { className: "reportKpis" },
+      el(ReportKpi, { title: "Fleet on rent", value: reportPct(u.rate), change: reportChange(u.rate, u.prevRate, "rate") }),
+      el(ReportKpi, { title: "Vehicles", value: String(u.fleet), note: "in the fleet now" }),
+      el(ReportKpi, { title: "Not out at all", value: String(u.idle.length), note: "in these dates" })),
+    el("h3", { className: "reportH" }, "On rent at noon, each day"),
+    el(ReportTrend, { series: u.series, prevSeries: u.prevSeries, valueKey: "rate", format: (v, axis) => axis ? `${Math.round(v * 100)}%` : reportPct(v), label: "Share of the fleet on rent each day" }),
+    el("h3", { className: "reportH" }, "By class"),
+    el(ReportBars, { rows: (u.byClass || []).map((c) => ({ name: c.name, value: c.rate, prev: c.prevRate })), format: reportPct, label: "Utilisation by class" }),
+    (u.byBranch || []).length > 1 && el(React.Fragment, null,
+      el("h3", { className: "reportH" }, "By branch"),
+      el(ReportBars, { rows: u.byBranch.map((b) => ({ name: b.name, value: b.rate, prev: b.prevRate })), format: reportPct, label: "Utilisation by branch" })),
+    el("h3", { className: "reportH" }, "Not out at all"),
+    u.idle.length === 0 ? el("p", { className: "closeRentalHint" }, "Every vehicle went out in these dates.")
+      : el("table", { className: "dashboardTable" },
+          el("thead", null, el("tr", null, ["Plate", "Vehicle", "Class", "Branch", "Status", "Last out"].map((h) => el("th", { key: h }, h)))),
+          el("tbody", null, u.idle.map((v) => el("tr", { key: v.plate },
+            el("td", null, el(PlateLink, { plate: v.plate })), el("td", null, v.vehicle), el("td", null, v.vehicleClass),
+            el("td", null, v.branch), el("td", null, v.status), el("td", null, v.lastOut || "Never"))))));
+}
+
+function RevenueReport({ data }) {
+  const el = React.createElement;
+  const r = data.revenue;
+  return el(React.Fragment, null,
+    el("div", { className: "reportKpis" },
+      el(ReportKpi, { title: "Revenue, before tax", value: reportMoney(r.total), change: reportChange(r.total, r.prevTotal) }),
+      el(ReportKpi, { title: "Per vehicle per day", value: reportMoney(r.perVehicleDay, true), change: reportChange(r.perVehicleDay, r.prevPerVehicleDay) }),
+      el(ReportKpi, { title: "Average daily rate", value: reportMoney(r.adr, true), change: reportChange(r.adr, r.prevAdr) }),
+      el(ReportKpi, { title: "Rentals closed", value: String(r.rentals || 0), change: reportChange(r.rentals, r.prevRentals) })),
+    el("h3", { className: "reportH" }, "Each day"),
+    el(ReportTrend, { series: r.series, prevSeries: r.prevSeries, valueKey: "total", format: (v) => reportMoney(v), label: "Revenue each day" }),
+    el("h3", { className: "reportH" }, "By source"),
+    el(ReportBars, { rows: (r.bySource || []).map((s) => ({ name: REPORT_SOURCE_LABEL[s.type], value: s.total, prev: s.prev })), format: (v) => reportMoney(v), label: "Revenue by source" }),
+    el("h3", { className: "reportH" }, "By class"),
+    el(ReportBars, { rows: (r.byClass || []).map((c) => ({ name: c.name, value: c.total, prev: c.prev })), format: (v) => reportMoney(v), label: "Revenue by class" }),
+    el("p", { className: "closeRentalHint" }, "Rentals that closed in these dates: their charges before tax. The average daily rate is the vehicle charge per rental day."));
+}
+
+function LostDemandReport({ data }) {
+  const el = React.createElement;
+  const l = data.lostDemand;
+  const sold = (l.soldOut || []).filter((c) => c.days > 0 || c.prevDays > 0).sort((a, b) => b.days - a.days);
+  return el(React.Fragment, null,
+    el("div", { className: "reportKpis" },
+      el(ReportKpi, { title: "Sold-out class days", value: String(sold.reduce((s, c) => s + c.days, 0)), change: reportChange(sold.reduce((s, c) => s + c.days, 0), sold.reduce((s, c) => s + c.prevDays, 0)) }),
+      el(ReportKpi, { title: "fleetr.ai searches for a sold-out class", value: String((l.searches || []).reduce((s, c) => s + c.searches, 0)),
+        change: reportChange((l.searches || []).reduce((s, c) => s + c.searches, 0), (l.searches || []).reduce((s, c) => s + c.prev, 0)) }),
+      el(ReportKpi, { title: "Searches that found nothing here", value: String(l.branchMisses || 0), change: reportChange(l.branchMisses, l.prevBranchMisses) })),
+    el("h3", { className: "reportH" }, "Days each class was sold out"),
+    sold.length === 0 ? el("p", { className: "closeRentalHint" }, "No class had every vehicle out in these dates.")
+      : el(React.Fragment, null,
+          el(ReportBars, { rows: sold.map((c) => ({ name: c.name, value: c.days, prev: c.prevDays })), format: (v) => `${v} day${v === 1 ? "" : "s"}`, label: "Sold-out days by class" }),
+          el("ul", { className: "avail__list" }, sold.filter((c) => c.days > 0).map((c) => el("li", { key: c.name },
+            el("strong", null, `${c.name}: `), (c.dates || []).map(shortDay).join(", "))))),
+    el("h3", { className: "reportH" }, "Searches on fleetr.ai that found the class sold out"),
+    el(ReportBars, { rows: (l.searches || []).map((c) => ({ name: c.name, value: c.searches, prev: c.prev })), format: (v) => String(v), label: "Sold-out searches by class" }));
+}
+
+function OwedReport({ data }) {
+  const el = React.createElement;
+  const o = data.owed;
+  return el(React.Fragment, null,
+    el("div", { className: "reportKpis" },
+      el(ReportKpi, { title: "Owed by insurers and companies", value: reportMoney(o.total, true), note: "today, by when the rental closed" })),
+    o.accounts.length === 0 ? el("p", { className: "closeRentalHint" }, "Nothing owed.")
+      : el(React.Fragment, null,
+          el("div", { className: "reportLegend" }, REPORT_AGE.map(([k, label, color]) =>
+            el("span", { key: k }, el("span", { className: "reportLegend__swatch", style: { background: color } }), label))),
+          el("table", { className: "dashboardTable" },
+            el("thead", null, el("tr", null, ["Account", "Owed", "", ...REPORT_AGE.map(([, label]) => label)].map((h, i) => el("th", { key: i }, h)))),
+            el("tbody", null, o.accounts.map((a) => el("tr", { key: a.name },
+              el("td", null, a.name, el("div", { className: "closeRentalHint", style: { margin: 0 } }, `${a.billingType === "insurance" ? "Insurer" : "Company"}, ${a.invoices} rental${a.invoices === 1 ? "" : "s"}`)),
+              el("td", null, el("strong", null, reportMoney(a.total, true))),
+              el("td", { style: { minWidth: 140 } }, el("div", { className: "reportStack", title: REPORT_AGE.map(([k, label]) => `${label}: ${reportMoney(a[k], true)}`).join(", ") },
+                REPORT_AGE.map(([k, , color]) => Number(a[k]) > 0 && el("span", { key: k, style: { width: `${a[k] / a.total * 100}%`, background: color } })))),
+              ...REPORT_AGE.map(([k]) => el("td", { key: k }, Number(a[k]) ? reportMoney(a[k], true) : "·"))))))));
+}
+
+function EconomicsReport({ data }) {
+  const el = React.createElement;
+  const e = data.economics;
+  const list = e.vehicles || [];
+  return el(React.Fragment, null,
+    el("div", { className: "reportKpis" },
+      el(ReportKpi, { title: "Depreciation so far", value: reportMoney(e.depreciation), note: "purchase price less market value" }),
+      el(ReportKpi, { title: "Value lost a month", value: reportMoney(e.valueLossMonthly), note: "across the fleet" }),
+      el(ReportKpi, { title: "Net a month", value: reportMoney(e.netMonthly), note: "rental income less costs, last 90 days" }),
+      el(ReportKpi, { title: "Ready to sell", value: String(e.readyToSell.length), note: "earning less than they lose" })),
+    el("table", { className: "dashboardTable" },
+      el("thead", null, el("tr", null, ["Plate", "Vehicle", "Bought", "Market value", "Depreciation", "Lost a month", "Net a month", ""].map((h, i) => el("th", { key: i }, h)))),
+      el("tbody", null, list.map((v) => el("tr", { key: v.id },
+        el("td", null, el(PlateLink, { plate: v.plate })), el("td", null, v.vehicle),
+        el("td", null, v.purchasePrice == null ? "·" : `${reportMoney(v.purchasePrice)}, ${v.purchaseDate}`),
+        el("td", null, reportMoney(v.marketValue)), el("td", null, reportMoney(v.depreciationTotal)),
+        el("td", null, reportMoney(v.valueLossMonthly)), el("td", null, reportMoney(v.netMonthly)),
+        el("td", null, v.readyToSell ? el("span", { className: "needsYou__tag needsYou__tag--disputed" }, "Ready to sell")
+          : v.monthsToSellPoint ? `${v.monthsToSellPoint} mo to sell point` : ""))))));
+}
+
 function ReportsPage() {
+  const el = React.createElement;
   const location = useLocation();
+  const { currentUser } = React.useContext(AppContext);
+  const isExec = roleAtLeast(currentUser?.role, "Exec");
   const asked = new URLSearchParams(location.search).get("section");
   const reportsOn = isFeatureEnabled("reports");
+  const [branches, setBranches] = React.useState([]);
+  const [here, setHere] = React.useState("");
+  const [branch, setBranch] = React.useState("");
+  const [preset, setPreset] = React.useState("30");
+  const [custom, setCustom] = React.useState(() => reportRange("30"));
+  const [data, setData] = React.useState(null);
+  const [error, setError] = React.useState("");
+  const range = reportRange(preset, custom);
+  React.useEffect(() => {
+    let live = true;
+    Promise.all([isExec ? supabase.rpc("company_overview") : Promise.resolve({ data: null }), supabase.rpc("my_acting_location")]).then(([ov, act]) => {
+      if (!live) return;
+      setBranches(ov.data && ov.data.ok ? (ov.data.branches || []).filter((b) => b.active) : []);
+      const h = (act.data && act.data.ok && act.data.locationId) || currentUser?.locationId || "";
+      setHere(h);
+      setBranch((b) => b || (isExec && new URLSearchParams(location.search).get("branch")) || h || (isExec ? "company" : ""));
+    });
+    return () => { live = false; };
+  }, [isExec]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => {
+    if (!reportsOn || !branch || !range.from || !range.to || range.to < range.from) return undefined;
+    let live = true;
+    setData(null); setError("");
+    supabase.rpc("report_data", { p_location_id: branch === "company" ? null : branch, p_from: range.from, p_to: range.to }).then(({ data: out, error: err }) => {
+      if (!live) return;
+      if (err || !out || !out.ok) setError(out && out.reason === "bad_dates" ? "Pick dates a year apart or less." : "Reports could not be loaded. Try again.");
+      else setData(out);
+    });
+    return () => { live = false; };
+  }, [reportsOn, branch, range.from, range.to]);
+  const ready = (render) => () => (error ? el("div", { className: "loginError" }, error)
+    : !data ? el("div", { className: "skelBox avail__skel", role: "status", "aria-label": "Loading" }) : render(data));
   const SECTS = [
-    { key: "availability", title: "Availability", render: () => React.createElement(AvailabilityReport) },
+    { key: "availability", title: "Availability", render: () => el(AvailabilityReport, { branchPick: branch }) },
     ...(reportsOn ? [
-      { key: "daily",   title: "Daily Summary",          body: "Summarises the day’s rentals, returns, no-shows, and pre-rental check completions." },
-      { key: "revenue", title: "Rental Revenue",         body: "Breakdown of rental revenue by file type (Retail, Insurance, Bodyshop/Dealership, Corporate) for the selected period." },
-      { key: "util",    title: "Fleet Utilization",      body: "Utilisation rate per vehicle class and overall. Highlights idle vehicles and high-demand periods." },
-      ...(isFeatureEnabled("no_shows") ? [{ key: "noshow",  title: "No-Show Report", body: "No-show rate, text outcomes, and resolutions for the selected date range." }] : []),
-      { key: "overdue", title: "Overdue Rentals Report", body: "All overdue rental agreements, including customer contact history and resolution status." },
+      { key: "util",     title: "Utilisation",            render: ready((d) => el(UtilisationReport, { data: d })) },
+      { key: "revenue",  title: "Revenue",                render: ready((d) => el(RevenueReport, { data: d })) },
+      { key: "lost",     title: "Lost demand",            render: ready((d) => el(LostDemandReport, { data: d })) },
+      { key: "owed",     title: "Money owed",             render: ready((d) => el(OwedReport, { data: d })) },
+      { key: "economics", title: "Vehicle economics",     render: ready((d) => el(EconomicsReport, { data: d })) },
     ] : []),
   ];
   const [sect, setSect] = React.useState(Object.fromEntries(SECTS.map((s) => [s.key, s.key !== asked])));
   const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
+  const days = range.from && range.to ? Math.round((Date.parse(range.to) - Date.parse(range.from)) / 86400000) + 1 : 0;
   // The same sections as the Company page: the whole box opens and closes.
-  return React.createElement(
-    "div", { className: "page companySetup" },
-    React.createElement("h1", { className: "page__title" }, "Reports"),
-    React.createElement("div", { className: "page__titleUnderline" }),
-    SECTS.map(({ key, title, body, render }) =>
-      React.createElement(CompanyStep, {
-        key, id: `report-${key}`, stepKey: key, title, open: !sect[key], onToggle: () => toggle(key),
-      },
-        render ? render() : React.createElement(React.Fragment, null,
-          React.createElement("p", { className: "aiTabDesc", style: { marginBottom: 0 } }, body),
-          React.createElement("div", { className: "resvEmpty", style: { marginTop: "16px" } }, "Report data will appear here."))
-      )
-    )
-  );
+  return el("div", { className: "page companySetup" },
+    el("h1", { className: "page__title" }, "Reports"),
+    el("div", { className: "page__titleUnderline" }),
+    el("div", { className: "avail__bar reportBar" },
+      isExec && el("select", { className: "resFormInput avail__pick", "aria-label": "Branch", value: branch, onChange: (e) => setBranch(e.target.value) },
+        el("option", { value: "company" }, "Whole company"),
+        branches.map((b) => el("option", { key: b.id, value: b.id }, b.name))),
+      reportsOn && el("select", { className: "resFormInput avail__pick", "aria-label": "Dates", value: preset, onChange: (e) => setPreset(e.target.value) },
+        REPORT_PRESETS.map(([k, label]) => el("option", { key: k, value: k }, label))),
+      reportsOn && preset === "custom" && el(React.Fragment, null,
+        el("input", { className: "resFormInput avail__pick", type: "date", "aria-label": "From", value: custom.from, max: custom.to, onChange: (e) => setCustom((c) => ({ ...c, from: e.target.value })) }),
+        el("input", { className: "resFormInput avail__pick", type: "date", "aria-label": "To", value: custom.to, min: custom.from, onChange: (e) => setCustom((c) => ({ ...c, to: e.target.value })) })),
+      reportsOn && days > 0 && el("span", { className: "closeRentalHint", style: { margin: 0 } },
+        `${shortDay(range.from)} to ${shortDay(range.to)}, compared with the ${days} day${days === 1 ? "" : "s"} before`)),
+    reportsOn && data && el(ReportRecommendations, { items: data.recommend, here }),
+    SECTS.map(({ key, title, render }) =>
+      el(CompanyStep, { key, id: `report-${key}`, stepKey: key, title, open: !sect[key], onToggle: () => toggle(key) }, render())));
 }
 
 // ─── AuditLogPage ────────────────────────────────────────────────────────────
@@ -22976,6 +23250,31 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 .avail__cell--plenty{ background: #A8D8C4; }
 .avail__cell--low{ background: #F4845F; }
 .avail__cell--sold{ background: #1F1E1D; }
+.reportBar{ margin-bottom: 16px; }
+.reportKpis{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.reportChange{ font-size: 12.5px; font-weight: 700; color: #1F1E1D; white-space: nowrap; }
+.reportChange--up::first-letter{ color: #2F7D5B; }
+.reportChange--down::first-letter{ color: #A8492B; }
+.reportH{ margin: 18px 0 8px; font-size: 14px; font-weight: 700; color: #1F1E1D; }
+.reportChart{ position: relative; }
+.reportTip{ margin-top: 4px; font-size: 13px; font-weight: 600; color: #1F1E1D; min-height: 18px; }
+.reportLegend{ display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0; font-size: 12px; color: #6B6A66; }
+.reportLegend > span{ display: inline-flex; align-items: center; gap: 6px; }
+.reportLegend__line{ display: inline-block; width: 18px; border-top: 2px solid #E06D47; }
+.reportLegend__line--prev{ border-top: 2px dashed #8A8883; }
+.reportLegend__swatch{ display: inline-block; width: 12px; height: 12px; border-radius: 3px; background: #E06D47; }
+.reportLegend__tick{ display: inline-block; width: 2px; height: 12px; background: #1F1E1D; }
+.reportBars{ display: grid; gap: 6px; }
+.reportBars__row{ display: grid; grid-template-columns: minmax(90px, 160px) 1fr minmax(64px, auto); align-items: center; gap: 10px; font-size: 13px; color: #1F1E1D; }
+.reportBars__name{ overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.reportBars__track{ position: relative; height: 14px; }
+.reportBars__bar{ position: absolute; left: 0; top: 0; bottom: 0; min-width: 2px; border-radius: 0 4px 4px 0; background: #E06D47; }
+.reportBars__prev{ position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: #1F1E1D; }
+.reportBars__value{ text-align: right; font-variant-numeric: tabular-nums; }
+.reportStack{ display: flex; gap: 2px; height: 12px; }
+.reportStack > span{ min-width: 3px; border-radius: 2px; }
+.reportRecs{ margin-bottom: 18px; padding: 14px 16px; border: 1px solid #EEEDE9; border-radius: 12px; background: #FFFFFF; }
+@media (max-width: 640px){ .reportBars__row{ grid-template-columns: 90px 1fr auto; } }
 .homeAvail__scroll{ overflow-x: auto; max-width: 100%; }
 .homeAvail{ display: grid; gap: 2px; align-items: stretch; min-width: 760px; }
 .homeAvail__day{ position: relative; padding-top: 14px; font-size: 11px; color: #6B6A66; text-align: center; }
