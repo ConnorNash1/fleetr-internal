@@ -360,6 +360,8 @@ async function loadCompanyLists(user) {
   try {
     // Filtered on the company explicitly, as loadCompanyFeatures is.
     const own = (table, cols) => supabase.from(table).select(cols).eq("operatorId", operatorId);
+    // Asked alongside the lists, not after them (see branchId below).
+    const acting = roleAtLeast(user.role, "Exec") ? supabase.rpc("my_acting_location").then((r) => r) : null;
     const results = await Promise.all([
       own("pickup_locations",    "id,locationId,name,active,sortOrder"),
       own("vehicle_classes",     "id,name,active,sortOrder,category,electric,luxury,seats,bags,exampleModels,lowWarnBelow"),
@@ -382,8 +384,8 @@ async function loadCompanyLists(user) {
     // The branch a new reservation belongs to: the one an Exec is acting in,
     // or the staff member's own.
     let branchId = user.locationId || null;
-    if (roleAtLeast(user.role, "Exec")) {
-      const { data } = await supabase.rpc("my_acting_location");
+    if (acting) {
+      const { data } = await acting;
       branchId = data && data.ok ? data.locationId || null : null;
     }
 
@@ -1889,7 +1891,50 @@ function useAnchorFollow(open, anchor, setAnchor, close) {
   }, [open, el]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
+
+// Every row a query matches, a page at a time. The API returns at most 1,000
+// rows a request, so a branch with more reservations or rentals than that
+// used to lose the rest without a word. make() builds the query afresh for
+// each page; key orders the pages so none is skipped or repeated.
+async function selectAllRows(make, key) {
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await make().order(key).range(from, from + 999);
+    if (error) return { data: rows.length ? rows : null, error };
+    rows.push(...(data || []));
+    if (!data || data.length < 1000) return { data: rows, error: null };
+  }
+}
+
+// Home's own reads, started with the first load when the app opens on Home
+// rather than after it: Needs you and the availability grid. Each is taken
+// once, by the first draw of its section, if it is under 15 seconds old.
+const homeEarly = new Map();
+const onHome = () => ["", "#", "#/", "#/dashboard"].includes(window.location.hash.split("?")[0]);
+function startHomeEarly(user) {
+  if (!onHome()) return;
+  const at = Date.now();
+  // .then starts each read now: a query is only sent once it is awaited.
+  homeEarly.set("needs_you", { at, promise: supabase.rpc("needs_you").then((r) => r) });
+  // Staff below Exec work in their own branch, so its grid needs no question
+  // first; an Exec's is the branch they are acting in.
+  const own = !roleAtLeast(user.role, "Exec") && user.locationId;
+  const acting = own ? Promise.resolve({ data: { ok: true, locationId: user.locationId } }) : supabase.rpc("my_acting_location").then((r) => r);
+  homeEarly.set("acting", { at, promise: acting });
+  homeEarly.set("availability", { at, promise: acting.then(({ data }) => {
+    const branch = data && data.ok ? data.locationId : null;
+    return branch ? supabase.rpc("branch_availability", { p_location_id: branch }).then((out) => ({ branch, out })) : null;
+  }) });
+}
+function takeHomeEarly(name) {
+  const e = homeEarly.get(name);
+  homeEarly.delete(name);
+  return e && Date.now() - e.at < 15000 ? e.promise : null;
+}
+
 function AppProvider({ children, currentUser, signOut }) {
+  const homeStarted = React.useRef(false);
+  if (!homeStarted.current && currentUser) { homeStarted.current = true; startHomeEarly(currentUser); }
   // Bumped when fleetr hq switches a feature on or off, so everything that
   // reads isFeatureEnabled draws again: the menu, the routes, the pages.
   const [featuresVersion, setFeaturesVersion] = React.useState(0);
@@ -1931,6 +1976,8 @@ function AppProvider({ children, currentUser, signOut }) {
 
   // ── UI-only state (not persisted) ────────────────────────────────────────
   const [dbReady,      setDbReady]      = React.useState(false);
+  // Whether the older history has joined the lists (see the initial load).
+  const [historyReady, setHistoryReady] = React.useState(false);
   const [openNotesId,  setOpenNotesId]  = React.useState(null);
   const [openCustomer, setOpenCustomer] = React.useState(null);
 
@@ -1969,7 +2016,9 @@ function AppProvider({ children, currentUser, signOut }) {
   ]), [reservations, fleet, rentalAgreements]);
   const fleetSignatureRef = React.useRef(null);
   React.useEffect(() => {
-    if (!dbReady) return undefined;
+    // The baseline is set once the history is in too, so its arrival is not
+    // taken for a change.
+    if (!dbReady || !historyReady) return undefined;
     if (fleetSignatureRef.current === null || fleetSignatureRef.current === fleetSignature) {
       fleetSignatureRef.current = fleetSignature;
       return undefined;
@@ -1982,7 +2031,7 @@ function AppProvider({ children, currentUser, signOut }) {
         .catch((e) => console.warn("refresh_my_fleet_notifications:", e));
     }, 1500);
     return () => clearTimeout(t);
-  }, [fleetSignature, dbReady]);
+  }, [fleetSignature, dbReady, historyReady]);
 
   // ── PIN confirmation modal ────────────────────────────────────────────────
   const [pinModalOpen, setPinModalOpen] = React.useState(false);
@@ -2239,15 +2288,28 @@ function AppProvider({ children, currentUser, signOut }) {
   const setDamageClaims = setDamageClaimsState;
 
   // ── Initial load from Supabase ───────────────────────────────────────────
+  // What the screens open with comes first: reservations picking up or
+  // returning from 30 days ago on, and every rental not closed before then
+  // or due back since (so each of those reservations has its rental).
+  // That is a fifth of a year's rows, so the app opens in about half the time.
+  // The older history follows straight after (loadHistory) and joins the
+  // lists; historyReady says it has.
+  const historyFrom = React.useMemo(() => {
+    const d = new Date(); d.setDate(d.getDate() - 30);
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return { day, at: d.toISOString() };
+  }, []);
   React.useEffect(() => {
     async function load() {
       const [res, ndi, tor, fl, ns, ra, dc, st, av] = await Promise.all([
-        supabase.from("reservations").select("*"),
+        selectAllRows(() => supabase.from("reservations").select("*")
+          .or(`date.gte.${historyFrom.day},returnDate.gte.${historyFrom.day},date.is.null`), "resCode"),
         supabase.from("ndi_rows").select("*"),
         supabase.from("tor_rows").select("*"),
         supabase.from("fleet").select("*"),
         supabase.from("no_shows").select("*"),
-        supabase.from("rental_agreements").select("*"),
+        selectAllRows(() => supabase.from("rental_agreements").select("*")
+          .or(`rentalAgreementStatus.neq.closed,rentalAgreementStatus.is.null,closedAt.is.null,closedAt.gte.${historyFrom.at},returnDate.gte.${historyFrom.day}`), "id"),
         supabase.from("damage_claims").select("*"),
         supabase.from("app_settings").select("*").eq("locationId", currentUser?.locationId ?? null),
         supabase.from("archived_vehicles").select("*").order("disposalDate", { ascending: false }),
@@ -2282,14 +2344,14 @@ function AppProvider({ children, currentUser, signOut }) {
       // ── 1. Migrate reservation codes to new format "ABC 123 456" ─────────────
       const RES_CODE_RE = /^[A-Z]{3} \d{3} \d{3}$/;
 
-      // Purge records with null or empty resCode from Supabase first.
-      // These cannot be reliably deleted by resCode (SQL "col = NULL" is always
-      // false; only "col IS NULL" matches), so without this step they would
-      // survive every run and trigger a new random code on every refresh.
-      try {
-        await supabase.from("reservations").delete().is("resCode", null);
-        await supabase.from("reservations").delete().eq("resCode", "");
-      } catch (e) { console.warn("resCode purge error:", e); }
+      // Purge records with null or empty resCode from Supabase. These cannot
+      // be reliably deleted by resCode (SQL "col = NULL" is always false; only
+      // "col IS NULL" matches), so without this step they would survive every
+      // run and trigger a new random code on every refresh. One request, and
+      // the app does not wait for it: it was two in a row before anything
+      // showed.
+      supabase.from("reservations").delete().or("resCode.is.null,resCode.eq.")
+        .then(({ error }) => { if (error) console.warn("resCode purge error:", error); }, (e) => console.warn("resCode purge error:", e));
       resData = resData.filter((r) => r.resCode);
 
       // Migrate any remaining old-format codes (e.g. "C9511234") to "ABC 123 456".
@@ -2375,6 +2437,39 @@ function AppProvider({ children, currentUser, signOut }) {
       setArchivedVehicles(av.data || []);
       setAppSettingsState(Object.fromEntries((st.data || []).map((r) => [r.key, r.value])));
       setDbReady(true);
+      loadHistory(raByResCode).catch((e) => console.warn("history load failed:", e)).finally(() => setHistoryReady(true));
+    }
+
+    // The rest: reservations that picked up before then (any already shown
+    // are left as they are) and rentals closed before then. Added to what is
+    // there, so an edit made meanwhile is kept.
+    async function loadHistory(raByResCode) {
+      const [res, ra] = await Promise.all([
+        selectAllRows(() => supabase.from("reservations").select("*").lt("date", historyFrom.day), "resCode"),
+        selectAllRows(() => supabase.from("rental_agreements").select("*").eq("rentalAgreementStatus", "closed").lt("closedAt", historyFrom.at), "id"),
+      ]);
+      if (res.error) console.warn("history reservations:", res.error);
+      if (ra.error) console.warn("history rental agreements:", ra.error);
+      const oldRa = ra.data || [];
+      if (oldRa.length) {
+        const have = new Set(raRef.current.map((a) => a.id));
+        const added = oldRa.filter((a) => !have.has(a.id));
+        raRef.current = [...raRef.current, ...added];
+        setRentalAgreementsState(raRef.current);
+        for (const a of added) raByResCode[a.resCode] = a;
+      }
+      const oldRes = (res.data || []).filter((r) => r.resCode);
+      setReservationsState((prev) => {
+        const have = new Set(prev.map((r) => r.resCode));
+        const withStatus = (r) => {
+          const a = raByResCode[r.resCode];
+          return a && !r.rentalAgreementStatus ? { ...r, rentalAgreementStatus: a.rentalAgreementStatus } : r;
+        };
+        const added = oldRes.filter((r) => !have.has(r.resCode)).map(withStatus);
+        // A reservation already shown whose rental only came with the history.
+        const shown = prev.map(withStatus);
+        return added.length || shown.some((r, i) => r !== prev[i]) ? [...shown, ...added] : prev;
+      });
     }
 
     load().catch((err) => {
@@ -2390,6 +2485,7 @@ function AppProvider({ children, currentUser, signOut }) {
       setArchivedVehicles([]);
       setAppSettingsState({});
       setDbReady(true);
+      setHistoryReady(true);
     });
   }, []);
 
@@ -4310,7 +4406,7 @@ function useHomeBranch() {
   const [branch, setBranch] = React.useState("");
   React.useEffect(() => {
     let live = true;
-    supabase.rpc("my_acting_location").then(({ data }) => {
+    (takeHomeEarly("acting") || supabase.rpc("my_acting_location")).then(({ data }) => {
       if (live) setBranch((data && data.ok && data.locationId) || currentUser?.locationId || "");
     });
     return () => { live = false; };
@@ -4328,7 +4424,9 @@ function HomeAvailability() {
   React.useEffect(() => {
     if (!branch) return undefined;
     let live = true;
-    supabase.rpc("branch_availability", { p_location_id: branch }).then(({ data: out, error: err }) => {
+    const early = takeHomeEarly("availability");
+    (early ? early.then((e) => (e && e.branch === branch ? e.out : supabase.rpc("branch_availability", { p_location_id: branch })))
+      : supabase.rpc("branch_availability", { p_location_id: branch })).then(({ data: out, error: err }) => {
       if (!live) return;
       if (err || !out || !out.ok) setError("Availability could not be loaded.");
       else setData(out);
@@ -4401,7 +4499,7 @@ function NeedsYou() {
   const [busy, setBusy] = React.useState("");
   const [error, setError] = React.useState("");
   const load = React.useCallback(async () => {
-    const { data, error: err } = await supabase.rpc("needs_you");
+    const { data, error: err } = await (takeHomeEarly("needs_you") || supabase.rpc("needs_you"));
     if (err || !data || !data.ok) { setItems((x) => x || []); return; }
     setItems(data.items || []);
   }, []);
@@ -25962,15 +26060,19 @@ input:-webkit-autofill, textarea:-webkit-autofill, select:-webkit-autofill{
 input:autofill, textarea:autofill, select:autofill{ box-shadow: 0 0 0 1000px #F9F9F7 inset; color: #1F1E1D; }
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([readonly]):focus,
 textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
-/* Phones: every control can be tapped. Buttons, tabs, fields and the Back
-   link that are under 40px tall on a desktop get 40px (44px for Back) here,
-   with the same look. */
-@media (max-width: 767px){
+/* Phones and touch screens: every control can be tapped. Buttons, tabs,
+   fields and the Back link that are under 44px tall with a mouse get 44px
+   here, with the same look. Links inside text and the card heads get the
+   taller tap area without moving anything around them. */
+@media (max-width: 767px), (pointer: coarse){
   .rentalAgreementBackBtn{ min-height: 44px; padding: 10px 0; }
-  .resvDateClear, .noteBtn{ min-width: 40px; min-height: 40px; display: inline-flex; align-items: center; justify-content: center; }
+  .resvDateClear, .noteBtn, .mobileHamburger{ min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
   .aiControl, .resolveClaimBtn, .loginBtn, .statusTab, .auditClearBtn, .resvInlineBtn, .joinCodeRotate,
   .resvSearchInput, .fleetFilterInput, .fleetFilterSelect, .gasOwedInput, .gasStatusSelect,
-  select.resFormInput{ min-height: 40px; }
+  select.resFormInput, .mobileTopbar__signOut, .customerPageSaveBtn, .closeRentalCta, .fleetGroupHeader{ min-height: 44px; }
+  .homeAvail__cell{ height: 44px; }
+  .customerLink, .plateLink, .rentalAgreementLink{ padding-block: 14px; margin-block: -14px; }
+  .statCard__head{ min-height: 44px; padding-block: 11px; margin: -11px 0 -3px; }
 }
 `;
 document.head.appendChild(style);
