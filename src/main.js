@@ -5447,6 +5447,8 @@ function OverdueRentalsPage() {
           phone: r.phone,
           plate: r.plate || ra?.plate || null,
           returnDate: r.returnDate,
+          // The time it was due back, read as pickupTime12 reads a pickup.
+          returnTime: pickupTime12({ time: r.returnTime, pickupMeridiem: r.returnMeridiem }),
           // Persisted outcome wins; local state only covers the moment between
           // the click and the next load.
           callStatus: callStatuses[r.resCode] ?? r.callOutcome,
@@ -5491,7 +5493,7 @@ function OverdueRentalsPage() {
             React.createElement("td", null, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })),
             React.createElement("td", null, row.phone),
             React.createElement("td", null, row.plate ? React.createElement(PlateLink, { plate: row.plate }) : "·"),
-            React.createElement("td", null, fmtDate(row.returnDate)),
+            React.createElement("td", null, [fmtDate(row.returnDate), row.returnTime].filter(Boolean).join(", ")),
             React.createElement(
               "td", null,
               isManual
@@ -15868,7 +15870,9 @@ function PreRentalCheckPage() {
     return d.toLocaleDateString("en-CA", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
   })();
 
-  const tomorrowRows = reservations.filter((r) => r.date === tomorrowIso);
+  // In pickup time order, as the day will run (they were in the order loaded).
+  const tomorrowRows = reservations.filter((r) => r.date === tomorrowIso)
+    .sort((a, b) => parseTimeToMinutes(pickupTime12(a)) - parseTimeToMinutes(pickupTime12(b)));
 
   // Each row's pre_rental text, by res code. Re-read on an interval and when
   // the tab comes back into view, so a status moves without a reload.
