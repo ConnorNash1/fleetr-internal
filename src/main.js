@@ -4325,7 +4325,7 @@ function needsYouText(i) {
     case "damage":     return ["Damage claim to approve", `${i.detail || "Damage reported"}${i.status === "in_review" ? ", in review" : ""}`];
     case "unreturned": return ["Not returned, no contact", `Due back ${i.due ? new Date(`${i.due}Z`).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" }) : ""}${i.phone ? `. Call ${i.phone}` : ""}`];
     case "incident":   return [i.incident === "accident" ? "Accident" : "Breakdown", i.detail || "Reported at a switch out"];
-    case "id_problem": return ["ID problem", `Licence says ${i.licenceLastName || "?"}, the booking says ${i.reservationLastName || "?"}`];
+    case "id_problem": return ["ID problem", `License says ${i.licenceLastName || "?"}, the booking says ${i.reservationLastName || "?"}`];
     default:           return ["Needs a look", ""];
   }
 }
