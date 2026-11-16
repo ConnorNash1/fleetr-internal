@@ -2533,7 +2533,7 @@ const PAGE_SKELETONS = {
   "/fleet/gas-collections": () => skEl("div", { className: "page" },
     skTitle("Gas collections"),
     skSection(skHead("Outstanding balances", "0 outstanding"), skTable(
-      ["Customer", "Res code", "Plate", "Gas owed", "Payment status"],
+      ["Customer", "Res Code", "Plate", "Gas owed", "Payment status"],
       [skCustomer.map(skLink), skLink(skCode), skPlate,
         skEl("div", { className: "gasOwedWrap" }, skEl("span", { className: "gasOwedDollar" }, skT("$")), skEl("input", { className: "gasOwedInput", type: "number", tabIndex: -1, readOnly: true })),
         skEl("select", { className: "gasStatusSelect", tabIndex: -1 }, skEl("option", null, "Unpaid"))]))),
@@ -5704,8 +5704,8 @@ function VehicleDetailPage() {
               .map((opt) => React.createElement("option", { key: opt.value, value: opt.value, disabled: opt.value === "In Transit" }, opt.label))
           )
         ),
-        (vehicle.status === "On Rent" || activeRa) && detailRow("Current Renter", activeRa?.customer || vehicle.currentRenter),
-        (vehicle.status === "On Rent" || activeRa) && detailRow("Reservation Code", activeRa?.resCode || currentRes?.resCode || "\u00b7"),
+        (vehicle.status === "On Rent" || activeRa) && detailRow("Current Customer", activeRa?.customer || vehicle.currentRenter),
+        (vehicle.status === "On Rent" || activeRa) && detailRow("Res Code", activeRa?.resCode || currentRes?.resCode || "\u00b7"),
         (vehicle.status === "On Rent" || activeRa) && detailRow("Expected Return", fmtDate(activeRa?.returnDate || vehicle.dueBack)),
         subHdr("Rental History"),
         rentalHistory.length === 0
@@ -8210,7 +8210,7 @@ function GasCollectionsPage() {
           : React.createElement("table", { className: "dashboardTable" },
               React.createElement("thead", null,
                 React.createElement("tr", null,
-                  ["Customer", "Res code", "Plate", "Gas owed", "Payment status"].map((col) =>
+                  ["Customer", "Res Code", "Plate", "Gas owed", "Payment status"].map((col) =>
                     React.createElement("th", { key: col }, col)
                   )
                 )
@@ -17564,7 +17564,7 @@ function CloseChargesSummary({ charges }) {
     row("Total", money(totals.grandTotal), { strong: true }),
     el("div", { className: "closeCharges__rule" }),
     row("Paid", money(totals.totalPaid)),
-    !retail && row("Bill-to owes", money(Math.max(0, totals.billToBalance))),
+    !retail && row("Bill-To owes", money(Math.max(0, totals.billToBalance))),
     !retail && row("Customer owes", money(Math.max(0, totals.customerBalance))),
     row("Balance owing", money(totals.owing), { strong: true }),
     totals.owing > 0 && el("div", { className: "closeRentalWarning", style: { marginTop: 10 } },
@@ -20150,7 +20150,7 @@ function CustomerPageView({ onDiscard }) {
     { className: "cdetailForm" },
     React.createElement("div", { className: "resFormRow" },
       React.createElement("label", { className: "resFormGroup" },
-        React.createElement("span", { className: "resFormLabel" }, "Reservation Code"),
+        React.createElement("span", { className: "resFormLabel" }, "Res Code"),
         React.createElement("input", {
           className: "resFormInput", type: "text", readOnly: true,
           value: resCode || "·",
