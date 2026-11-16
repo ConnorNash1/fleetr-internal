@@ -944,7 +944,7 @@ const ACTION_POLICY = {
   // gate exists to prevent. So the list below is deliberately short.
 
   // Destroys a record. There is no undo for any of these.
-  "reservation.delete": { tier: "pin", label: "Delete reservation" },
+  "reservation.delete": { tier: "pin", label: "Cancel reservation" },
   "reservation.noShow": { tier: "pin", label: "Mark reservation as a no-show" },
   // Brings a cancelled no-show back as a reservation.
   "noShow.restore":     { tier: "pin", label: "Restore a no-show reservation" },
@@ -3352,6 +3352,37 @@ const pickupMinutes = (r) => parseTimeToMinutes(pickupTime12(r));
 const byPickup = (a, b) => (String(a.date || "") !== String(b.date || "") ? (String(a.date || "") < String(b.date || "") ? -1 : 1)
   : (pickupMinutes(a) - pickupMinutes(b)) || String(a.resCode || "").localeCompare(String(b.resCode || "")));
 
+// Cancelled bookings, kept with status Cancelled (reservation_cancellations,
+// rental_rules.sql): closed until opened, the last 60 days, newest first.
+function CancelledReservations() {
+  const el = React.createElement;
+  const [open, setOpen] = React.useState(false);
+  const [rows, setRows] = React.useState(null);
+  React.useEffect(() => {
+    if (!open || rows) return undefined;
+    let live = true;
+    const since = new Date(Date.now() - 60 * 86400000).toISOString();
+    supabase.from("reservation_cancellations").select("id,resCode,cancelledAt,cancelledBy,reservation")
+      .gte("cancelledAt", since).order("cancelledAt", { ascending: false }).limit(200)
+      .then(({ data, error }) => { if (live) setRows(error ? [] : data || []); });
+    return () => { live = false; };
+  }, [open, rows]);
+  const when = (iso) => new Date(iso).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  return el("div", { className: "cancelledReservations" },
+    el("button", { type: "button", className: "aiControl", "aria-expanded": open, onClick: () => setOpen((o) => !o), style: { marginTop: 12 } },
+      open ? "Hide cancelled" : "Show cancelled"),
+    open && (rows === null ? el("p", { className: "closeRentalHint" }, "Loading cancelled bookings\u2026")
+      : rows.length === 0 ? el("div", { className: "resvEmpty" }, "No cancelled bookings in the last 60 days.")
+      : el("table", { className: "dashboardTable", style: { marginTop: 8 } },
+          el("thead", null, el("tr", null, ["Cancelled", "Res Code", "Customer", "Pickup was", "By"].map((h) => el("th", { key: h }, h)))),
+          el("tbody", null, rows.map((r) => el("tr", { key: r.id },
+            el("td", null, when(r.cancelledAt)),
+            el("td", null, r.resCode),
+            el("td", null, r.reservation?.customer || "-"),
+            el("td", null, [r.reservation?.date, r.reservation && pickupTime12(r.reservation)].filter(Boolean).join(" ")),
+            el("td", null, r.cancelledBy)))))));
+}
+
 function ReservationsTable({ rows: given }) {
   const { setReservations } = React.useContext(AppContext);
   const rows = given.slice().sort(byPickup);
@@ -3661,7 +3692,8 @@ function ReservationsPage() {
       React.createElement(
         "div",
         { className: "dashboardSection__body" },
-        React.createElement(ReservationsTable, { rows: filtered })
+        React.createElement(ReservationsTable, { rows: filtered }),
+        React.createElement(CancelledReservations, null)
       )
     ),
     showModal && React.createElement(
@@ -9145,6 +9177,9 @@ const COMPANY_STEPS = [
   { key: "protection", title: "Protections", items: ["protection"], skippable: true },
   { key: "contract",   title: "Contract terms",             items: ["contract"] },
   { key: "listing",    title: "fleetr.ai listing",          items: ["listing"], skippable: true },
+  // Optional: connecting Stripe lets renters and bill-tos pay by card through
+  // payment links. Can be skipped and done after launch.
+  { key: "payments",   title: "Card payments",              items: ["payments"], skippable: true },
   // Last before Launch, and best on a phone: walking the lot, scanning VINs.
   { key: "fleet",      title: "Add your vehicles",          items: ["vehicles"], phone: true },
   { key: "launch",     title: "Launch", after: "Status" },
@@ -9691,6 +9726,7 @@ function CompanyPage() {
         launched && parts.pickup);
       case "vehicles": return only(parts.classes);
       case "fleet": return el(VehiclesStep, { onAdded: changed });
+      case "payments": return el(StripeSection);
       // Sources, then the rates for each of them, then Date pricing, before
       // launch and after.
       case "rates": return el(React.Fragment, null, parts.sources, parts.rates, parts.seasons);
@@ -9757,12 +9793,6 @@ function CompanyPage() {
         current: false, open: !!openSteps.billing, onToggle: () => setOpenSteps((o) => ({ ...o, billing: !o.billing })),
         busy: stepBusy, showState: false,
       }, el(BillingSection)),
-      // An Exec connects the company's Stripe account for card payments.
-      isExec && el(CompanyStep, {
-        key: "payments", id: "company-step-payments", stepKey: "payments", n: null, title: "Card payments", state: "done",
-        current: false, open: !!openSteps.payments, onToggle: () => setOpenSteps((o) => ({ ...o, payments: !o.payments })),
-        busy: stepBusy, showState: false,
-      }, el(StripeSection)),
       // An Exec picks which branches can transfer vehicles to each other.
       isExec && el(CompanyStep, {
         key: "transfers", id: "company-step-transfers", stepKey: "transfers", n: null, title: "Transfers between branches", state: "done",
@@ -18708,9 +18738,10 @@ function withAcceptedProtection(items, choices, days) {
 
 // The days a rental is charged for, as the database counts them
 // (booking_days, public_booking.sql) for fleetr.ai, check-in and the emails:
-// every started 24 hours from the pickup to the return, at least one, both
-// as wall-clock times on the branch's clock ("YYYY-MM-DD HH:MM", as rateStamp
-// and returnedStamp give them). 0 while either is not known.
+// every started 24 hours from the pickup to the return, with a 29-minute
+// grace, at least one, both as wall-clock times on the branch's clock
+// ("YYYY-MM-DD HH:MM", as rateStamp and returnedStamp give them). 0 while
+// either is not known.
 function chargeDays(pickupStamp, returnStamp) {
   const at = (s) => {
     const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/.exec(String(s || ""));
@@ -18718,8 +18749,10 @@ function chargeDays(pickupStamp, returnStamp) {
   };
   const from = at(pickupStamp), to = at(returnStamp);
   if (!Number.isFinite(from) || !Number.isFinite(to)) return 0;
-  return Math.max(1, Math.ceil((to - from) / 86400000));
+  return Math.max(1, Math.ceil((to - from - DAY_GRACE_MS) / 86400000));
 }
+// 24 hours 29 minutes is one day; 24 hours 30 minutes two (booking_days).
+const DAY_GRACE_MS = 29 * 60000;
 
 // The branch's clock when none is set, as checkin_branch_tz has it.
 const DEFAULT_BRANCH_TIME_ZONE = "America/St_Johns";
@@ -19112,10 +19145,13 @@ function chargeLinesAsCounted(items) {
 // the booked rates, protection accepted at pickup) are saved first, and the
 // worker makes the link only for exactly that amount.
 // Why a payment link cannot be made yet for an agreement in this status, or
-// null when it can. A rental still out has its charges finalised at return.
+// null when it can.
+// Back but not closed is not yet either: the charges are final at close, when
+// fuel moves to Gas Collections (stripe_checkout_for refuses it too).
 function payLinkNotYet(status) {
-  return status === "open_rental_agreement"
-    ? "Charges are finalised at return. A payment link can be made once the vehicle is back." : null;
+  if (status === "open_rental_agreement") return "Charges are final at close. A payment link can be made once the rental is closed.";
+  if (status === "customer_return") return "The vehicle is back. Close the rental first: a payment link asks for the final charges.";
+  return null;
 }
 
 function StripePayLink({ agreementId, unsaved, retail, owes, saveLines, billToName, notYet }) {
@@ -19516,13 +19552,13 @@ function CustomerPageView({ onDiscard }) {
         console.warn("Delete reservation error:", e);
       }
       if (!gone) {
-        appAlert(`${resCode} could not be deleted, so it is still booked. Check your connection and try again.`, { title: "Not deleted" });
+        appAlert(`${resCode} could not be cancelled, so it is still booked. Check your connection and try again.`, { title: "Not cancelled" });
         throw new Error("reservation not deleted");
       }
       setReservations((prev) => prev.filter((r) => r.resCode !== resCode));
       navigate(-1);
-    }, { tableName: "reservations", recordId: resCode, description: `Deleted reservation ${resCode}.`,
-         warning: `Delete reservation ${resCode}? This cannot be undone.`, danger: true });
+    }, { tableName: "reservations", recordId: resCode, description: `Cancelled reservation ${resCode}.`,
+         warning: `Cancel reservation ${resCode}? It leaves the reservations list and is kept under Cancelled.`, danger: true });
   };
 
   const deleteBtn = React.createElement("button", {
@@ -19530,7 +19566,7 @@ function CustomerPageView({ onDiscard }) {
     className: "customerRentalAgreementBtn customerRentalAgreementBtn--delete",
     style: { marginLeft: "auto" },
     onClick: handleDeleteReservation,
-  }, "Delete");
+  }, "Cancel reservation");
 
   const isDamaged = !!localRecord?.hasDamage;
   const flagDamageBtn = React.createElement("button", {
