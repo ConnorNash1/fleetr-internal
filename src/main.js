@@ -2313,7 +2313,11 @@ function AppProvider({ children, currentUser, signOut }) {
         selectAllRows(() => supabase.from("rental_agreements").select("*")
           .or(`rentalAgreementStatus.neq.closed,rentalAgreementStatus.is.null,closedAt.is.null,closedAt.gte.${historyFrom.at},returnDate.gte.${historyFrom.day}`), "id"),
         supabase.from("damage_claims").select("*"),
-        supabase.from("app_settings").select("*").eq("locationId", currentUser?.locationId ?? null),
+        // A branch's settings; an Exec has no branch of their own, and asking
+        // for locationId = null was a 400 on every Exec's load.
+        currentUser?.locationId
+          ? supabase.from("app_settings").select("*").eq("locationId", currentUser.locationId)
+          : Promise.resolve({ data: [], error: null }),
         supabase.from("archived_vehicles").select("*").order("disposalDate", { ascending: false }),
         // Fills companyLists rather than returning rows, and never throws: a
         // failure leaves the built-in lists in charge.
@@ -8305,13 +8309,15 @@ function FleetDamageClaimsPage() {
 // for the new amount, not one for each digit typed. A cancelled PIN leaves
 // the amount as it was.
 function GasOwedInput({ value, onCommit }) {
-  const saved = value == null ? "" : String(value);
+  // Dollars and cents, as every amount reads: "29.40", not the "29.4" saved.
+  const saved = value == null || String(value).trim() === "" ? ""
+    : Number.isFinite(Number(value)) ? Number(value).toFixed(2) : String(value);
   const [draft, setDraft] = React.useState(saved);
   React.useEffect(() => { setDraft(saved); }, [saved]);
   const commit = () => {
     const t = draft.trim();
     setDraft(saved);
-    if (t === saved || t === "") return;
+    if (t === "" || t === saved || Number(t) === Number(saved)) return;
     onCommit(t);
   };
   return React.createElement("input", {
