@@ -6334,7 +6334,7 @@ function TransferRoutesSection() {
   };
   return el(React.Fragment, null,
     el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-      "Pick which branches can send each other vehicles, and the usual drive between them. Staff at either branch can then send a vehicle from the Fleet page."),
+      "Pick which branches can send each other vehicles, and the usual drive between them. Staff at either branch can then send a vehicle from the Vehicles page."),
     el("table", { className: "dashboardTable" },
       el("thead", null, el("tr", null, ["Branches", "Can transfer", "Drive time (minutes)", ""].map((h) => el("th", { key: h }, h)))),
       el("tbody", null, pairs.map(([a, b]) => {
