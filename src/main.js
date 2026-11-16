@@ -2544,7 +2544,7 @@ const PAGE_SKELETONS = {
     skStep("Add Vehicle to Fleet", "add"), skStep("Retire Vehicle", "retire"), skStep("Archived Vehicles", "archived")),
 
   "/fleet/gas-collections": () => skEl("div", { className: "page" },
-    skTitle("Gas collections"),
+    skTitle("Gas Collections"),
     skSection(skHead("Outstanding balances", "0 outstanding"), skTable(
       ["Customer", "Res Code", "Plate", "Gas owed", "Payment status"],
       [skCustomer.map(skLink), skLink(skCode), skPlate,
@@ -2633,7 +2633,7 @@ const PAGE_SKELETONS = {
   },
 
   "/account": () => skEl("div", { className: "page companySetup" },
-    skEl("h1", { className: "companySetup__title" }, skT("Your account")),
+    skEl("h1", { className: "companySetup__title" }, skT("Your Account")),
     skStep("Who you are", "who", true, [
       skEl("div", { key: "who", style: { fontSize: "0.95rem", lineHeight: "1.9" } },
         skEl("div", null, skT("Username: username")), skEl("div", null, skT("Name: First Last")), skEl("div", null, skT("Role: Agent"))),
@@ -8208,7 +8208,7 @@ function GasCollectionsPage() {
   };
 
   return React.createElement("div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Gas collections"),
+    React.createElement("h1", { className: "page__title" }, "Gas Collections"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement("section", { className: "dashboardSection" },
       React.createElement("div", { className: "dashboardSection__header" },
@@ -8837,7 +8837,7 @@ function AccountPage() {
   if (!account && !loadErr) return React.createElement(PageSkeleton, { path: "/account" });
   return React.createElement(
     "div", { className: "page companySetup" },
-    React.createElement("h1", { className: "companySetup__title" }, "Your account"),
+    React.createElement("h1", { className: "companySetup__title" }, "Your Account"),
     loadErr && React.createElement("div", { className: "loginError" }, loadErr),
 
     card("who", "Who you are",
