@@ -7254,7 +7254,11 @@ function FleetVehiclesPage() {
             );
           })()
         )
-    )
+    ),
+    // Sending a vehicle to another branch, and receiving one, on the page the
+    // sidebar opens. It was only on the old Branch Fleet page, which nothing
+    // in the sidebar reaches.
+    React.createElement(VehicleTransfers, { fleet, setFleet })
   );
 }
 
@@ -8483,7 +8487,7 @@ function ReportRecommendations({ items, here }) {
   const [error, setError] = React.useState("");
   if (!items || !items.length) return null;
   const transfer = async (r) => {
-    const path = `/fleet?${new URLSearchParams({ transferTo: r.toLocationId, transferClass: r.vehicleClass }).toString()}`;
+    const path = `/fleet/vehicles?${new URLSearchParams({ transferTo: r.toLocationId, transferClass: r.vehicleClass }).toString()}`;
     // The vehicle is sent from the other branch: an Exec works there first.
     if (isExec && here !== r.fromLocationId) {
       const { data, error: err } = await supabase.rpc("set_acting_location", { location_id: r.fromLocationId });
