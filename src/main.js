@@ -3315,8 +3315,15 @@ async function generateUniqueResCode() {
 
 // The reservations table, on the Reservations page and on Home: one
 // component, so the two show the same columns, source, notes and links.
-function ReservationsTable({ rows }) {
+// Reservations by pickup: date, then time with its AM/PM, then res code. The
+// list arrives in database order, so 2 PM could sit above 8 AM.
+const pickupMinutes = (r) => parseTimeToMinutes(pickupTime12(r));
+const byPickup = (a, b) => (String(a.date || "") !== String(b.date || "") ? (String(a.date || "") < String(b.date || "") ? -1 : 1)
+  : (pickupMinutes(a) - pickupMinutes(b)) || String(a.resCode || "").localeCompare(String(b.resCode || "")));
+
+function ReservationsTable({ rows: given }) {
   const { setReservations } = React.useContext(AppContext);
+  const rows = given.slice().sort(byPickup);
   // "Oct 22, 2026", as both pages wrote it with their own fmtDate.
   const fmtDate = (iso) => {
     const d = new Date(`${iso}T00:00:00`);
