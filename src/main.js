@@ -2793,7 +2793,7 @@ function NoteIconCell({ noteId, notesLog: notesLogRaw, onSave }) {
     latest && el("path", { d: "M5.5 8h5M5.5 10.5h5", stroke: "#fff", strokeWidth: 1.2, strokeLinecap: "round" }));
   return el("span", { style: { display: "inline-flex" } },
     el("button", {
-      type: "button", onClick: open,
+      type: "button", className: "noteBtn", onClick: open,
       "aria-label": latest ? "Change the note" : "Add a note",
       style: { background: "none", border: "none", padding: "2px", cursor: "pointer", color: "inherit", opacity: latest ? 0.9 : 0.55, lineHeight: 0 },
       onMouseEnter: (e) => { if (latest && !edit) setHover(anchor(e.currentTarget, 320, 60 + Math.min(notesLog.length, 5) * 28)); },
@@ -13830,7 +13830,7 @@ function StaffPage({ embedded, onChanged } = {}) {
           }, copied === c.locationId ? "Copied" : "Copy")
         ),
         React.createElement("button", {
-          type: "button", disabled: !!rotating, onClick: () => rotate(c.locationId),
+          type: "button", className: "joinCodeRotate", disabled: !!rotating, onClick: () => rotate(c.locationId),
           style: { display: "block", background: "none", border: "none", padding: 0, marginTop: "8px", color: "#6F6E69", fontSize: "0.8rem", fontFamily: "inherit", cursor: rotating ? "default" : "pointer" },
         }, rotating === c.locationId ? "Generating…" : "Generate new code"))),
       React.createElement(FieldError, { text: codeError })
@@ -25812,6 +25812,16 @@ input:-webkit-autofill, textarea:-webkit-autofill, select:-webkit-autofill{
 input:autofill, textarea:autofill, select:autofill{ box-shadow: 0 0 0 1000px #F9F9F7 inset; color: #1F1E1D; }
 input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([readonly]):focus,
 textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
+/* Phones: every control can be tapped. Buttons, tabs, fields and the Back
+   link that are under 40px tall on a desktop get 40px (44px for Back) here,
+   with the same look. */
+@media (max-width: 767px){
+  .rentalAgreementBackBtn{ min-height: 44px; padding: 10px 0; }
+  .resvDateClear, .noteBtn{ min-width: 40px; min-height: 40px; display: inline-flex; align-items: center; justify-content: center; }
+  .aiControl, .resolveClaimBtn, .loginBtn, .statusTab, .auditClearBtn, .resvInlineBtn, .joinCodeRotate,
+  .resvSearchInput, .fleetFilterInput, .fleetFilterSelect, .gasOwedInput, .gasStatusSelect,
+  select.resFormInput{ min-height: 40px; }
+}
 `;
 document.head.appendChild(style);
 
