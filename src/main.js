@@ -17303,6 +17303,19 @@ function gasChargeForReturn({ pickupGas, returnGas, vehicle, ratePerLitre }) {
 // Switch Out still reaches open agreements only. A vehicle that is back is not
 // one a customer can be switched onto another of, so close_pending is as out
 // of reach there as it ever was. Neither flow reaches closed.
+// Whether the vehicle went out on another agreement after this one came back.
+// Then its being in Ready Returns is that later rental's return, not this
+// one's: on the demo's HVD 108, Reese Nesbitt's close_pending rental from
+// Nov 13 came back onto Close Rental beside Morgan Loopwalk's Nov 16 return,
+// one car twice, inviting a second close.
+function rentedAgainSince(ra, rentalAgreements) {
+  const back = Date.parse(ra.returnedAt || ra.closePendingAt || "");
+  if (!ra.plate || Number.isNaN(back)) return false;
+  return (rentalAgreements || []).some((o) => o !== ra && o.id !== ra.id
+    && normalizePlate(o.plate || "") === normalizePlate(ra.plate)
+    && Date.parse(o.openedAt || o.created_at || "") > back);
+}
+
 function useOpenRentalRows({ includeSelfReturns = false } = {}) {
   const { reservations, rentalAgreements, fleet } = React.useContext(AppContext);
   return React.useMemo(() => {
@@ -17339,7 +17352,8 @@ function useOpenRentalRows({ includeSelfReturns = false } = {}) {
           // also where a staff-processed rental sits.
           selfReturn: ra.rentalAgreementStatus === "customer_return"
                       || (ra.rentalAgreementStatus === "close_pending"
-                          && vehicle?.status === "Ready Returns"),
+                          && vehicle?.status === "Ready Returns"
+                          && !rentedAgainSince(ra, rentalAgreements)),
           raStatus:   ra.rentalAgreementStatus,
         };
       })
