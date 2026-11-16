@@ -19021,7 +19021,7 @@ function chargeLinesAsCounted(items) {
 // charges the page has priced since they were saved (the days to the return,
 // the booked rates, protection accepted at pickup) are saved first, and the
 // worker makes the link only for exactly that amount.
-function StripePayLink({ agreementId, unsaved, retail, owes, saveLines }) {
+function StripePayLink({ agreementId, unsaved, retail, owes, saveLines, billToName }) {
   const el = React.createElement;
   const [busy, setBusy] = React.useState("");
   const [link, setLink] = React.useState(null);
@@ -19031,7 +19031,7 @@ function StripePayLink({ agreementId, unsaved, retail, owes, saveLines }) {
     setBusy(paidBy); setError(""); setLink(null); setCopied(false);
     try {
       if (saveLines) await saveLines();
-      const data = await stripeCall("pay-link", { agreementId, paidBy, expected: owes[paidBy] });
+      const data = await stripeCall("pay-link", { agreementId, paidBy, expected: owes[paidBy], billToName });
       setLink({ url: data.url, amount: data.amount, paidBy });
     } catch (e) { setError(e.message); }
     setBusy("");
@@ -19879,7 +19879,9 @@ function CustomerPageView({ onDiscard }) {
   const fmtPayment = (p) => {
     const card = p.type === "Stripe" ? (p.last4 ? `Card Ending in ${p.last4}, paid online` : "Card, paid online")
       : isCardType(p.type) && p.last4 ? `${p.type} Ending in ${p.last4}` : p.type;
-    const parts = [card, p.cardholderName, p.amount ? fmtMoney(parseFloat(p.amount) || 0) : ""].filter(Boolean);
+    // Paid through a Bill-To link: the bill-to's, not the name on the card.
+    const payer = p.type === "Stripe" && p.paidBy === "Bill-To" && btSrcCat && btSrcCat !== "Retail" && btSrcName ? btSrcName : p.cardholderName;
+    const parts = [card, payer, p.amount ? fmtMoney(parseFloat(p.amount) || 0) : ""].filter(Boolean);
     return parts.join(" · ");
   };
 
@@ -20090,7 +20092,7 @@ function CustomerPageView({ onDiscard }) {
             )
           ),
       React.createElement("button", { type: "button", className: "addPaymentBtn", onClick: addPayment }, "+ Add Payment"),
-      ra?.id && React.createElement(StripePayLink, { agreementId: ra.id, unsaved: chargesEdited, retail: btSrcCat === "Retail", owes: linkOwes, saveLines: saveLinkLines }),
+      ra?.id && React.createElement(StripePayLink, { agreementId: ra.id, unsaved: chargesEdited, retail: btSrcCat === "Retail", owes: linkOwes, saveLines: saveLinkLines, billToName: btSrcName || "" }),
       // A retail customer has one total paid and one balance, as at the top.
       btSrcCat === "Retail" && React.createElement("div", { className: "paymentsTotals" },
         React.createElement("div", { className: "chargesTotalRow" },
