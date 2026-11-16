@@ -23258,8 +23258,8 @@ select.resFormInput.listAdd__payer--empty{ color: #9B9A96; }
 .datePricing__table th{ text-align: left; font-size: 12px; font-weight: 600; color: #5C5B57; padding: 6px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .datePricing__table td{ padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
 .datePricing__class{ font-weight: 600; }
-.datePricing__normal{ color: #6B6A66; }
-.datePricing__tiers{ margin-top: 2px; font-size: 0.75rem; color: #6B6A66; }
+.datePricing__normal{ color: #8A8984; }
+.datePricing__tiers{ margin-top: 2px; font-size: 0.75rem; color: #8A8984; }
 .protCard__allSources{ display: flex; flex-direction: column; gap: 2px; margin: 0 0 6px; }
 .protCard__block{ max-width: 340px; padding-top: 8px; border-top: 1px solid #EEEDE9; }
 .protCard__blockHead{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
