@@ -19395,6 +19395,12 @@ function CustomerPageView({ onDiscard }) {
     setCustomerNotesLog(parseNotesLog(localRecord.notesLog));
   }, [localRecord]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // A closed rental's charges are final: shown as they were saved at close,
+  // never priced again here and never saved again by a payment link (a link
+  // re-priced HVZ 113 259 from 7 to 8 days). Close Pending is closed, with
+  // only the fuel left to collect.
+  const chargesFinal = ["close_pending", "closed"].includes(ra?.rentalAgreementStatus);
+
   // Rental days, as the database counts them (chargeDays): from the pickup to
   // the moment the vehicle came back once it has, and to the scheduled return
   // until then, on the branch's clock.
@@ -19412,20 +19418,23 @@ function CustomerPageView({ onDiscard }) {
     const startDays = billDays;
     // An other driver is never charged for, so adds no line. Winter tires are
     // not charged for either: a line saved for them before is left off.
-    setLineItems((prev) => withAcceptedProtection((saved || prev).filter((it) => it.key !== "winter"), ra.protectionChoices, startDays));
+    // A closed rental's saved lines are final, so they are shown as saved.
+    if (chargesFinal && saved) setLineItems(saved);
+    else setLineItems((prev) => withAcceptedProtection((saved || prev).filter((it) => it.key !== "winter"), ra.protectionChoices, startDays));
     if (Array.isArray(ra.payments)) {
       setPayments(ra.payments);
     }
   }, [ra]); // eslint-disable-line react-hooks/exhaustive-deps
 
   React.useEffect(() => {
-    if (!billDays) return;
+    if (!billDays || chargesFinal) return;
     setLineItems((prev) => withRentalDays(prev, billDays));
-  }, [billDays]);
+  }, [billDays, chargesFinal]);
 
   React.useEffect(() => {
+    if (chargesFinal) return;
     setLineItems((prev) => withVehicleRate(prev, billToForm.dailyRate));
-  }, [billToForm.dailyRate]);
+  }, [billToForm.dailyRate, chargesFinal]);
 
   // A reservation with rates kept from when it was made (seasons, weekly or
   // monthly rates) has its vehicle charged by price_rental: a line for each
@@ -19440,10 +19449,11 @@ function CustomerPageView({ onDiscard }) {
     saved: localRecord,
   });
   React.useEffect(() => {
+    if (chargesFinal) return;
     setLineItems((prev) => withRentalPrice(prev, rentalPrice, {
       days: billDays, dailyRate: billToForm.dailyRate,
     }));
-  }, [rentalPrice]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [rentalPrice, chargesFinal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [saveStatus, setSaveStatus] = React.useState("idle"); // "idle" | "saving" | "saved" | "error"
   // Charges and payments are changed by hand; the reservation's fields are
@@ -19986,7 +19996,8 @@ function CustomerPageView({ onDiscard }) {
 
   const updateLineItem = (key, field, value) => {
     setChargesEdited(true);
-    setLineItems((prev) => prev.map((it) => it.key === key ? { ...it, [field]: value } : it));
+    // A closed rental's charges are final (their inputs are disabled too).
+    setLineItems((prev) => chargesFinal ? prev : prev.map((it) => it.key === key ? { ...it, [field]: value } : it));
   };
 
   // Protection lines, the accepted products and any old fixed lines, are the
@@ -20013,7 +20024,7 @@ function CustomerPageView({ onDiscard }) {
     ? { Customer: Math.max(0, Math.round((grandTotal - totalPaid) * 100) / 100) }
     : { Customer: Math.max(0, Math.round(customerBalance * 100) / 100), "Bill-To": Math.max(0, Math.round(billToBalance * 100) / 100) };
   const saveLinkLines = async () => {
-    if (!ra?.id || chargeLinesAsCounted(lineItems) === chargeLinesAsCounted(ra.lineItems)) return;
+    if (!ra?.id || chargesFinal || chargeLinesAsCounted(lineItems) === chargeLinesAsCounted(ra.lineItems)) return;
     const { error } = await supabase.from("rental_agreements").update({ "lineItems": lineItems }).eq("id", ra.id);
     if (error) throw new Error("The charges could not be saved. Try again.");
     setRentalAgreements((prev) => prev.map((r) => r.id !== ra.id ? r : { ...r, lineItems }));
@@ -20050,7 +20061,7 @@ function CustomerPageView({ onDiscard }) {
       React.createElement("td", { className: "chargesTd chargesTd--check" },
         React.createElement("input", {
           type: "checkbox", className: "chargesCheck",
-          checked: item.applies,
+          checked: item.applies, disabled: chargesFinal,
           onChange: (e) => updateLineItem(item.key, "applies", e.target.checked),
         })
       ),
@@ -20061,7 +20072,7 @@ function CustomerPageView({ onDiscard }) {
               React.createElement("label", { className: "chargesCoverLabel" },
                 React.createElement("input", {
                   type: "checkbox", className: "chargesCoverCheck",
-                  checked: item.coveredByBillTo || false,
+                  checked: item.coveredByBillTo || false, disabled: chargesFinal,
                   onChange: (e) => updateLineItem(item.key, "coveredByBillTo", e.target.checked),
                 }),
                 "Covered by Bill-To"
@@ -20077,7 +20088,7 @@ function CustomerPageView({ onDiscard }) {
             placeholder: chargeQtyPlaceholder(item),
             value: item.qty,
             onChange: (e) => updateLineItem(item.key, "qty", numberTyped(e.target.value, { digits: 4, decimals: 2 })),
-            disabled: !item.applies,
+            disabled: !item.applies || chargesFinal,
           }),
           React.createElement("span", { className: "unitSuffix" }, chargeQtyUnit(item))
         )
@@ -20090,7 +20101,7 @@ function CustomerPageView({ onDiscard }) {
             type: "text", inputMode: "decimal", maxLength: 9,
             value: item.amount,
             onChange: (e) => updateLineItem(item.key, "amount", numberTyped(e.target.value, { digits: 6, decimals: 2 })),
-            disabled: !item.applies,
+            disabled: !item.applies || chargesFinal,
           })
         )
       ),
