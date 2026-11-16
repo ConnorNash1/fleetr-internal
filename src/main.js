@@ -3636,8 +3636,18 @@ function ReservationsPage() {
 
   const updateForm = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
 
+  // One save at a time: a second press while the first is saving used to add
+  // the reservation twice, under two codes.
+  const savingRef = React.useRef(false);
+  const [saving, setSaving] = React.useState(false);
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try { await submitReservation(); } finally { savingRef.current = false; setSaving(false); }
+  };
+  const submitReservation = async () => {
     // One rule, shared with the command bar. Checked before a resCode is burned.
     // "Unknown" used to be silently substituted for a blank name, which is how
     // unusable reservations reached the list.
@@ -3924,7 +3934,7 @@ function ReservationsPage() {
           ),
           React.createElement("div", { className: "resModalActions" },
             React.createElement("button", { type: "button", className: "resModalCancel", onClick: () => setShowModal(false) }, "Cancel"),
-            React.createElement("button", { type: "submit", className: "resModalSubmit" }, "Add Reservation")
+            React.createElement("button", { type: "submit", className: "resModalSubmit", disabled: saving }, saving ? "Saving\u2026" : "Add Reservation")
           )
         )
       )
@@ -4661,8 +4671,18 @@ function DashboardPage() {
     return true;
   });
 
+  // One save at a time: a second press while the first is saving used to add
+  // the reservation twice, under two codes.
+  const savingRef = React.useRef(false);
+  const [saving, setSaving] = React.useState(false);
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try { await submitReservation(); } finally { savingRef.current = false; setSaving(false); }
+  };
+  const submitReservation = async () => {
     // One rule, shared with the command bar. Checked before a resCode is burned.
     // "Unknown" used to be silently substituted for a blank name, which is how
     // unusable reservations reached the list.
@@ -5089,7 +5109,7 @@ function DashboardPage() {
           ),
           React.createElement("div", { className: "resModalActions" },
             React.createElement("button", { type: "button", className: "resModalCancel", onClick: () => setShowModal(false) }, "Cancel"),
-            React.createElement("button", { type: "submit", className: "resModalSubmit" }, "Add Reservation")
+            React.createElement("button", { type: "submit", className: "resModalSubmit", disabled: saving }, saving ? "Saving\u2026" : "Add Reservation")
           )
         )
       )
@@ -17863,15 +17883,17 @@ function CloseRentalPage() {
   // says nothing and the second because there is nothing to measure against.
   // The rental's branch's post-pay fuel rate, read when there is a shortage
   // to charge for. Nothing read leaves the charge blank, for manual entry.
-  const [branchRate, setBranchRate] = React.useState(null);
+  // undefined while it is being read, so the "cannot be worked out" warning
+  // waits for the answer instead of flashing up first.
+  const [branchRate, setBranchRate] = React.useState(undefined);
   const gasBranch = agreementOutcome.reason === "fuel_short" ? ra?.locationId || null : null;
   React.useEffect(() => {
     let live = true;
-    setBranchRate(null);
+    setBranchRate(gasBranch ? undefined : null);
     if (!gasBranch) return undefined;
     supabase.rpc("branch_fuel_rate", { p_location_id: gasBranch }).then(({ data }) => {
-      if (live && data && data.ok) setBranchRate(data.ratePerLitre ?? null);
-    });
+      if (live) setBranchRate(data && data.ok ? data.ratePerLitre ?? null : null);
+    }, () => { if (live) setBranchRate(null); });
     return () => { live = false; };
   }, [gasBranch]);
   const gasCharge = React.useMemo(() => (
@@ -17969,8 +17991,12 @@ function CloseRentalPage() {
   }, { enabled: !!closeCharges });
   const closeChargesShown = closeCharges && closeTotals ? { ...closeCharges, totals: closeTotals } : null;
 
+  // Complete Close waits for the final charges and, on a fuel shortage, the
+  // fuel rate: a quick press used to close with the pickup's charge lines and
+  // no fuel line, and a closed rental's charges cannot change afterwards.
+  const chargesPending = (!!closeRes && !closeCharges) || (agreementOutcome.reason === "fuel_short" && branchRate === undefined);
   const completeClose = async () => {
-    if (!final || !ra) return;
+    if (!final || !ra || chargesPending) return;
     // A rental switched onto a vehicle the customer has not collected has
     // nothing to close. Checked again here, since the pickup may have been
     // assigned after the rental was selected.
@@ -18000,19 +18026,27 @@ function CloseRentalPage() {
         // paid. The return time is written unless a self-return already put
         // it there; the reservation keeps the scheduled return it was booked
         // with.
+        //
+        // The write returns the row it changed: a write that changes no row
+        // is not an error to the database, and the done screen used to say
+        // "Rental closed" with nothing saved when the rental had changed since
+        // the page loaded or another tab had moved to another branch. With
+        // nothing else to write, the return time is written back as it was,
+        // so the write still says whether the rental is there.
         const charges = {};
         if (closeCharges) charges.lineItems = closeCharges.lines;
         if (gasCharge) charges.gasOwed = gasCharge;
         if (!ra.returnedAt) charges.returnedAt = endedAt;
-        if (Object.keys(charges).length) {
-          const chargesRes = await supabase.from("rental_agreements").update(charges).eq("id", ra.id);
-          if (chargesRes?.error) {
-            console.warn("close rental: charges write failed:", chargesRes.error);
-            setRefusal("The charges could not be saved, so the rental has not been closed. Check your connection and try again.");
-            return;
-          }
-          setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, ...charges } : a)));
+        if (!Object.keys(charges).length) charges.returnedAt = ra.returnedAt;
+        const chargesRes = await supabase.from("rental_agreements").update(charges).eq("id", ra.id);
+        if (chargesRes?.error || !Array.isArray(chargesRes?.data) || chargesRes.data.length === 0) {
+          console.warn("close rental: charges write failed:", chargesRes?.error || "no row changed");
+          setRefusal(chargesRes?.error
+            ? "The charges could not be saved, so the rental has not been closed. Check your connection and try again."
+            : "This rental could not be found as it was when the page opened, so it has not been closed. Reload the page and try again.");
+          return;
         }
+        setRentalAgreements((prev) => prev.map((a) => (a.id === ra.id ? { ...a, ...charges } : a)));
 
         // The leg. Pickup readings come off the agreement's own record, which
         // is where the vehicle went out on them; the closing pair is what was
@@ -18255,7 +18289,7 @@ function CloseRentalPage() {
       agreementOutcome.reason && CLOSE_RENTAL_REASONS[agreementOutcome.reason] &&
         line("Reason", CLOSE_RENTAL_REASONS[agreementOutcome.reason]),
       gasCharge && line("Gas owed", `$${gasCharge}`),
-      agreementOutcome.reason === "fuel_short" && !gasCharge &&
+      agreementOutcome.reason === "fuel_short" && !gasCharge && branchRate !== undefined &&
         React.createElement("div", { className: "closeRentalWarning" },
           "The vehicle came back with less fuel, but the charge cannot be worked out: the vehicle needs a tank size and its " +
           "region needs a fuel price. It will have to be entered by hand on Gas Collections."),
@@ -18268,8 +18302,9 @@ function CloseRentalPage() {
           type: "button", className: "resModalCancel", disabled: busy,
           onClick: () => { setFinal(null); setReview(null); },
         }, "Back"),
-        React.createElement("button", { type: "button", className: "resModalSubmit", onClick: completeClose, disabled: busy },
-          busy ? "Closing..." : "Complete Close")
+        React.createElement("button", { type: "button", className: "resModalSubmit", onClick: completeClose, disabled: busy || chargesPending,
+          title: chargesPending ? "Working out the final charges" : undefined },
+          busy ? "Closing\u2026" : "Complete Close")
       )
     );
   }
