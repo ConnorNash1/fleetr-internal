@@ -3036,6 +3036,14 @@ const EMPTY_RES_FORM = {
 };
 
 // The blank form, with the location and class the company's own lists start on.
+// How a walk-in pays, one list for New Reservation and the customer page. The
+// customer page offered "Debit" and no E-transfer, so a booking taken as Debit
+// Card or E-transfer showed there as Credit Card. A saved value off the list
+// (an older "Debit") stays offered, so opening the page never changes it.
+const RESERVATION_PAYMENT_METHODS = ["Credit Card", "Debit Card", "Cash", "E-transfer"];
+const paymentMethodOptions = (saved) => (saved && !RESERVATION_PAYMENT_METHODS.includes(saved)
+  ? [...RESERVATION_PAYMENT_METHODS, saved] : RESERVATION_PAYMENT_METHODS);
+
 const emptyResForm = () => ({
   ...EMPTY_RES_FORM,
   date: isoOffset(0),
@@ -3741,7 +3749,7 @@ function ReservationsPage() {
                   React.createElement("label", { className: "resFormGroup" },
                     React.createElement("span", { className: "resFormLabel" }, "Payment Method"),
                     React.createElement("select", { className: "resFormInput", value: form.paymentMethod, onChange: (e) => updateForm("paymentMethod", e.target.value) },
-                      ["Credit Card", "Debit Card", "Cash", "E-transfer"].map((m) => React.createElement("option", { key: m, value: m }, m))
+                      RESERVATION_PAYMENT_METHODS.map((m) => React.createElement("option", { key: m, value: m }, m))
                     )
                   )
                 ),
@@ -4904,7 +4912,7 @@ function DashboardPage() {
                   React.createElement("label", { className: "resFormGroup" },
                     React.createElement("span", { className: "resFormLabel" }, "Payment Method"),
                     React.createElement("select", { className: "resFormInput", value: form.paymentMethod, onChange: (e) => updateForm("paymentMethod", e.target.value) },
-                      ["Credit Card", "Debit Card", "Cash", "E-transfer"].map((m) => React.createElement("option", { key: m, value: m }, m))
+                      RESERVATION_PAYMENT_METHODS.map((m) => React.createElement("option", { key: m, value: m }, m))
                     )
                   )
                 ),
@@ -19825,7 +19833,7 @@ function CustomerPageView({ onDiscard }) {
     ];
     if (btSrcCat === "Retail") return [
       React.createElement("div", { className: "resFormRow", key: "b1" },
-        btSelect("Payment Method", "paymentMethod", ["Credit Card", "Debit", "Cash"])
+        btSelect("Payment Method", "paymentMethod", paymentMethodOptions(billToForm.paymentMethod))
       ),
     ];
     return [];
