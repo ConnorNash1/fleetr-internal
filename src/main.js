@@ -12283,6 +12283,13 @@ const SOURCE_PAYERS = [
   ["corporate",  "Corporate account"],
   ["other",      "Other"],
 ];
+// Who pays, as saved, or for a source saved without one, from its billing
+// type as fleetr_ai_one_switch.sql filled them in. The demo company's sources
+// have none, so every one, its insurers included, showed Other.
+const sourcePayerOf = (entry) => entry?.payer || (
+  entry?.billingType === "insurance" ? "insurance"
+    : entry?.billingType === "bodyshop_dealership" ? (/dealer/i.test(entry?.name || "") ? "dealership" : "body_shop")
+    : entry?.billingType === "corporate" ? "corporate" : "other");
 
 // A section of the Company page. Closed until its header is tapped, so the
 // page opens as a short list of headings rather than seven screens of tables.
@@ -13264,11 +13271,11 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
               ? "The customer"
               : el("select", {
                 className: "resFormInput", style: { width: "auto", padding: "5px 8px" }, disabled: busy,
-                value: entry.payer || "other", "aria-label": `Who pays for ${entry.name}`, ...invalid(!!errAt(`sources:payer:${entry.id}`)),
+                value: sourcePayerOf(entry), "aria-label": `Who pays for ${entry.name}`, ...invalid(!!errAt(`sources:payer:${entry.id}`)),
                 onChange: (e) => act(`sources:payer:${entry.id}`, "save_source", {
                   p_id: entry.id, p_name: entry.name, p_billing_type: e.target.value, p_sort: null,
                 }),
-              }, sourcePayers(entry.payer).map(([v, l]) => el("option", { key: v, value: v }, l))),
+              }, sourcePayers(sourcePayerOf(entry)).map(([v, l]) => el("option", { key: v, value: v }, l))),
               el(FieldError, { text: errAt(`sources:payer:${entry.id}`) })),
           })];
           if (isOpen) {
