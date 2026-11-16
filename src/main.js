@@ -9798,8 +9798,12 @@ function StripeSection() {
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
   const load = React.useCallback(async () => {
-    const { data, error: err } = await supabase.rpc("stripe_status");
-    setStatus(err || !data ? { error: "Card payment status could not be loaded." } : data);
+    const [{ data, error: err }, config] = await Promise.all([
+      supabase.rpc("stripe_status"),
+      // Whether fleetr is on Stripe test keys: the demo company may connect then.
+      fetch(`${CLAUDE_API_URL}/stripe/config`, { method: "POST" }).then((r) => r.json()).catch(() => null),
+    ]);
+    setStatus(err || !data ? { error: "Card payment status could not be loaded." } : { ...data, testMode: !!(config && config.testMode) });
   }, []);
   React.useEffect(() => {
     // Back from Stripe's onboarding: ask Stripe where the account stands.
@@ -9813,7 +9817,9 @@ function StripeSection() {
     try { const { url } = await stripeCall("connect"); window.location.href = url; }
     catch (e) { setError(e.message); setBusy(false); }
   };
-  const state = status.isDemo ? "The demo company does not take card payments."
+  const demoBlocked = status.isDemo && !status.testMode;
+  const canConnect = status.canConnect || (status.isDemo && status.testMode && status.isExec);
+  const state = demoBlocked ? "The demo company takes card payments only while fleetr uses Stripe test keys."
     : status.chargesEnabled ? "Connected. Renters and bill-tos can pay by card through payment links."
     : status.connected ? "Stripe still needs a few details before this account can take payments."
     : "Not connected.";
@@ -9821,7 +9827,9 @@ function StripeSection() {
     el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
       "Card payments go straight to your own Stripe account. fleetr's share is taken from each payment by Stripe as it is paid."),
     el("p", null, state),
-    status.canConnect && !status.chargesEnabled && el("button", {
+    status.isDemo && status.testMode && el("p", { className: "closeRentalHint" },
+      "Test mode: the demo company uses Stripe test payments, so no real money moves."),
+    canConnect && !status.chargesEnabled && el("button", {
       type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, disabled: busy, onClick: connect,
     }, busy ? "Opening Stripe…" : status.connected ? "Finish Stripe setup" : "Connect Stripe"),
     el(FieldError, { text: error }));
