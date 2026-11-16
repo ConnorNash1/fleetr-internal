@@ -3063,6 +3063,18 @@ const RESERVATION_PAYMENT_METHODS = ["Credit Card", "Debit Card", "Cash", "E-tra
 const paymentMethodOptions = (saved) => (saved && !RESERVATION_PAYMENT_METHODS.includes(saved)
   ? [...RESERVATION_PAYMENT_METHODS, saved] : RESERVATION_PAYMENT_METHODS);
 
+// A North American number however it was typed, "7095550142", "(709)
+// 555-0142", "+1 709 555 0142", saved one way: 709-555-0142. Anything else
+// (an overseas number) is kept as typed, trimmed.
+const tidyPhone = (raw) => {
+  const s = String(raw || "").trim();
+  const d = s.replace(/\D/g, "");
+  const ten = d.length === 11 && d[0] === "1" ? d.slice(1) : d;
+  return ten.length === 10 ? `${ten.slice(0, 3)}-${ten.slice(3, 6)}-${ten.slice(6)}` : s;
+};
+// "4:07 PM", not en-CA's "4:07 p.m.": every time in the app reads one way.
+const ampm = (s) => String(s).replace(/\ba\.m\./g, "AM").replace(/\bp\.m\./g, "PM");
+
 const emptyResForm = () => ({
   ...EMPTY_RES_FORM,
   date: isoOffset(0),
@@ -3367,7 +3379,7 @@ function CancelledReservations() {
       .then(({ data, error }) => { if (live) setRows(error ? [] : data || []); });
     return () => { live = false; };
   }, [open, rows]);
-  const when = (iso) => new Date(iso).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const when = (iso) => ampm(new Date(iso).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
   return el("div", { className: "cancelledReservations" },
     el("button", { type: "button", className: "aiControl", "aria-expanded": open, onClick: () => setOpen((o) => !o), style: { marginTop: 12 } },
       open ? "Hide cancelled" : "Show cancelled"),
@@ -3379,7 +3391,7 @@ function CancelledReservations() {
             el("td", null, when(r.cancelledAt)),
             el("td", null, r.resCode),
             el("td", null, r.reservation?.customer || "-"),
-            el("td", null, [r.reservation?.date, r.reservation && pickupTime12(r.reservation)].filter(Boolean).join(" ")),
+            el("td", null, [r.reservation?.date && dayMonth(r.reservation.date), r.reservation && pickupTime12(r.reservation)].filter(Boolean).join(", ")),
             el("td", null, r.cancelledBy)))))));
 }
 
@@ -3549,7 +3561,7 @@ function ReservationsPage() {
       date: form.date, time: quarterTime(form.time), location: form.location,
       resCode, customer,
       firstName: form.firstName, lastName: form.lastName,
-      phone: form.phone, email: form.email, licenseNumber: form.licenseNumber,
+      phone: tidyPhone(form.phone), email: form.email.trim(), licenseNumber: form.licenseNumber,
       returnDate: form.returnDate, returnTime: quarterTime(form.returnTime),
       vehicleClass: form.vehicleClass, winterTires: form.winterTires,
       source: form.source, sourceDetail: form.sourceDetail,
@@ -4373,7 +4385,7 @@ function needsYouText(i) {
     case "disputed":   return ["Disputed charge", `${needsMoney(i.amount)} card payment disputed${i.detail ? ` (${String(i.detail).replace(/_/g, " ")})` : ""}`];
     case "failed":     return ["Failed payment", `${needsMoney(i.amount)} card payment failed${i.detail ? `: ${i.detail}` : ""}`];
     case "damage":     return ["Damage claim to approve", `${i.detail || "Damage reported"}${i.status === "in_review" ? ", in review" : ""}`];
-    case "unreturned": return ["Not returned, no contact", `Due back ${i.due ? new Date(`${i.due}Z`).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" }) : ""}${i.phone ? `. Call ${i.phone}` : ""}`];
+    case "unreturned": return ["Not returned, no contact", `Due back ${i.due ? ampm(new Date(`${i.due}Z`).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" })) : ""}${i.phone ? `. Call ${i.phone}` : ""}`];
     case "incident":   return [i.incident === "accident" ? "Accident" : "Breakdown", i.detail || "Reported at a switch out"];
     case "id_problem": return ["ID problem", `License says ${i.licenceLastName || "?"}, the booking says ${i.reservationLastName || "?"}`];
     default:           return ["Needs a look", ""];
@@ -4572,7 +4584,7 @@ function DashboardPage() {
       date: form.date, time: quarterTime(form.time), location: form.location,
       resCode, customer,
       firstName: form.firstName, lastName: form.lastName,
-      phone: form.phone, email: form.email, licenseNumber: form.licenseNumber,
+      phone: tidyPhone(form.phone), email: form.email.trim(), licenseNumber: form.licenseNumber,
       returnDate: form.returnDate, returnTime: quarterTime(form.returnTime),
       vehicleClass: form.vehicleClass, winterTires: form.winterTires,
       source: form.source, sourceDetail: form.sourceDetail,
@@ -5174,7 +5186,7 @@ function NoShowsPage() {
       React.createElement("td", null, row.vehicleClass),
       pickupCell(row),
       React.createElement("td", null, !sent ? "Not sent yet" : sent.status === "sent"
-        ? new Date(sent.sentAt).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+        ? ampm(new Date(sent.sentAt).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))
         : sent.status === "failed" ? "Failed" : "Sending"),
       React.createElement("td", null, fmtBranchStamp(row.cutoffAt)),
       React.createElement("td", null, React.createElement("div", { className: "readyStatusWrap" },
@@ -6261,7 +6273,7 @@ const transferTime = (iso) => {
   if (Number.isNaN(d.getTime())) return "";
   const today = new Date().toDateString() === d.toDateString();
   return (today ? "" : d.toLocaleDateString("en-CA", { month: "short", day: "numeric" }) + ", ")
-    + d.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" });
+    + ampm(d.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" }));
 };
 const driveText = (m) => m < 60 ? `${m} min` : m % 60 === 0 ? `${m / 60} h` : `${Math.floor(m / 60)} h ${m % 60} min`;
 
@@ -14085,7 +14097,7 @@ function AuditLogPage() {
     if (!iso) return "\u00b7";
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? iso
-      : d.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      : ampm(d.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
   };
 
   const outcomeClass = (o) =>
@@ -15852,7 +15864,7 @@ function ProtectionChoicesList({ rentalAgreementId }) {
   const fmtWhen = (iso) => {
     const d = iso ? new Date(iso) : null;
     return d && !Number.isNaN(d.getTime())
-      ? d.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+      ? ampm(d.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))
       : "-";
   };
   const fmtPrice = (n) => (Number.isFinite(Number(n)) ? `$${Number(n).toFixed(2)}` : "-");
@@ -15964,7 +15976,7 @@ function NameMismatchWarning({ rentalAgreementId }) {
   const when = (iso) => {
     const d = iso ? new Date(iso) : null;
     return d && !Number.isNaN(d.getTime())
-      ? d.toLocaleString("en-CA", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })
+      ? ampm(d.toLocaleString("en-CA", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }))
       : "";
   };
 
@@ -16106,7 +16118,7 @@ function RentalPhotoTile({ photo, onOpen }) {
     return () => { live = false; };
   }, [photo.path]);
   const when = photo.time
-    ? photo.time.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+    ? ampm(photo.time.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))
     : "Time unknown";
   return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: "4px", width: "96px" } },
     failed
@@ -16262,7 +16274,7 @@ function AgreementVehicleHistory({ rentalAgreementId, resCode }) {
     if (!iso) return "-";
     const d = new Date(iso);
     return Number.isNaN(d.getTime()) ? "-"
-      : d.toLocaleString("en-CA", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+      : ampm(d.toLocaleString("en-CA", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }));
   };
   const fmtKm = (n) => fmtDistance(n) ?? "-";
   const label = resCode || "this rental agreement";
@@ -17534,7 +17546,7 @@ function ReturnsWaitingToClose({ rows, onSelect }) {
   const fmtReturned = (iso) => {
     const d = iso ? new Date(iso) : null;
     return !d || Number.isNaN(d.getTime()) ? "-"
-      : d.toLocaleString("en-CA", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+      : ampm(d.toLocaleString("en-CA", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }));
   };
   const plateText = (row) => [row.plate || "-", row.province].filter(Boolean).join(" \u00b7 ");
   const list = waiting.length === 0
@@ -18078,7 +18090,7 @@ function CloseRentalPage() {
       done.resCode && line("Rental agreement", done.resCode),
       done.plate && line("Vehicle", done.plate),
       line("Closing mileage", fmtDistance(done.closingMileage)),
-      line("Closing gas level", done.closingGas),
+      line("Closing gas level", fuelText(done.closingGas)),
       line("New damage found", done.damageFound ? "Yes" : "No"),
       done.damageFound && line("Vehicle", vehicleRentableLabel(done.vehicleRentable)),
       line("Agreement status", statusLabel(done.agreementStatus)),
@@ -19172,8 +19184,12 @@ function StripePayLink({ agreementId, unsaved, retail, owes, saveLines, billToNa
   const copy = () => {
     navigator.clipboard?.writeText(link.url).then(() => setCopied(true)).catch(() => setError("Copy the link from the box."));
   };
+  // A side that owes nothing has no link to make: its button waits, saying so.
+  const owesNothing = (paidBy) => !!owes && !(Number(owes[paidBy]) > 0);
   const btn = (paidBy, label) => el("button", {
-    key: paidBy, type: "button", className: "addPaymentBtn", disabled: !!busy || unsaved || !owes || !!notYet, onClick: () => make(paidBy),
+    key: paidBy, type: "button", className: "addPaymentBtn", disabled: !!busy || unsaved || !owes || !!notYet || owesNothing(paidBy),
+    title: owesNothing(paidBy) ? `Nothing is owing by the ${paidBy === "Bill-To" ? "bill-to" : "renter"}.` : undefined,
+    onClick: () => make(paidBy),
   }, busy === paidBy ? "Making link…" : label);
   return el("div", { className: "paymentsTotals" },
     el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
