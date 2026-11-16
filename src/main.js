@@ -1675,7 +1675,9 @@ function PinConfirmModal({ onConfirm, onCancel, warning, danger }) {
             React.createElement("input", {
               ref: inputRef,
               type: "password",
-              inputMode: "text",
+              // A PIN is four digits (signup_pin_and_recovery.sql), so phones
+              // show the number pad, as the PIN fields in Account do.
+              inputMode: "numeric",
               maxLength: 4,
               className: "pinField__input",
               "aria-label": "PIN",
@@ -18991,7 +18993,7 @@ function withRentalPrice(items, rentalPrice, { days, dailyRate }) {
     const exact = Math.round(l.perDay * l.days * 100) === Math.round(l.amount * 100);
     return {
       key: i === 0 ? "vehicle" : `vehicle:${i}`,
-      label: "Vehicle",
+      label: "Vehicle Cost",
       applies, qty: String(l.days), qtyPlaceholder: "Days",
       amount: String(exact ? l.perDay : Math.round((l.amount / l.days) * 1e6) / 1e6),
     };
