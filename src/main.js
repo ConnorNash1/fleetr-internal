@@ -19447,12 +19447,22 @@ function CustomerPageView({ onDiscard }) {
   const handleDeleteReservation = () => {
     if (!resCode) return;
     guardAction("reservation.delete", async () => {
-      setReservations((prev) => prev.filter((r) => r.resCode !== resCode));
+      // Off the list only once the database has deleted it. A refused or
+      // failed delete came back without throwing, and the page dropped the
+      // booking and went back as if it were gone; it was still booked.
+      let gone = false;
       try {
-        await supabase.from("reservations").delete().eq("resCode", resCode);
+        const { data, error } = await supabase.from("reservations").delete().eq("resCode", resCode);
+        gone = !error && (data || []).length > 0;
+        if (error) console.warn("Delete reservation error:", error);
       } catch (e) {
         console.warn("Delete reservation error:", e);
       }
+      if (!gone) {
+        appAlert(`${resCode} could not be deleted, so it is still booked. Check your connection and try again.`, { title: "Not deleted" });
+        throw new Error("reservation not deleted");
+      }
+      setReservations((prev) => prev.filter((r) => r.resCode !== resCode));
       navigate(-1);
     }, { tableName: "reservations", recordId: resCode, description: `Deleted reservation ${resCode}.`,
          warning: `Delete reservation ${resCode}? This cannot be undone.`, danger: true });
