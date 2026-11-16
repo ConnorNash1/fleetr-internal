@@ -1,0 +1,38 @@
+# Deploys the staff app (production, internal.fleetr.ai) to GitHub Pages, by
+# hand only: Actions > Deploy production > Run workflow. Every push to main
+# goes to staging instead (deploy-staging.yml, staging-internal.fleetr.ai).
+#
+# Built with Jekyll exactly as GitHub Pages built it from the branch, which
+# stamps the build time into index.html and version.json. Needs the
+# repository's Pages source set to "GitHub Actions" (Settings > Pages); until
+# then GitHub keeps publishing main on every push.
+name: Deploy production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./
+          destination: ./_site
+      - uses: actions/upload-pages-artifact@v3
+      - id: deployment
+        uses: actions/deploy-pages@v4
