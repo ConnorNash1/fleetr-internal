@@ -43,8 +43,10 @@ perl -pi -e '
   s{(src="(?:\./)?(?:src/main|app)\.js)\?v=[^"]*"}{$1?v=$ENV{STAMP}"}g;
 ' "${FILES[@]}"
 
-# version.json's Jekyll front matter, which only GitHub Pages strips.
-if [ -f "$DIR/version.json" ]; then perl -0pi -e 's/\A---\s*\n---\s*\n//' "$DIR/version.json"; fi
+# Jekyll front matter (the staff app's index.html and version.json), which
+# only GitHub Pages strips. Left in, index.html showed "--- ---" above the
+# app and opened in quirks mode, with no doctype first.
+for f in "${FILES[@]}"; do perl -0pi -e 's/\A---\s*\n---\s*\n//' "$f"; done
 # Cloudflare Pages takes its domains from the project, not a CNAME file.
 rm -f "$DIR/CNAME"
 
