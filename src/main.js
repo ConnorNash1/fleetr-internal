@@ -1368,6 +1368,19 @@ function fmt12h(raw) {
   return `${h}:${String(m).padStart(2, "0")} ${meridiem}`;
 }
 
+// A pickup's time as "H:MM AM/PM". A time saved without AM/PM ("2:00") takes
+// the pickup's saved AM/PM (pickupMeridiem), as the demo company's bookings
+// are kept; "14:00" from fleetr.ai and "2:00 PM" from staff read as before.
+function pickupTime12(r) {
+  const t = String(r?.time || r?.pickupTime || "").trim();
+  if (!t) return "";
+  const bare = /^(\d{1,2}):(\d{2})$/.exec(t);
+  const mer = String(r?.pickupMeridiem || "").toUpperCase();
+  const h = bare ? parseInt(bare[1], 10) : 0;
+  if (bare && (mer === "AM" || mer === "PM") && h >= 1 && h <= 12) return `${h}:${bare[2]} ${mer}`;
+  return fmt12h(t);
+}
+
 // Normalise a potentially-24h time string to { digits, meridiem } in 12-hour format.
 // digits is the 4-char "HHMM" string used internally by time picker fields.
 // Hours 13-23 and 0 are unambiguously 24h and are converted; 1-12 trust storedMeridiem.
@@ -3323,7 +3336,7 @@ function ReservationsTable({ rows }) {
         rows.map((row) =>
           React.createElement("tr", { key: row.resCode, className: row.fromNonDrive ? "dashboardRow--fromNonDrive" : "" },
             React.createElement("td", { key: `${row.resCode}-date` }, fmtDate(row.date)),
-            React.createElement("td", { key: `${row.resCode}-time` }, fmt12h(row.time)),
+            React.createElement("td", { key: `${row.resCode}-time` }, pickupTime12(row)),
             React.createElement("td", { key: `${row.resCode}-loc` }, row.location),
             React.createElement("td", { key: `${row.resCode}-res` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
             React.createElement("td", { key: `${row.resCode}-cust` },
@@ -3503,7 +3516,7 @@ function ReservationsPage() {
       const next = [...prev, newRow];
       next.sort((a, b) => {
         if (a.date !== b.date) return a.date < b.date ? -1 : 1;
-        return parseTimeToMinutes(a.time) - parseTimeToMinutes(b.time);
+        return parseTimeToMinutes(pickupTime12(a)) - parseTimeToMinutes(pickupTime12(b));
       });
       return next;
     });
@@ -3848,7 +3861,7 @@ function NonDriveIntakeSection({ standalone }) {
     guardAction("noShow.confirmPickup", () => {
       setReservations((prev) => {
         const next = [...prev, newRes];
-        next.sort((a, b) => parseTimeToMinutes(a.time) - parseTimeToMinutes(b.time));
+        next.sort((a, b) => parseTimeToMinutes(pickupTime12(a)) - parseTimeToMinutes(pickupTime12(b)));
         return next;
       });
       runWrite(supabase.from("reservations").insert(newRes).then((res) => console.log("reservations insert response:", res)), "reservations insert");
@@ -4195,7 +4208,7 @@ function ReturnsCurveCard({ days, upcoming, onOpen }) {
           : el("ol", { className: "nextPickups" }, upcoming.map((r, i) =>
               el("li", { key: r.resCode, className: "nextPickups__item", style: { transitionDelay: `${150 + i * 120}ms` } },
                 el("span", { className: "nextPickups__dot", "aria-hidden": "true" }),
-                el("div", { className: "nextPickups__when" }, `${r.date === isoOffset(0) ? "Today" : `${dayShort(r.date)} ${dayMonth(r.date)}`}${r.time ? `, ${fmt12h(r.time)}` : ""}`),
+                el("div", { className: "nextPickups__when" }, `${r.date === isoOffset(0) ? "Today" : `${dayShort(r.date)} ${dayMonth(r.date)}`}${r.time ? `, ${pickupTime12(r)}` : ""}`),
                 el("div", { className: "nextPickups__who" }, r.customer || r.resCode),
                 r.vehicleClass && el("div", { className: "nextPickups__what" }, r.vehicleClass)))))));
 }
@@ -4370,7 +4383,7 @@ function DashboardStats() {
   const upcoming = reservations
     .filter((r) => r.date >= today && (r.rentalAgreementStatus || "reservation") === "reservation")
     .slice()
-    .sort((a, b) => (a.date !== b.date ? (a.date < b.date ? -1 : 1) : parseTimeToMinutes(a.time) - parseTimeToMinutes(b.time)))
+    .sort((a, b) => (a.date !== b.date ? (a.date < b.date ? -1 : 1) : parseTimeToMinutes(pickupTime12(a)) - parseTimeToMinutes(pickupTime12(b))))
     .slice(0, 3);
   return el("div", { className: "dashStats" },
     el("div", { className: "dashStats__cards" },
@@ -4525,7 +4538,7 @@ function DashboardPage() {
       const next = [...prev, newRow];
       next.sort((a, b) => {
         if (a.date !== b.date) return a.date < b.date ? -1 : 1;
-        return parseTimeToMinutes(a.time) - parseTimeToMinutes(b.time);
+        return parseTimeToMinutes(pickupTime12(a)) - parseTimeToMinutes(pickupTime12(b));
       });
       return next;
     });
@@ -5076,7 +5089,7 @@ function NoShowsPage() {
     type: "button", className: "aiControl", style: { marginRight: "6px" }, disabled, title, onClick,
   }, label);
   const pickupCell = (row) => React.createElement("td", null,
-    row.pickupAt ? fmtBranchStamp(row.pickupAt) : `${row.date || ""} ${fmt12h(row.time)}`.trim());
+    row.pickupAt ? fmtBranchStamp(row.pickupAt) : `${row.date || ""} ${pickupTime12(row)}`.trim());
 
   const missedRow = (row) => {
     const working = busy.startsWith(`${row.resCode}:`);
@@ -15693,7 +15706,7 @@ function PreRentalCheckPage() {
                   React.createElement(
                     "tr",
                     { key: row.resCode },
-                    React.createElement("td", { key: `${row.resCode}-0` }, fmt12h(row.time)),
+                    React.createElement("td", { key: `${row.resCode}-0` }, pickupTime12(row)),
                     React.createElement("td", { key: `${row.resCode}-1` }, row.location),
                     React.createElement("td", { key: `${row.resCode}-2` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
                     React.createElement("td", { key: `${row.resCode}-3` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer })),
