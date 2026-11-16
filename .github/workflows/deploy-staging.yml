@@ -15,7 +15,8 @@ name: Deploy staging
 
 on:
   push:
-    branches: [main]
+    # The working branch too, so staging always shows it (polish-nov16).
+    branches: [main, polish-nov16]
   workflow_dispatch:
 
 concurrency:
