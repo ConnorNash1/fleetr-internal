@@ -8988,7 +8988,7 @@ function ChangeRecoveryEmail({ account, onDone }) {
   return React.createElement(
     React.Fragment, null,
     React.createElement("p", { className: "closeRentalHint" },
-      "The only real address we hold for you. Your login address is not a real mailbox, so this is how you get back in if you forget your password."),
+      "The only real address we hold for you. Your sign-in address is not a real mailbox, so this is how you get back in if you forget your password."),
     account && React.createElement("div", { style: { opacity: 0.7, fontSize: "0.85rem", marginBottom: "8px" } },
       account.recoveryEmail
         ? (verified ? "Confirmed." : "Not confirmed yet.")
@@ -20952,7 +20952,7 @@ function LoginScreen({ onSuccess, onSignup, onForgot, notice }) {
         }),
         errorAt === "password" && error && React.createElement("div", { className: "loginError" }, error),
         React.createElement("button", { type: "submit", className: "loginBtn authBtn", disabled: loading },
-          loading ? "Signing in…" : "Sign In"),
+          loading ? "Signing in…" : "Sign in"),
         notice && React.createElement("div", { className: "loginNotice", style: { color: "#3fbf7f", fontSize: "0.85rem", textAlign: "center" } }, notice),
         React.createElement("div", { className: "loginLinks" },
           React.createElement("button", { type: "button", className: "loginLink", onClick: onSignup }, "I have a join code"),
