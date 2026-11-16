@@ -19003,11 +19003,25 @@ function CustomerPage() {
   return React.createElement(CustomerPageView, { key: round, onDiscard: () => setRound((n) => n + 1) });
 }
 
+// The charge lines as charge_totals counts them: what each applying line comes
+// to and whose side it is on. Lines that count the same come to the same
+// totals, however they are written.
+function chargeLinesAsCounted(items) {
+  return JSON.stringify((Array.isArray(items) ? items : [])
+    .filter((it) => it && typeof it === "object" && String(it.applies) === "true")
+    .map((it) => JSON.stringify([String(it.key), Math.round((Number(it.qty) || 0) * (Number(it.amount) || 0) * 100),
+      isProtectionLine(it) && String(it.coveredByBillTo) !== "true"]))
+    .sort());
+}
+
 // A Stripe payment link for what is owing on a saved agreement, for the renter
 // or the bill-to. The amount is the database's, from the saved charges, so
 // unsaved changes are saved first. The payment arrives on the agreement by
-// itself once it is paid.
-function StripePayLink({ agreementId, unsaved, retail }) {
+// itself once it is paid. owes is what the page shows each party owes: the
+// charges the page has priced since they were saved (the days to the return,
+// the booked rates, protection accepted at pickup) are saved first, and the
+// worker makes the link only for exactly that amount.
+function StripePayLink({ agreementId, unsaved, retail, owes, saveLines }) {
   const el = React.createElement;
   const [busy, setBusy] = React.useState("");
   const [link, setLink] = React.useState(null);
@@ -19016,7 +19030,8 @@ function StripePayLink({ agreementId, unsaved, retail }) {
   const make = async (paidBy) => {
     setBusy(paidBy); setError(""); setLink(null); setCopied(false);
     try {
-      const data = await stripeCall("pay-link", { agreementId, paidBy });
+      if (saveLines) await saveLines();
+      const data = await stripeCall("pay-link", { agreementId, paidBy, expected: owes[paidBy] });
       setLink({ url: data.url, amount: data.amount, paidBy });
     } catch (e) { setError(e.message); }
     setBusy("");
@@ -19025,7 +19040,7 @@ function StripePayLink({ agreementId, unsaved, retail }) {
     navigator.clipboard?.writeText(link.url).then(() => setCopied(true)).catch(() => setError("Copy the link from the box."));
   };
   const btn = (paidBy, label) => el("button", {
-    key: paidBy, type: "button", className: "addPaymentBtn", disabled: !!busy || unsaved, onClick: () => make(paidBy),
+    key: paidBy, type: "button", className: "addPaymentBtn", disabled: !!busy || unsaved || !owes, onClick: () => make(paidBy),
   }, busy === paidBy ? "Making link…" : label);
   return el("div", { className: "paymentsTotals" },
     el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
@@ -19831,6 +19846,19 @@ function CustomerPageView({ onDiscard }) {
     billToDue, customerDue, grandTotal, billToPaid, customerPaid, totalPaid, billToBalance, customerBalance,
   } = chargeTotalsNow || NO_CHARGE_TOTALS;
 
+  // What each party owes as shown here, for a payment link; null until the
+  // totals are in. Charge lines priced here since they were saved are saved
+  // before a link is made, so the link asks for exactly this.
+  const linkOwes = !chargeTotalsNow ? null : btSrcCat === "Retail"
+    ? { Customer: Math.max(0, Math.round((grandTotal - totalPaid) * 100) / 100) }
+    : { Customer: Math.max(0, Math.round(customerBalance * 100) / 100), "Bill-To": Math.max(0, Math.round(billToBalance * 100) / 100) };
+  const saveLinkLines = async () => {
+    if (!ra?.id || chargeLinesAsCounted(lineItems) === chargeLinesAsCounted(ra.lineItems)) return;
+    const { error } = await supabase.from("rental_agreements").update({ "lineItems": lineItems }).eq("id", ra.id);
+    if (error) throw new Error("The charges could not be saved. Try again.");
+    setRentalAgreements((prev) => prev.map((r) => r.id !== ra.id ? r : { ...r, lineItems }));
+  };
+
   const addPayment = () => {
     setChargesEdited(true);
     setPayments((prev) => [...prev, { id: Date.now(), type: "Visa", last4: "", cardholderName: "", amount: "", paidBy: "Bill-To" }]);
@@ -20062,7 +20090,7 @@ function CustomerPageView({ onDiscard }) {
             )
           ),
       React.createElement("button", { type: "button", className: "addPaymentBtn", onClick: addPayment }, "+ Add Payment"),
-      ra?.id && React.createElement(StripePayLink, { agreementId: ra.id, unsaved: chargesEdited, retail: btSrcCat === "Retail" }),
+      ra?.id && React.createElement(StripePayLink, { agreementId: ra.id, unsaved: chargesEdited, retail: btSrcCat === "Retail", owes: linkOwes, saveLines: saveLinkLines }),
       // A retail customer has one total paid and one balance, as at the top.
       btSrcCat === "Retail" && React.createElement("div", { className: "paymentsTotals" },
         React.createElement("div", { className: "chargesTotalRow" },
