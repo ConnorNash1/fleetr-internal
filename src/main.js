@@ -1239,10 +1239,13 @@ function visibleNavSections() {
 // ─── Reservations page ──────────────────────────────────────────────────────
 
 
+// A day from today on this device's calendar, as "YYYY-MM-DD". Not the UTC
+// day: in St. John's that turns over at 8:30 PM, and Reservations, new
+// bookings and Home's Today all jumped to tomorrow for the evening shift.
 function isoOffset(days) {
   const d = new Date();
   d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 // ─── Module-level helpers (used by DashboardPage, NonDriveIntakeSection, TORPage) ──────
@@ -3020,7 +3023,7 @@ function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote })
 
 
 const EMPTY_RES_FORM = {
-  date: new Date().toISOString().slice(0, 10),
+  date: "",
   time: "", location: "",
   vehicleClass: "", winterTires: "No",
   noteText: "",
@@ -3035,6 +3038,7 @@ const EMPTY_RES_FORM = {
 // The blank form, with the location and class the company's own lists start on.
 const emptyResForm = () => ({
   ...EMPTY_RES_FORM,
+  date: isoOffset(0),
   location: defaultPickupLocation(),
   vehicleClass: defaultVehicleClass(),
 });
@@ -3373,7 +3377,7 @@ function ReservationsTable({ rows: given }) {
 function ReservationsPage() {
   const { reservations, setReservations, currentUser } = React.useContext(AppContext);
   const navigate = useNavigate();
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = isoOffset(0);
   const [showModal, setShowModal] = React.useState(false);
   // Set by a save with a required field empty; each empty one then shows its
   // message underneath until it is filled.
@@ -3788,7 +3792,7 @@ function NonDriveIntakeSection({ standalone }) {
   const movePickerMonth = (rowId, delta) => {
     setPickerMonthByRow((prev) => {
       const selected = ndiRows.find((row) => row.id === rowId)?.aiDate;
-      const base = prev[rowId] || `${(selected || new Date().toISOString().slice(0, 10)).slice(0, 7)}-01`;
+      const base = prev[rowId] || `${(selected || isoOffset(0)).slice(0, 7)}-01`;
       const [y, m] = base.split("-").map(Number);
       const nextMonth = new Date(y, m - 1 + delta, 1);
       return {
@@ -3887,7 +3891,7 @@ function NonDriveIntakeSection({ standalone }) {
     return React.createElement("span", { className }, value);
   };
 
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = isoOffset(0);
 
   const sectionEl = React.createElement(
     CompanyStep, { title: "Non-Drive Intake", open: !collapsed, onToggle: () => setCollapsed((c) => !c) },
@@ -4423,7 +4427,7 @@ function DashboardPage() {
   });
   const toggleFleetGroup = (key) =>
     setFleetGroupCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = isoOffset(0);
   const [srchDate,          setSrchDate]          = React.useState(todayIso);
   const [srchFirst,         setSrchFirst]         = React.useState("");
   const [srchLast,          setSrchLast]          = React.useState("");
@@ -5377,7 +5381,7 @@ function VehicleEconomics({ vehicle }) {
   const [form, setForm] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
-  const today = new Date().toISOString().slice(0, 10);
+  const today = isoOffset(0);
   const load = React.useCallback(async () => {
     if (!vehicle.id) return;
     const [e, c] = await Promise.all([
@@ -16464,7 +16468,7 @@ function RentalAgreementsPage() {
   useAnchorFollow(returnOpen, returnAnchor, setReturnAnchor, () => setReturnOpen(false));
   const [returnMonth,     setReturnMonth]     = React.useState(null);
 
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = isoOffset(0);
 
   const fmtDate = (iso) => {
     if (!iso) return "·";
@@ -19111,7 +19115,7 @@ function CustomerPageView({ onDiscard }) {
   const [calAnchor, setCalAnchor] = React.useState({ x: 0, y: 0 });
   useAnchorFollow(openCal != null, calAnchor, setCalAnchor, () => setOpenCal(null));
   const [calMonths, setCalMonths] = React.useState({});
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayIso = isoOffset(0);
 
   const openCalFor = (key, e) => {
     setCalAnchor(anchorAt(e.currentTarget));
