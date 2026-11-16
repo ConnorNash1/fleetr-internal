@@ -4315,9 +4315,11 @@ function CountUp({ value }) {
     const start = performance.now();
     let raf = 0;
     const tick = (now) => {
-      const p = Math.min(1, (now - start) / 900);
+      // A frame's time can be a moment before start, which made p negative
+      // and showed "-0" (kept while the tab was in the background).
+      const p = Math.max(0, Math.min(1, (now - start) / 900));
       at.current = from + (value - from) * (1 - Math.pow(1 - p, 3));
-      setShown(Math.round(at.current));
+      setShown(Math.round(at.current) || 0);
       if (p < 1) raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -4908,6 +4910,9 @@ function DashboardPage() {
 
               const avail    = fleet.filter((v) => v.status === "Available");
               const cleaning = fleet.filter((v) => v.status === "Needs Cleaning");
+              // A Switch Out's replacement, waiting for its renter: it was in no
+              // group, so the groups did not add up to the fleet.
+              const readyPickup = fleet.filter((v) => v.status === "Ready for Pickup");
               // Due for PM, or moved to PM by hand.
               const pm     = fleet.filter((v) => v.needsPm || v.status === "PM");
               const damaged  = fleet.filter((v) => v.status === "Damaged");
@@ -4931,6 +4936,7 @@ function DashboardPage() {
               return React.createElement(React.Fragment, null,
                 group("Available", "available", "available", avail, false),
                 group("Needs Cleaning", "cleaning", "needsCleaning", cleaning, false),
+                readyPickup.length > 0 && group("Ready for Pickup", "readyPickup", "readyPickup", readyPickup, false),
                 // Ready Returns — two sub-sections: returned & ready + projected
                 React.createElement("div", { className: `fleetGroup${statusDrag.groupClass("Ready Returns")}`, ...statusDrag.groupProps("Ready Returns") },
                   React.createElement("div", {
@@ -6050,7 +6056,7 @@ function VehicleDetailPage() {
 // Every move goes through guardAction, so it is in the audit log under who
 // made it. After a move, "Moved to <status>" shows with Undo for a few seconds.
 const VS_GROUP_STATUS = {
-  available: "Available", needsCleaning: "Needs Cleaning", readyReturns: "Ready Returns",
+  available: "Available", needsCleaning: "Needs Cleaning", readyPickup: "Ready for Pickup", readyReturns: "Ready Returns",
   pm: "PM", damaged: "Damaged", onRent: "On Rent",
 };
 const VS_HOLD_MS = 450;
@@ -6331,7 +6337,9 @@ function FleetPage() {
 
             const avail    = fleet.filter((v) => v.status === "Available");
             const cleaning = fleet.filter((v) => v.status === "Needs Cleaning");
-            const pm     = fleet.filter((v) => v.needsPm);
+            const readyPickup = fleet.filter((v) => v.status === "Ready for Pickup");
+            // As Home counts it: due for PM, or moved to PM by hand.
+            const pm     = fleet.filter((v) => v.needsPm || v.status === "PM");
             const damaged  = fleet.filter((v) => v.status === "Damaged");
             const onRent   = fleet.filter((v) => v.status === "On Rent");
 
@@ -6350,6 +6358,7 @@ function FleetPage() {
             return React.createElement(React.Fragment, null,
               group("Available", "available", "available", avail, false),
               group("Needs Cleaning", "cleaning", "needsCleaning", cleaning, false),
+              readyPickup.length > 0 && group("Ready for Pickup", "readyPickup", "readyPickup", readyPickup, false),
               React.createElement("div", { className: "fleetGroup" },
                 React.createElement("div", { className: "fleetGroupHeader fleetGroupHeader--readyReturns", ...barToggle(() => toggleFleetGroup("readyReturns"), !fleetGroupCollapsed.readyReturns) },
                   React.createElement("span", null, "Ready Returns"),
@@ -7177,6 +7186,9 @@ const FLEET_STATUS_OPTS = [
   { value: "Available",       label: "Available",        bg: "#d1fae5", fg: "#065f46" },
   { value: "Needs Cleaning",  label: "Needs Cleaning",   bg: "#fef3c7", fg: "#92400e" },
   { value: "Ready for Pickup",label: "Ready for Pickup", bg: "#fed7aa", fg: "#7c2d12" },
+  // A returned vehicle not looked at yet. Missing here, a Ready Returns
+  // vehicle's status picker showed Available.
+  { value: "Ready Returns",   label: "Ready Returns",    bg: "#fde68a", fg: "#78350f" },
   { value: "PM",              label: "PM",               bg: "#ede9fe", fg: "#4c1d95" },
   { value: "Damaged",         label: "Damaged",          bg: "#fee2e2", fg: "#991b1b" },
   { value: "On Rent",         label: "On Rent",          bg: "#dbeafe", fg: "#1e3a8a" },
@@ -7400,6 +7412,7 @@ function FleetVehiclesPage() {
 
             const avail    = filtered.filter((v) => v.status === "Available");
             const cleaning = filtered.filter((v) => v.status === "Needs Cleaning");
+            const readyPickup = filtered.filter((v) => v.status === "Ready for Pickup");
             // Due for PM, or moved to PM by hand.
             const pm     = filtered.filter((v) => v.needsPm || v.status === "PM");
             const damaged  = filtered.filter((v) => v.status === "Damaged");
@@ -7422,6 +7435,7 @@ function FleetVehiclesPage() {
             return React.createElement(React.Fragment, null,
               group("Available", "available", "available", avail),
               group("Needs Cleaning", "cleaning", "needsCleaning", cleaning),
+              readyPickup.length > 0 && group("Ready for Pickup", "readyPickup", "readyPickup", readyPickup),
               React.createElement("div", { className: `fleetGroup${statusDrag.groupClass("Ready Returns")}`, ...statusDrag.groupProps("Ready Returns") },
                 React.createElement("div", {
                   className: "fleetGroupHeader fleetGroupHeader--readyReturns",
@@ -9365,7 +9379,7 @@ const jumpTo = (step, ...targets) => {
 // the section. Only the outermost CompanySection reads it.
 const CompanySectionFlat = React.createContext(false);
 
-function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, onSkip, onUnskip, onDone, doneLabel, left, skipError, busy, showState, setup, children }) {
+function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, skippable, skipNote, onSkip, onUnskip, onDone, doneLabel, left, skipError, busy, showState, setup, children }) {
   const el = React.createElement;
   return el("section", { id, className: `companyStep companyStep--${stepKey}${open ? " companyStep--open" : ""}${current ? " companyStep--current" : ""}` },
     el("button", {
@@ -9386,6 +9400,7 @@ function CompanyStep({ id, stepKey, n, title, state, current, open, onToggle, sk
       showState && onDone && el("div", { className: "companyStep__foot" },
         el("button", { type: "button", className: "resModalSubmit", disabled: left, onClick: onDone }, doneLabel || "Done"),
         left && skippable && state !== "skipped" && el("button", { type: "button", className: "companyStep__textBtn companyStep__skip", disabled: busy, onClick: onSkip }, "Skip for now")),
+      showState && left && skipNote && el("p", { className: "closeRentalHint" }, skipNote),
       el(FieldError, { text: skipError })));
 }
 
@@ -9478,7 +9493,9 @@ function LaunchStep({ steps }) {
       window.location.reload();
     }, {
       description: "Launched the company.", tableName: "operators",
-      warning: "Launch the company? Your branches that are switched on show on fleetr.ai and take bookings, texts start going to customers, and every test record made in setup mode is deleted. This cannot be undone, though the company can be paused afterwards.",
+      // fleetr.ai is promised only to a company listed there.
+      warning: "Launch the company? " + (isFleetrAiListed() ? "Your branches that are switched on show on fleetr.ai and take bookings, texts" : "Texts")
+        + " start going to customers, and every test record made in setup mode is deleted. This cannot be undone, though the company can be paused afterwards.",
     });
   };
 
@@ -9906,7 +9923,10 @@ function CompanyPage() {
   // list does not show it. Launch counts once the company is ready to launch.
   const progress = [{ key: "signup", state: "done" },
     ...COMPANY_STEPS.map((st) => ({ key: st.key, state: st.key === "launch" && setup.ready ? "done" : stepState(st) }))];
-  const progressDone = progress.filter((p) => p.state === "done").length;
+  // A skipped step is dealt with, and once every required step is done the
+  // bar is full: it read "8 of 11 steps done, 73%" beside Launch's "Every
+  // required step is done", counting skipped and optional steps as not done.
+  const progressDone = setup.ready ? progress.length : progress.filter((p) => p.state === "done" || p.state === "skipped").length;
   const progressPct = Math.round((progressDone / progress.length) * 100);
   return el("div", { className: "page companySetup" },
     el("h1", { className: "companySetup__title" }, "Company"),
@@ -9932,7 +9952,11 @@ function CompanyPage() {
         current: !launched && st.key === nextKey,
         open: !!openSteps[st.key],
         onToggle: () => setOpenSteps((o) => ({ ...o, [st.key]: !o[st.key] })),
-        skippable: st.skippable,
+        // A step the company has made required (the listing, while List on
+        // fleetr.ai is on) cannot be skipped: its Skip for now did nothing.
+        skippable: st.skippable && !(st.items || []).some((k) => itemOf(k) && itemOf(k).required),
+        skipNote: st.key === "listing" && itemOf("listing") && itemOf("listing").required
+          ? "While List on fleetr.ai is on, this step has to be finished. Turn it off above to skip it for now." : null,
         onSkip: () => setSkip(st.key, true),
         onUnskip: () => setSkip(st.key, false),
         skipError: errorFor(`skip:${st.key}`),
@@ -11111,6 +11135,17 @@ function ListingEditor({ branch, operatorId, listing, timeZone, onSaved, onTimeZ
     return true;
   };
   const auto = useAutosave(keyOf(draft), keyOf(toDraft(listing)), saveDetails, 1200);
+  // An address typed somewhere else (HQ fills one in when it creates the
+  // company) gets its pin and local time the first time it is seen here: the
+  // pin was only placed on a save, so a new company's Business details could
+  // never be done without retyping an address that was already complete.
+  const pinPlaced = React.useRef(false);
+  React.useEffect(() => {
+    if (pinPlaced.current || !showAddress || !listing || !branchAddressComplete(listing)) return;
+    if (listing.latitude != null && listing.longitude != null && timeZone) return;
+    pinPlaced.current = true;
+    saveDetails(false);
+  }, [listing, timeZone]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Uploads a new photo or logo, points the listing at it, then removes the
   // file it replaced. A file the listing never pointed at is removed again.
@@ -24025,6 +24060,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 }
 .fleetGroupHeader--available    { background: #22c55e; }
 .fleetGroupHeader--cleaning     { background: #e6a800; }
+.fleetGroupHeader--readyPickup  { background: #c2410c; }
 .fleetGroupHeader--readyReturns { background: #ea580c; }
 .fleetGroupHeader--pm         { background: #7b5ea7; }
 .fleetGroupHeader--damaged      { background: #c0392b; }
@@ -25406,6 +25442,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 .fleetGroup .fleetGroupHeader > .fleetGroupChevron{ order: 3; }
 .fleetGroup .fleetGroupHeader--available   { --fg: #22c55e; }
 .fleetGroup .fleetGroupHeader--cleaning    { --fg: #e6a800; }
+.fleetGroup .fleetGroupHeader--readyPickup { --fg: #c2410c; }
 .fleetGroup .fleetGroupHeader--readyReturns{ --fg: #ea580c; }
 .fleetGroup .fleetGroupHeader--pm          { --fg: #7b5ea7; }
 .fleetGroup .fleetGroupHeader--damaged     { --fg: #c0392b; }
