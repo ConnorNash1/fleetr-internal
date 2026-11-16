@@ -1592,12 +1592,13 @@ function PinConfirmModal({ onConfirm, onCancel, warning, danger }) {
     { className: "resModalBackdrop", onClick: onCancel },
     React.createElement(
       "div",
-      { className: "resModal", style: { maxWidth: "340px" }, onClick: (e) => e.stopPropagation() },
+      { className: "resModal", style: { maxWidth: "340px" }, onClick: (e) => e.stopPropagation(),
+        role: "dialog", "aria-modal": "true", "aria-labelledby": "pinModalTitle" },
       React.createElement(
         "div", { className: "resModalHeader" },
-        React.createElement("h2", { className: "resModalTitle" },
+        React.createElement("h2", { id: "pinModalTitle", className: "resModalTitle" },
           mode === "setup" ? "Set your PIN" : "Confirm PIN"),
-        React.createElement("button", { type: "button", className: "resModalClose", onClick: onCancel }, "✕")
+        React.createElement("button", { type: "button", className: "resModalClose", "aria-label": "Close", onClick: onCancel }, "✕")
       ),
       mode === "setup" ? React.createElement(
         "form", { className: "resModalForm", onSubmit: handleSetPin },
@@ -3650,10 +3651,10 @@ function ReservationsPage() {
       { className: "resModalBackdrop", onClick: () => setShowModal(false) },
       React.createElement(
         "div",
-        { className: "resModal", onClick: (e) => e.stopPropagation() },
+        { className: "resModal", onClick: (e) => e.stopPropagation(), role: "dialog", "aria-modal": "true", "aria-labelledby": "newResTitle" },
         React.createElement("div", { className: "resModalHeader" },
-          React.createElement("h2", { className: "resModalTitle" }, "New Reservation"),
-          React.createElement("button", { type: "button", className: "resModalClose", onClick: () => setShowModal(false) }, "✕")
+          React.createElement("h2", { id: "newResTitle", className: "resModalTitle" }, "New Reservation"),
+          React.createElement("button", { type: "button", className: "resModalClose", "aria-label": "Close", onClick: () => setShowModal(false) }, "✕")
         ),
         React.createElement("form", { className: "resModalForm", onSubmit: handleSubmit, noValidate: true },
           React.createElement("div", { className: "resModalBody" },
@@ -4813,10 +4814,10 @@ function DashboardPage() {
       { className: "resModalBackdrop", onClick: () => setShowModal(false) },
       React.createElement(
         "div",
-        { className: "resModal", onClick: (e) => e.stopPropagation() },
+        { className: "resModal", onClick: (e) => e.stopPropagation(), role: "dialog", "aria-modal": "true", "aria-labelledby": "newResTitle" },
         React.createElement("div", { className: "resModalHeader" },
-          React.createElement("h2", { className: "resModalTitle" }, "New Reservation"),
-          React.createElement("button", { type: "button", className: "resModalClose", onClick: () => setShowModal(false) }, "✕")
+          React.createElement("h2", { id: "newResTitle", className: "resModalTitle" }, "New Reservation"),
+          React.createElement("button", { type: "button", className: "resModalClose", "aria-label": "Close", onClick: () => setShowModal(false) }, "✕")
         ),
         React.createElement("form", { className: "resModalForm", onSubmit: handleSubmit, noValidate: true },
           React.createElement("div", { className: "resModalBody" },
