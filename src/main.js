@@ -5207,6 +5207,17 @@ function NoShowsPage() {
 
 // ─── OverdueRentalsPage ───────────────────────────────────────────────────────
 
+// Whether an open rental is past its due-back time on this device's clock:
+// the reservation's return date and time, the end of that day with no time.
+function overdueNow(r, ra, now = new Date()) {
+  if (!r?.returnDate) return false;
+  const raStatus = ra?.rentalAgreementStatus || r.rentalAgreementStatus || "";
+  if (raStatus !== "open_rental_agreement") return false;
+  const due = rateStamp(r.returnDate, r.returnTime, r.returnMeridiem, true) || rateStamp(r.returnDate, "", "", true);
+  const dueAt = due ? new Date(`${due.replace(" ", "T")}:00`) : null;
+  return !!dueAt && !Number.isNaN(dueAt.getTime()) && now > dueAt;
+}
+
 function OverdueRentalsPage() {
   const { reservations, rentalAgreements } = React.useContext(AppContext);
   const [callStatuses, setCallStatuses] = React.useState({});
@@ -5218,19 +5229,14 @@ function OverdueRentalsPage() {
       : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
   };
 
-  // Derived: reservations with an open rental agreement whose return date has
-  // passed (same computation the automated overdue-rental SMS uses).
+  // Derived: reservations with an open rental agreement past their due-back
+  // time, as the automated overdue text counts it: the return time, or the end
+  // of the day when there is none. It used midnight, so a rental due back at
+  // noon was listed overdue from the start of its last day.
   const rows = React.useMemo(() => {
     const now = new Date();
     return reservations
-      .filter((r) => {
-        if (!r.returnDate) return false;
-        const ra = rentalAgreements.find((a) => a.resCode === r.resCode);
-        const raStatus = ra?.rentalAgreementStatus || r.rentalAgreementStatus || "";
-        if (raStatus !== "open_rental_agreement") return false;
-        const returnDt = new Date(`${r.returnDate}T00:00:00`);
-        return !Number.isNaN(returnDt.getTime()) && now > returnDt;
-      })
+      .filter((r) => overdueNow(r, rentalAgreements.find((a) => a.resCode === r.resCode), now))
       .map((r) => {
         const ra = rentalAgreements.find((a) => a.resCode === r.resCode);
         return {
