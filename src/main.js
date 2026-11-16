@@ -6570,7 +6570,9 @@ const PROVINCE_CODES = PROV_STATE_LIST.filter((p) => p.value !== "All").map((p) 
 // until PM Complete clears the flag.
 const PM_BLOCKED_STATUSES = ["Available", "Needs Cleaning", "Ready for Pickup"];
 
-function resolvePmStatus(vehicle, requestedStatus) {
+// before: worded for a confirm screen, ahead of the change ("will go to PM"),
+// where "has been set" told staff it had happened before they pressed Complete.
+function resolvePmStatus(vehicle, requestedStatus, { before = false } = {}) {
   if (!vehicle?.needsPm) return { status: requestedStatus, forced: false, message: null };
   if (!PM_BLOCKED_STATUSES.includes(requestedStatus)) {
     // Damaged / On Rent / PM are left alone: they are either more urgent or
@@ -6580,7 +6582,7 @@ function resolvePmStatus(vehicle, requestedStatus) {
   return {
     status: "PM",
     forced: true,
-    message: `${vehicle.plate} is due for preventative maintenance, so it has been set to PM instead of ${requestedStatus}. Use PM Complete on its detail page once serviced.`,
+    message: `${vehicle.plate} is due for preventative maintenance, so it ${before ? "will go" : "has been set"} to PM instead of ${requestedStatus}. Use PM Complete on its detail page once serviced.`,
   };
 }
 
@@ -17669,7 +17671,7 @@ function CloseRentalPage() {
   // they move one out of Ready Returns: damage reported beats the default, and
   // resolvePmStatus has the last word, so a vehicle flagged for preventative
   // maintenance goes to PM rather than back into service.
-  const vehicleStatus = resolvePmStatus(vehicle, returnedVehicleStatus(!!final?.newDamageFound, final?.vehicleRentable));
+  const vehicleStatus = resolvePmStatus(vehicle, returnedVehicleStatus(!!final?.newDamageFound, final?.vehicleRentable), { before: true });
 
   // Where the agreement lands. Independent of the vehicle's status: a vehicle
   // can need cleaning without the customer owing anything for it.
@@ -17971,7 +17973,9 @@ function CloseRentalPage() {
           agreementStatus: agreementOutcome.status,
           agreementReason: agreementOutcome.reason,
           vehicleStatus: vehicle ? vehicleStatus.status : null,
-          forcedMessage: vehicle && vehicleStatus.forced ? vehicleStatus.message : null,
+          // Said once it is done, so in the past tense.
+          forcedMessage: vehicle && vehicleStatus.forced
+            ? resolvePmStatus(vehicle, returnedVehicleStatus(!!final?.newDamageFound, final?.vehicleRentable)).message : null,
           legSaved:      !legRes?.error,
           claimSaved:    !claimRes?.error,
           gasOwed:       gasCharge,
@@ -18334,7 +18338,8 @@ function SwitchOutPage() {
   // move one out of Ready Returns.
   const oldVehicleStatus = resolvePmStatus(
     oldVehicle,
-    returnedVehicleStatus(!!review?.newDamageFound, review?.vehicleRentable)
+    returnedVehicleStatus(!!review?.newDamageFound, review?.vehicleRentable),
+    { before: true }
   );
 
   const resetFlow = () => {
@@ -18506,7 +18511,9 @@ function SwitchOutPage() {
           oldDamageFound: !!review.newDamageFound,
           oldVehicleRentable: review.newDamageFound ? review.vehicleRentable : null,
           oldStatus: oldVehicle ? oldVehicleStatus.status : null,
-          forcedMessage: oldVehicle && oldVehicleStatus.forced ? oldVehicleStatus.message : null,
+          // Said once it is done, so in the past tense.
+          forcedMessage: oldVehicle && oldVehicleStatus.forced
+            ? resolvePmStatus(oldVehicle, returnedVehicleStatus(!!review?.newDamageFound, review?.vehicleRentable)).message : null,
           newPlate: newVehicle.plate,
           resCode: ra.resCode || null,
           oldVehicleSaved: !oldRes?.error,
