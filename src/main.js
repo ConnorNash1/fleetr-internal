@@ -1467,15 +1467,21 @@ function vehicleForPlate(fleet, plate) {
 const DAMAGE_CLAIM_STATUS_LABEL = { open: "Open", in_review: "In Review", resolved: "Settled" };
 const damageClaimStatusLabel = (status) => DAMAGE_CLAIM_STATUS_LABEL[status] || status || "Open";
 
-function enrichDamageClaim(claim, rentalAgreements, reservations) {
+function enrichDamageClaim(claim, rentalAgreements, reservations, fleet = []) {
   const ra  = rentalAgreements.find((a) => a.id === claim.rentalAgreementId) || null;
   const res = ra ? reservations.find((r) => r.resCode === ra.resCode) : null;
-  const vehicle = res
-    ? [res.vehicleYear, res.vehicleMake, res.vehicleModel].filter(Boolean).join(" ") || res.vehicleClass
-    : (ra ? [ra.make, ra.model].filter(Boolean).join(" ") || ra.vehicleClass : null);
+  // The fleet vehicle the claim is on, by its plate. The reservation's
+  // vehicleYear, vehicleMake and vehicleModel are the renter's own car (the
+  // one in for repair on an insurance or body shop rental), which this used
+  // to show: HVD 128, a Chevrolet Tahoe, read "2015 Mazda CX-5".
+  const plate = claim.plate || ra?.plate || null;
+  const car = plate ? (fleet || []).find((v) => v.plate === plate) : null;
+  const vehicle = car
+    ? [car.year, car.make, car.model].filter(Boolean).join(" ") || car.vehicleClass
+    : (ra ? [ra.make, ra.model].filter(Boolean).join(" ") || ra.vehicleClass || res?.vehicleClass : res?.vehicleClass) || null;
   return {
     id:                claim.id,
-    plate:             claim.plate || ra?.plate || null,
+    plate,
     vehicle:           vehicle || "Unknown",
     customer:          res?.customer || "Unknown",
     resCode:           ra?.resCode || null,
@@ -5157,6 +5163,15 @@ const NO_SHOWS_POLL_MS = 30000;
 
 // "YYYY-MM-DDTHH:MM" in the branch's own time, as my_no_shows sends it, read
 // as written: no conversion through this browser's time zone.
+// A cutoff at midnight reads as the end of the day before: "End of Nov 15",
+// not "Nov 16, 12:00 AM", which read as the end of the 16th.
+function fmtCutoffStamp(stamp) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T00:00/.exec(String(stamp || ""));
+  if (!m) return fmtBranchStamp(stamp);
+  const day = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]) - 1)
+    .toLocaleDateString("en-CA", { month: "short", day: "numeric" });
+  return `End of ${day}`;
+}
 function fmtBranchStamp(stamp, withDate = true) {
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(stamp || ""));
   if (!m) return "";
@@ -5312,7 +5327,7 @@ function NoShowsPage() {
       React.createElement("td", null, !sent ? "Not sent yet" : sent.status === "sent"
         ? ampm(new Date(sent.sentAt).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))
         : sent.status === "failed" ? "Failed" : "Sending"),
-      React.createElement("td", null, fmtBranchStamp(row.cutoffAt)),
+      React.createElement("td", null, fmtCutoffStamp(row.cutoffAt)),
       React.createElement("td", null, React.createElement("div", { className: "readyStatusWrap" },
         outcome,
         !outcome && btn("Reached", () => setOutcome(row, "reached"), working, "The customer replied or we spoke to them"),
@@ -5973,7 +5988,7 @@ function VehicleDetailPage() {
     mkSection("damageClaims", "Ongoing Damage Claims", (() => {
       const claims = damageClaims
         .filter((c) => (c.plate || "") === plate && c.status !== "resolved")
-        .map((c) => enrichDamageClaim(c, rentalAgreements, reservations));
+        .map((c) => enrichDamageClaim(c, rentalAgreements, reservations, fleet));
       if (claims.length === 0) return React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "12px 0" } }, "No active damage claims for this vehicle.");
       return React.createElement(
         "table", { className: "dashboardTable" },
@@ -8209,7 +8224,7 @@ function FleetDamageClaimsPage() {
   // Claims without a plate are shown regardless of the current fleet filter.
   const allClaims = damageClaims
     .filter((c) => !c.preExisting && (!c.plate || filteredPlates.has(c.plate)))
-    .map((c) => enrichDamageClaim(c, rentalAgreements, reservations));
+    .map((c) => enrichDamageClaim(c, rentalAgreements, reservations, fleet));
 
   const openClaims   = allClaims.filter((c) => c._status !== "resolved");
   const closedClaims = allClaims.filter((c) => c._status === "resolved");
