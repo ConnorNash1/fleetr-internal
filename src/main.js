@@ -7139,8 +7139,9 @@ function FleetVehiclesPage() {
         React.createElement("strong", null, `${duePm.length} vehicle${duePm.length === 1 ? "" : "s"} due for preventative maintenance: `),
         React.createElement("span", { className: "pmBannerPlates" }, duePm.map((v) => v.plate).join(", ")),
         ". ",
-        duePm.length === 1 ? "It keeps its current status " : "They keep their current status ",
-        "until moved on, then switches to PM automatically. Use PM Complete on the vehicle's detail page once serviced."
+        duePm.length === 1
+          ? "It keeps its current status until moved on, then switches to PM automatically. Use PM Complete on its detail page once serviced."
+          : "They keep their current status until moved on, then switch to PM automatically. Use PM Complete on each one's detail page once serviced."
       );
     })(),
 
