@@ -8440,6 +8440,7 @@ function GasCollectionsPage() {
         return;
       }
       setRentalAgreements((prev) => prev.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+      if (value === "Paid") closePaidLinks(id);
     }, { warning: value === "Paid"
       ? `Mark the gas on ${codeOf(id)} as paid? It is recorded as a payment on the rental's charges.`
       : `Mark the gas on ${codeOf(id)} as unpaid?` });
@@ -8800,7 +8801,7 @@ function OwedReport({ data }) {
   const o = data.owed;
   return el(React.Fragment, null,
     el("div", { className: "reportKpis" },
-      el(ReportKpi, { title: "Owed by insurers and companies", value: reportMoney(o.total, true), note: "today, by when the rental closed" })),
+      el(ReportKpi, { title: "Owed by insurers, body shops and companies", value: reportMoney(o.total, true), note: "today, by when the rental closed" })),
     o.accounts.length === 0 ? el("p", { className: "closeRentalHint" }, "Nothing owed.")
       : el(React.Fragment, null,
           el("div", { className: "reportLegend" }, REPORT_AGE.map(([k, label, color]) =>
@@ -8808,7 +8809,7 @@ function OwedReport({ data }) {
           el("table", { className: "dashboardTable" },
             el("thead", null, el("tr", null, ["Account", "Owed", "", ...REPORT_AGE.map(([, label]) => label)].map((h, i) => el("th", { key: i }, h)))),
             el("tbody", null, o.accounts.map((a) => el("tr", { key: a.name },
-              el("td", null, a.name, el("div", { className: "closeRentalHint", style: { margin: 0 } }, `${a.billingType === "insurance" ? "Insurer" : "Company"}, ${a.invoices} rental${a.invoices === 1 ? "" : "s"}`)),
+              el("td", null, a.name, el("div", { className: "closeRentalHint", style: { margin: 0 } }, `${a.billingType === "insurance" ? "Insurer" : a.billingType === "bodyshop_dealership" ? "Body shop" : "Company"}, ${a.invoices} rental${a.invoices === 1 ? "" : "s"}`)),
               el("td", null, el("strong", null, reportMoney(a.total, true))),
               el("td", { style: { minWidth: 140 } }, el("div", { className: "reportStack", title: REPORT_AGE.map(([k, label]) => `${label}: ${reportMoney(a[k], true)}`).join(", ") },
                 REPORT_AGE.map(([k, , color]) => Number(a[k]) > 0 && el("span", { key: k, style: { width: `${a[k] / a.total * 100}%`, background: color } })))),
@@ -9964,7 +9965,7 @@ function CompanyPage() {
 }
 
 // ─── Invoicing ───────────────────────────────────────────────────────────────
-// A rental billed to an insurer or a company makes an invoice when it closes,
+// A rental billed to an insurer, a body shop or a company makes an invoice when it closes,
 // with a Stripe payment link, sent to the bill-to's invoice email with
 // reminders at 14 and 30 days (invoicing.sql, fleetr-infra). Off until an
 // Exec switches it on here, and fleetr's own switch is off for now.
@@ -9993,7 +9994,7 @@ function InvoicingSection() {
   const smallBtn = { width: "auto", padding: "6px 10px" };
   return el(React.Fragment, null,
     el("p", { style: { opacity: 0.8, fontSize: "0.9rem" } },
-      "When a rental billed to an insurer or a company closes with something owing, an invoice is made with a card payment link. "
+      "When a rental billed to an insurer, a body shop or a company closes with something owing, an invoice is made with a card payment link. "
       + "With sending on, it goes to that bill-to's invoice email, with reminders 14 and 30 days later if it is still unpaid."),
     el("label", { style: { display: "flex", gap: "8px", alignItems: "center" } },
       el("input", { type: "checkbox", checked: !!data.sendingOn, disabled: !!busy || data.isDemo,
@@ -10006,7 +10007,7 @@ function InvoicingSection() {
     el("p", { className: "closeRentalHint" },
       `${data.counts.waiting} waiting to send, ${data.counts.sent} sent and unpaid, ${data.counts.paid} paid.`),
     data.sources.length === 0
-      ? el("p", { className: "closeRentalHint" }, "No insurance or corporate sources yet.")
+      ? el("p", { className: "closeRentalHint" }, "No insurance, body shop or corporate sources yet.")
       : el("table", { className: "dashboardTable" },
           el("thead", null, el("tr", null, ["Bill-to", "Invoice email", ""].map((h) => el("th", { key: h }, h)))),
           el("tbody", null, data.sources.map((src) => {
@@ -10028,6 +10029,14 @@ function InvoicingSection() {
 // links made on it, the money goes straight to the company, and fleetr's
 // revenue share comes off each payment as Stripe's application fee
 // (stripe_payments.sql and /stripe/* in worker.js, fleetr-infra).
+// After a payment is saved: the Worker switches off the agreement's open
+// payment links whose balance it paid. Not waited for, and a failure is
+// harmless: the Worker's 30-minute run does the same.
+function closePaidLinks(agreementId) {
+  if (!agreementId) return;
+  stripeCall("close-paid-links", { agreementId }).catch((e) => console.warn("paid links not switched off yet:", e.message));
+}
+
 async function stripeCall(route, body) {
   const session = supabase.auth.session();
   if (!session?.access_token) throw new Error("Your session has ended. Sign in again.");
@@ -19669,6 +19678,7 @@ function CustomerPageView({ onDiscard }) {
           setRentalAgreements((prev) =>
             prev.map((r) => r.id !== ra.id ? r : { ...r, lineItems, payments, ...(raRes.data || {}) })
           );
+          if (JSON.stringify(payments) !== JSON.stringify(ra.payments || [])) closePaidLinks(ra.id);
         }
       }
       // Re-fetch fresh record from Supabase and update both local and global state
