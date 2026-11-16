@@ -19021,7 +19021,14 @@ function chargeLinesAsCounted(items) {
 // charges the page has priced since they were saved (the days to the return,
 // the booked rates, protection accepted at pickup) are saved first, and the
 // worker makes the link only for exactly that amount.
-function StripePayLink({ agreementId, unsaved, retail, owes, saveLines, billToName }) {
+// Why a payment link cannot be made yet for an agreement in this status, or
+// null when it can. A rental still out has its charges finalised at return.
+function payLinkNotYet(status) {
+  return status === "open_rental_agreement"
+    ? "Charges are finalised at return. A payment link can be made once the vehicle is back." : null;
+}
+
+function StripePayLink({ agreementId, unsaved, retail, owes, saveLines, billToName, notYet }) {
   const el = React.createElement;
   const [busy, setBusy] = React.useState("");
   const [link, setLink] = React.useState(null);
@@ -19040,13 +19047,14 @@ function StripePayLink({ agreementId, unsaved, retail, owes, saveLines, billToNa
     navigator.clipboard?.writeText(link.url).then(() => setCopied(true)).catch(() => setError("Copy the link from the box."));
   };
   const btn = (paidBy, label) => el("button", {
-    key: paidBy, type: "button", className: "addPaymentBtn", disabled: !!busy || unsaved || !owes, onClick: () => make(paidBy),
+    key: paidBy, type: "button", className: "addPaymentBtn", disabled: !!busy || unsaved || !owes || !!notYet, onClick: () => make(paidBy),
   }, busy === paidBy ? "Making link…" : label);
   return el("div", { className: "paymentsTotals" },
     el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
       retail ? btn("Customer", "Card payment link")
         : [btn("Customer", "Customer payment link"), btn("Bill-To", "Bill-To payment link")]),
-    unsaved && el("p", { className: "closeRentalHint" }, "Save the charges first: the link asks for what is saved."),
+    notYet ? el("p", { className: "closeRentalHint" }, notYet)
+      : unsaved && el("p", { className: "closeRentalHint" }, "Save the charges first: the link asks for what is saved."),
     link && el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginTop: "8px" } },
       el("input", { className: "resFormInput", readOnly: true, value: link.url, style: { flex: "1 1 240px" }, onFocus: (e) => e.target.select() }),
       el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, onClick: copy }, copied ? "Copied" : "Copy"),
@@ -20092,7 +20100,7 @@ function CustomerPageView({ onDiscard }) {
             )
           ),
       React.createElement("button", { type: "button", className: "addPaymentBtn", onClick: addPayment }, "+ Add Payment"),
-      ra?.id && React.createElement(StripePayLink, { agreementId: ra.id, unsaved: chargesEdited, retail: btSrcCat === "Retail", owes: linkOwes, saveLines: saveLinkLines, billToName: btSrcName || "" }),
+      ra?.id && React.createElement(StripePayLink, { agreementId: ra.id, unsaved: chargesEdited, retail: btSrcCat === "Retail", owes: linkOwes, saveLines: saveLinkLines, billToName: btSrcName || "", notYet: payLinkNotYet(rentalAgreementStatus) }),
       // A retail customer has one total paid and one balance, as at the top.
       btSrcCat === "Retail" && React.createElement("div", { className: "paymentsTotals" },
         React.createElement("div", { className: "chargesTotalRow" },
