@@ -20012,7 +20012,7 @@ function CustomerPageView({ onDiscard }) {
     chargesTab === "Payments" && React.createElement("div", { className: "cdetailForm" },
       // Owes summary. A retail customer is their own bill-to, so they have one
       // balance: every charge less every payment. The split is kept only when
-      // someone else pays.
+      // someone else pays: what each still owes after their payments.
       btSrcCat === "Retail"
         ? React.createElement("div", { className: "chargesInfoRow" },
             React.createElement("div", { className: "chargesInfoItem" },
@@ -20023,11 +20023,11 @@ function CustomerPageView({ onDiscard }) {
         : React.createElement("div", { className: "chargesInfoRow" },
             React.createElement("div", { className: "chargesInfoItem" },
               React.createElement("span", { className: "chargesInfoLabel" }, "Bill-To Owes"),
-              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(billToDue))
+              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(Math.max(0, billToBalance)))
             ),
             React.createElement("div", { className: "chargesInfoItem" },
               React.createElement("span", { className: "chargesInfoLabel" }, "Customer Owes"),
-              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(customerDue))
+              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(Math.max(0, customerBalance)))
             )
           ),
       // Payments list
