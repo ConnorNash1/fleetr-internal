@@ -16540,7 +16540,7 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
   }, { enabled: !!savedLines });
   const charges = savedLines && savedTotals ? {
     base: savedTotals.vehicleTotal, additional: savedTotals.otherTotal, taxes: savedTotals.taxTotal,
-    total: savedTotals.grandTotal, paid: savedTotals.totalPaid, owing: savedTotals.owing,
+    total: savedTotals.grandTotal, paid: savedTotals.totalPaid, owing: owedInAll(savedTotals),
   } : null;
 
   const notesContent = React.createElement("div", { style: { padding: "14px" } },
@@ -17789,6 +17789,7 @@ function CloseChargesSummary({ charges }) {
       el("p", { className: "closeRentalHint" }, "Working out the final charges\u2026"));
   }
   const { lines, totals, extraDays, dueDate, billToCategory } = charges;
+  const owingAll = owedInAll(totals);
   const shown = lines.filter((it) => it.applies && lineItemAmount(it) !== 0);
   const unit = (it) => { const u = chargeQtyUnit(it); return u === "days" ? ` day${Number(it.qty) === 1 ? "" : "s"}` : u ? ` ${u}` : ""; };
   const lineLabel = (it) => (it.key === "vehicle:cap" ? it.label
@@ -17811,9 +17812,9 @@ function CloseChargesSummary({ charges }) {
     row("Paid", money(totals.totalPaid)),
     !retail && row("Bill-To owes", money(Math.max(0, totals.billToBalance))),
     !retail && row("Customer owes", money(Math.max(0, totals.customerBalance))),
-    row("Balance owing", money(totals.owing), { strong: true }),
-    totals.owing > 0 && el("div", { className: "closeRentalWarning", style: { marginTop: 10 } },
-      `${money(totals.owing)} is still owing on this rental. Completing the close does not take payment: record it under Charges & Payments on the reservation.`));
+    row("Balance owing", money(owingAll), { strong: true }),
+    owingAll > 0 && el("div", { className: "closeRentalWarning", style: { marginTop: 10 } },
+      `${money(owingAll)} is still owing on this rental. Completing the close does not take payment: record it under Charges & Payments on the reservation.`));
 }
 
 function CloseRentalPage() {
@@ -19069,6 +19070,16 @@ const NO_CHARGE_TOTALS = {
 // The totals for these charges, asked for again a moment after they change;
 // the last answer stays up meanwhile. Null until the first answer, and while
 // not enabled.
+// What is still owed on a rental in all, from charge_totals. On a bill-to
+// rental its owing is the larger side's (it says whether anything is owed at
+// all), so here both sides are added: Close Rental showed "$369.15 is still
+// owing" with $531.30 owed, $369.15 by the bill-to and $162.15 by the renter.
+function owedInAll(totals) {
+  if (!totals) return 0;
+  const n = totals.retail ? Number(totals.owing)
+    : Math.max(0, Number(totals.billToBalance)) + Math.max(0, Number(totals.customerBalance));
+  return Math.round((Number.isFinite(n) ? n : 0) * 100) / 100;
+}
 function useChargeTotals({ lineItems, payments, salesTaxes, billToCategory }, { enabled = true } = {}) {
   const key = JSON.stringify([lineItems || [], payments || [], salesTaxes || [], billToCategory || null]);
   const [totals, setTotals] = React.useState(null);
