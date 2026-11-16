@@ -23258,8 +23258,8 @@ select.resFormInput.listAdd__payer--empty{ color: #9B9A96; }
 .datePricing__table th{ text-align: left; font-size: 12px; font-weight: 600; color: #5C5B57; padding: 6px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .datePricing__table td{ padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
 .datePricing__class{ font-weight: 600; }
-.datePricing__normal{ color: #8A8984; }
-.datePricing__tiers{ margin-top: 2px; font-size: 0.75rem; color: #8A8984; }
+.datePricing__normal{ color: #6B6A66; }
+.datePricing__tiers{ margin-top: 2px; font-size: 0.75rem; color: #6B6A66; }
 .protCard__allSources{ display: flex; flex-direction: column; gap: 2px; margin: 0 0 6px; }
 .protCard__block{ max-width: 340px; padding-top: 8px; border-top: 1px solid #EEEDE9; }
 .protCard__blockHead{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
@@ -25297,7 +25297,7 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
   height: 28px;
   font-size: 11px;
   font-weight: 500;
-  color: #8A8984;
+  color: #6B6A66;
 }
 .dateFieldPanel__day{
   width: 32px;
@@ -25354,7 +25354,7 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
 .calendarArrow:hover{ background: rgba(31, 30, 29, 0.06); color: #1F1E1D; }
 .calendarMonthLabel{ font-size: 13px; font-weight: 600; }
 .calendarWeekdays, .calendarGrid{ gap: 2px; }
-.calendarWeekday{ padding: 6px 0; font-size: 11px; font-weight: 500; color: #8A8984; }
+.calendarWeekday{ padding: 6px 0; font-size: 11px; font-weight: 500; color: #6B6A66; }
 .calendarDay{
   height: 30px;
   padding: 0;
@@ -25604,7 +25604,7 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .faiRules{ margin-bottom: 20px; }
 .companyLogo{ display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
 .companyLogo__tile{ width: 88px; height: 88px; border-radius: 16px; border: 1px solid #E2DFD9; background: #FFFFFF; overflow: hidden;
-  display: flex; align-items: center; justify-content: center; font-size: 12px; color: #8A8984; }
+  display: flex; align-items: center; justify-content: center; font-size: 12px; color: #6B6A66; }
 .companyLogo__tile img{ width: 100%; height: 100%; object-fit: contain; }
 .companyLogo__tile--empty{ background: #EEEDE9; }
 .companyLogo__actions{ display: flex; align-items: center; gap: 12px; }
