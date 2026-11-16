@@ -68,7 +68,16 @@ function restHeaders(extra) {
 // Staff type a username, not an email. Supabase Auth authenticates by email, so
 // the username is mapped onto a fixed non-routable domain. The alternative, a
 // public username-to-email table, would let anyone enumerate staff.
-const AUTH_EMAIL_DOMAIN = "fleetr.internal";
+//
+// New logins are username@staff.fleetr.ai, a subdomain of fleetr.ai with no
+// mail records. Logins made before 2026-11-16 are username@fleetr.internal and
+// keep working: .internal is a reserved top-level domain, which an auth server
+// may refuse for a new address. Staff still type only their username.
+const AUTH_EMAIL_DOMAIN = "staff.fleetr.ai";
+const LEGACY_AUTH_EMAIL_DOMAIN = "fleetr.internal";
+// The order sign-in tries them: every login made before the change is a
+// legacy one, so that is tried first and they sign in with one request.
+const SIGN_IN_DOMAINS = [LEGACY_AUTH_EMAIL_DOMAIN, AUTH_EMAIL_DOMAIN];
 
 // Usernames are globally unique, enforced by a unique index on public.users
 // rather than by anything here. That is what lets the address stay a plain
@@ -84,7 +93,13 @@ const AUTH_EMAIL_DOMAIN = "fleetr.internal";
 // Nothing outside this file needs to know the address exists. Staff type a
 // username; the mapping to an email is an implementation detail of Supabase
 // Auth authenticating by email.
-const usernameToEmail = (u) => `${String(u || "").trim().toLowerCase()}@${AUTH_EMAIL_DOMAIN}`;
+const usernameToEmail = (u, domain = AUTH_EMAIL_DOMAIN) => `${String(u || "").trim().toLowerCase()}@${domain}`;
+// The username in a login address, at either domain; "" for any other address.
+const emailToUsername = (email) => {
+  const e = String(email || "").trim().toLowerCase();
+  const d = [AUTH_EMAIL_DOMAIN, LEGACY_AUTH_EMAIL_DOMAIN].find((x) => e.endsWith(`@${x}`));
+  return d ? e.slice(0, -d.length - 1) : "";
+};
 
 // A hard cap on how long a session lives, independent of Supabase's own token
 // refresh. Refresh tokens would otherwise keep a session alive indefinitely,
@@ -167,11 +182,14 @@ const isBadCredentials = (err) => {
 // picks the message; `error` carries the detail for the console.
 async function signInReal(username, password) {
   try {
-    // supabase-js v1: signIn, not v2's signInWithPassword.
-    const { error } = await supabase.auth.signIn({
-      email:    usernameToEmail(username),
-      password: password,
-    });
+    // supabase-js v1: signIn, not v2's signInWithPassword. Each login domain in
+    // turn, the next only after a wrong-credentials answer, so a wrong
+    // password reads the same whichever domain the login is at.
+    let error = null;
+    for (const domain of SIGN_IN_DOMAINS) {
+      ({ error } = await supabase.auth.signIn({ email: usernameToEmail(username, domain), password }));
+      if (!error || !isBadCredentials(error)) break;
+    }
     if (error) {
       if (isBadCredentials(error)) {
         return { ok: false, reason: "credentials", error: error.message };
@@ -9205,7 +9223,7 @@ const PHONE_HANDOFF_STEP = "/company?section=fleet";
 function phoneHandoffUrl() {
   const session = supabase.auth.session();
   const email = (session && session.user && session.user.email) || "";
-  const username = email.endsWith(`@${AUTH_EMAIL_DOMAIN}`) ? email.slice(0, -AUTH_EMAIL_DOMAIN.length - 1) : "";
+  const username = emailToUsername(email);
   const base = `${window.location.origin}${window.location.pathname}`;
   return `${base}#${PHONE_HANDOFF_STEP}${username ? `&as=${encodeURIComponent(username)}` : ""}`;
 }
