@@ -19685,10 +19685,15 @@ function CustomerPageView({ onDiscard }) {
     try {
       // Build the full candidate payload (form → Supabase field names)
       const candidate = customerCandidate({ resInfoForm, ratesForm, billToForm, customerVehicleForm });
-      // Diff against localRecord — only write fields that actually changed
+      // Only the fields that actually changed, compared as the unsaved check
+      // compares them: with the saved record read through the same form.
+      // Against the raw record every Save rewrote the times in the form's
+      // own format ("19:19" became "07:19 PM", "8:00" became "800"), with
+      // only a payment added.
+      const before = localRecord ? customerCandidate(customerFormsFrom(localRecord)) : {};
       const patch = Object.fromEntries(
         Object.entries(candidate).filter(
-          ([k, v]) => String(localRecord?.[k] ?? "") !== String(v ?? "")
+          ([k, v]) => String(before[k] ?? "") !== String(v ?? "")
         )
       );
       if (Object.keys(patch).length > 0) {
