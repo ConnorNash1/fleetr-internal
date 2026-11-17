@@ -19401,6 +19401,26 @@ function StripePayLink({ agreementId, unsaved, retail, owes, saveLines, billToNa
   const copy = () => {
     navigator.clipboard?.writeText(link.url).then(() => setCopied(true)).catch(() => setError("Copy the link from the box."));
   };
+  // Less owed than the link shown asks for (a payment saved since): the
+  // Worker switches that link off and makes one for what is owed now, which
+  // is shown in its place; paid off, none is shown. It used to keep showing
+  // the switched-off link to copy.
+  const dueNow = owes && link ? Number(owes[link.paidBy]) : NaN;
+  React.useEffect(() => {
+    if (!link || !Number.isFinite(dueNow) || Math.abs(dueNow - Number(link.amount)) < 0.005) return undefined;
+    if (!(dueNow > 0)) { setLink(null); return undefined; }
+    let live = true, tries = 0, timer = 0;
+    const look = async () => {
+      const { data } = await supabase.rpc("open_payment_link", { p_agreement_id: agreementId, p_paid_by: link.paidBy });
+      if (!live) return;
+      if (data && Math.abs(Number(data.amount) - dueNow) < 0.005) {
+        setLink({ url: data.url, amount: Number(data.amount), paidBy: link.paidBy, replaced: true }); setCopied(false);
+      } else if (++tries < 5) timer = setTimeout(look, 1500);
+      else setLink(null);
+    };
+    look();
+    return () => { live = false; clearTimeout(timer); };
+  }, [dueNow, link && link.amount]); // eslint-disable-line react-hooks/exhaustive-deps
   // A side that owes nothing has no link to make: its button waits, saying so.
   const owesNothing = (paidBy) => !!owes && !(Number(owes[paidBy]) > 0);
   const btn = (paidBy, label) => el("button", {
@@ -19418,7 +19438,8 @@ function StripePayLink({ agreementId, unsaved, retail, owes, saveLines, billToNa
       el("input", { className: "resFormInput", readOnly: true, value: link.url, style: { flex: "1 1 240px" }, onFocus: (e) => e.target.select() }),
       el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, onClick: copy }, copied ? "Copied" : "Copy"),
       el("a", { href: link.url, target: "_blank", rel: "noopener", className: "loginBtn", style: { width: "auto", padding: "6px 10px", textDecoration: "none" } }, "Open"),
-      el("span", { className: "closeRentalHint" }, `$${Number(link.amount).toFixed(2)} for the ${link.paidBy === "Bill-To" ? "bill-to" : "renter"}`)),
+      el("span", { className: "closeRentalHint" }, `$${Number(link.amount).toFixed(2)} for the ${link.paidBy === "Bill-To" ? "bill-to" : "renter"}`
+        + (link.replaced ? ". The earlier link was switched off: less is owed now." : ""))),
     el(FieldError, { text: error }));
 }
 
