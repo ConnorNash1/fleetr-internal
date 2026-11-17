@@ -2856,6 +2856,78 @@ function PageSkeleton({ path }) {
 // the new one is drawn while the old one is still counted here.
 const SKEL_DELAY_MS = 150;
 let skelShowing = 0;
+// ─── UI kit (fleetr design system 1.0) ───────────────────────────────────────
+// The shared pieces new screens are built from, drawn by the .fl* rules in the
+// design system layer at the end of the stylesheet. One primary Button per
+// view; Field puts a label, hint and error around any input; EmptyState and
+// ErrorState say what to do next rather than how it feels.
+const UI_ICONS = {
+  check: ["M20 6 9 17l-5-5"],
+  chevronRight: ["m9 18 6-6-6-6"],
+  chevronLeft: ["m15 18-6-6 6-6"],
+  x: ["M18 6 6 18", "M6 6l12 12"],
+  plus: ["M12 5v14", "M5 12h14"],
+  car: ["M19 17h2v-4l-2.4-5.2A2 2 0 0 0 16.8 6H7.2a2 2 0 0 0-1.8 1.2L3 13v4h2", "M7 17h10", "M5 13h14"],
+  carCircle: ["M7 17a2 2 0 1 0 0 .01", "M17 17a2 2 0 1 0 0 .01"],
+  calendar: ["M8 2v4", "M16 2v4", "M3 10h18", "M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"],
+  card: ["M2 7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z", "M2 10h20"],
+  building: ["M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18", "M6 12H4a2 2 0 0 0-2 2v8h20v-8a2 2 0 0 0-2-2h-2", "M10 6h4", "M10 10h4", "M10 14h4", "M10 18h4"],
+  tag: ["M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z", "M7.5 7.5h.01"],
+  users: ["M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z", "M22 21v-2a4 4 0 0 0-3-3.9", "M16 3.1a4 4 0 0 1 0 7.8"],
+  file: ["M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z", "M14 2v5h6", "M8 13h8", "M8 17h5"],
+  bell: ["M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9", "M10.3 21a1.9 1.9 0 0 0 3.4 0"],
+  alert: ["M12 9v4", "M12 17h.01", "M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"],
+  bolt: ["M13 2 3 14h9l-1 8 10-12h-9z"],
+  search: ["M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z", "m21 21-4.3-4.3"],
+  phone: ["M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z", "M12 18h.01"],
+  inbox: ["M22 12h-6l-2 3h-4l-2-3H2", "M5.5 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.5-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.7 1.1z"],
+  wrench: ["M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.9 6.9a2.1 2.1 0 0 1-3-3l6.9-6.9a6 6 0 0 1 7.9-7.9z"],
+  sparkle: ["M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z", "M19 17v4", "M17 19h4"],
+};
+function Icon({ name, size = 20, className }) {
+  const el = React.createElement;
+  return el("svg", { className: `flIcon${className ? ` ${className}` : ""}`, width: size, height: size, viewBox: "0 0 24 24", fill: "none",
+    stroke: "currentColor", strokeWidth: 1.75, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
+    (UI_ICONS[name] || UI_ICONS.check).map((d, i) => el("path", { key: i, d })));
+}
+// variant: primary | secondary | quiet | danger. loading shows a spinner and
+// keeps the button's width, so nothing jumps.
+function Button({ variant = "primary", size, block, loading, className, children, type = "button", ...rest }) {
+  const cls = ["flBtn", `flBtn--${variant}`, size === "lg" && "flBtn--lg", block && "flBtn--block", className].filter(Boolean).join(" ");
+  return React.createElement("button", { type, className: cls, "aria-busy": loading ? "true" : undefined, ...rest, disabled: rest.disabled || loading },
+    loading ? React.createElement("span", { className: "flSpinner", "aria-hidden": "true" }) : null, children);
+}
+function Field({ label, hint, error, htmlFor, children, className }) {
+  const el = React.createElement;
+  return el("div", { className: `flField${className ? ` ${className}` : ""}` },
+    label && el("label", { className: "flField__label", htmlFor }, label),
+    children,
+    error ? el("span", { className: "flField__error", role: "alert" }, error) : hint ? el("span", { className: "flField__hint" }, hint) : null);
+}
+function Card({ title, desc, children, className, ...rest }) {
+  const el = React.createElement;
+  return el("section", { className: `flCard${className ? ` ${className}` : ""}`, ...rest },
+    title && el("h3", { className: "flCard__title" }, title), desc && el("p", { className: "flCard__desc" }, desc), children);
+}
+function EmptyState({ icon = "inbox", title, text, action }) {
+  const el = React.createElement;
+  return el("div", { className: "flEmpty" }, el("span", { className: "flEmpty__icon" }, el(Icon, { name: icon, size: 22 })),
+    el("h3", { className: "flEmpty__title" }, title), text && el("p", { className: "flEmpty__text" }, text), action || null);
+}
+function ErrorState({ title = "This could not load", text = "Check the connection, then try again.", onRetry }) {
+  const el = React.createElement;
+  return el("div", { className: "flError", role: "alert" }, el("span", { className: "flError__icon" }, el(Icon, { name: "alert", size: 22 })),
+    el("h3", { className: "flError__title" }, title), el("p", { className: "flError__text" }, text),
+    onRetry && el(Button, { variant: "secondary", onClick: onRetry }, "Try again"));
+}
+function Progress({ value, label }) {
+  const pct = Math.max(0, Math.min(100, Math.round(value * 100)));
+  return React.createElement("div", { className: "flProgress", role: "progressbar", "aria-label": label || "Progress", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": pct },
+    React.createElement("div", { className: "flProgress__bar", style: { width: `${pct}%` } }));
+}
+const Chip = ({ tone, children }) => React.createElement("span", { className: `flChip${tone ? ` flChip--${tone}` : ""}` }, children);
+const Plate = ({ children }) => React.createElement("span", { className: "flPlate" }, String(children || "").toUpperCase());
+
 function SkeletonFrame({ children, label = "Loading" }) {
   const [shown, setShown] = React.useState(() => skelShowing > 0);
   React.useEffect(() => {
@@ -21045,7 +21117,7 @@ function ForgotScreen({ onCancel }) {
               "Nothing has changed yet. Your password stays as it is until you use the link."),
             React.createElement("button", {
               type: "button", onClick: onCancel,
-              style: { background: "none", border: "none", color: "#C9603D", cursor: "pointer", fontSize: "0.85rem" },
+              style: { background: "none", border: "none", color: "var(--fl-brand-text)", cursor: "pointer", fontSize: "0.85rem" },
             }, "Back to sign in"))
         : React.createElement(
             "form", { className: "loginForm", onSubmit: submit, noValidate: true },
@@ -21062,7 +21134,7 @@ function ForgotScreen({ onCancel }) {
               "The link goes to the email on your account, not to your fleetr username."),
             React.createElement("button", {
               type: "button", onClick: onCancel,
-              style: { background: "none", border: "none", color: "#C9603D", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
+              style: { background: "none", border: "none", color: "var(--fl-brand-text)", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
             }, "Back to sign in"))
     )
   );
@@ -21257,7 +21329,7 @@ function SignupScreen({ onDone, onCancel }) {
         messageAt === "" && message && React.createElement("div", { className: "loginError" }, message),
         React.createElement("button", {
           type: "button", className: "loginLink", onClick: onCancel,
-          style: { background: "none", border: "none", color: "#C9603D", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
+          style: { background: "none", border: "none", color: "var(--fl-brand-text)", cursor: "pointer", marginTop: "8px", fontSize: "0.85rem" },
         }, "I already have an account")
       )
     )
@@ -21513,6 +21585,37 @@ function UpdateBanner() {
 const style = document.createElement("style");
 style.textContent = `
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+/* fleetr design tokens 1.0. The same block sits in the staff app, check-in,
+   fleetr.ai and HQ (design_tokens.test.mjs keeps them identical). Colour is
+   built around the logo's terracotta, which itself never changes. */
+:root{
+  --fl-paper: #F9F9F7; --fl-surface: #FFFFFF; --fl-sunken: #F1F0EC; --fl-hover: #F4F3EF;
+  --fl-ink: #1F1E1D; --fl-ink-2: #4A4946; --fl-ink-3: #6B6A66; --fl-ink-4: #8A8984;
+  --fl-line: rgba(31, 30, 29, 0.12); --fl-line-soft: rgba(31, 30, 29, 0.07); --fl-line-strong: rgba(31, 30, 29, 0.24);
+  --fl-brand: #F4845F; --fl-brand-hover: #EE7550; --fl-brand-press: #E06D47; --fl-on-brand: #1F1E1D;
+  --fl-brand-text: #B4532F; --fl-brand-soft: rgba(244, 132, 95, 0.14); --fl-brand-wash: rgba(244, 132, 95, 0.07);
+  --fl-success: #17683F; --fl-success-soft: #E3F4EA; --fl-warning: #8A5100; --fl-warning-soft: #FDF1DC;
+  --fl-danger: #B42318; --fl-danger-soft: #FDE8E6; --fl-info: #2557A7; --fl-info-soft: #E6EEFB;
+  --fl-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --fl-text-xs: 12px; --fl-text-sm: 13px; --fl-text-base: 15px; --fl-text-md: 17px;
+  --fl-text-lg: 20px; --fl-text-xl: 24px; --fl-text-2xl: 30px; --fl-text-3xl: 40px;
+  --fl-leading-tight: 1.2; --fl-leading: 1.5; --fl-tracking-tight: -0.02em;
+  --fl-space-1: 4px; --fl-space-2: 8px; --fl-space-3: 12px; --fl-space-4: 16px; --fl-space-5: 20px;
+  --fl-space-6: 24px; --fl-space-7: 32px; --fl-space-8: 40px; --fl-space-9: 48px; --fl-space-10: 64px;
+  --fl-radius-sm: 6px; --fl-radius: 10px; --fl-radius-lg: 14px; --fl-radius-xl: 20px; --fl-radius-pill: 999px;
+  --fl-shadow-xs: 0 1px 2px rgba(31, 30, 29, 0.05);
+  --fl-shadow-sm: 0 1px 2px rgba(31, 30, 29, 0.06), 0 2px 8px rgba(31, 30, 29, 0.05);
+  --fl-shadow-md: 0 2px 4px rgba(31, 30, 29, 0.06), 0 10px 28px rgba(31, 30, 29, 0.10);
+  --fl-shadow-lg: 0 4px 8px rgba(31, 30, 29, 0.06), 0 24px 64px rgba(31, 30, 29, 0.18);
+  --fl-ring: 0 0 0 3px rgba(244, 132, 95, 0.35);
+  --fl-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1); --fl-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --fl-dur-fast: 120ms; --fl-dur: 180ms; --fl-dur-slow: 280ms;
+  --fl-tap: 44px;
+}
+@media (prefers-reduced-motion: reduce){
+  :root{ --fl-dur-fast: 0ms; --fl-dur: 0ms; --fl-dur-slow: 0ms; }
+}
+/* end fleetr design tokens */
 body, * {
   font-family: 'Inter', sans-serif;
 }
@@ -22009,7 +22112,7 @@ body, * {
   color: var(--cs-ink);
 }
 .companyStep__body .dashboardSection > h2[role="button"][aria-expanded="false"]:hover,
-.staffPage .dashboardSection > h2[role="button"][aria-expanded="false"]:hover{ color: #C9603D; }
+.staffPage .dashboardSection > h2[role="button"][aria-expanded="false"]:hover{ color: var(--fl-brand-text); }
 .companyStep__body .dashboardSection > h2:not([aria-expanded="false"]),
 .staffPage .dashboardSection > h2:not([aria-expanded="false"]){
   border-bottom: 1px solid var(--cs-line);
@@ -22056,7 +22159,7 @@ body, * {
 .companySetup input[type="checkbox"],
 .companySetup input[type="radio"]{ accent-color: var(--cs-terra); }
 .companyStep__body a,
-.staffPage a{ color: #C9603D; text-underline-offset: 2px; }
+.staffPage a{ color: var(--fl-brand-text); text-underline-offset: 2px; }
 .companyStep__body .closeRentalHint,
 .staffPage .closeRentalHint{ color: var(--cs-muted); line-height: 1.5; }
 .companyStep__body .closeRentalActions,
@@ -22165,7 +22268,7 @@ body, * {
 .branchMapPin{ background: none; border: none; }
 .branchMapPin svg{ display: block; filter: drop-shadow(0 2px 3px rgba(31, 30, 29, 0.28)); }
 .companySetup .leaflet-container{ border: 1px solid var(--cs-line); border-radius: 10px; font-family: 'Inter', sans-serif; }
-.companySetup .leaflet-container a{ color: #C9603D; }
+.companySetup .leaflet-container a{ color: var(--fl-brand-text); }
 .companySetup .leaflet-bar a{ color: var(--cs-ink); }
 .companySetup .leaflet-bar a:hover{ background: var(--cs-terra-soft); }
 @media (max-width: 767px){
@@ -22240,7 +22343,7 @@ body, * {
   background: none;
   border: none;
   cursor: pointer;
-  color: #C9603D;
+  color: var(--fl-brand-text);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -22312,7 +22415,7 @@ body, * {
   border-bottom: 1px solid rgba(244, 132, 95,0.15);
   font-size: 12px;
   font-weight: 600;
-  color: #C9603D;
+  color: var(--fl-brand-text);
   letter-spacing: 0.04em;
 }
 .fleetrCommandBar__popoverClose{
@@ -22575,7 +22678,7 @@ body, * {
   font-weight: 700;
 }
 .slaTimer--under{
-  color: #C9603D;
+  color: var(--fl-brand-text);
   font-weight: 500;
 }
 .aiCallWrap{
@@ -22711,7 +22814,7 @@ body, * {
   font-size: 13px;
 }
 .preRentalCheckDone {
-  color: #C9603D;
+  color: var(--fl-brand-text);
   font-weight: 700;
   font-size: 13px;
 }
@@ -22738,12 +22841,12 @@ body, * {
 }
 .aiSubTab:hover {
   border-color: #F4845F;
-  color: #C9603D;
+  color: var(--fl-brand-text);
 }
 .aiSubTab--active {
   border-color: #F4845F;
   background: rgba(244, 132, 95,0.08);
-  color: #C9603D;
+  color: var(--fl-brand-text);
 }
 .aiTabDesc {
   font-size: 13px;
@@ -23224,7 +23327,7 @@ body, * {
 .closeRentalFuel__value{
   font-size: 15px;
   font-weight: 700;
-  color: #C9603D;
+  color: var(--fl-brand-text);
 }
 .closeRentalFuel{
   touch-action: none;
@@ -23342,7 +23445,7 @@ body, * {
 .damageSection__thumb, .damageSection__add{ aspect-ratio: 1; width: 100%; border-radius: 10px; overflow: hidden; padding: 0; cursor: pointer; }
 .damageSection__thumb{ border: 1px solid #E3E2DE; background: #FFFFFF; }
 .damageSection__thumb img{ width: 100%; height: 100%; object-fit: cover; display: block; }
-.damageSection__add{ border: 1px dashed rgba(31, 30, 29, 0.3); background: #FFFFFF; font: inherit; font-size: 13px; font-weight: 600; color: #C9603D; }
+.damageSection__add{ border: 1px dashed rgba(31, 30, 29, 0.3); background: #FFFFFF; font: inherit; font-size: 13px; font-weight: 600; color: var(--fl-brand-text); }
 .damageSection__addNote, .damageSection__note{ background: none; border: none; padding: 0; font: inherit; font-size: 12px; text-align: left; cursor: pointer; overflow-wrap: anywhere; }
 .damageSection__addNote{ color: rgba(31, 30, 29, 0.62); text-decoration: underline; text-underline-offset: 2px; }
 .damageSection__note{ color: #1F1E1D; }
@@ -23783,9 +23886,9 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   background: none; border: 0; padding: 0; font: inherit; font-weight: inherit; color: inherit; cursor: pointer;
   text-decoration: underline; text-decoration-color: #F4845F; text-decoration-thickness: 2px; text-underline-offset: 3px;
 }
-.setupItem__link:hover{ color: #C9603D; }
+.setupItem__link:hover{ color: var(--fl-brand-text); }
 .listingMissing__link{
-  background: none; border: 0; padding: 0; font: inherit; color: #C9603D; cursor: pointer;
+  background: none; border: 0; padding: 0; font: inherit; color: var(--fl-brand-text); cursor: pointer;
   text-decoration: underline; text-underline-offset: 2px;
 }
 .resFormTextarea{
@@ -24066,7 +24169,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   }
 }
 
-.fleetStatus--available { color: #C9603D; font-weight: 700; }
+.fleetStatus--available { color: var(--fl-brand-text); font-weight: 700; }
 .fleetStatus--onRent    { color: #4a6fa5; font-weight: 700; }
 .fleetStatus--cleaning  { color: #c0392b; font-weight: 700; }
 .fleetStatus--pm      { color: #7b5ea7; font-weight: 700; }
@@ -24131,7 +24234,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   padding: 5px 14px 3px;
   font-size: 11px;
   font-weight: 700;
-  color: #C9603D;
+  color: var(--fl-brand-text);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   background: #f4fcf7;
@@ -24179,8 +24282,8 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   text-decoration-color: #ccc;
 }
 .customerLink:hover {
-  color: #C9603D;
-  text-decoration-color: #C9603D;
+  color: var(--fl-brand-text);
+  text-decoration-color: var(--fl-brand-text);
 }
 .plateLink {
   background: none;
@@ -24197,8 +24300,8 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   letter-spacing: 0.02em;
 }
 .plateLink:hover {
-  color: #C9603D;
-  text-decoration-color: #C9603D;
+  color: var(--fl-brand-text);
+  text-decoration-color: var(--fl-brand-text);
 }
 .vehicleDetailRow {
   display: flex;
@@ -24482,7 +24585,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: #C9603D;
+  color: var(--fl-brand-text);
 }
 .customerPlaceholder {
   padding: 16px 18px;
@@ -24500,7 +24603,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #C9603D;
+  color: var(--fl-brand-text);
   padding-top: 6px;
   border-top: 1px solid #F1F0EC;
 }
@@ -24641,7 +24744,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   color: #1F1E1D;
 }
 .chargesTotalValue--owing{ color: #c0392b; }
-.chargesTotalValue--credit{ color: #C9603D; }
+.chargesTotalValue--credit{ color: var(--fl-brand-text); }
 .paymentsList{
   display: flex;
   flex-direction: column;
@@ -24785,7 +24888,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   background: none;
   border: none;
   padding: 0;
-  color: #C9603D;
+  color: var(--fl-brand-text);
   font-weight: 600;
   font-size: inherit;
   cursor: pointer;
@@ -24799,7 +24902,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   color: #1F1E1D;
 }
 .rentalAgreementLink--dark:hover {
-  color: #C9603D;
+  color: var(--fl-brand-text);
 }
 .rentalAgreementBadge {
   display: inline-block;
@@ -24856,7 +24959,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 .rentalAgreementBackBtn {
   background: none;
   border: none;
-  color: #C9603D;
+  color: var(--fl-brand-text);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -25132,7 +25235,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 }
 .resolveClaimBtn:hover {
   border-color: #F4845F;
-  color: #C9603D;
+  color: var(--fl-brand-text);
 }
 
 /* ─── Gas Collections ──────────────────────────────────────────────────────── */
@@ -25212,7 +25315,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 }
 .statCard__title{ font-size: 13px; font-weight: 600; color: rgba(31, 30, 29, 0.62); }
 .statCard__chevron{ font-size: 22px; line-height: 1; color: rgba(31, 30, 29, 0.45); transition: transform 160ms ease, color 160ms ease; }
-.statCard__head:hover .statCard__chevron{ transform: translateX(3px); color: #C9603D; }
+.statCard__head:hover .statCard__chevron{ transform: translateX(3px); color: var(--fl-brand-text); }
 .statCard__big{ font-size: 32px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .statCard__desc{ margin: 2px 0 0; font-size: 13px; color: rgba(31, 30, 29, 0.62); }
 
@@ -25258,7 +25361,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   background: #FFFFFF; border: 2px solid #F4845F;
 }
 .nextPickups__item:first-child .nextPickups__dot{ background: #F4845F; }
-.nextPickups__when{ font-size: 12px; font-weight: 700; color: #C9603D; }
+.nextPickups__when{ font-size: 12px; font-weight: 700; color: var(--fl-brand-text); }
 .nextPickups__who{ font-size: 14px; font-weight: 600; color: #1F1E1D; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nextPickups__what{ font-size: 12px; color: rgba(31, 30, 29, 0.62); }
 
@@ -25547,7 +25650,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 .loginLinks{ display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 8px; }
 .loginLink{
   background: none; border: none; padding: 2px 4px; border-radius: 4px;
-  color: #C9603D; font: inherit; font-size: 0.85rem; cursor: pointer;
+  color: var(--fl-brand-text); font: inherit; font-size: 0.85rem; cursor: pointer;
 }
 .loginLink:hover{ color: #B4532F; text-decoration: underline; text-underline-offset: 3px; }
 .loginLink:focus-visible{ outline: 2px solid #F4845F; outline-offset: 2px; }
@@ -25978,7 +26081,7 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .fai .faiLogo--empty{ background: #EEEDE9; border: 1.5px dashed rgba(31, 30, 29, 0.28); box-shadow: none; }
 .faiLogo__initials{ font-size: 24px; font-weight: 600; color: rgba(31, 30, 29, 0.6); letter-spacing: 0.02em; }
 .faiImage__badge{ position: absolute; right: 4px; bottom: 4px; width: 22px; height: 22px; display: grid; place-items: center; border-radius: 999px; background: #FFFFFF; color: #1F1E1D; box-shadow: 0 1px 3px rgba(31, 30, 29, 0.2); pointer-events: none; font-weight: 700; font-size: 14px; }
-.faiImage__badge--add{ color: #C9603D; }
+.faiImage__badge--add{ color: var(--fl-brand-text); }
 .fai .placeholder-photo.faiImage__empty{ border: 1.5px dashed rgba(31, 30, 29, 0.28); }
 .faiMenu{ position: absolute; z-index: 5; display: grid; min-width: 160px; padding: 6px; border-radius: 12px; background: #fff; box-shadow: var(--shadow-lg); border: 1px solid var(--rule); }
 .faiMenu--photo{ top: 12px; right: 12px; }
@@ -26052,7 +26155,7 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 /* Not set: dashed, with + Set ... in terracotta. Set: solid, its value large,
    a small pencil. */
 .setCard--unset{ border-style: dashed; border-color: rgba(31, 30, 29, 0.28); }
-.setCard__add{ color: #C9603D; font-weight: 600; font-size: 15px; }
+.setCard__add{ color: var(--fl-brand-text); font-weight: 600; font-size: 15px; }
 .setCard__pencil{ margin-left: auto; flex: 0 0 auto; color: rgba(31, 30, 29, 0.5); }
 .perkCards{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
 .perkCard__text{ font-size: 15px; color: #1F1E1D; }
@@ -26236,6 +26339,162 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
   .customerLink, .plateLink, .rentalAgreementLink{ padding-block: 14px; margin-block: -14px; }
   .statCard__head{ min-height: 44px; padding-block: 11px; margin: -11px 0 -3px; }
 }
+
+/* ══ fleetr design system 1.0 ════════════════════════════════════════════
+   The layer every screen is drawn with, built on the tokens at the top of
+   this sheet. Last in the sheet, so it is the look that wins: the rules
+   above it keep layout, these set type, colour, shape, depth and motion.
+   One family (Inter, the logo's face), one type scale, one spacing scale,
+   radii by size (controls 10, cards 14, sheets 20), depth only for things
+   that float, and terracotta kept for the one action that matters. */
+html, body{ background: var(--fl-paper); color: var(--fl-ink); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility; }
+body, button, input, select, textarea{ font-family: var(--fl-font); }
+button, a, [role="button"]{ -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+::selection{ background: var(--fl-brand-soft); }
+.content{ background: var(--fl-paper); padding: var(--fl-space-7) var(--fl-space-7) var(--fl-space-9); }
+.page{ max-width: 1120px; }
+.page__title{ font-size: var(--fl-text-2xl); font-weight: 600; letter-spacing: var(--fl-tracking-tight); line-height: var(--fl-leading-tight); color: var(--fl-ink); }
+.page__titleUnderline{ margin: 0 0 var(--fl-space-6); }
+table, .statCard__big, .statTile__value, .chargesTotalValue, .chargesInfoValue{ font-variant-numeric: tabular-nums; }
+
+/* Keyboard focus: one ring, everywhere, only when moving with the keyboard. */
+[data-keys] :focus-visible{ outline: none; box-shadow: var(--fl-ring); }
+
+/* ── Buttons ── primary (terracotta, one per view), secondary, quiet ── */
+.loginBtn, .resModalSubmit, .resModalSave, .appDialog__main, .resvInlineBtn, .customerPageSaveBtn, .unsavedBar__save,
+.flBtn--primary{
+  background: var(--fl-brand); color: var(--fl-on-brand); border: 1px solid transparent; border-radius: var(--fl-radius);
+  font-weight: 600; letter-spacing: -0.005em; box-shadow: var(--fl-shadow-xs);
+  transition: background var(--fl-dur-fast) var(--fl-ease-out), transform var(--fl-dur-fast) var(--fl-ease-out), box-shadow var(--fl-dur-fast) var(--fl-ease-out);
+}
+.loginBtn:hover:not(:disabled), .resModalSubmit:hover:not(:disabled), .resModalSave:hover:not(:disabled), .appDialog__main:hover:not(:disabled),
+.resvInlineBtn:hover:not(:disabled), .customerPageSaveBtn:hover:not(:disabled), .unsavedBar__save:hover:not(:disabled), .flBtn--primary:hover:not(:disabled){ background: var(--fl-brand-hover); }
+.resModalCancel, .appDialog__cancel, .unsavedBar__discard, .flBtn--secondary{
+  background: var(--fl-surface); color: var(--fl-ink); border: 1px solid var(--fl-line); border-radius: var(--fl-radius);
+  font-weight: 600; box-shadow: var(--fl-shadow-xs);
+  transition: background var(--fl-dur-fast) var(--fl-ease-out), border-color var(--fl-dur-fast) var(--fl-ease-out), transform var(--fl-dur-fast) var(--fl-ease-out);
+}
+.resModalCancel:hover, .appDialog__cancel:hover, .unsavedBar__discard:hover, .flBtn--secondary:hover:not(:disabled){ background: var(--fl-hover); border-color: var(--fl-line-strong); }
+.appDialog__main--danger, .resModalSubmit--danger, .flBtn--danger{ background: var(--fl-danger); color: #FFFFFF; }
+.appDialog__main--danger:hover, .resModalSubmit--danger:hover, .flBtn--danger:hover:not(:disabled){ background: #962016; }
+/* Every press shows at once (under 100ms): a small sink. */
+.loginBtn:active:not(:disabled), .resModalSubmit:active:not(:disabled), .resModalSave:active:not(:disabled), .resModalCancel:active, .appDialog__main:active,
+.appDialog__cancel:active, .resvInlineBtn:active:not(:disabled), .customerPageSaveBtn:active:not(:disabled), .unsavedBar__save:active, .unsavedBar__discard:active,
+.flBtn:active:not(:disabled), .flPress:active{ transform: scale(0.98); }
+
+/* ── Fields ── white, 10px corners, a terracotta ring on focus ── */
+.resFormInput, .loginInput, .appDialog__input, .resvSearchInput, .fleetFilterInput, .fleetFilterSelect, .flInput{
+  background-color: var(--fl-surface); color: var(--fl-ink); border: 1px solid var(--fl-line-strong); border-radius: var(--fl-radius);
+  transition: border-color var(--fl-dur-fast) var(--fl-ease-out), box-shadow var(--fl-dur-fast) var(--fl-ease-out);
+}
+.resFormInput:hover:not(:disabled):not(:focus), .loginInput:hover:not(:focus), .resvSearchInput:hover:not(:focus), .flInput:hover:not(:focus){ border-color: rgba(31, 30, 29, 0.38); }
+.resFormInput:focus, .loginInput:focus, .appDialog__input:focus, .resvSearchInput:focus, .fleetFilterInput:focus, .fleetFilterSelect:focus, .flInput:focus{
+  outline: none; border-color: var(--fl-brand); box-shadow: var(--fl-ring);
+}
+.resFormInput:disabled, .flInput:disabled{ background-color: var(--fl-sunken); color: var(--fl-ink-3); }
+input::placeholder, textarea::placeholder{ color: var(--fl-ink-4); }
+/* Labels in sentence case, not shouted. */
+.resFormLabel, .appDialog__label, .signupField__label{ font-size: var(--fl-text-sm); font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--fl-ink-2); }
+.resFormError, .fieldError, .loginError{ color: var(--fl-danger); }
+
+/* ── Cards and lists ── */
+.dashboardSection{ background: var(--fl-surface); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); box-shadow: var(--fl-shadow-xs); }
+.dashboardSection__header{ background: var(--fl-surface); color: var(--fl-ink); padding: var(--fl-space-4) var(--fl-space-5); font-size: var(--fl-text-base); font-weight: 600; letter-spacing: -0.01em; border-bottom: 1px solid var(--fl-line-soft); }
+.dashboardTable th{ background: var(--fl-surface); color: var(--fl-ink-3); font-size: var(--fl-text-xs); font-weight: 500; text-transform: none; letter-spacing: 0; padding: 10px var(--fl-space-4); border-bottom: 1px solid var(--fl-line-soft); }
+.dashboardTable td{ font-size: 14px; padding: 13px var(--fl-space-4); border-bottom: 1px solid var(--fl-line-soft); }
+.dashboardTable tbody tr:hover{ background: var(--fl-brand-wash); }
+.resvEmpty{ padding: var(--fl-space-8) var(--fl-space-6); color: var(--fl-ink-3); font-size: 14px; line-height: var(--fl-leading); }
+
+/* ── Dialogs: a centred card on a desk, a sheet from the bottom on a phone ── */
+.resModalBackdrop, .appDialogBackdrop{ background: rgba(31, 30, 29, 0.42); animation: flFade var(--fl-dur) var(--fl-ease-out); }
+.resModal, .appDialog{ background: var(--fl-surface); border-radius: var(--fl-radius-xl); box-shadow: var(--fl-shadow-lg); animation: flRise var(--fl-dur-slow) var(--fl-ease-out); }
+.resModalHeader{ background: var(--fl-surface); color: var(--fl-ink); padding: var(--fl-space-5) var(--fl-space-6) var(--fl-space-3); }
+.resModalTitle, .appDialog__title{ font-size: var(--fl-text-lg); font-weight: 600; letter-spacing: -0.01em; }
+.resModalClose{ width: 36px; height: 36px; display: grid; place-items: center; border-radius: var(--fl-radius-pill); color: var(--fl-ink-3); font-size: 18px; }
+.resModalClose:hover{ background: var(--fl-sunken); color: var(--fl-ink); }
+.resModalBody{ padding: var(--fl-space-3) var(--fl-space-6) var(--fl-space-6); }
+.resModalActions, .resModalFooter{ border-top: 1px solid var(--fl-line-soft); }
+.appDialog__message{ color: var(--fl-ink-2); }
+@keyframes flFade{ from{ opacity: 0; } to{ opacity: 1; } }
+@keyframes flRise{ from{ opacity: 0; transform: translateY(8px) scale(0.99); } to{ opacity: 1; transform: none; } }
+@keyframes flSheet{ from{ transform: translateY(100%); } to{ transform: none; } }
+@media (max-width: 767px){
+  .resModalBackdrop, .appDialogBackdrop{ align-items: flex-end; padding: 0; }
+  .resModal, .appDialog{ max-width: none; width: 100%; border-radius: var(--fl-radius-xl) var(--fl-radius-xl) 0 0; max-height: calc(100dvh - 24px);
+    padding-bottom: env(safe-area-inset-bottom, 0px); animation: flSheet var(--fl-dur-slow) var(--fl-ease-out); }
+  .resModal::before, .appDialog::before{ content: ""; display: block; width: 36px; height: 4px; margin: 8px auto 0; border-radius: 999px; background: var(--fl-line-strong); }
+  .appDialog__actions{ flex-direction: column-reverse; }
+  .appDialog__actions > button{ width: 100%; min-height: var(--fl-tap); }
+}
+
+/* ── Toasts ── */
+.vsToast, .flToast{ border-radius: var(--fl-radius-lg); background: var(--fl-ink); color: var(--fl-paper); box-shadow: var(--fl-shadow-lg); animation: flToastIn var(--fl-dur-slow) var(--fl-ease-out); }
+.vsToast--error, .flToast--error{ background: #8A1C14; }
+@keyframes flToastIn{ from{ opacity: 0; transform: translate(-50%, 12px); } to{ opacity: 1; transform: translate(-50%, 0); } }
+
+/* ── Navigation ── the ink rail stays; items are soft pills ── */
+.nav__item{ border-radius: var(--fl-radius); border-left: 0; margin-right: var(--fl-space-3); padding: 9px var(--fl-space-3); color: rgba(249, 249, 247, 0.72); transition: background var(--fl-dur-fast) var(--fl-ease-out), color var(--fl-dur-fast) var(--fl-ease-out); }
+.nav__item:hover{ background: rgba(249, 249, 247, 0.06); color: var(--fl-paper); }
+.nav__item--active{ background: rgba(244, 132, 95, 0.16); color: var(--fl-paper); box-shadow: inset 3px 0 0 var(--fl-brand); }
+.nav__label{ font-size: 14px; font-weight: 500; letter-spacing: -0.005em; }
+.sidebar__sectionHeader{ font-size: var(--fl-text-xs); font-weight: 500; text-transform: none; letter-spacing: 0; color: rgba(249, 249, 247, 0.46); }
+
+/* ── Phones ── */
+@media (max-width: 767px){
+  .content{ padding: var(--fl-space-4) var(--fl-space-4) calc(var(--mobileBottomBarH, 68px) + var(--fl-space-6)); }
+  .page__title{ font-size: var(--fl-text-xl); }
+  .resFormInput, .loginInput, .appDialog__input, .resvSearchInput, .fleetFilterInput, .flInput{ font-size: 16px; }
+  .dashboardSection{ border-radius: var(--fl-radius-lg); }
+}
+
+/* ── Shared components (the UI kit in this file: Button, Field, Card,
+   Sheet, EmptyState, ErrorState, Progress) ── */
+.flBtn{ display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 var(--fl-space-5);
+  font: 600 14px/1 var(--fl-font); cursor: pointer; text-decoration: none; white-space: nowrap; }
+.flBtn--lg{ min-height: 52px; padding: 0 var(--fl-space-6); font-size: var(--fl-text-base); border-radius: var(--fl-radius-lg); }
+.flBtn--block{ width: 100%; }
+.flBtn--quiet{ background: transparent; border: 0; color: var(--fl-ink); text-decoration: underline; text-underline-offset: 3px; padding: 0 var(--fl-space-2); }
+.flBtn--quiet:hover:not(:disabled){ background: var(--fl-hover); border-radius: var(--fl-radius); }
+.flBtn:disabled{ background: var(--fl-sunken); color: var(--fl-ink-4); border-color: transparent; box-shadow: none; cursor: not-allowed; }
+.flField{ display: grid; gap: 6px; }
+.flField__label{ font-size: var(--fl-text-sm); font-weight: 500; color: var(--fl-ink-2); }
+.flField__hint{ font-size: var(--fl-text-xs); color: var(--fl-ink-3); line-height: 1.45; }
+.flField__error{ font-size: var(--fl-text-xs); color: var(--fl-danger); font-weight: 500; }
+.flInput{ width: 100%; min-height: var(--fl-tap); padding: 0 var(--fl-space-3); font-size: 15px; }
+textarea.flInput{ padding: var(--fl-space-3); min-height: 96px; line-height: var(--fl-leading); }
+.flInputAffix{ position: relative; display: flex; align-items: center; }
+.flInputAffix > span{ position: absolute; left: 12px; color: var(--fl-ink-3); font-size: 15px; pointer-events: none; }
+.flInputAffix > span + .flInput{ padding-left: 26px; }
+.flInputAffix > .flInput + span{ left: auto; right: 12px; }
+.flCard{ background: var(--fl-surface); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); padding: var(--fl-space-5); }
+.flCard--flat{ box-shadow: none; }
+.flCard__title{ margin: 0 0 4px; font-size: var(--fl-text-md); font-weight: 600; letter-spacing: -0.01em; }
+.flCard__desc{ margin: 0; color: var(--fl-ink-3); font-size: 14px; line-height: var(--fl-leading); }
+.flEmpty, .flError{ display: grid; justify-items: center; gap: var(--fl-space-2); text-align: center; padding: var(--fl-space-9) var(--fl-space-6); }
+.flEmpty__icon, .flError__icon{ width: 48px; height: 48px; display: grid; place-items: center; border-radius: var(--fl-radius-pill); background: var(--fl-sunken); color: var(--fl-ink-3); margin-bottom: var(--fl-space-2); }
+.flError__icon{ background: var(--fl-danger-soft); color: var(--fl-danger); }
+.flEmpty__title, .flError__title{ margin: 0; font-size: var(--fl-text-md); font-weight: 600; }
+.flEmpty__text, .flError__text{ margin: 0; max-width: 42ch; color: var(--fl-ink-3); font-size: 14px; line-height: var(--fl-leading); }
+.flEmpty .flBtn, .flError .flBtn{ margin-top: var(--fl-space-3); }
+.flProgress{ height: 4px; background: var(--fl-sunken); border-radius: 999px; overflow: hidden; }
+.flProgress__bar{ height: 100%; background: var(--fl-ink); border-radius: 999px; transition: width var(--fl-dur-slow) var(--fl-ease-out); }
+.flChip{ display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 var(--fl-space-3); border-radius: var(--fl-radius-pill); background: var(--fl-sunken); color: var(--fl-ink-2); font-size: var(--fl-text-sm); font-weight: 500; }
+.flChip--brand{ background: var(--fl-brand-soft); color: var(--fl-brand-text); }
+.flChip--success{ background: var(--fl-success-soft); color: var(--fl-success); }
+.flChip--warning{ background: var(--fl-warning-soft); color: var(--fl-warning); }
+.flChip--danger{ background: var(--fl-danger-soft); color: var(--fl-danger); }
+.flSpinner{ width: 18px; height: 18px; border-radius: 999px; border: 2px solid currentColor; border-right-color: transparent; animation: flSpin 700ms linear infinite; }
+@keyframes flSpin{ to{ transform: rotate(360deg); } }
+.flSkeleton{ display: block; border-radius: var(--fl-radius-sm); background: linear-gradient(90deg, var(--fl-sunken) 0%, #F8F7F4 50%, var(--fl-sunken) 100%); background-size: 200% 100%; animation: flShimmer 1.4s ease-in-out infinite; }
+@keyframes flShimmer{ from{ background-position: 100% 0; } to{ background-position: -100% 0; } }
+/* The plate: rental work turns on plates, so a plate looks like one. */
+.flPlate{ display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border: 1.5px solid var(--fl-ink); border-radius: 5px; background: var(--fl-surface);
+  font: 600 12.5px/1 var(--fl-font); letter-spacing: 0.06em; color: var(--fl-ink); white-space: nowrap; font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce){
+  .resModal, .appDialog, .vsToast, .flToast, .resModalBackdrop, .appDialogBackdrop, .flSkeleton, .flSpinner{ animation: none; }
+  .flBtn:active:not(:disabled), .flPress:active, .loginBtn:active:not(:disabled), .resModalSubmit:active:not(:disabled), .resModalCancel:active, .appDialog__main:active, .appDialog__cancel:active{ transform: none; }
+}
+/* end fleetr design system 1.0 */
 `;
 document.head.appendChild(style);
 
