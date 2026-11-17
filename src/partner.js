@@ -92,7 +92,7 @@ function Join({ token, onDone }) {
     h(Btn, { lg: true, block: true, type: "submit", loading: busy, disabled: pw.length < 8 }, "Set password and continue")));
 }
 
-function SignIn({ onDone }) {
+function SignIn({ onDone, onForgot }) {
   const [email, setEmail] = React.useState("");
   const [pw, setPw] = React.useState("");
   const [busy, setBusy] = React.useState(false);
@@ -111,7 +111,26 @@ function SignIn({ onDone }) {
     h(Field, { label: "Password" }, Input({ type: "password", autoComplete: "current-password", value: pw, onChange: (e) => setPw(e.target.value), required: true })),
     error && h("p", { className: "error", role: "alert" }, error),
     h(Btn, { lg: true, block: true, type: "submit", loading: busy, disabled: !email || !pw }, "Sign in"),
-    h("p", { className: "note" }, "Forgot your password? Ask the rental company to send you a new invite.")));
+    h(Btn, { variant: "quiet", onClick: onForgot }, "Forgot your password?")));
+}
+
+// The same as staff: a link by email, to the address the invite went to.
+function Forgot({ onBack }) {
+  const [email, setEmail] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [sent, setSent] = React.useState(false);
+  const submit = async (e) => {
+    e.preventDefault(); setBusy(true);
+    await fetch(`${RESET_URL}/partner/forgot`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: email.trim().toLowerCase() }) }).catch(() => null);
+    setBusy(false); setSent(true);
+  };
+  return h("div", { className: "auth" }, h("form", { className: "auth__card", onSubmit: submit }, logo("auth__logo"),
+    h("h1", { className: "auth__title" }, "Reset your password"),
+    sent ? h("p", { className: "ok", role: "status" }, `If ${email.trim()} has a partner account, a link to choose a new password is on its way. It works for an hour.`)
+      : h("p", { className: "note" }, "Enter the email you sign in with. We'll send a link to choose a new password."),
+    !sent && h(Field, { label: "Email" }, Input({ type: "email", autoComplete: "email", inputMode: "email", value: email, onChange: (e) => setEmail(e.target.value), required: true })),
+    !sent && h(Btn, { lg: true, block: true, type: "submit", loading: busy, disabled: !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim()) }, "Send link"),
+    h(Btn, { variant: "quiet", onClick: onBack }, "Back to sign in")));
 }
 
 // ── Availability ──
@@ -339,8 +358,9 @@ function App() {
   const [invite, setInvite] = React.useState(() => (window.location.hash.match(/invite=([0-9a-f]{48})/) || [])[1] || "");
   React.useEffect(() => { const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s)); return () => data && data.unsubscribe(); }, []);
   const refresh = () => setSession(supabase.auth.session());
+  const [forgot, setForgot] = React.useState(false);
   if (invite) return h(Join, { token: invite, onDone: () => { setInvite(""); refresh(); } });
-  if (!session) return h(SignIn, { onDone: refresh });
+  if (!session) return forgot ? h(Forgot, { onBack: () => setForgot(false) }) : h(SignIn, { onDone: refresh, onForgot: () => setForgot(true) });
   return h(Portal, { onSignOut: async () => { await supabase.auth.signOut(); refresh(); } });
 }
 
