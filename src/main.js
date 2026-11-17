@@ -9496,10 +9496,10 @@ function VehiclesStep({ onAdded }) {
 // A computer: a mouse or trackpad that hovers, not a finger.
 const onComputer = () => !!(window.matchMedia && window.matchMedia("(hover: hover) and (pointer: fine)").matches);
 
-// Where the QR code goes: this step, in the staff app, with the username
+// Where the QR code goes: the guided setup's Add your cars screen, in the staff app, with the username
 // filled in on the sign-in screen (?as=), so the Exec only types their
 // password on the phone, and lands back here once signed in.
-const PHONE_HANDOFF_STEP = "/company?section=fleet";
+const PHONE_HANDOFF_STEP = "/setup?screen=fleet";
 function phoneHandoffUrl() {
   const session = supabase.auth.session();
   const email = (session && session.user && session.user.email) || "";
@@ -9590,6 +9590,556 @@ function LaunchStep({ steps }) {
         }, busy ? "Launching..." : "Launch")
       : el("p", { className: "closeRentalHint" }, "An Exec launches the company once every required step is done."),
     el(FieldError, { text: error }));
+}
+
+// ─── Guided setup (overnight-nov17) ──────────────────────────────────────────
+// Setting up a company as one full-screen flow, one task a screen: a progress
+// bar, Back, one Next that stays grey until the screen is done, Skip for now
+// on the screens that can wait, and Save and finish later at the top. Each
+// screen starts filled in with a sensible default, so most are one look and
+// one tap. It ends at Review and launch, and the Exec lands in the app.
+// Everything saves through the same calls as the Company page, which stays
+// for changes later and for the rare options cut from here (units, sources,
+// staff, per-branch fuel rates, per-class protection prices, own terms).
+const SETUP_SUGGESTED_RATES = {
+  "small car": 55, "compact car": 55, "medium car": 62, "intermediate car": 62, "large car": 72, "full size car": 72,
+  "small suv": 79, "medium suv": 89, "suv": 89, "large suv": 109, "minivan": 99, "pickup truck": 99, "luxury car": 129,
+  "premium car": 109, "electric car": 85, "cargo van": 115, "passenger van": 139,
+};
+const setupSuggestedRate = (name) => SETUP_SUGGESTED_RATES[String(name || "").trim().toLowerCase()] || 65;
+// The classes most branches start with, picked before the Exec looks.
+const SETUP_STARTER_CLASSES = ["Small car", "Medium car", "Large car", "Medium SUV", "Minivan"];
+const SETUP_WEEK_PCT = 15;
+const SETUP_MONTH_PCT = 30;
+const SETUP_SCREENS = [
+  { key: "welcome",    phase: 0 },
+  { key: "address",    phase: 1, step: "business", title: "Where do renters pick up?" },
+  { key: "tax",        phase: 1, step: "business", title: "Sales tax" },
+  { key: "fuel",       phase: 1, step: "business", title: "Fuel when a car comes back low" },
+  { key: "classes",    phase: 2, step: "vehicles", title: "Which kinds of cars do you rent?" },
+  { key: "rates",      phase: 2, step: "rates",    title: "Your daily rates" },
+  { key: "discounts",  phase: 2, step: "rates",    title: "Longer rentals cost less a day" },
+  { key: "dates",      phase: 2, step: "rates",    title: "Busy dates", skippable: true },
+  { key: "protection", phase: 3, step: "protection", title: "Damage protection", skippable: true },
+  { key: "contract",   phase: 3, step: "contract", title: "Rental terms" },
+  { key: "listing",    phase: 3, step: "listing",  title: "Take bookings on fleetr.ai", skippable: true },
+  { key: "payments",   phase: 3, step: "payments", title: "Card payments", skippable: true },
+  { key: "fleet",      phase: 4, step: "fleet",    title: "Add your cars" },
+  { key: "review",     phase: 4, title: "Review and launch" },
+];
+const SETUP_PHASES = ["", "Your branch", "Cars and prices", "How you rent", "Go live"];
+const SETUP_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// Whole dollars, as every price is: a discount fills a cell with this.
+const discountedRate = (daily, pct) => (Number(pct) > 0 ? Math.round(Number(daily) * (1 - Number(pct) / 100)) : null);
+const setupScreenKey = (op) => `fleetr.setup.screen.${op || ""}`;
+
+function GuidedSetup() {
+  const { currentUser, setup, refreshSetup, fleet } = React.useContext(AppContext);
+  const el = React.createElement;
+  const navigate = useNavigate();
+  const isMobile = useMobile();
+  const op = currentUser?.operatorId;
+  const location = useLocation();
+  const [at, setAt] = React.useState(() => {
+    const asked = new URLSearchParams(location.search).get("screen");
+    let k = asked;
+    if (!k) { try { k = window.localStorage.getItem(setupScreenKey(op)); } catch (e) { k = null; } }
+    const i = SETUP_SCREENS.findIndex((x) => x.key === k);
+    return i >= 0 ? i : 0;
+  });
+  const [dir, setDir] = React.useState(1);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const [loaded, setLoaded] = React.useState(false);
+  const [loadError, setLoadError] = React.useState(false);
+  const [ctx, setCtx] = React.useState({});
+  const [d, setD] = React.useState({});
+  const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
+  const screen = SETUP_SCREENS[at];
+  React.useEffect(() => { try { window.localStorage.setItem(setupScreenKey(op), screen.key); } catch (e) { /* a private window */ } }, [op, screen.key]);
+
+  const lists = () => companyLists || {};
+  const fleetrSource = () => (lists().sources || []).find((x) => x.standardKey === "fleetr_ai") || null;
+  // Walk-in and phone renters pay the online rate, so the Rates screen saves
+  // each rate to both: then the rates are in place whether or not the company
+  // is on fleetr.ai.
+  const walkInSource = () => (lists().sources || []).find((x) => x.standardKey === "walk_in")
+    || (lists().sources || []).find((x) => /^walk-in/i.test(String(x.name || "")) && x.billingType === "retail") || null;
+  const classes = () => (lists().vehicleClasses || []).filter((c) => c.active);
+
+  // Everything the screens start from, read once and again after a save.
+  const load = React.useCallback(async () => {
+    setLoadError(false);
+    try {
+      await loadCompanyLists(currentUser);
+      const [co, act, tx, gs, disc, std, stripe] = await Promise.all([
+        supabase.from("operators").select("name").eq("id", op ?? null).limit(1).then(oneOrNone),
+        supabase.rpc("my_acting_location"),
+        supabase.rpc("company_sales_taxes"),
+        supabase.rpc("company_gas_settings"),
+        supabase.from("rate_discounts").select("weekPct,monthPct").eq("operatorId", op ?? null).limit(1).then(oneOrNone),
+        supabase.rpc("standard_vehicle_classes"),
+        supabase.rpc("stripe_status"),
+      ]);
+      const branchId = (act.data && act.data.ok && act.data.locationId) || lists().branchId || null;
+      const [lst, sug] = branchId ? await Promise.all([
+        supabase.from("branch_listings").select("*").eq("locationId", branchId).limit(1).then(oneOrNone),
+        supabase.rpc("suggested_sales_tax", { p_location_id: branchId }),
+      ]) : [{ data: null }, { data: null }];
+      const taxRow = ((tx.data && tx.data.branches) || []).find((t) => t.locationId === branchId) || null;
+      const src = fleetrSource();
+      const per = src ? await supabase.from("period_rates").select("vehicleClassId,period,amount,override").eq("sourceId", src.id) : { data: [] };
+      setCtx({
+        company: (co.data && co.data.name) || "your company",
+        branchId, listing: lst.data || {}, taxRow, taxSuggestion: Array.isArray(sug.data) ? sug.data : [],
+        fuelRate: gs.data && gs.data.ok ? gs.data.companyPostPayFuelRate : null,
+        discounts: disc.data || null, standard: Array.isArray(std.data) ? std.data : [],
+        stripe: stripe.data || null, periodRows: per.data || [],
+      });
+      setLoaded(true);
+    } catch (e) {
+      setLoadError(true);
+    }
+  }, [currentUser, op]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => { load(); }, [load]);
+  // Back from Stripe: ask it where the account stands, then carry on.
+  React.useEffect(() => {
+    if (!/[?&]stripe=(return|refresh)/.test(window.location.hash)) return;
+    stripeCall("refresh").catch(() => null).then(load);
+  }, [load]);
+
+  // Each screen's draft, from what is saved or the default, the first time
+  // the screen is shown.
+  React.useEffect(() => {
+    if (!loaded) return;
+    const l = ctx.listing || {};
+    const src = fleetrSource();
+    const rates = (src && lists().rates[src.name]) || {};
+    setD((p) => {
+      const n = { ...p };
+      const once = (k, v) => { if (!(k in n)) n[k] = v; };
+      once("street", l.street || ""); once("city", l.city || ""); once("province", l.province || ""); once("postalCode", l.postalCode || "");
+      once("country", l.country || "Canada");
+      const saved = ctx.taxRow && Array.isArray(ctx.taxRow.taxes) && ctx.taxRow.taxes.length ? ctx.taxRow.taxes : null;
+      const first = (saved || ctx.taxSuggestion || [])[0] || null;
+      once("taxName", first ? String(first.name || "") : ""); once("taxRate", first && first.rate != null ? String(first.rate) : "");
+      once("fuel", ctx.fuelRate != null && Number(ctx.fuelRate) > 0 ? String(fuelRateForDisplay(ctx.fuelRate)) : "2.00");
+      const mineNames = classes().map((c) => c.name);
+      once("picked", mineNames.length ? mineNames : SETUP_STARTER_CLASSES.filter((x) => (ctx.standard || []).some((s) => s.name === x)));
+      once("rates", Object.fromEntries(classes().map((c) => [c.name, rates[c.name] != null ? String(Math.round(rates[c.name])) : String(setupSuggestedRate(c.name))])));
+      once("weekPct", ctx.discounts && ctx.discounts.weekPct != null ? String(Number(ctx.discounts.weekPct)) : String(SETUP_WEEK_PCT));
+      once("monthPct", ctx.discounts && ctx.discounts.monthPct != null ? String(Number(ctx.discounts.monthPct)) : String(SETUP_MONTH_PCT));
+      // A cell typed before is kept as typed; every rate there before the
+      // discounts existed counts as typed.
+      once("overrides", Object.fromEntries((ctx.periodRows || []).filter((r) => r.override).map((r) => {
+        const c = classes().find((x) => x.id === r.vehicleClassId);
+        return c ? [`${c.name}:${r.period}`, String(Math.round(Number(r.amount)))] : null;
+      }).filter(Boolean)));
+      once("resets", []);
+      // The first period already saved, to change; else a summer to start.
+      const sx = (lists().seasons || [])[0] || null;
+      once("seasonId", sx ? sx.id : null);
+      once("seasonName", sx ? sx.name : "Summer");
+      once("seasonFrom", sx ? [sx.startMonth, sx.startDay] : [6, 15]); once("seasonTo", sx ? [sx.endMonth, sx.endDay] : [9, 15]);
+      once("seasonRates", sx ? Object.fromEntries(classes().filter((c) => sx.rates && sx.rates[c.id] != null).map((c) => [c.name, String(Math.round(sx.rates[c.id]))])) : {});
+      once("protName", "Damage protection"); once("protPrice", "25");
+      return n;
+    });
+  }, [loaded, ctx]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Rates for a class just picked start at the suggestion.
+  React.useEffect(() => {
+    if (!d.rates) return;
+    const missing = classes().filter((c) => d.rates[c.name] == null);
+    if (missing.length) set("rates", { ...d.rates, ...Object.fromEntries(missing.map((c) => [c.name, String(setupSuggestedRate(c.name))])) });
+  }); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const itemOf = (key) => (setup && setup.items.find((i) => i.key === key)) || null;
+  const rpc = async (fn, args) => {
+    const { data, error: err } = await supabase.rpc(fn, args || {});
+    if (err) throw new Error("Could not reach fleetr. Check the connection and try again.");
+    if (!data || data.ok === false) {
+      const why = data && data.reason;
+      throw new Error(why === "overlaps" && data.season ? seasonOverlapText(data.season, lists().seasons || [])
+        : SETUP_REFUSALS[why] || LIST_REASONS[why] || "That could not be saved. Check the fields above and try again.");
+    }
+    return data;
+  };
+  const whole = (v) => /^\d{1,5}$/.test(String(v).trim());
+  // A busy-dates rate starts 20% over the class's daily rate.
+  const seasonRate = (c) => ((d.seasonRates || {})[c.name] != null ? d.seasonRates[c.name] : String(Math.round(Number((d.rates || {})[c.name] || 0) * 1.2)));
+  const pct = (v) => String(v).trim() === "" || (/^\d{1,2}(\.\d{1,2})?$/.test(String(v).trim()) && Number(v) <= 90);
+
+  // What each screen needs before Next, and what Next saves.
+  const valid = {
+    welcome: () => true,
+    address: () => ["street", "city", "province", "postalCode"].every((k) => String(d[k] || "").trim() !== ""),
+    tax: () => String(d.taxName || "").trim() !== "" && Number(d.taxRate) > 0 && Number(d.taxRate) < 100,
+    fuel: () => validateFuelRate(String(d.fuel || "")).ok,
+    classes: () => (d.picked || []).length > 0,
+    rates: () => classes().length > 0 && classes().every((c) => whole((d.rates || {})[c.name] || "") && Number(d.rates[c.name]) > 0),
+    discounts: () => pct(d.weekPct || "") && pct(d.monthPct || ""),
+    dates: () => String(d.seasonName || "").trim() !== "" && classes().every((c) => whole(seasonRate(c)) && Number(seasonRate(c)) > 0),
+    protection: () => String(d.protName || "").trim() !== "" && whole(d.protPrice || ""),
+    contract: () => true,
+    listing: () => true,
+    payments: () => !!(ctx.stripe && ctx.stripe.chargesEnabled),
+    fleet: () => (fleet || []).length > 0,
+    review: () => true,
+  };
+  const saveScreen = {
+    address: async () => {
+      const parts = { street: d.street.trim(), city: d.city.trim(), province: d.province.trim(), postalCode: d.postalCode.trim().toUpperCase(), country: (d.country || "Canada").trim() };
+      const pin = await geocodeBranchAddress(parts);
+      await rpc("save_branch_listing", { p_location_id: ctx.branchId, p_listing: pin ? { ...parts, latitude: pin[0], longitude: pin[1] } : parts });
+    },
+    tax: async () => rpc("set_branch_sales_taxes", { p_location_id: ctx.branchId, p_taxes: [{ name: d.taxName.trim(), rate: Number(d.taxRate) }] }),
+    fuel: async () => {
+      await rpc("set_company_fuel_rate", { p_rate: fuelRateToLitre(validateFuelRate(d.fuel).value) });
+      await rpc("confirm_setup_step", { p_step: "business" }).catch(() => null);
+    },
+    classes: async () => {
+      const have = new Set(classes().map((c) => c.name));
+      const add = (d.picked || []).filter((x) => !have.has(x));
+      if (add.length) await rpc("add_standard_vehicle_classes", { p_names: add });
+      await loadCompanyLists(currentUser);
+      await rpc("confirm_setup_step", { p_step: "vehicles" }).catch(() => null);
+    },
+    rates: async () => {
+      const src = fleetrSource();
+      if (!src) throw new Error("The fleetr.ai source is missing. Add it under Sources on the Company page.");
+      for (const x of [src, walkInSource()].filter(Boolean)) {
+        const saved = lists().rates[x.name] || {};
+        for (const c of classes()) {
+          const v = Number(d.rates[c.name]);
+          if (saved[c.name] !== v) await rpc("set_daily_rate", { p_class_id: c.id, p_source_id: x.id, p_amount: v });
+        }
+      }
+    },
+    discounts: async () => {
+      const src = fleetrSource();
+      await rpc("set_rate_discounts", { p_week: String(d.weekPct).trim() === "" ? null : Number(d.weekPct), p_month: String(d.monthPct).trim() === "" ? null : Number(d.monthPct) });
+      const typed = (ctx.periodRows || []).filter((r) => r.override);
+      for (const [k, v] of Object.entries(d.overrides || {})) {
+        const [name, per] = k.split(":");
+        const c = classes().find((x) => x.name === name);
+        const was = c && typed.find((r) => r.vehicleClassId === c.id && r.period === per);
+        if (c && src && whole(v) && !(was && Number(was.amount) === Number(v))) await rpc("set_period_rate", { p_period: per, p_class_id: c.id, p_source_id: src.id, p_amount: Number(v) });
+      }
+      for (const k of d.resets || []) {
+        if ((d.overrides || {})[k] != null) continue;
+        const [name, per] = k.split(":");
+        const c = classes().find((x) => x.name === name);
+        if (c && src && typed.some((r) => r.vehicleClassId === c.id && r.period === per)) await rpc("set_period_rate", { p_period: per, p_class_id: c.id, p_source_id: src.id, p_amount: null });
+      }
+      await rpc("confirm_setup_step", { p_step: "rates" }).catch(() => null);
+    },
+    dates: async () => {
+      const [sm, sd] = d.seasonFrom, [em, ed] = d.seasonTo;
+      const made = await rpc("save_rate_season", { p_id: d.seasonId || null, p_name: d.seasonName.trim(), p_start_month: sm, p_start_day: sd, p_end_month: em, p_end_day: ed });
+      const id = made.id || d.seasonId;
+      if (id && !d.seasonId) set("seasonId", id);
+      for (const c of classes()) {
+        if (id) await rpc("set_season_class_rate", { p_season_id: id, p_class_id: c.id, p_amount: Number(seasonRate(c)) });
+      }
+    },
+    protection: async () => {
+      // The product once, even if Next is pressed again after a failure.
+      const name = d.protName.trim();
+      const have = (lists().protectionProducts || []).find((x) => x.name.toLowerCase() === name.toLowerCase());
+      const id = have ? have.id : (await rpc("save_protection_product", { p_id: null, p_name: name, p_sort: null })).id;
+      for (const c of classes()) await rpc("set_protection_default_price", { p_product_id: id, p_class_id: c.id, p_amount: Number(d.protPrice) });
+      // Optional, so the renter ticks to buy it or to decline it: fleetr's
+      // rule, $0 for damage with it and full responsibility without.
+      await rpc("set_protection_details", { p_id: id, p_wording: SETUP_PROTECTION_WORDING, p_decline_wording: SETUP_PROTECTION_DECLINE, p_required: false });
+      await rpc("set_setup_skip", { p_step: "protection", p_skipped: false }).catch(() => null);
+    },
+    contract: async () => {
+      const done = (itemOf("contract") && itemOf("contract").done) || (itemOf("acknowledgements") && itemOf("acknowledgements").done);
+      if (!done) await rpc("use_standard_contract_terms", {});
+    },
+    listing: async () => {
+      if (!isFleetrAiListed()) await rpc("set_fleetr_ai_listed", { p_on: true });
+      await rpc("set_setup_skip", { p_step: "listing", p_skipped: false }).catch(() => null);
+    },
+  };
+
+  const go = (to) => { setError(""); setDir(to > at ? 1 : -1); setAt(Math.max(0, Math.min(SETUP_SCREENS.length - 1, to))); window.scrollTo(0, 0); };
+  const next = async () => {
+    const save = saveScreen[screen.key];
+    if (!save) { go(at + 1); return; }
+    setBusy(true); setError("");
+    try {
+      await save();
+      await Promise.all([refreshSetup(), loadCompanyLists(currentUser)]);
+      if (["address", "fuel", "classes", "rates", "discounts", "tax"].includes(screen.key)) await load();
+      go(at + 1);
+    } catch (e) {
+      setError(e.message || "That could not be saved.");
+    } finally { setBusy(false); }
+  };
+  const skip = async () => {
+    setBusy(true); setError("");
+    try {
+      if (screen.step && ["protection", "listing", "payments"].includes(screen.step)) await rpc("set_setup_skip", { p_step: screen.step, p_skipped: true }).catch(() => null);
+      if (screen.key === "listing") await rpc("set_fleetr_ai_listed", { p_on: false }).catch(() => null);
+      await refreshSetup();
+      go(at + 1);
+    } finally { setBusy(false); }
+  };
+  const finishLater = () => navigate("/dashboard");
+
+  // ── The screens ──
+  const field = (key, label, props = {}) => el(Field, { label, htmlFor: `setup-${key}`, hint: props.hint },
+    el("input", { id: `setup-${key}`, className: "flInput", value: d[key] ?? "", onChange: (e) => set(key, e.target.value),
+      autoComplete: props.autoComplete, inputMode: props.inputMode, maxLength: props.maxLength, placeholder: props.placeholder }));
+  const money = (value, onChange, label, id) => el("div", { className: "flInputAffix" }, el("span", null, "$"),
+    el("input", { id, className: "flInput", inputMode: "numeric", value, maxLength: 5, "aria-label": label,
+      onChange: (e) => onChange(e.target.value.replace(/[^\d]/g, "")) }));
+  const percent = (key, label) => el("div", { className: "flInputAffix" },
+    el("input", { id: `setup-${key}`, className: "flInput", inputMode: "decimal", value: d[key] ?? "", maxLength: 5, "aria-label": label,
+      onChange: (e) => set(key, e.target.value.replace(/[^\d.]/g, "")) }), el("span", null, "%"));
+  const monthDay = (key, label) => {
+    const [m, day] = d[key] || [1, 1];
+    return el(Field, { label },
+      el("div", { className: "gsMonthDay" },
+        el("select", { className: "flInput", "aria-label": `${label} month`, value: m, onChange: (e) => set(key, [Number(e.target.value), day]) },
+          SETUP_MONTHS.map((x, i) => el("option", { key: x, value: i + 1 }, x))),
+        el("select", { className: "flInput", "aria-label": `${label} day`, value: day, onChange: (e) => set(key, [m, Number(e.target.value)]) },
+          Array.from({ length: 31 }, (_, i) => el("option", { key: i, value: i + 1 }, i + 1)))));
+  };
+
+  const body = () => {
+    switch (screen.key) {
+      case "welcome": return el("div", { className: "gsWelcome" },
+        el("h1", { className: "gsTitle gsTitle--big" }, `Let's get ${ctx.company} ready to rent`),
+        el("p", { className: "gsLead" }, "About ten minutes. Each screen starts filled in, so most are a look and a tap. You can stop at any point and pick up where you left off."),
+        el("ol", { className: "gsPhases" }, SETUP_PHASES.slice(1).map((p, i) => el("li", { key: p },
+          el("span", { className: "gsPhases__n" }, i + 1),
+          el("span", null, el("strong", null, p), el("small", null, [
+            "Address, sales tax and fuel",
+            "Classes, rates and discounts",
+            "Protection, terms and payments",
+            "Your cars, then launch"][i]))))));
+      case "address": return el("div", { className: "gsStack" },
+        el("p", { className: "gsLead" }, "The address renters see on fleetr.ai and in their texts. We filled in what fleetr has on file."),
+        field("street", "Street address", { autoComplete: "address-line1", maxLength: 200 }),
+        el("div", { className: "gsRow" }, field("city", "City", { autoComplete: "address-level2", maxLength: 100 }),
+          field("province", "Province", { autoComplete: "address-level1", maxLength: 100 })),
+        field("postalCode", "Postal code", { autoComplete: "postal-code", maxLength: 10 }));
+      case "tax": return el("div", { className: "gsStack" },
+        el("p", { className: "gsLead" }, ctx.taxSuggestion && ctx.taxSuggestion.length
+          ? `This is the rate for ${d.province || "your province"}. Change it only if your accountant says otherwise.`
+          : "The tax added to every rental at this branch, once, on the subtotal."),
+        el("div", { className: "gsRow" }, field("taxName", "Name", { placeholder: "HST", maxLength: 20 }),
+          el(Field, { label: "Rate", htmlFor: "setup-taxRate" }, percent("taxRate", "Tax rate"))));
+      case "fuel": return el("div", { className: "gsStack" },
+        el("p", { className: "gsLead" }, `What you charge per ${fuelRateUnit()} when a car comes back with less fuel than it left with. Most branches charge about 40 cents over the pump price.`),
+        el(Field, { label: `Per ${fuelRateUnit()}`, htmlFor: "setup-fuel" },
+          el("div", { className: "flInputAffix" }, el("span", null, "$"),
+            el("input", { id: "setup-fuel", className: "flInput gsBigInput", inputMode: "decimal", value: d.fuel ?? "", maxLength: 6,
+              onChange: (e) => set("fuel", e.target.value.replace(/[^\d.]/g, "")) }))));
+      case "classes": {
+        const std = ctx.standard || [];
+        const picked = new Set(d.picked || []);
+        const held = new Set(classes().map((c) => c.name));
+        return el("div", { className: "gsStack" },
+          el("p", { className: "gsLead" }, "Renters book a class and pick their own car at pickup. Choose the ones you have. You can add more later."),
+          el("div", { className: "gsChoices", role: "group", "aria-label": "Vehicle classes" }, std.map((s) => {
+            const on = picked.has(s.name);
+            return el("button", { key: s.name, type: "button", className: `gsChoice${on ? " gsChoice--on" : ""}`, "aria-pressed": on,
+              disabled: held.has(s.name) && on, onClick: () => set("picked", on ? (d.picked || []).filter((x) => x !== s.name) : [...(d.picked || []), s.name]) },
+              el("span", { className: "gsChoice__name" }, s.name),
+              s.exampleModels && el("span", { className: "gsChoice__meta" }, s.exampleModels),
+              el("span", { className: "gsChoice__tick", "aria-hidden": "true" }, on ? el(Icon, { name: "check", size: 16 }) : null));
+          })));
+      }
+      case "rates": return el("div", { className: "gsStack" },
+        el("p", { className: "gsLead" }, "What one day costs, in whole dollars. Walk-in and phone renters pay the same. We started each at a typical rate for the class."),
+        el("div", { className: "gsRateList" }, classes().map((c) => el("label", { key: c.id, className: "gsRateRow", htmlFor: `rate-${c.id}` },
+          el("span", { className: "gsRateRow__name" }, c.name, c.exampleModels && el("small", null, c.exampleModels)),
+          el("span", { className: "gsRateRow__input" }, money((d.rates || {})[c.name] ?? "", (v) => set("rates", { ...d.rates, [c.name]: v }), `${c.name} daily rate`, `rate-${c.id}`),
+            el("small", null, "a day"))))));
+      case "discounts": {
+        const cell = (c, per) => {
+          const k = `${c.name}:${per}`;
+          const own = (d.overrides || {})[k];
+          const auto = discountedRate((d.rates || {})[c.name], per === "week" ? d.weekPct : d.monthPct);
+          return el("td", { key: per, className: `gsGrid__cell${own != null ? " gsGrid__cell--own" : ""}` },
+            el("div", { className: "flInputAffix" }, el("span", null, "$"),
+              el("input", { className: "flInput", inputMode: "numeric", maxLength: 5, "aria-label": `${c.name} ${per === "week" ? "weekly" : "monthly"} daily rate`,
+                value: own != null ? own : auto != null ? String(auto) : String((d.rates || {})[c.name] || ""),
+                onChange: (e) => set("overrides", { ...d.overrides, [k]: e.target.value.replace(/[^\d]/g, "") }) })),
+            own != null && el("button", { type: "button", className: "gsGrid__reset", onClick: () => {
+              const o = { ...d.overrides }; delete o[k];
+              setD((p) => ({ ...p, overrides: o, resets: [...(p.resets || []), k] }));
+            } }, "Use discount"));
+        };
+        return el("div", { className: "gsStack" },
+          el("p", { className: "gsLead" }, "One discount for the whole company fills in every class. Type over any price to set your own."),
+          el("div", { className: "gsRow" },
+            el(Field, { label: "Weekly, 7 to 27 days", htmlFor: "setup-weekPct", hint: "Off the daily rate" }, percent("weekPct", "Weekly discount")),
+            el(Field, { label: "Monthly, 28 days or more", htmlFor: "setup-monthPct", hint: "Off the daily rate" }, percent("monthPct", "Monthly discount"))),
+          el("div", { className: "gsGridWrap" }, el("table", { className: "gsGrid" },
+            el("thead", null, el("tr", null, el("th", null, "Class"), el("th", null, "Daily"), el("th", null, "Weekly, a day"), el("th", null, "Monthly, a day"))),
+            el("tbody", null, classes().map((c) => el("tr", { key: c.id },
+              el("th", { scope: "row" }, c.name), el("td", { className: "gsGrid__daily" }, `$${(d.rates || {})[c.name] || "0"}`),
+              cell(c, "week"), cell(c, "month")))))));
+      }
+      case "dates": return el("div", { className: "gsStack" },
+        el("p", { className: "gsLead" }, "Charge more on the dates you always sell out, like summer or the holidays. A day in the period costs the rate you set here instead."),
+        field("seasonName", "Name", { maxLength: 40 }),
+        el("div", { className: "gsRow" }, monthDay("seasonFrom", "From"), monthDay("seasonTo", "To")),
+        el("div", { className: "gsRateList" }, classes().map((c) => el("label", { key: c.id, className: "gsRateRow", htmlFor: `season-${c.id}` },
+          el("span", { className: "gsRateRow__name" }, c.name, el("small", null, `Usually $${(d.rates || {})[c.name] || "0"}`)),
+          el("span", { className: "gsRateRow__input" }, money(seasonRate(c), (v) => set("seasonRates", { ...d.seasonRates, [c.name]: v }), `${c.name} rate in this period`, `season-${c.id}`),
+            el("small", null, "a day"))))));
+      case "protection": return el("div", { className: "gsStack" },
+        el("p", { className: "gsLead" }, "Renters who buy it pay $0 for damage. Those who decline are fully responsible, and tick to say so at check-in. One daily price for every class to start; you can price each class on the Company page."),
+        field("protName", "Name renters see", { maxLength: 60 }),
+        el(Field, { label: "Price a day", htmlFor: "setup-prot" }, money(d.protPrice ?? "", (v) => set("protPrice", v), "Protection price a day", "setup-prot")));
+      case "contract": {
+        const done = !!(itemOf("contract") && itemOf("contract").done) || !!(itemOf("acknowledgements") && itemOf("acknowledgements").done);
+        return el("div", { className: "gsStack" },
+          el("p", { className: "gsLead" }, "Renters accept these when they check in on their phone. fleetr's standard terms cover the vehicle, fuel, damage, tolls and returns, and are written for Canadian rentals."),
+          done
+            ? el(Card, { className: "gsTerms", title: "Your terms are set", desc: "Renters accept the terms you already chose. Change them on the Company page." })
+            : el(Card, { className: "gsTerms", title: "fleetr standard rental terms", desc: "Recommended for most branches. You can switch to your own wording later on the Company page." }),
+          !done && el("p", { className: "gsNote" }, "Next uses the standard terms."));
+      }
+      case "listing": return el("div", { className: "gsStack" },
+        el("p", { className: "gsLead" }, "fleetr.ai shows your branch to renters searching nearby and takes the booking for you, with no fee to the renter."),
+        el(Card, { title: "Finish your listing after setup", desc: "Your hours, a photo and your rules go on the Company page, where you can see the listing as renters will. It stays hidden until then." }),
+        el("p", { className: "gsNote" }, "Next keeps fleetr.ai on. Skip for now turns it off; walk-in, phone and business bookings still work."));
+      case "payments": {
+        const s = ctx.stripe || {};
+        const connect = async () => {
+          setBusy(true); setError("");
+          try { const { url } = await stripeCall("connect", { returnTo: "setup" }); window.location.href = url; }
+          catch (e) { setError(e.message); setBusy(false); }
+        };
+        return el("div", { className: "gsStack" },
+          el("p", { className: "gsLead" }, "Renters and insurers pay by card from a link, and later from a saved card. The money goes straight to your own Stripe account."),
+          el(Card, { title: s.chargesEnabled ? "Connected" : s.connected ? "Stripe needs a few more details" : "Connect Stripe",
+            desc: s.chargesEnabled ? "You can take card payments." : "Takes about five minutes on Stripe's own page. You come back here when it's done." },
+            !s.chargesEnabled && el(Button, { variant: "secondary", onClick: connect, loading: busy, className: "gsCardBtn" }, s.connected ? "Finish on Stripe" : "Connect Stripe")));
+      }
+      case "fleet": {
+        const n = (fleet || []).length;
+        return el("div", { className: "gsStack" },
+          el("p", { className: "gsLead" }, isMobile
+            ? "Walk the lot and add each car. Scan the VIN and fleetr fills in the make, model and year."
+            : "This is quickest on a phone: walk the lot and scan each VIN. Open this on your phone, or add one here."),
+          !isMobile && el(PhoneHandoffQr),
+          el(AddVehicleForm, { onAdded: () => Promise.all([refreshSetup()]) }),
+          n > 0 && el("p", { className: "gsNote" }, `${n} car${n === 1 ? "" : "s"} added.`));
+      }
+      case "review": return el(GuidedSetupReview, { company: ctx.company, op, onEdit: (key) => go(SETUP_SCREENS.findIndex((x) => x.key === key)) });
+      default: return null;
+    }
+  };
+
+  if (!roleAtLeast(currentUser?.role, "Exec")) return el(Navigate, { to: "/dashboard", replace: true });
+  if (setup && setup.launched) return el(Navigate, { to: "/dashboard", replace: true });
+  const pctDone = at / (SETUP_SCREENS.length - 1);
+  const canNext = loaded && valid[screen.key] && valid[screen.key]();
+  const nextLabel = screen.key === "welcome" ? "Get started" : screen.key === "fleet" ? "Review" : "Next";
+  return el("div", { className: "gs", role: "main" },
+    el("header", { className: "gs__top" },
+      fleetrLogo("light", 22, "gs__logo"),
+      screen.phase > 0 && el("span", { className: "gs__phase" }, SETUP_PHASES[screen.phase]),
+      el("button", { type: "button", className: "gs__exit", onClick: finishLater }, "Save and finish later")),
+    el(Progress, { value: pctDone, label: "Setup progress" }),
+    el("div", { className: "gs__scroll" },
+      !loaded ? (loadError ? el(ErrorState, { title: "Setup could not load", onRetry: load })
+        : el("div", { className: "gs__body" }, el("span", { className: "flSkeleton", style: { height: 36, width: "70%" } }),
+            el("span", { className: "flSkeleton", style: { height: 18, width: "90%", marginTop: 16 } }),
+            el("span", { className: "flSkeleton", style: { height: 52, marginTop: 32 } })))
+      : el("div", { key: screen.key, className: `gs__body gs__body--${dir > 0 ? "fwd" : "back"}` },
+          screen.title && el("h1", { className: "gsTitle" }, screen.title),
+          body(),
+          error && el("p", { className: "gsError", role: "alert" }, error))),
+    screen.key !== "review" && el("footer", { className: "gs__foot" },
+      at > 0 ? el(Button, { variant: "quiet", onClick: () => go(at - 1), disabled: busy }, "Back") : el("span"),
+      el("div", { className: "gs__footRight" },
+        screen.skippable && el(Button, { variant: "quiet", onClick: skip, disabled: busy }, "Skip for now"),
+        el(Button, { size: "lg", onClick: next, disabled: !canNext, loading: busy }, nextLabel))));
+}
+
+const SETUP_PROTECTION_WORDING = "I want damage protection. I pay $0 for damage to the vehicle during my rental.";
+const SETUP_PROTECTION_DECLINE = "I decline damage protection and accept full responsibility for any damage to the vehicle during my rental.";
+const SETUP_REFUSALS = {
+  exec_only: "Only an Exec can change this.", not_signed_in: "Your session has ended. Sign in again.",
+  whole_dollars: "Use whole dollars.", bad_amount: "Enter a price between $0 and $99,999.", bad_percent: "A discount is between 0% and 90%.",
+  duplicate_name: "There is already one with that name.", overlaps: "Those dates overlap a period you already have.",
+};
+
+// The last screen: every part, done or not, each with a way back to it, and
+// Launch once fleetr says the company is ready.
+function GuidedSetupReview({ company, op, onEdit }) {
+  const { setup, refreshSetup } = React.useContext(AppContext);
+  const el = React.createElement;
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState("");
+  if (!setup) return null;
+  const item = (k) => setup.items.find((i) => i.key === k) || null;
+  const doneOf = (keys) => keys.map(item).filter(Boolean);
+  // Needed or not is fleetr's to say (the item's required flag): the
+  // fleetr.ai listing, say, is needed while the company is listed there.
+  const rows = [
+    ["Branch address, tax and fuel", ["branch", "fuel_rate"], "address"],
+    ["Vehicle classes", ["vehicle_classes"], "classes"],
+    ["Rates and discounts", ["rates"], "rates"],
+    ["Damage protection", ["protection"], "protection"],
+    ["Rental terms", ["contract"], "contract"],
+    ["fleetr.ai listing", ["listing"], "listing"],
+    ["Card payments", ["payments"], "payments"],
+    ["Your cars", ["vehicles"], "fleet"],
+  ];
+  const stateOf = (keys) => {
+    const its = doneOf(keys);
+    return { done: its.length > 0 && its.every((i) => i.done), skipped: its.some((i) => i.skipped), needed: its.some((i) => i.required && !i.done) };
+  };
+  const blocking = rows.filter(([, keys]) => stateOf(keys).needed).map(([title]) => title);
+  const row = ([title, keys, screenKey]) => {
+    const { done, skipped, needed } = stateOf(keys);
+    // A listing is finished on the Company page, where it can be seen as renters will.
+    const action = screenKey === "listing" && needed
+      ? el("a", { className: "flBtn flBtn--quiet", href: "#/company?section=listing" }, "Finish listing")
+      : el(Button, { variant: "quiet", onClick: () => onEdit(screenKey) }, done ? "Change" : "Finish");
+    return el("li", { key: title, className: "gsReview__row" },
+      el("span", { className: `gsReview__mark${done ? " gsReview__mark--done" : ""}`, "aria-hidden": "true" }, done ? el(Icon, { name: "check", size: 14 }) : null),
+      el("span", { className: "gsReview__title" }, title,
+        el("small", null, done ? "Done" : needed ? "Needed to launch" : skipped ? "Skipped for now" : "Optional")),
+      action);
+  };
+  const testRentals = item("test_rentals_finished");
+  const launch = async () => {
+    setBusy(true); setError("");
+    const { data, error: err } = await supabase.rpc("launch_company");
+    if (err || !data || !data.ok) {
+      setBusy(false);
+      setError(err ? LAUNCH_REASONS.network : (LAUNCH_REASONS[data && data.reason] || "That did not work."));
+      await refreshSetup();
+      return;
+    }
+    try { window.localStorage.removeItem(setupScreenKey(op)); } catch (e) { /* fine */ }
+    window.location.hash = "/dashboard";
+    window.location.reload();
+  };
+  return el("div", { className: "gsStack" },
+    el("p", { className: "gsLead" }, setup.ready
+      ? `Everything ${company} needs is in place. Launching makes your branch live: bookings open and texts start going to renters. Test records made during setup are removed.`
+      : blocking.length ? `Still needed to launch: ${blocking.join(", ")}.`
+      : "fleetr is finishing your account. You can launch as soon as it has."),
+    el("ul", { className: "gsReview" },
+      rows.map(row),
+      testRentals && !testRentals.done && el("li", { key: "tr", className: "gsReview__row" },
+        el("span", { className: "gsReview__mark", "aria-hidden": "true" }),
+        el("span", { className: "gsReview__title" }, "Test rentals", el("small", null, "Finish or delete the test rentals made during setup")),
+        el("a", { className: "flBtn flBtn--quiet", href: "#/rental-agreements" }, "Open"))),
+    el(Button, { size: "lg", block: true, onClick: launch, disabled: !setup.ready || setup.suspended, loading: busy }, `Launch ${company}`),
+    !setup.ready && el("p", { className: "gsNote" }, "Launch turns on when everything above that is needed is done."),
+    error && el("p", { className: "gsError", role: "alert" }, error));
 }
 
 function CompanyPage() {
@@ -15824,12 +16374,12 @@ function SetupBar() {
   if (!setup.launched) {
     text = "Setup mode: not live yet";
     // Not shown on the Company page, where setup already is.
-    if (isExec && location.pathname !== "/company") action = React.createElement("a", { href: "#/company", className: "setupBar__continue" }, "Continue setup \u2192");
+    if (isExec && location.pathname !== "/setup") action = React.createElement("a", { href: "#/setup", className: "setupBar__continue" }, "Continue setup");
   } else if (setup.suspended) {
     text = "Suspended by fleetr. Your branches are hidden from fleetr.ai and take no online bookings. Texts for existing reservations and rentals still go. Contact fleetr to lift it.";
   } else if (setup.paused) {
     text = "Paused. Your branches are hidden from fleetr.ai and take no online bookings. Texts for existing reservations and rentals still go.";
-    if (isExec) action = link("#/company", "Resume on the Company page");
+    if (isExec) action = link("#/setup", "Resume setup");
   } else {
     return null;
   }
@@ -20802,7 +21352,8 @@ function StartRedirect() {
   const { setup, currentUser } = React.useContext(AppContext);
   const isExec = roleAtLeast(currentUser?.role, "Exec");
   if (isExec && !setup) return null;
-  const to = isExec && !setup.launched ? "/company" : "/dashboard";
+  // An Exec whose company has not launched yet carries on with the guided setup.
+  const to = isExec && !setup.launched ? "/setup" : "/dashboard";
   return React.createElement(Navigate, { to, replace: true });
 }
 
@@ -20851,7 +21402,7 @@ function AppRoutes() {
     React.createElement(Route, {
       key:  "setup",
       path: "/setup",
-      element: React.createElement(Navigate, { to: "/company", replace: true }),
+      element: React.createElement(GuidedSetup),
     }),
     React.createElement(Route, {
       path: "/dashboard",
@@ -26340,6 +26891,108 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
   .statCard__head{ min-height: 44px; padding-block: 11px; margin: -11px 0 -3px; }
 }
 
+/* ── Guided setup: a full screen of its own, one task at a time ── */
+.gs{ position: fixed; inset: 0; z-index: 9000; display: grid; grid-template-rows: auto auto 1fr auto; background: var(--fl-paper); color: var(--fl-ink); }
+.gs__top{ display: flex; align-items: center; gap: var(--fl-space-4); padding: var(--fl-space-4) var(--fl-space-6); }
+.gs__phase{ font-size: var(--fl-text-sm); font-weight: 500; color: var(--fl-ink-3); }
+.gs__exit{ margin-left: auto; min-height: 40px; padding: 0 var(--fl-space-4); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-pill); background: var(--fl-surface);
+  font: 500 var(--fl-text-sm)/1 var(--fl-font); color: var(--fl-ink); cursor: pointer; transition: background var(--fl-dur-fast) var(--fl-ease-out); }
+.gs__exit:hover{ background: var(--fl-hover); }
+.gs > .flProgress{ border-radius: 0; height: 3px; }
+.gs__scroll{ overflow-y: auto; overscroll-behavior: contain; }
+.gs__body{ max-width: 600px; margin: 0 auto; padding: var(--fl-space-9) var(--fl-space-6) var(--fl-space-10); }
+.gs__body--fwd{ animation: gsIn var(--fl-dur-slow) var(--fl-ease-out); }
+.gs__body--back{ animation: gsBack var(--fl-dur-slow) var(--fl-ease-out); }
+@keyframes gsIn{ from{ opacity: 0; transform: translateX(16px); } to{ opacity: 1; transform: none; } }
+@keyframes gsBack{ from{ opacity: 0; transform: translateX(-16px); } to{ opacity: 1; transform: none; } }
+.gsTitle{ margin: 0 0 var(--fl-space-3); font-size: var(--fl-text-2xl); font-weight: 600; letter-spacing: var(--fl-tracking-tight); line-height: var(--fl-leading-tight); }
+.gsTitle--big{ font-size: var(--fl-text-3xl); max-width: 14ch; }
+.gsLead{ margin: 0 0 var(--fl-space-2); font-size: var(--fl-text-md); line-height: var(--fl-leading); color: var(--fl-ink-2); max-width: 52ch; }
+.gsNote{ margin: 0; font-size: 14px; color: var(--fl-ink-3); line-height: var(--fl-leading); }
+.gsError{ margin: var(--fl-space-5) 0 0; padding: var(--fl-space-3) var(--fl-space-4); border-radius: var(--fl-radius); background: var(--fl-danger-soft); color: var(--fl-danger); font-size: 14px; font-weight: 500; }
+.gsStack{ display: grid; gap: var(--fl-space-5); }
+.gsRow{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--fl-space-4); }
+.gsBigInput{ min-height: 64px; font-size: var(--fl-text-xl); font-weight: 600; }
+.gsMonthDay{ display: grid; grid-template-columns: 1.4fr 1fr; gap: var(--fl-space-2); }
+.gs__foot{ display: flex; align-items: center; justify-content: space-between; gap: var(--fl-space-3);
+  padding: var(--fl-space-3) var(--fl-space-6) calc(var(--fl-space-3) + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--fl-line-soft); background: var(--fl-surface); }
+.gs__footRight{ display: flex; align-items: center; gap: var(--fl-space-2); }
+.gs__foot .flBtn--quiet{ min-height: var(--fl-tap); }
+.gs__foot .flBtn--lg{ min-width: 148px; }
+
+/* Welcome: the four parts, in order, because they are a sequence. */
+.gsWelcome .gsLead{ margin-bottom: var(--fl-space-7); }
+.gsPhases{ list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; border-top: 1px solid var(--fl-line-soft); }
+.gsPhases li{ display: flex; align-items: center; gap: var(--fl-space-4); padding: var(--fl-space-4) 0; border-bottom: 1px solid var(--fl-line-soft); }
+.gsPhases__n{ flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: var(--fl-radius-pill); background: var(--fl-sunken); font-weight: 600; font-size: 14px; font-variant-numeric: tabular-nums; }
+.gsPhases strong{ display: block; font-size: var(--fl-text-base); font-weight: 600; }
+.gsPhases small{ display: block; margin-top: 2px; font-size: 14px; color: var(--fl-ink-3); }
+
+/* Class cards: tap to pick, a tick when picked. */
+.gsChoices{ display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: var(--fl-space-3); }
+.gsChoice{ position: relative; display: grid; gap: 4px; align-content: start; min-height: 88px; padding: var(--fl-space-4); text-align: left; cursor: pointer;
+  border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); background: var(--fl-surface); font-family: var(--fl-font); color: var(--fl-ink);
+  transition: border-color var(--fl-dur-fast) var(--fl-ease-out), box-shadow var(--fl-dur-fast) var(--fl-ease-out), transform var(--fl-dur-fast) var(--fl-ease-out); }
+.gsChoice:hover{ border-color: var(--fl-line-strong); }
+.gsChoice:active{ transform: scale(0.98); }
+.gsChoice--on{ border-color: var(--fl-ink); box-shadow: inset 0 0 0 1px var(--fl-ink); }
+.gsChoice:disabled{ cursor: default; opacity: 1; }
+.gsChoice__name{ font-weight: 600; font-size: var(--fl-text-base); padding-right: 28px; }
+.gsChoice__meta{ font-size: var(--fl-text-sm); color: var(--fl-ink-3); line-height: 1.4; }
+.gsChoice__tick{ position: absolute; top: 14px; right: 14px; width: 22px; height: 22px; display: grid; place-items: center; border-radius: var(--fl-radius-pill);
+  border: 1px solid var(--fl-line-strong); color: var(--fl-surface); }
+.gsChoice--on .gsChoice__tick{ background: var(--fl-ink); border-color: var(--fl-ink); }
+
+/* A price per class: name on the left, the dollar field on the right. */
+.gsRateList{ display: grid; border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); background: var(--fl-surface); overflow: hidden; }
+.gsRateRow{ display: flex; align-items: center; justify-content: space-between; gap: var(--fl-space-4); padding: var(--fl-space-3) var(--fl-space-4); border-top: 1px solid var(--fl-line-soft); cursor: text; }
+.gsRateRow:first-child{ border-top: 0; }
+.gsRateRow__name{ display: grid; gap: 2px; font-weight: 600; font-size: var(--fl-text-base); min-width: 0; }
+.gsRateRow__name small{ font-weight: 400; font-size: var(--fl-text-sm); color: var(--fl-ink-3); }
+.gsRateRow__input{ display: flex; align-items: center; gap: var(--fl-space-2); flex: none; }
+.gsRateRow__input .flInputAffix{ width: 112px; }
+.gsRateRow__input .flInput{ text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.gsRateRow__input small{ font-size: var(--fl-text-sm); color: var(--fl-ink-3); width: 36px; }
+
+/* The discount grid: every cell filled; a typed one is marked as your own. */
+.gsGridWrap{ border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); background: var(--fl-surface); overflow-x: auto; }
+.gsGrid{ width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.gsGrid th, .gsGrid td{ padding: var(--fl-space-2) var(--fl-space-3); text-align: left; border-top: 1px solid var(--fl-line-soft); vertical-align: middle; }
+.gsGrid thead th{ border-top: 0; font-size: var(--fl-text-xs); font-weight: 500; color: var(--fl-ink-3); }
+.gsGrid tbody th{ font-weight: 600; font-size: 14px; white-space: nowrap; }
+.gsGrid__daily{ color: var(--fl-ink-3); font-size: 14px; }
+.gsGrid__cell .flInputAffix{ width: 96px; }
+.gsGrid__cell .flInput{ min-height: 40px; text-align: right; }
+.gsGrid__cell--own .flInput{ border-color: var(--fl-ink); background: var(--fl-sunken); }
+.gsGrid__reset{ display: block; margin-top: 4px; padding: 0; border: 0; background: none; font: 500 var(--fl-text-xs)/1.4 var(--fl-font); color: var(--fl-brand-text); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.gsTerms .flCard__title{ font-size: var(--fl-text-base); }
+.gsCardBtn{ margin-top: var(--fl-space-4); }
+
+/* Review: every part, done or not, with its way back. */
+.gsReview{ list-style: none; margin: 0; padding: 0; border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); background: var(--fl-surface); }
+.gsReview__row{ display: flex; align-items: center; gap: var(--fl-space-3); padding: var(--fl-space-3) var(--fl-space-4); border-top: 1px solid var(--fl-line-soft); }
+.gsReview__row:first-child{ border-top: 0; }
+.gsReview__mark{ flex: none; width: 24px; height: 24px; display: grid; place-items: center; border-radius: var(--fl-radius-pill); border: 1.5px dashed var(--fl-line-strong); color: var(--fl-surface); }
+.gsReview__mark--done{ border: 0; background: var(--fl-success); }
+.gsReview__title{ flex: 1; min-width: 0; display: grid; gap: 2px; font-weight: 600; font-size: var(--fl-text-base); }
+.gsReview__title small{ font-weight: 400; font-size: var(--fl-text-sm); color: var(--fl-ink-3); }
+
+@media (max-width: 767px){
+  .gs__top{ padding: var(--fl-space-3) var(--fl-space-4); }
+  .gs__phase{ display: none; }
+  .gs__body{ padding: var(--fl-space-7) var(--fl-space-4) var(--fl-space-9); }
+  .gsTitle{ font-size: var(--fl-text-xl); }
+  .gsTitle--big{ font-size: var(--fl-text-2xl); }
+  .gsLead{ font-size: var(--fl-text-base); }
+  .gsRow{ grid-template-columns: minmax(0, 1fr); }
+  .gs__foot{ padding: var(--fl-space-3) var(--fl-space-4) calc(var(--fl-space-3) + env(safe-area-inset-bottom, 0px)); }
+  .gs__foot .flBtn--lg{ min-width: 0; flex: 1; }
+  .gs__footRight{ flex: 1; justify-content: flex-end; }
+  .gsChoices{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gsGrid__cell .flInputAffix{ width: 80px; }
+}
+@media (prefers-reduced-motion: reduce){ .gs__body--fwd, .gs__body--back{ animation: none; } }
+
 /* ══ fleetr design system 1.0 ════════════════════════════════════════════
    The layer every screen is drawn with, built on the tokens at the top of
    this sheet. Last in the sheet, so it is the look that wins: the rules
@@ -26451,6 +27104,8 @@ input::placeholder, textarea::placeholder{ color: var(--fl-ink-4); }
    Sheet, EmptyState, ErrorState, Progress) ── */
 .flBtn{ display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 var(--fl-space-5);
   font: 600 14px/1 var(--fl-font); cursor: pointer; text-decoration: none; white-space: nowrap; }
+/* 44px to a finger: found at 40px walking the guided setup on a phone. */
+@media (max-width: 767px), (pointer: coarse){ .flBtn, .gs__exit{ min-height: var(--fl-tap); } }
 .flBtn--lg{ min-height: 52px; padding: 0 var(--fl-space-6); font-size: var(--fl-text-base); border-radius: var(--fl-radius-lg); }
 .flBtn--block{ width: 100%; }
 .flBtn--quiet{ background: transparent; border: 0; color: var(--fl-ink); text-decoration: underline; text-underline-offset: 3px; padding: 0 var(--fl-space-2); }
