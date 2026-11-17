@@ -1236,6 +1236,7 @@ const NAV_SECTIONS = [
     items: [
       { label: "Reports", path: "/reports", feature: "reports" },
       { label: "Audit Log", path: "/audit-log", feature: "audit_log" },
+      { label: "Partners", path: "/partners", minRole: "Admin" },
       { label: "Company", path: "/company" },
       { label: "Your Account", path: "/account" },
     ],
@@ -1247,11 +1248,12 @@ const NAV = NAV_SECTIONS.flatMap((section) => section.items);
 // this rather than NAV_SECTIONS directly, so an item whose company has the
 // feature off is not there at all, and a section left with no items loses its
 // header too instead of hanging empty. Items without a feature always show.
-const navItemVisible = (item) => (!item.feature || isFeatureEnabled(item.feature))
-  && (!item.setupOnly || !companyLaunched);
-function visibleNavSections() {
+const navItemVisible = (item, role) => (!item.feature || isFeatureEnabled(item.feature))
+  && (!item.setupOnly || !companyLaunched)
+  && (!item.minRole || roleAtLeast(role, item.minRole));
+function visibleNavSections(role) {
   return NAV_SECTIONS
-    .map((section) => ({ ...section, items: section.items.filter(navItemVisible) }))
+    .map((section) => ({ ...section, items: section.items.filter((item) => navItemVisible(item, role)) }))
     .filter((section) => section.items.length > 0);
 }
 
@@ -2345,7 +2347,7 @@ function AppProvider({ children, currentUser, signOut }) {
       let [resData, ndiData, torData, flData, nsData, raData] = await Promise.all([
         // Reservations and rental agreements come from Supabase only. Nothing
         // is ever seeded into them.
-        Promise.resolve(res.data || []),
+        Promise.resolve(notPartnerRequests(res.data || [])),
         Promise.resolve(ndi.data || []),
         Promise.resolve(tor.data || []),
         Promise.resolve(fl.data  || []),
@@ -2470,7 +2472,7 @@ function AppProvider({ children, currentUser, signOut }) {
         setRentalAgreementsState(raRef.current);
         for (const a of added) raByResCode[a.resCode] = a;
       }
-      const oldRes = (res.data || []).filter((r) => r.resCode);
+      const oldRes = notPartnerRequests(res.data || []).filter((r) => r.resCode);
       setReservationsState((prev) => {
         const have = new Set(prev.map((r) => r.resCode));
         const withStatus = (r) => {
@@ -2856,6 +2858,12 @@ function PageSkeleton({ path }) {
 // the new one is drawn while the old one is still counted here.
 const SKEL_DELAY_MS = 150;
 let skelShowing = 0;
+// A partner's booking waiting for the company's yes, or declined, is not a
+// reservation yet: it waits on the Partners page and in Needs you, and stays
+// out of every list, count and search until it is accepted.
+const PARTNER_PENDING_STATUSES = ["partner_requested", "partner_declined"];
+const notPartnerRequests = (rows) => rows.filter((r) => !PARTNER_PENDING_STATUSES.includes(r && r.rentalAgreementStatus));
+
 // ─── UI kit (fleetr design system 1.0) ───────────────────────────────────────
 // The shared pieces new screens are built from, drawn by the .fl* rules in the
 // design system layer at the end of the stylesheet. One primary Button per
@@ -4594,7 +4602,10 @@ function NeedsYou() {
   const [items, setItems] = React.useState(null);
   const [busy, setBusy] = React.useState("");
   const [error, setError] = React.useState("");
+  // What partners are waiting on (partner_portal.sql), one line to the Partners page.
+  const [partnerWait, setPartnerWait] = React.useState(null);
   const load = React.useCallback(async () => {
+    supabase.rpc("my_partner_needs_you").then(({ data: pw }) => setPartnerWait(pw || null)).catch(() => null);
     const { data, error: err } = await (takeHomeEarly("needs_you") || supabase.rpc("needs_you"));
     if (err || !data || !data.ok) { setItems((x) => x || []); return; }
     setItems(data.items || []);
@@ -4619,11 +4630,18 @@ function NeedsYou() {
     await load();
     setBusy("");
   };
-  const count = items ? items.length : 0;
+  const pw = partnerWait || {};
+  const partnerParts = [[pw.bookings, "booking", "bookings", "to confirm"], [pw.extensions, "extension", "extensions", "asked for"], [pw.transfers, "bank transfer", "bank transfers", "to look for"]]
+    .filter(([n]) => Number(n) > 0).map(([n, one, many, what]) => `${n} ${Number(n) === 1 ? one : many} ${what}`);
+  const count = (items ? items.length : 0) + (partnerParts.length ? 1 : 0);
   return el(CompanyStep, { title: count ? `Needs you (${count})` : "Needs you", open, onToggle: () => setOpen((o) => !o) },
     open && el("div", { className: "dashboardSection__body" },
       items === null && el("div", { className: "skelBox avail__skel", role: "status", "aria-label": "Loading" }),
-      items && items.length === 0 && el("p", { className: "closeRentalHint" }, "Nothing needs you right now."),
+      items && count === 0 && el("p", { className: "closeRentalHint" }, "Nothing needs you right now."),
+      partnerParts.length > 0 && el("ul", { className: "needsYou" }, el("li", { className: "needsYou__item" },
+        el("button", { type: "button", className: "needsYou__open", onClick: () => navigate("/partners") },
+          el("span", { className: "needsYou__tag needsYou__tag--partner" }, "Partners"),
+          el("span", { className: "needsYou__what" }, partnerParts.join(", "))))),
       items && items.length > 0 && el("ul", { className: "needsYou" }, items.map((i) => {
         const [title, detail] = needsYouText(i);
         return el("li", { key: `${i.kind}:${i.id}`, className: "needsYou__item" },
@@ -10142,6 +10160,179 @@ function GuidedSetupReview({ company, op, onEdit }) {
     error && el("p", { className: "gsError", role: "alert" }, error));
 }
 
+// ─── Partners (overnight-nov17, Part 3) ──────────────────────────────────────
+// The body shops, insurers and dealerships the company works with, each with
+// its own portal (partner.html): an Exec or Admin adds a partner, invites its
+// people, and decides what they ask for. An Exec chooses whether partner
+// bookings are accepted automatically or approved one by one, and the bank
+// details partners pay invoices to. All of it is partner_portal.sql.
+const PARTNER_KINDS = [["body_shop", "Body shop"], ["insurer", "Insurer"], ["dealership", "Dealership"]];
+const PARTNER_REFUSALS = {
+  admin_only: "Only an Exec or Admin can do this.", exec_only: "Only an Exec can change this.", bad_name: "Add a name.",
+  duplicate_name: "There's already a partner with that name.", bad_email: "Check the email address.",
+  staff_email: "That address belongs to someone on your staff. Use their work address at the partner.",
+  already_joined: "That person has already joined the portal.", not_found: "That's no longer waiting. It may have been handled already.",
+  too_long: "Keep the bank details under 600 characters.",
+};
+const partnerRefusal = (r) => PARTNER_REFUSALS[r] || "That didn't work. Try again.";
+let partnerCountCache = { at: 0, value: null, pending: null };
+async function partnerPendingCount(force) {
+  if (!force && partnerCountCache.value != null && Date.now() - partnerCountCache.at < 60000) return partnerCountCache.value;
+  if (partnerCountCache.pending) return partnerCountCache.pending;
+  partnerCountCache.pending = supabase.rpc("my_partner_needs_you").then(({ data }) => {
+    const n = data ? Number(data.bookings || 0) + Number(data.extensions || 0) + Number(data.transfers || 0) : 0;
+    partnerCountCache = { at: Date.now(), value: n, pending: null, detail: data };
+    return n;
+  }).catch(() => { partnerCountCache.pending = null; return 0; });
+  return partnerCountCache.pending;
+}
+
+function PartnersPage() {
+  const { currentUser, setReservations } = React.useContext(AppContext);
+  const el = React.createElement;
+  const isAdmin = roleAtLeast(currentUser?.role, "Admin");
+  const isExec = roleAtLeast(currentUser?.role, "Exec");
+  const [data, setData] = React.useState(null);
+  const [busy, setBusy] = React.useState("");
+  const [error, setError] = React.useState({});
+  const [notice, setNotice] = React.useState("");
+  const [adding, setAdding] = React.useState(false);
+  const [newP, setNewP] = React.useState({ name: "", kind: "body_shop" });
+  const [inviteFor, setInviteFor] = React.useState("");
+  const [invite, setInvite] = React.useState({ name: "", email: "" });
+  const [links, setLinks] = React.useState({});
+  const [settings, setSettings] = React.useState(null);
+  const load = React.useCallback(async () => {
+    const { data: d, error: err } = await supabase.rpc("partners_overview");
+    setData(err || !d ? { ok: false, reason: "network" } : d);
+    if (d && d.ok) setSettings((s) => s || { mode: d.settings.bookingMode, bank: d.settings.bankTransferDetails || "" });
+    partnerPendingCount(true);
+  }, []);
+  React.useEffect(() => { if (isAdmin) load(); }, [isAdmin, load]);
+  const act = async (key, fn, args, done) => {
+    setBusy(key); setError((e) => ({ ...e, [key]: "" }));
+    const { data: d, error: err } = await supabase.rpc(fn, args);
+    setBusy("");
+    if (err || !d || !d.ok) { setError((e) => ({ ...e, [key]: err ? "Could not reach fleetr. Try again." : partnerRefusal(d && d.reason) })); return null; }
+    if (done) await done(d);
+    await load();
+    return d;
+  };
+  const flash = (t) => { setNotice(t); setTimeout(() => setNotice(""), 6000); };
+  if (!isAdmin) return el("div", { className: "page" }, el("h1", { className: "page__title" }, "Partners"),
+    el(EmptyState, { icon: "users", title: "For an Exec or Admin", text: "Partners are body shops, insurers and dealerships that book rentals with you. An Exec or Admin manages them." }));
+  if (!data) return el("div", { className: "page" }, el("h1", { className: "page__title" }, "Partners"),
+    el("div", { className: "partnersGrid" }, [0, 1].map((i) => el("span", { key: i, className: "flSkeleton", style: { height: 120 } }))));
+  if (!data.ok) return el("div", { className: "page" }, el("h1", { className: "page__title" }, "Partners"), el(ErrorState, { title: "Partners could not load", onRetry: load }));
+  const fmt = (iso) => (iso ? new Date(`${String(iso).slice(0, 10)}T12:00:00`).toLocaleDateString("en-CA", { month: "short", day: "numeric" }) : "");
+  const waiting = data.requests.length + data.extensions.length + data.transfers.length;
+  const sendInvite = async (p) => {
+    const d = await act(`invite:${p.id}`, "invite_partner_user", { p_partner_id: p.id, p_name: invite.name, p_email: invite.email });
+    if (!d) return;
+    let link = `${window.location.origin}/partner#invite=${d.token}`;
+    let sent = false;
+    try {
+      const session = supabase.auth.session();
+      const res = await fetch(`${CLAUDE_API_URL}/partner/invite-email`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${session && session.access_token}` }, body: JSON.stringify({ token: d.token }) });
+      const out = await res.json().catch(() => null);
+      if (out && out.ok) { sent = !!out.sent; link = out.link || link; }
+    } catch (e) { /* the link below still works */ }
+    setLinks((l) => ({ ...l, [d.id]: link }));
+    setInvite({ name: "", email: "" }); setInviteFor("");
+    flash(sent ? `Invite sent to ${d.email}.` : `Invite made for ${d.email}. Copy the link below and send it to them.`);
+  };
+  return el("div", { className: "page partners" },
+    el("div", { className: "partners__head" },
+      el("div", null, el("h1", { className: "page__title" }, "Partners"),
+        el("p", { className: "partners__lead" }, "Body shops, insurers and dealerships book replacement rentals, extend them and pay invoices in their own portal. They see only their own bookings.")),
+      el(Button, { onClick: () => setAdding(true) }, el(Icon, { name: "plus", size: 18 }), "Add partner")),
+    notice && el("p", { className: "partners__notice", role: "status" }, notice),
+
+    waiting > 0 && el("section", { className: "partners__section" },
+      el("h2", { className: "partners__h2" }, `Waiting for you (${waiting})`),
+      el("div", { className: "flCard partners__list" },
+        data.requests.map((r) => el("div", { key: r.resCode, className: "partners__row" },
+          el("div", { className: "partners__rowMain" },
+            el("strong", null, `${r.partner} wants a ${r.vehicleClass}`),
+            el("span", null, `${r.customer}, ${fmt(r.date)} at ${r.time} to ${fmt(r.returnDate)}. ${r.claimNumber ? `Claim ${r.claimNumber}` : `RO ${r.repairOrder}`}${r.repairVehicle && r.repairVehicle.make ? `, for a ${[r.repairVehicle.year, r.repairVehicle.make, r.repairVehicle.model].filter(Boolean).join(" ")}` : ""}.`),
+            el(FieldError, { text: error[`book:${r.resCode}`] })),
+          el("div", { className: "partners__rowActions" },
+            el(Button, { variant: "secondary", loading: busy === `decline:${r.resCode}`, onClick: () => act(`book:${r.resCode}`, "decide_partner_booking", { p_res_code: r.resCode, p_accept: false, p_note: null }, () => flash(`Declined. ${r.partner} has been told.`)) }, "Decline"),
+            el(Button, { loading: busy === `book:${r.resCode}`, onClick: () => act(`book:${r.resCode}`, "decide_partner_booking", { p_res_code: r.resCode, p_accept: true, p_note: null }, async () => {
+              // Into the lists now, not at the next reload (found on staging).
+              const { data: row } = await supabase.from("reservations").select("*").eq("resCode", r.resCode).limit(1).then(oneOrNone);
+              if (row && setReservations) setReservations((prev) => [...(prev || []).filter((x) => x.resCode !== row.resCode), row]);
+              flash(`Booked. ${r.customer} is in Reservations, and ${r.partner} has been told.`);
+            }) }, "Accept")))),
+        data.extensions.map((x) => el("div", { key: x.id, className: "partners__row" },
+          el("div", { className: "partners__rowMain" }, el("strong", null, `${x.partner} wants ${x.resCode} until ${fmt(x.newReturnDate)}`), x.reason && el("span", null, x.reason),
+            el(FieldError, { text: error[`ext:${x.id}`] })),
+          el("div", { className: "partners__rowActions" },
+            el(Button, { variant: "secondary", onClick: () => act(`ext:${x.id}`, "decide_partner_extension", { p_id: x.id, p_approve: false }) }, "Decline"),
+            el(Button, { loading: busy === `ext:${x.id}`, onClick: () => act(`ext:${x.id}`, "decide_partner_extension", { p_id: x.id, p_approve: true }, () => flash("Extended. The return date is moved.")) }, "Approve")))),
+        data.transfers.map((t) => el("div", { key: t.id, className: "partners__row" },
+          el("div", { className: "partners__rowMain" }, el("strong", null, `${t.partner} sent a $${Number(t.amount).toFixed(2)} bank transfer`),
+            el("span", null, `${t.reference ? `Reference ${t.reference}. ` : ""}When it arrives, record it on the rental as Bank transfer (EFT), then mark it here.`),
+            el(FieldError, { text: error[`tr:${t.id}`] })),
+          el("div", { className: "partners__rowActions" },
+            el(Button, { loading: busy === `tr:${t.id}`, onClick: () => act(`tr:${t.id}`, "record_partner_transfer", { p_id: t.id }, () => flash("Marked arrived. The partner has been thanked.")) }, "It arrived")))))),
+
+    el("section", { className: "partners__section" },
+      el("h2", { className: "partners__h2" }, "Your partners"),
+      !data.partners.length && !adding
+        ? el("div", { className: "flCard" }, el(EmptyState, { icon: "building", title: "No partners yet",
+            text: "Add the body shops, insurers and dealerships that send you renters. Each gets a portal to book with you.",
+            action: el(Button, { onClick: () => setAdding(true) }, "Add your first partner") }))
+        : el("div", { className: "partnersGrid" },
+            adding && el("form", { className: "flCard partners__card", onSubmit: (e) => { e.preventDefault(); act("add", "save_partner", { p_id: null, p_name: newP.name, p_kind: newP.kind, p_active: true }, () => { setAdding(false); setNewP({ name: "", kind: "body_shop" }); flash("Partner added. Invite their people next."); }); } },
+              el("h3", { className: "flCard__title" }, "Add a partner"),
+              el(Field, { label: "Name", htmlFor: "partner-name" }, el("input", { id: "partner-name", className: "flInput", value: newP.name, maxLength: 80, autoFocus: true, onChange: (e) => setNewP({ ...newP, name: e.target.value }) })),
+              el("div", { className: "partners__kinds", role: "radiogroup", "aria-label": "Kind" }, PARTNER_KINDS.map(([k, label]) =>
+                el("button", { key: k, type: "button", role: "radio", "aria-checked": newP.kind === k, className: `partners__kind${newP.kind === k ? " partners__kind--on" : ""}`, onClick: () => setNewP({ ...newP, kind: k }) }, label))),
+              el(FieldError, { text: error.add }),
+              el("div", { className: "partners__formActions" }, el(Button, { variant: "quiet", onClick: () => setAdding(false) }, "Cancel"),
+                el(Button, { type: "submit", disabled: !newP.name.trim(), loading: busy === "add" }, "Add partner"))),
+            data.partners.map((p) => el("article", { key: p.id, className: `flCard partners__card${p.active ? "" : " partners__card--off"}` },
+              el("div", { className: "partners__cardHead" },
+                el("div", null, el("h3", { className: "flCard__title" }, p.name), el(Chip, null, (PARTNER_KINDS.find(([k]) => k === p.kind) || [])[1])),
+                !p.active && el(Chip, { tone: "warning" }, "Off")),
+              el("ul", { className: "partners__people" }, p.users.length === 0 && el("li", { className: "partners__nobody" }, "Nobody invited yet."),
+                p.users.map((u) => el("li", { key: u.id },
+                  el("span", { className: "partners__person" }, el("strong", null, u.name), el("small", null, u.email)),
+                  el(Chip, { tone: u.joined ? (u.active ? "success" : undefined) : "warning" }, u.joined ? (u.active ? "Joined" : "Off") : u.invitePending ? "Invited" : "Invite expired"),
+                  u.joined && el("button", { type: "button", className: "partners__mini", onClick: () => act(`user:${u.id}`, "set_partner_user_active", { p_id: u.id, p_active: !u.active }) }, u.active ? "Turn off" : "Turn on"),
+                  links[u.id] && el("div", { className: "partners__link" }, el("input", { className: "flInput", readOnly: true, value: links[u.id], "aria-label": `Invite link for ${u.name}`, onFocus: (e) => e.target.select() }),
+                    el(Button, { variant: "secondary", onClick: () => { navigator.clipboard && navigator.clipboard.writeText(links[u.id]); flash("Link copied."); } }, "Copy"))))),
+              inviteFor === p.id
+                ? el("form", { className: "partners__invite", onSubmit: (e) => { e.preventDefault(); sendInvite(p); } },
+                    el("div", { className: "partners__inviteRow" },
+                      el(Field, { label: "Name", htmlFor: `inv-name-${p.id}` }, el("input", { id: `inv-name-${p.id}`, className: "flInput", value: invite.name, maxLength: 80, autoFocus: true, onChange: (e) => setInvite({ ...invite, name: e.target.value }) })),
+                      el(Field, { label: "Work email", htmlFor: `inv-email-${p.id}` }, el("input", { id: `inv-email-${p.id}`, className: "flInput", type: "email", inputMode: "email", value: invite.email, maxLength: 200, onChange: (e) => setInvite({ ...invite, email: e.target.value }) }))),
+                    el(FieldError, { text: error[`invite:${p.id}`] }),
+                    el("div", { className: "partners__formActions" }, el(Button, { variant: "quiet", onClick: () => setInviteFor("") }, "Cancel"),
+                      el(Button, { type: "submit", disabled: !invite.name.trim() || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(invite.email.trim()), loading: busy === `invite:${p.id}` }, "Send invite")))
+                : el("div", { className: "partners__formActions" },
+                    el(Button, { variant: "quiet", onClick: () => act(`p:${p.id}`, "save_partner", { p_id: p.id, p_name: p.name, p_kind: p.kind, p_active: !p.active }) }, p.active ? "Turn off" : "Turn on"),
+                    p.active && el(Button, { variant: "secondary", onClick: () => { setInviteFor(p.id); setInvite({ name: "", email: "" }); } }, "Invite someone")))))),
+
+    el("section", { className: "partners__section" },
+      el("h2", { className: "partners__h2" }, "How partners book"),
+      el("div", { className: "flCard partners__settings" },
+        el("div", { className: "partners__kinds", role: "radiogroup", "aria-label": "Partner bookings" },
+          [["approve", "Approve each booking", "You accept or decline every booking. The car is held while you decide."],
+           ["auto", "Accept automatically", "A booking is confirmed the moment a partner makes it, if a car is free."]].map(([k, t, d]) =>
+            el("button", { key: k, type: "button", role: "radio", "aria-checked": settings && settings.mode === k, disabled: !isExec,
+              className: `partners__mode${settings && settings.mode === k ? " partners__mode--on" : ""}`, onClick: () => setSettings({ ...settings, mode: k }) },
+              el("strong", null, t), el("small", null, d)))),
+        el(Field, { label: "Bank details for invoices", htmlFor: "partner-bank", hint: "Shown to partners who pay by bank transfer: your institution, transit and account numbers, and what to put as the reference." },
+          el("textarea", { id: "partner-bank", className: "flInput", rows: 4, maxLength: 600, disabled: !isExec, value: settings ? settings.bank : "", onChange: (e) => setSettings({ ...settings, bank: e.target.value }) })),
+        el(FieldError, { text: error.settings }),
+        isExec ? el("div", { className: "partners__formActions" }, el(Button, { loading: busy === "settings",
+          disabled: !settings || (settings.mode === data.settings.bookingMode && (settings.bank || "") === (data.settings.bankTransferDetails || "")),
+          onClick: () => act("settings", "set_partner_settings", { p_mode: settings.mode, p_bank: settings.bank }, () => flash("Saved.")) }, "Save"))
+          : el("p", { className: "closeRentalHint" }, "Only an Exec changes these."))));
+}
+
 function CompanyPage() {
   const { currentUser, setup, refreshSetup, fleet } = React.useContext(AppContext);
   const isExec = roleAtLeast(currentUser?.role, "Exec");
@@ -15014,7 +15205,7 @@ function useMobile() {
 
 function MobileNav() {
   const [open, setOpen] = React.useState(false);
-  const { signOut } = React.useContext(AppContext);
+  const { signOut, currentUser } = React.useContext(AppContext);
   const badges = useNavBadges();
   const drawerRef = React.useRef(null);
   const burgerRef = React.useRef(null);
@@ -15102,7 +15293,7 @@ function MobileNav() {
       React.createElement(
         "nav",
         { className: "mobileNavDrawer", ref: drawerRef, "aria-label": "Menu" },
-        visibleNavSections().map((section) =>
+        visibleNavSections(currentUser?.role).map((section) =>
           React.createElement(
             "section",
             { key: section.header, className: "mobileNavSection" },
@@ -15441,6 +15632,7 @@ const NAV_ICONS = {
   "/no-shows":             ["M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z", "M17 8l5 5", "M22 8l-5 5"],
   "/reports":              ["M3 3v18h18", "M7 16v-5", "M12 16V8", "M17 16v-8"],
   "/audit-log":            ["M8 6h13", "M8 12h13", "M8 18h13", "M3 6h.01", "M3 12h.01", "M3 18h.01"],
+  "/partners":             ["M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2", "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z", "M22 21v-2a4 4 0 0 0-3-3.9", "M16 3.1a4 4 0 0 1 0 7.8"],
   "/company":              ["M3 21h18", "M5 21V7l7-4 7 4v14", "M9 9h.01", "M15 9h.01", "M9 13h.01", "M15 13h.01", "M10 21v-4h4v4"],
   "/account":              ["M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z", "M12 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6z", "M6.2 19a6 6 0 0 1 11.6 0"],
 };
@@ -15466,9 +15658,20 @@ function overdueRentalCount(reservations, rentalAgreements) {
 }
 
 function useNavBadges() {
-  const { reservations, rentalAgreements } = React.useContext(AppContext);
+  const { reservations, rentalAgreements, currentUser } = React.useContext(AppContext);
   const overdue = overdueRentalCount(reservations || [], rentalAgreements || []);
-  return { "/overdue-rentals": overdue };
+  // What partners are waiting on: bookings to confirm, extensions, transfers.
+  const [partners, setPartners] = React.useState(0);
+  const admin = roleAtLeast(currentUser?.role, "Admin");
+  React.useEffect(() => {
+    if (!admin) return undefined;
+    let live = true;
+    const tick = () => partnerPendingCount().then((n) => { if (live) setPartners(n); });
+    tick();
+    const t = setInterval(tick, 60000);
+    return () => { live = false; clearInterval(t); };
+  }, [admin]);
+  return { "/overdue-rentals": overdue, "/partners": partners };
 }
 
 const initialsOf = (name) => String(name || "").trim().split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("") || "?";
@@ -15494,8 +15697,8 @@ function readSidebarCollapsed() {
 // this device. The highlight behind the current page slides to it.
 function Sidebar({ collapsed, onToggle }) {
   // Read so the nav redraws when the company's setup state arrives: the Setup
-  // item depends on it.
-  React.useContext(AppContext);
+  // item depends on it. The role decides the Exec and Admin items.
+  const { currentUser } = React.useContext(AppContext);
   const el = React.createElement;
   const location = useLocation();
   const badges = useNavBadges();
@@ -15527,7 +15730,7 @@ function Sidebar({ collapsed, onToggle }) {
         el("path", { d: collapsed ? "M9 18l6-6-6-6" : "M15 18l-6-6 6-6" })))),
     marker && el("span", { className: "nav__marker", "aria-hidden": "true",
       style: { transform: `translateY(${marker.top}px)`, left: `${marker.left}px`, width: `${marker.width}px`, height: `${marker.height}px` } }),
-    visibleNavSections().map((section) =>
+    visibleNavSections(currentUser?.role).map((section) =>
       el("section", { key: section.header, className: "sidebar__section" },
         el("h2", { className: "sidebar__sectionHeader" }, section.header),
         el("nav", { className: "nav" },
@@ -21405,6 +21608,10 @@ function AppRoutes() {
       element: React.createElement(GuidedSetup),
     }),
     React.createElement(Route, {
+      path: "/partners",
+      element: React.createElement(PartnersPage),
+    }),
+    React.createElement(Route, {
       path: "/dashboard",
       element: React.createElement(ExecNeedsBranch, null, React.createElement(DashboardPage)),
     }),
@@ -26992,6 +27199,53 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
   .gsGrid__cell .flInputAffix{ width: 80px; }
 }
 @media (prefers-reduced-motion: reduce){ .gs__body--fwd, .gs__body--back{ animation: none; } }
+
+/* ── Partners ── */
+.needsYou__tag--partner{ background: var(--fl-info-soft); color: var(--fl-info); }
+.partners__head{ display: flex; align-items: flex-start; justify-content: space-between; gap: var(--fl-space-4); flex-wrap: wrap; margin-bottom: var(--fl-space-6); }
+.partners__lead{ margin: var(--fl-space-2) 0 0; color: var(--fl-ink-3); max-width: 60ch; line-height: var(--fl-leading); }
+.partners__notice{ margin: 0 0 var(--fl-space-5); padding: var(--fl-space-3) var(--fl-space-4); border-radius: var(--fl-radius); background: var(--fl-success-soft); color: var(--fl-success); font-weight: 500; }
+.partners__section{ margin-top: var(--fl-space-7); }
+.partners__h2{ margin: 0 0 var(--fl-space-3); font-size: var(--fl-text-md); font-weight: 600; letter-spacing: -0.01em; }
+.partners__list{ padding: 0; }
+.partners__row{ display: flex; align-items: center; gap: var(--fl-space-4); padding: var(--fl-space-4) var(--fl-space-5); border-top: 1px solid var(--fl-line-soft); }
+.partners__row:first-child{ border-top: 0; }
+.partners__rowMain{ flex: 1; min-width: 0; display: grid; gap: 4px; }
+.partners__rowMain strong{ font-weight: 600; }
+.partners__rowMain span{ color: var(--fl-ink-3); font-size: 14px; line-height: 1.45; }
+.partners__rowActions{ display: flex; gap: var(--fl-space-2); flex: none; }
+.partnersGrid{ display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: var(--fl-space-4); }
+.partners__card{ display: grid; gap: var(--fl-space-4); align-content: start; }
+.partners__card--off{ opacity: 0.7; }
+.partners__cardHead{ display: flex; align-items: flex-start; justify-content: space-between; gap: var(--fl-space-3); }
+.partners__cardHead .flCard__title{ margin-bottom: 6px; }
+.partners__people{ list-style: none; margin: 0; padding: 0; display: grid; gap: var(--fl-space-3); }
+.partners__people > li{ display: flex; flex-wrap: wrap; align-items: center; gap: var(--fl-space-2) var(--fl-space-3); }
+.partners__person{ flex: 1; min-width: 0; display: grid; }
+.partners__person strong{ font-weight: 600; font-size: 14px; }
+.partners__person small{ color: var(--fl-ink-3); font-size: var(--fl-text-sm); overflow: hidden; text-overflow: ellipsis; }
+.partners__nobody{ color: var(--fl-ink-3); font-size: 14px; }
+.partners__mini{ min-height: 32px; padding: 0 var(--fl-space-2); border: 0; background: none; color: var(--fl-ink-2); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; font: 500 var(--fl-text-sm)/1 var(--fl-font); }
+.partners__link{ flex-basis: 100%; display: flex; gap: var(--fl-space-2); }
+.partners__invite{ display: grid; gap: var(--fl-space-3); padding-top: var(--fl-space-3); border-top: 1px solid var(--fl-line-soft); }
+.partners__inviteRow{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--fl-space-3); }
+.partners__formActions{ display: flex; justify-content: flex-end; gap: var(--fl-space-2); flex-wrap: wrap; }
+.partners__kinds{ display: flex; gap: var(--fl-space-2); flex-wrap: wrap; }
+.partners__kind{ min-height: 40px; padding: 0 var(--fl-space-4); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-pill); background: var(--fl-surface); cursor: pointer; font: 500 14px/1 var(--fl-font); color: var(--fl-ink); }
+.partners__kind--on{ border-color: var(--fl-ink); box-shadow: inset 0 0 0 1px var(--fl-ink); }
+.partners__settings{ display: grid; gap: var(--fl-space-5); }
+.partners__mode{ flex: 1 1 240px; display: grid; gap: 4px; text-align: left; padding: var(--fl-space-4); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); background: var(--fl-surface); cursor: pointer; font-family: var(--fl-font); color: var(--fl-ink); }
+.partners__mode strong{ font-weight: 600; }
+.partners__mode small{ color: var(--fl-ink-3); font-size: var(--fl-text-sm); line-height: 1.45; }
+.partners__mode--on{ border-color: var(--fl-ink); box-shadow: inset 0 0 0 1px var(--fl-ink); }
+.partners__mode:disabled{ cursor: default; }
+@media (max-width: 767px){
+  .partners__row{ flex-direction: column; align-items: stretch; }
+  .partners__rowActions .flBtn{ flex: 1; }
+  .partners__inviteRow{ grid-template-columns: minmax(0, 1fr); }
+  .partnersGrid{ grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 767px), (pointer: coarse){ .partners__kind, .partners__mini{ min-height: var(--fl-tap); } }
 
 /* ══ fleetr design system 1.0 ════════════════════════════════════════════
    The layer every screen is drawn with, built on the tokens at the top of

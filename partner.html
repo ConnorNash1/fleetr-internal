@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>fleetr for partners</title>
+    <meta name="robots" content="noindex" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <meta name="theme-color" content="#F9F9F7">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+    <style>
+      /* fleetr design tokens 1.0. The same block sits in the staff app, check-in,
+         fleetr.ai and HQ (design_tokens.test.mjs keeps them identical). Colour is
+         built around the logo's terracotta, which itself never changes. */
+      :root{
+        --fl-paper: #F9F9F7; --fl-surface: #FFFFFF; --fl-sunken: #F1F0EC; --fl-hover: #F4F3EF;
+        --fl-ink: #1F1E1D; --fl-ink-2: #4A4946; --fl-ink-3: #6B6A66; --fl-ink-4: #8A8984;
+        --fl-line: rgba(31, 30, 29, 0.12); --fl-line-soft: rgba(31, 30, 29, 0.07); --fl-line-strong: rgba(31, 30, 29, 0.24);
+        --fl-brand: #F4845F; --fl-brand-hover: #EE7550; --fl-brand-press: #E06D47; --fl-on-brand: #1F1E1D;
+        --fl-brand-text: #B4532F; --fl-brand-soft: rgba(244, 132, 95, 0.14); --fl-brand-wash: rgba(244, 132, 95, 0.07);
+        --fl-success: #17683F; --fl-success-soft: #E3F4EA; --fl-warning: #8A5100; --fl-warning-soft: #FDF1DC;
+        --fl-danger: #B42318; --fl-danger-soft: #FDE8E6; --fl-info: #2557A7; --fl-info-soft: #E6EEFB;
+        --fl-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        --fl-text-xs: 12px; --fl-text-sm: 13px; --fl-text-base: 15px; --fl-text-md: 17px;
+        --fl-text-lg: 20px; --fl-text-xl: 24px; --fl-text-2xl: 30px; --fl-text-3xl: 40px;
+        --fl-leading-tight: 1.2; --fl-leading: 1.5; --fl-tracking-tight: -0.02em;
+        --fl-space-1: 4px; --fl-space-2: 8px; --fl-space-3: 12px; --fl-space-4: 16px; --fl-space-5: 20px;
+        --fl-space-6: 24px; --fl-space-7: 32px; --fl-space-8: 40px; --fl-space-9: 48px; --fl-space-10: 64px;
+        --fl-radius-sm: 6px; --fl-radius: 10px; --fl-radius-lg: 14px; --fl-radius-xl: 20px; --fl-radius-pill: 999px;
+        --fl-shadow-xs: 0 1px 2px rgba(31, 30, 29, 0.05);
+        --fl-shadow-sm: 0 1px 2px rgba(31, 30, 29, 0.06), 0 2px 8px rgba(31, 30, 29, 0.05);
+        --fl-shadow-md: 0 2px 4px rgba(31, 30, 29, 0.06), 0 10px 28px rgba(31, 30, 29, 0.10);
+        --fl-shadow-lg: 0 4px 8px rgba(31, 30, 29, 0.06), 0 24px 64px rgba(31, 30, 29, 0.18);
+        --fl-ring: 0 0 0 3px rgba(244, 132, 95, 0.35);
+        --fl-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1); --fl-ease-in: cubic-bezier(0.4, 0, 1, 1);
+        --fl-dur-fast: 120ms; --fl-dur: 180ms; --fl-dur-slow: 280ms;
+        --fl-tap: 44px;
+      }
+      @media (prefers-reduced-motion: reduce){
+        :root{ --fl-dur-fast: 0ms; --fl-dur: 0ms; --fl-dur-slow: 0ms; }
+      }
+      /* end fleetr design tokens */
+
+    </style>
+    <link rel="stylesheet" href="/src/partner.css?v=3" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/partner.js?v=5"></script>
+  </body>
+</html>
