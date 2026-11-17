@@ -7493,10 +7493,29 @@ function FleetFilterBar({ filterState }) {
 
 // ─── FleetVehiclesPage ─────────────────────────────────────────────────────────
 
+// The fleet in one line: each status, how many, a tap to its group.
+const FLEET_STRIP = [["available", "Available", "Available", "success"], ["needsCleaning", "Needs Cleaning", "Needs cleaning", "warning"],
+  ["readyReturns", "Ready Returns", "Ready returns", "warning"], ["readyPickup", "Ready for Pickup", "Ready for pickup", "brand"],
+  ["pm", "PM", "Maintenance", "warning"], ["damaged", "Damaged", "Damaged", "danger"], ["onRent", "On Rent", "On rent", null]];
+function FleetStatusStrip({ fleet, onPick }) {
+  const el = React.createElement;
+  const count = (status, key) => (fleet || []).filter((v) => (key === "pm" ? v.needsPm || v.status === "PM" : v.status === status)).length;
+  return el("div", { className: "fleetStrip", role: "list", "aria-label": "Vehicles by status" },
+    FLEET_STRIP.map(([key, status, label, tone]) => {
+      const n = count(status, key);
+      if (key === "readyPickup" && n === 0) return null;
+      return el("button", { key, type: "button", role: "listitem", className: `fleetStrip__item${n === 0 ? " fleetStrip__item--zero" : ""}`, onClick: () => onPick(key) },
+        el("span", { className: `fleetStrip__dot${tone ? ` fleetStrip__dot--${tone}` : ""}`, "aria-hidden": "true" }),
+        el("span", { className: "fleetStrip__n" }, n),
+        el("span", { className: "fleetStrip__label" }, label));
+    }));
+}
+
 function FleetVehiclesPage() {
   const { fleet, setFleet, rentalAgreements, guardAction } = React.useContext(AppContext);
   const { filtered, filterState } = useFleetFilter(fleet);
   const statusDrag = useVehicleStatusDrag();
+  const navigate = useNavigate();
 
   // Status dropdown change: update fleet state immediately then persist
   const handleStatusChange = (vehicle, newStatus) => {
@@ -7509,17 +7528,25 @@ function FleetVehiclesPage() {
   };
 
   const [sectionCollapsed, setSectionCollapsed] = React.useState(false);
+  // The groups that need someone open; the big settled ones folded.
   const [fleetGroupCollapsed, setFleetGroupCollapsed] = React.useState({
-    available: true, needsCleaning: true, readyReturns: true, pm: true, damaged: true, onRent: true,
+    available: true, needsCleaning: false, readyReturns: false, readyPickup: false, pm: false, damaged: false, onRent: true,
   });
   const toggleFleetGroup = (key) =>
     setFleetGroupCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
 
   return React.createElement(
     "div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Vehicles"),
-    React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement(FleetFilterBar, { filterState }),
+    // Vehicles, rebuilt (overnight-nov17): the fleet at a glance, each
+    // status a tap away, the groups that need someone open.
+    React.createElement("header", { className: "listHead" },
+      React.createElement("h1", { className: "page__title" }, "Vehicles"),
+      React.createElement(Button, { onClick: () => navigate("/fleet/additions") }, React.createElement(Icon, { name: "plus", size: 18 }), "Add vehicle")),
+    React.createElement(FleetStatusStrip, { fleet: filtered, onPick: (key) => {
+      setFleetGroupCollapsed((prev) => ({ ...prev, [key]: false }));
+      setTimeout(() => { const n = document.querySelector(`[data-fleet-group="${key}"]`); if (n) n.scrollIntoView({ block: "start", behavior: "smooth" }); }, 60);
+    } }),
+    React.createElement("div", { className: "listTools" }, React.createElement(FleetFilterBar, { filterState })),
 
     // Tank size is manual, so missing values are surfaced here rather than
     // failing quietly at return time as a skipped gas charge.
@@ -7623,7 +7650,7 @@ function FleetVehiclesPage() {
             const filteredRR = filtered.filter((v) => v.status === "Ready Returns");
 
             const group = (label, cls, key, rows, children) =>
-              React.createElement("div", { className: `fleetGroup${statusDrag.groupClass(VS_GROUP_STATUS[key])}`, ...statusDrag.groupProps(VS_GROUP_STATUS[key]) },
+              React.createElement("div", { className: `fleetGroup${statusDrag.groupClass(VS_GROUP_STATUS[key])}`, "data-fleet-group": key, ...statusDrag.groupProps(VS_GROUP_STATUS[key]) },
                 React.createElement("div", {
                   className: `fleetGroupHeader fleetGroupHeader--${cls}`,
                   ...barToggle(() => toggleFleetGroup(key), !fleetGroupCollapsed[key]),
@@ -9105,27 +9132,31 @@ function ReportsPage() {
       { key: "economics", title: "Vehicle economics",     render: ready((d) => el(EconomicsReport, { data: d })) },
     ] : []),
   ];
-  const [sect, setSect] = React.useState(Object.fromEntries(SECTS.map((s) => [s.key, s.key !== asked])));
-  const toggle = (key) => setSect((p) => ({ ...p, [key]: !p[key] }));
+  // One report at a time (overnight-nov17): the one asked for, else the
+  // first. A tab per report instead of six boxes to open.
+  const [tab, setTab] = React.useState(() => (SECTS.some((x) => x.key === asked) ? asked : SECTS[0].key));
+  const current = SECTS.find((x) => x.key === tab) || SECTS[0];
   const days = range.from && range.to ? Math.round((Date.parse(range.to) - Date.parse(range.from)) / 86400000) + 1 : 0;
-  // The same sections as the Company page: the whole box opens and closes.
-  return el("div", { className: "page companySetup" },
-    el("h1", { className: "page__title" }, "Reports"),
-    el("div", { className: "page__titleUnderline" }),
-    el("div", { className: "avail__bar reportBar" },
-      isExec && el("select", { className: "resFormInput avail__pick", "aria-label": "Branch", value: branch, onChange: (e) => setBranch(e.target.value) },
+  return el("div", { className: "page companySetup reports" },
+    el("header", { className: "listHead" },
+      el("h1", { className: "page__title" }, "Reports"),
+      reportsOn && days > 0 && el("span", { className: "reports__range" },
+        `${shortDay(range.from)} to ${shortDay(range.to)}, compared with the ${days} day${days === 1 ? "" : "s"} before`)),
+    el("div", { className: "listTools reports__tools" },
+      isExec && el("select", { className: "flInput reports__branch", "aria-label": "Branch", value: branch, onChange: (e) => setBranch(e.target.value) },
         el("option", { value: "company" }, "Whole company"),
         branches.map((b) => el("option", { key: b.id, value: b.id }, b.name))),
-      reportsOn && el("select", { className: "resFormInput avail__pick", "aria-label": "Dates", value: preset, onChange: (e) => setPreset(e.target.value) },
-        REPORT_PRESETS.map(([k, label]) => el("option", { key: k, value: k }, label))),
-      reportsOn && preset === "custom" && el(React.Fragment, null,
-        el("input", { className: "resFormInput avail__pick", type: "date", "aria-label": "From", value: custom.from, max: custom.to, onChange: (e) => setCustom((c) => ({ ...c, from: e.target.value })) }),
-        el("input", { className: "resFormInput avail__pick", type: "date", "aria-label": "To", value: custom.to, min: custom.from, onChange: (e) => setCustom((c) => ({ ...c, to: e.target.value })) })),
-      reportsOn && days > 0 && el("span", { className: "closeRentalHint", style: { margin: 0 } },
-        `${shortDay(range.from)} to ${shortDay(range.to)}, compared with the ${days} day${days === 1 ? "" : "s"} before`)),
+      reportsOn && el("div", { className: "segmented", role: "radiogroup", "aria-label": "Dates" },
+        REPORT_PRESETS.map(([k, label]) => el("button", { key: k, type: "button", role: "radio", "aria-checked": preset === k,
+          className: `segmented__opt${preset === k ? " segmented__opt--on" : ""}`, onClick: () => setPreset(k) }, label))),
+      reportsOn && preset === "custom" && el("div", { className: "reports__custom" },
+        el("input", { className: "flInput", type: "date", "aria-label": "From", value: custom.from, max: custom.to, onChange: (e) => setCustom((c) => ({ ...c, from: e.target.value })) }),
+        el("input", { className: "flInput", type: "date", "aria-label": "To", value: custom.to, min: custom.from, onChange: (e) => setCustom((c) => ({ ...c, to: e.target.value })) }))),
     reportsOn && data && el(ReportRecommendations, { items: data.recommend, here }),
-    SECTS.map(({ key, title, render }) =>
-      el(CompanyStep, { key, id: `report-${key}`, stepKey: key, title, open: !sect[key], onToggle: () => toggle(key) }, render())));
+    el("nav", { className: "tabs", role: "tablist", "aria-label": "Reports" },
+      SECTS.map(({ key, title }) => el("button", { key, type: "button", role: "tab", id: `report-tab-${key}`, "aria-selected": key === current.key, "aria-controls": `report-${key}`,
+        className: `tabs__tab${key === current.key ? " tabs__tab--on" : ""}`, onClick: () => setTab(key) }, title))),
+    el("section", { className: "flCard reports__panel", role: "tabpanel", id: `report-${current.key}`, "aria-labelledby": `report-tab-${current.key}` }, current.render()));
 }
 
 // ─── AuditLogPage ────────────────────────────────────────────────────────────
@@ -18971,6 +19002,18 @@ function CloseChargesSummary({ charges }) {
       `${money(owingAll)} is still owing on this rental. Completing the close does not take payment: record it under Charges & Payments on the reservation.`));
 }
 
+// Close Rental's steps, shown above each one (overnight-nov17), so staff
+// always know where they are and what is left.
+const CLOSE_STEPS = ["Find", "Readings", "Damage", "Charges", "Done"];
+function FlowSteps({ steps, at }) {
+  const el = React.createElement;
+  return el("ol", { className: "flowSteps", "aria-label": `Step ${at + 1} of ${steps.length}` }, steps.map((label, i) =>
+    el("li", { key: label, className: `flowSteps__item${i < at ? " flowSteps__item--done" : i === at ? " flowSteps__item--now" : ""}`, "aria-current": i === at ? "step" : undefined },
+      el("span", { className: "flowSteps__dot", "aria-hidden": "true" }, i < at ? el(Icon, { name: "check", size: 12 }) : i + 1),
+      el("span", { className: "flowSteps__label" }, label))));
+}
+const closeStepped = (at, node) => React.createElement("div", { className: "flow" }, React.createElement(FlowSteps, { steps: CLOSE_STEPS, at }), node);
+
 function CloseRentalPage() {
   const { reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, setFleet, syncRAStatus, setDamageClaims, guardAction, currentUser } =
     React.useContext(AppContext);
@@ -19370,7 +19413,7 @@ function CloseRentalPage() {
   if (done) {
     const line = (label, value) =>
       React.createElement("p", { className: "page__body" }, `${label} `, React.createElement("strong", null, value));
-    return React.createElement("div", { className: "page" },
+    return closeStepped(4, React.createElement("div", { className: "page" },
       React.createElement("h1", { className: "page__title" }, "Close Rental"),
       React.createElement("div", { className: "page__titleUnderline" }),
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Rental closed"),
@@ -19405,7 +19448,7 @@ function CloseRentalPage() {
         React.createElement("button", { type: "button", className: "resModalCancel", onClick: () => { setDone(null); resetFlow(); } }, "Close another rental"),
         React.createElement("button", { type: "button", className: "resModalSubmit", onClick: () => navigate("/dashboard") }, "Back to Home")
       )
-    );
+    ));
   }
 
   // Any step, once the selected rental turns out to have a pickup pending.
@@ -19421,7 +19464,7 @@ function CloseRentalPage() {
   if (final) {
     const line = (label, value) =>
       React.createElement("p", { className: "page__body" }, `${label} `, React.createElement("strong", null, value));
-    return React.createElement("div", { className: "page" },
+    return closeStepped(3, React.createElement("div", { className: "page" },
       React.createElement("button", {
         type: "button", className: "rentalAgreementBackBtn", disabled: busy,
         onClick: () => { setFinal(null); setReview(null); },
@@ -19461,14 +19504,14 @@ function CloseRentalPage() {
           title: chargesPending ? "Working out the final charges" : undefined },
           busy ? "Closing\u2026" : "Complete Close")
       )
-    );
+    ));
   }
 
   // Step 3: previous damage, and the new damage's photos. Back returns to
   // step 2 with its values intact; they live here, not in the step, so they
   // survive the round trip, photos included.
   if (closing) {
-    return React.createElement(CloseRentalDamageStep, {
+    return closeStepped(2, React.createElement(CloseRentalDamageStep, {
       row: openRows.find((r) => r.id === closing.rentalAgreementId) || null,
       damageDraft, setDamageDraft, photos, setPhotos,
       onBack: () => setClosing(null),
@@ -19477,28 +19520,32 @@ function CloseRentalPage() {
         setReview(next);
         setFinal({ ...next, photos });
       },
-    });
+    }));
   }
 
   // Step 2. Back returns to search and drops what was entered, so the next
   // agreement picked starts empty.
   if (selectedId) {
-    return React.createElement(CloseRentalReadingsStep, {
+    return closeStepped(1, React.createElement(CloseRentalReadingsStep, {
       row: openRows.find((r) => r.id === selectedId) || null,
       rentalAgreementId: selectedId,
       readings, setReadings,
       onBack: () => { setSelectedId(null); setReadings(EMPTY_CLOSE_READINGS); setDamageDraft(EMPTY_DAMAGE_DRAFT); clearPhotos(); },
       onNext: setClosing,
-    });
+    }));
   }
 
-  return React.createElement("div", { className: "page" },
+  const waitingCount = openRows.filter((row) => row.selfReturn).length;
+  return closeStepped(0, React.createElement("div", { className: "page" },
     React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate("/dashboard") }, "\u2190 Home"),
     React.createElement("h1", { className: "page__title" }, "Close Rental"),
+    React.createElement("p", { className: "flowLead" }, waitingCount
+      ? `${waitingCount} rental${waitingCount === 1 ? " is" : "s are"} back from the renter and waiting. Pick one below, or find any open rental.`
+      : `${openRows.length} rental${openRows.length === 1 ? "" : "s"} out. Find the one coming back by plate, name or code.`),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement(OpenRentalSearch, { rows: openRows, onSelect: setSelectedId, byNameOrCode: true }),
     React.createElement(ReturnsWaitingToClose, { rows: openRows, onSelect: setSelectedId })
-  );
+  ));
 }
 
 // ─── Switch Out ──────────────────────────────────────────────────────────────
@@ -27548,6 +27595,52 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
   .custHead__actions{ width: 100%; }
   .custHead__actions .customerRentalAgreementBtn{ flex: 1; }
 }
+/* Step flows: Close Rental (overnight-nov17) */
+.flowSteps{ list-style: none; display: flex; gap: var(--fl-space-2); margin: 0 0 var(--fl-space-5); padding: 0; max-width: 1120px; counter-reset: s; }
+.flowSteps__item{ flex: 1; display: flex; align-items: center; gap: var(--fl-space-2); min-width: 0; padding-top: var(--fl-space-2); border-top: 3px solid var(--fl-sunken);
+  color: var(--fl-ink-3); font-size: var(--fl-text-sm); font-weight: 500; }
+.flowSteps__item--done{ border-top-color: var(--fl-ink); color: var(--fl-ink-2); }
+.flowSteps__item--now{ border-top-color: var(--fl-brand); color: var(--fl-ink); font-weight: 600; }
+.flowSteps__dot{ flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 999px; background: var(--fl-sunken); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.flowSteps__item--done .flowSteps__dot{ background: var(--fl-ink); color: var(--fl-paper); }
+.flowSteps__item--now .flowSteps__dot{ background: var(--fl-brand); color: var(--fl-on-brand); }
+.flowSteps__label{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flowLead{ margin: 6px 0 0; color: var(--fl-ink-3); font-size: var(--fl-text-base); line-height: var(--fl-leading); max-width: 60ch; }
+@media (max-width: 767px){
+  .flowSteps__label{ display: none; }
+  .flowSteps__item--now .flowSteps__label{ display: inline; }
+  /* The step's buttons in thumb reach. */
+  .flow .closeRentalActions{ position: sticky; bottom: calc(var(--mobileBottomBarH, 0px) + 8px); z-index: 5; padding: var(--fl-space-3); margin: var(--fl-space-4) calc(-1 * var(--fl-space-3)) 0;
+    background: var(--fl-surface); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); box-shadow: var(--fl-shadow-md); }
+}
+/* Vehicles (overnight-nov17) */
+.fleetStrip{ display: flex; gap: var(--fl-space-2); margin-bottom: var(--fl-space-4); overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+.fleetStrip__item{ flex: 1 0 auto; display: grid; grid-template-columns: auto auto; grid-template-rows: auto auto; column-gap: var(--fl-space-2); align-items: center; justify-content: start;
+  min-width: 112px; min-height: 64px; padding: var(--fl-space-3) var(--fl-space-4); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); background: var(--fl-surface);
+  text-align: left; cursor: pointer; font-family: var(--fl-font); color: var(--fl-ink); transition: border-color var(--fl-dur-fast) var(--fl-ease-out), transform var(--fl-dur-fast) var(--fl-ease-out); }
+.fleetStrip__item:hover{ border-color: var(--fl-line-strong); }
+.fleetStrip__item:active{ transform: scale(0.98); }
+.fleetStrip__item--zero{ color: var(--fl-ink-3); }
+.fleetStrip__dot{ grid-row: 1 / 3; width: 8px; height: 8px; border-radius: 999px; background: var(--fl-ink-4); }
+.fleetStrip__dot--success{ background: var(--fl-success); }
+.fleetStrip__dot--warning{ background: #E8A33D; }
+.fleetStrip__dot--danger{ background: var(--fl-danger); }
+.fleetStrip__dot--brand{ background: var(--fl-brand); }
+.fleetStrip__n{ font-size: var(--fl-text-lg); font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.fleetStrip__label{ grid-column: 2; font-size: var(--fl-text-sm); color: var(--fl-ink-3); white-space: nowrap; }
+.listTools .fleetFilterBar{ margin: 0; flex-wrap: wrap; }
+/* Reports (overnight-nov17): one report at a time. */
+.reports__range{ color: var(--fl-ink-3); font-size: 14px; }
+.reports__branch{ width: auto; min-width: 200px; min-height: 44px; }
+.reports__custom{ display: flex; gap: var(--fl-space-2); }
+.reports__custom .flInput{ width: auto; }
+.tabs{ display: flex; gap: var(--fl-space-1); margin: var(--fl-space-4) 0 0; border-bottom: 1px solid var(--fl-line); overflow-x: auto; scrollbar-width: none; }
+.tabs__tab{ min-height: 44px; padding: 0 var(--fl-space-4); border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; cursor: pointer;
+  font: 500 14px/1 var(--fl-font); color: var(--fl-ink-3); white-space: nowrap; transition: color var(--fl-dur-fast) var(--fl-ease-out); }
+.tabs__tab:hover{ color: var(--fl-ink); }
+.tabs__tab--on{ color: var(--fl-ink); font-weight: 600; border-bottom-color: var(--fl-ink); }
+.reports__panel{ margin-top: var(--fl-space-4); }
+@media (max-width: 767px){ .reports__branch{ width: 100%; } .reports__custom{ flex-direction: column; } .reports__custom .flInput{ width: 100%; } }
 /* Home (overnight-nov17) */
 .homeHead{ display: flex; align-items: flex-end; justify-content: space-between; gap: var(--fl-space-4); flex-wrap: wrap; margin-bottom: var(--fl-space-6); }
 .homeHead__title{ margin: 0; }
