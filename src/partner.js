@@ -45,8 +45,8 @@ const money = (n) => `$${Number(n || 0).toLocaleString("en-CA", { minimumFractio
 const fmtDay = (iso) => { if (!iso) return ""; const d = new Date(`${String(iso).slice(0, 10)}T12:00:00`); return d.toLocaleDateString("en-CA", { weekday: "short", month: "short", day: "numeric" }); };
 const isoDay = (offset) => { const d = new Date(); d.setDate(d.getDate() + offset); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 const logo = (cls) => h("img", { className: cls, src: "/fleetr-logo-terracotta-on-white.svg", alt: "fleetr" });
-const Btn = ({ variant = "primary", block, lg, loading, children, ...rest }) => h("button", {
-  type: "button", className: ["btn", `btn--${variant}`, block && "btn--block", lg && "btn--lg"].filter(Boolean).join(" "), ...rest, disabled: rest.disabled || loading,
+const Btn = ({ variant = "primary", block, lg, loading, className, children, ...rest }) => h("button", {
+  type: "button", ...rest, className: ["btn", `btn--${variant}`, block && "btn--block", lg && "btn--lg", className].filter(Boolean).join(" "), disabled: rest.disabled || loading,
 }, loading ? h("span", { className: "spin", "aria-hidden": "true" }) : null, children);
 // A label tied to its input by id, with any hint read out with it.
 let fieldSeq = 0;
@@ -241,6 +241,7 @@ function Book({ home, branchId, onBooked, onCancel }) {
 
 // ── Rentals ──
 const STAGE = { requested: "Waiting for the branch", booked: "Booked", out: "Out", returned: "Returned", declined: "Not booked" };
+const OPEN_STAGES = ["requested", "booked", "out"];
 function Rentals({ home, reload, flash }) {
   const [ext, setExt] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
@@ -254,9 +255,11 @@ function Rentals({ home, reload, flash }) {
     if (!out.ok) { setError(reasonText(out.reason)); return; }
     setExt(null); flash("Extension requested. The branch will answer here."); reload();
   };
-  return h("div", null, h("h1", { className: "pp__h1" }, "Your rentals"),
-    h("p", { className: "pp__lead" }, `Every rental you've booked with ${home.company}.`),
-    h("div", { className: "card list" }, home.rentals.map((r) => h("div", { key: r.resCode, className: "item" },
+  // Rentals, rebuilt (overnight-nov17): the open ones first, each with
+  // when it comes back; the finished ones below, out of the way.
+  const open = home.rentals.filter((r) => OPEN_STAGES.includes(r.stage));
+  const done = home.rentals.filter((r) => !OPEN_STAGES.includes(r.stage));
+  const row = (r) => h("div", { key: r.resCode, className: "item" },
       h("div", { className: "item__top" }, h("span", { className: "item__title" }, r.customer), h("span", { className: `chip chip--${r.stage}` }, STAGE[r.stage] || r.stage)),
       h("div", { className: "item__meta" }, `${r.vehicleClass}${r.plate ? `, ${r.plate}` : ""}. ${fmtDay(r.date)} to ${fmtDay(r.returnDate)}.`),
       h("div", { className: "item__meta" }, h("span", { className: "code" }, r.resCode), r.claimNumber ? ` · Claim ${r.claimNumber}` : r.repairOrder ? ` · RO ${r.repairOrder}` : "",
@@ -268,7 +271,11 @@ function Rentals({ home, reload, flash }) {
             h(Field, { label: "Why (optional)" }, Input({ value: ext.reason, maxLength: 300, placeholder: "Parts delayed", onChange: (e) => setExt({ ...ext, reason: e.target.value }) })),
             error && h("p", { className: "error", role: "alert" }, error),
             h("div", { className: "item__actions" }, h(Btn, { onClick: ask, loading: busy, disabled: !ext.date }, "Ask to extend"), h(Btn, { variant: "quiet", onClick: () => setExt(null) }, "Cancel")))
-        : h("div", { className: "item__actions" }, h(Btn, { variant: "secondary", onClick: () => { setError(""); setExt({ resCode: r.resCode, date: "", reason: "" }); } }, "Extend")))))));
+        : h("div", { className: "item__actions" }, h(Btn, { variant: "secondary", onClick: () => { setError(""); setExt({ resCode: r.resCode, date: "", reason: "" }); } }, "Extend"))));
+  return h("div", null, h("h1", { className: "pp__h1" }, "Your rentals"),
+    h("p", { className: "pp__lead" }, open.length ? `${open.length} open with ${home.company}.` : `Nothing open with ${home.company} right now.`),
+    open.length > 0 && h("section", { "aria-label": "Open rentals" }, h("h2", { className: "pp__h2" }, "Open"), h("div", { className: "card list" }, open.map(row))),
+    done.length > 0 && h("section", { className: open.length ? "pp__section" : "", "aria-label": "Finished rentals" }, h("h2", { className: "pp__h2" }, "Finished"), h("div", { className: "card list" }, done.map(row))));
 }
 
 // ── Invoices ──
@@ -287,9 +294,11 @@ function Invoices({ home, reload, flash }) {
     if (!out.ok) { setError(reasonText(out.reason)); return; }
     setOpen(null); setRef(""); flash("Thanks. The branch will mark it paid when it arrives."); reload();
   };
-  return h("div", null, h("h1", { className: "pp__h1" }, "Invoices"),
-    h("p", { className: "pp__lead" }, owing > 0 ? `${money(owing)} owing to ${home.company}.` : "All paid. Thank you."),
-    h("div", { className: "card list" }, home.invoices.map((i) => h("div", { key: i.id, className: "item" },
+  // Invoices, rebuilt (overnight-nov17): what is owed, in one number,
+  // then the ones to pay, then the paid ones.
+  const unpaid = home.invoices.filter((i) => i.status !== "paid");
+  const paid = home.invoices.filter((i) => i.status === "paid");
+  const row = (i) => h("div", { key: i.id, className: "item" },
       h("div", { className: "item__top" }, h("span", { className: "item__title" }, `Invoice ${i.number}`), h("span", { className: "money" }, money(i.amount))),
       h("div", { className: "item__meta" }, `Rental ${i.resCode}. Sent ${fmtDay(i.issuedAt)}${i.status !== "paid" ? `, due ${fmtDay(i.dueAt)}` : ""}.`),
       i.status === "paid" ? h("span", { className: "chip chip--paid" }, "Paid")
@@ -301,7 +310,14 @@ function Invoices({ home, reload, flash }) {
           h("div", { className: "item__actions" }, h(Btn, { onClick: () => sent(i), loading: busy }, "I've sent it"), h(Btn, { variant: "quiet", onClick: () => setOpen(null) }, "Cancel")))
       : h("div", { className: "item__actions" },
           i.payUrl && h("a", { className: "btn btn--primary", href: i.payUrl, target: "_blank", rel: "noopener" }, "Pay by card"),
-          h(Btn, { variant: "secondary", onClick: () => { setError(""); setOpen(i.id); } }, "Pay by bank transfer"))))));
+          h(Btn, { variant: "secondary", onClick: () => { setError(""); setOpen(i.id); } }, "Pay by bank transfer")));
+  return h("div", null, h("h1", { className: "pp__h1" }, "Invoices"),
+    h("div", { className: `card card__pad owing${owing > 0 ? "" : " owing--clear"}` },
+      h("span", { className: "owing__label" }, owing > 0 ? `Owing to ${home.company}` : "All paid"),
+      h("span", { className: "owing__n" }, money(owing)),
+      h("span", { className: "owing__sub" }, owing > 0 ? `${unpaid.length} invoice${unpaid.length === 1 ? "" : "s"} to pay` : "Thank you.")),
+    unpaid.length > 0 && h("section", { className: "pp__section", "aria-label": "To pay" }, h("h2", { className: "pp__h2" }, "To pay"), h("div", { className: "card list" }, unpaid.map(row))),
+    paid.length > 0 && h("section", { className: "pp__section", "aria-label": "Paid" }, h("h2", { className: "pp__h2" }, "Paid"), h("div", { className: "card list" }, paid.map(row))));
 }
 
 function Notifications({ items, onClose }) {
@@ -317,36 +333,46 @@ function Notifications({ items, onClose }) {
 
 function Portal({ onSignOut }) {
   const [home, setHome] = React.useState(null);
-  const [tab, setTab] = React.useState("availability");
+  // null until the first load picks: Rentals when some are open, else
+  // Availability (overnight-nov17).
+  const [tab, setTab] = React.useState(null);
   const [booking, setBooking] = React.useState(false);
   const [branchId, setBranchId] = React.useState("");
   const [notif, setNotif] = React.useState(false);
   const [msg, setMsg] = React.useState("");
-  const load = React.useCallback(() => rpc("partner_home").then((d) => { setHome(d); if (d.ok && !branchId && d.branches[0]) setBranchId(d.branches[0].id); }), [branchId]);
+  const load = React.useCallback(() => rpc("partner_home").then((d) => {
+    setHome(d);
+    if (d.ok && !branchId && d.branches[0]) setBranchId(d.branches[0].id);
+    if (d.ok) setTab((t) => t || ((d.rentals || []).some((r) => OPEN_STAGES.includes(r.stage)) ? "rentals" : "availability"));
+  }), [branchId]);
   React.useEffect(() => { load(); const t = setInterval(load, 60000); return () => clearInterval(t); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const flash = (t) => { setMsg(t); setTimeout(() => setMsg(""), 5000); };
   if (!home) return h("div", { className: "pp__main stack" }, [0, 1, 2].map((i) => h("span", { key: i, className: "skel", style: { height: i ? 64 : 32 } })));
   if (!home.ok) return h("div", { className: "auth" }, h("div", { className: "auth__card" }, logo("auth__logo"), h("h1", { className: "auth__title" }, "No partner account"),
     h("p", { className: "note" }, reasonText(home.reason)), h(Btn, { variant: "secondary", onClick: onSignOut }, "Sign out")));
   const unread = home.notifications.filter((n) => !n.read).length;
-  const tabs = [["availability", "Availability"], ["rentals", "Rentals"], ["invoices", "Invoices"]];
+  const openCount = home.rentals.filter((r) => OPEN_STAGES.includes(r.stage)).length;
+  const owingCount = home.invoices.filter((i) => i.status !== "paid" && !i.transferSent).length;
+  const tabs = [["availability", "Availability", 0], ["rentals", "Rentals", openCount], ["invoices", "Invoices", owingCount]];
+  const shown = tab || "availability";
   return h("div", { className: "pp" },
     h("header", { className: "pp__top" }, logo("pp__logo"),
       h("span", { className: "pp__who" }, h("strong", null, home.partner.name), h("small", null, `with ${home.company}`)),
       h("button", { type: "button", className: "pp__bell", "aria-label": unread ? `Notifications, ${unread} new` : "Notifications", onClick: () => setNotif(true) },
         h("svg", { width: 22, height: 22, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.75, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
           h("path", { d: "M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" }), h("path", { d: "M10.3 21a1.9 1.9 0 0 0 3.4 0" })),
-        unread > 0 && h("span", { className: "pp__dot" }, unread))),
-    h("nav", { className: "pp__tabs", role: "tablist" }, tabs.map(([k, label]) => h("button", { key: k, type: "button", role: "tab", className: "pp__tab", "aria-selected": tab === k && !booking,
-      onClick: () => { setBooking(false); setTab(k); } }, label)),
-      h("button", { type: "button", className: "pp__tab", style: { marginLeft: "auto" }, onClick: onSignOut }, "Sign out")),
+        unread > 0 && h("span", { className: "pp__dot" }, unread)),
+      !booking && h(Btn, { className: "pp__book", onClick: () => setBooking(true) }, "Book a rental")),
+    h("nav", { className: "pp__tabs", role: "tablist", "aria-label": "Portal" }, tabs.map(([k, label, n]) => h("button", { key: k, type: "button", role: "tab", className: "pp__tab", "aria-selected": shown === k && !booking,
+      onClick: () => { setBooking(false); setTab(k); } }, label, n > 0 && h("span", { className: "pp__count", "aria-label": `, ${n}` }, n)))),
     h("main", { className: "pp__main" },
       msg && h("p", { className: "ok", role: "status", style: { marginBottom: 16 } }, msg),
       booking ? h(Book, { home, branchId, onCancel: () => setBooking(false),
           onBooked: (out) => { setBooking(false); setTab("rentals"); flash(out.status === "accepted" ? `Booked: ${out.vehicleClass}, reservation ${out.resCode}.` : `Sent to ${home.company}. You'll be notified when it's confirmed.`); load(); } })
-      : tab === "availability" ? h(Availability, { home, branchId, setBranchId, onBook: () => setBooking(true) })
-      : tab === "rentals" ? h(Rentals, { home, reload: load, flash })
-      : h(Invoices, { home, reload: load, flash })),
+      : shown === "availability" ? h(Availability, { home, branchId, setBranchId, onBook: () => setBooking(true) })
+      : shown === "rentals" ? h(Rentals, { home, reload: load, flash })
+      : h(Invoices, { home, reload: load, flash }),
+      h("footer", { className: "pp__foot" }, h("span", null, `Signed in for ${home.partner.name}`), h(Btn, { variant: "quiet", onClick: onSignOut }, "Sign out"))),
     notif && h(Notifications, { items: home.notifications, onClose: () => { setNotif(false); load(); } }));
 }
 

@@ -144,4 +144,25 @@ textarea.input{ min-height: 88px; padding: var(--fl-space-3); line-height: var(-
   .foot .btn--primary{ flex: 0 0 auto; min-width: 200px; }
 }
 @media (max-width: 420px){ .grid2{ grid-template-columns: minmax(0, 1fr); } .match{ flex-wrap: wrap; } .match select{ margin-left: 0; width: 100%; } }
+/* The portal, rebuilt (overnight-nov17): Book always in the top bar, counts
+   on the tabs, the tabs along the bottom on a phone like an app. */
+.pp__bell{ margin-left: auto; }
+.pp__book{ flex: none; }
+.pp__count{ display: inline-grid; place-items: center; min-width: 20px; height: 20px; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--fl-sunken); color: var(--fl-ink-2); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pp__tab[aria-selected="true"] .pp__count{ background: var(--fl-ink); color: var(--fl-paper, #fff); }
+.pp__foot{ display: flex; align-items: center; justify-content: space-between; gap: var(--fl-space-3); margin-top: var(--fl-space-10); padding-top: var(--fl-space-4); border-top: 1px solid var(--fl-line-soft); color: var(--fl-ink-3); font-size: 14px; }
+.owing{ display: grid; gap: 2px; margin-bottom: var(--fl-space-2); }
+.owing__label{ font-size: 14px; color: var(--fl-ink-3); }
+.owing__n{ font-size: var(--fl-text-2xl); font-weight: 600; letter-spacing: var(--fl-tracking-tight); font-variant-numeric: tabular-nums; }
+.owing__sub{ font-size: 14px; color: var(--fl-ink-2); }
+.owing--clear .owing__n{ color: var(--fl-success); }
+@media (max-width: 767px){
+  .pp__tabs{ position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; justify-content: space-around; gap: 0; padding: 0 0 env(safe-area-inset-bottom, 0px);
+    border-top: 1px solid var(--fl-line); border-bottom: 0; background: rgba(255,255,255,0.94); -webkit-backdrop-filter: saturate(1.4) blur(12px); backdrop-filter: saturate(1.4) blur(12px); }
+  .pp__tab{ flex: 1; min-height: 56px; padding: 0 4px; border-bottom: 0; border-top: 2px solid transparent; margin: 0; }
+  .pp__tab[aria-selected="true"]{ border-top-color: var(--fl-ink); }
+  .pp__main{ padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
+  .pp__who small{ display: none; }
+  .pp__book{ min-height: 40px; padding: 0 14px; }
+}
 @media (prefers-reduced-motion: reduce){ *, *::before, *::after{ animation: none !important; transition: none !important; } }

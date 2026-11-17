@@ -5421,6 +5421,17 @@ function NewPickupPicker({ initial, label, busy, onSave, onClose }) {
 // at which the worker cancels it (no_show_cutoff.sql), and the no-shows
 // cancelled in the last 7 days. Nothing on this page sends a text, and no
 // fee is ever charged.
+// One page header for every work list (overnight-nov17): the title, one
+// line on what the list is for or how much is in it, the main action.
+function PageHead({ title, lead, children }) {
+  const el = React.createElement;
+  return el("header", { className: "listHead pageHead" },
+    el("div", { className: "pageHead__text" },
+      el("h1", { className: "page__title" }, title),
+      lead ? el("p", { className: "pageHead__lead" }, lead) : null),
+    children ? el("div", { className: "pageHead__actions" }, children) : null);
+}
+
 function NoShowsPage() {
   const { setReservations, guardAction } = React.useContext(AppContext);
 
@@ -5584,8 +5595,7 @@ function NoShowsPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "No Shows"),
-    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement(PageHead, { title: "No Shows", lead: "Renters who missed their pickup, from the text to the decision." }),
     React.createElement(StatusTabs, {
       label: "No-show sections", value: activeTab, onChange: (v) => { setActiveTab(v); setPicking(""); },
       tabs: TABS.map(({ key, label }) => ({ value: key, label, count: rows.filter((r) => r.section === key).length })),
@@ -5733,13 +5743,8 @@ function OverdueRentalsPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Overdue Rentals"),
-    React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement(
-      "p",
-      { className: "aiTabDesc" },
-      "Rental agreements past their return date. The customer gets a text automatically. Customers with no response are moved to Manual Follow-Up."
-    ),
+    React.createElement(PageHead, { title: "Overdue Rentals",
+      lead: `${rows.length === 0 ? "Nothing overdue" : `${rows.length} past ${rows.length === 1 ? "its" : "their"} return time`}. The renter gets a text automatically; anyone who doesn't answer moves to Manual Follow-Up.` }),
     React.createElement(
       "section",
       { className: "dashboardSection" },
@@ -6026,8 +6031,30 @@ function VehicleDetailPage() {
       className: "rentalAgreementBackBtn",
       onClick: () => navigate(-1),
     }, "\u2190 Back"),
-    React.createElement("h1", { className: "page__title" }, plate),
-    React.createElement("div", { className: "page__titleUnderline" }),
+    // The vehicle page, rebuilt (overnight-nov17): which car, where it
+    // stands and who has it, in one look; the detail sections below.
+    React.createElement("header", { className: "custHead vehHead" },
+      React.createElement("div", { className: "custHead__who" },
+        React.createElement("h1", { className: "page__title vehHead__title" }, React.createElement(Plate, null, plate.replace(/-/g, " ")),
+          React.createElement("span", { className: "vehHead__car" }, [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(" "))),
+        React.createElement("div", { className: "customerPageMeta" },
+          vehicle.status && React.createElement("span", { className: (() => {
+            const st = vehicle.status;
+            return st === "Available" ? "fleetStatus--available" : st === "Needs Cleaning" ? "fleetStatus--cleaning" : st === "PM" ? "fleetStatus--pm"
+              : st === "Damaged" ? "fleetStatus--damaged" : st === "On Rent" ? "fleetStatus--onRent" : "flChip";
+          })() }, vehicle.status),
+          vehicle.vehicleClass && React.createElement(Chip, null, vehicle.vehicleClass))),
+      activeRa && React.createElement("div", { className: "custHead__actions" },
+        React.createElement(Button, { variant: "secondary", onClick: () => navigate(customerPath(activeRa.resCode)) }, `Open ${activeRa.customer || "the renter"}'s rental`))),
+    React.createElement("div", { className: "custFacts" },
+      [["Odometer", latestRa?.mileage != null ? fmtDistance(latestRa.mileage) : vehicle.currentOdometer != null ? fmtDistance(vehicle.currentOdometer) : "Not read yet", ""],
+       ["Fuel", fuelText(latestRa?.fuelAtPickup || vehicle.currentFuelLevel) || "Not read yet", ""],
+       ["With", activeRa ? (activeRa.customer || "A renter") : "Nobody", activeRa ? `Due back ${activeRa.returnDate || "not set"}` : "On the lot"],
+       ["Province", vehicle.province || "Not set", vehicle.vin ? `VIN ${vehicle.vin}` : ""]].map(([label, main, sub]) =>
+        React.createElement("div", { key: label, className: "custFacts__item" },
+          React.createElement("span", { className: "custFacts__label" }, label),
+          React.createElement("span", { className: "custFacts__main" }, main),
+          sub ? React.createElement("span", { className: "custFacts__sub" }, sub) : null))),
 
     // \u2500\u2500 Section 1: Vehicle Information \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     mkSection("info", "Vehicle Information",
@@ -6491,8 +6518,7 @@ function FleetPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Branch Fleet"),
-    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement(PageHead, { title: "Branch Fleet" }),
     React.createElement(
       CompanyStep, { title: "Vehicle Status", open: !collapsed, onToggle: () => setCollapsed((c) => !c) },
       !collapsed &&
@@ -6803,8 +6829,7 @@ function TORPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Unknown Repair Date"),
-    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement(PageHead, { title: "Unknown Repair Date", lead: `${rows.length === 0 ? "No replacement rentals" : `${rows.length} replacement rental${rows.length === 1 ? "" : "s"}`} waiting on a repair date. Set it as soon as the shop knows.` }),
     React.createElement(
       "section",
       { className: "dashboardSection" },
@@ -8539,9 +8564,8 @@ function FleetDamageClaimsPage() {
 
   return React.createElement(
     "div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Ongoing Damage Claims"),
-    React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement(FleetFilterBar, { filterState }),
+    React.createElement(PageHead, { title: "Ongoing Damage Claims", lead: `${openClaims.length === 0 ? "No claims open" : `${openClaims.length} open`}. Each one stays here until it is settled.` }),
+    React.createElement("div", { className: "listTools" }, React.createElement(FleetFilterBar, { filterState })),
     React.createElement(
       "section", { className: "dashboardSection" },
       React.createElement("div", { className: "dashboardSection__header" },
@@ -8693,8 +8717,7 @@ function GasCollectionsPage() {
   };
 
   return React.createElement("div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Gas Collections"),
-    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement(PageHead, { title: "Gas Collections", lead: rows.length === 0 ? "Nothing owing for gas." : `${rows.length} rental${rows.length === 1 ? "" : "s"} still owing for gas.` }),
     React.createElement("section", { className: "dashboardSection" },
       React.createElement("div", { className: "dashboardSection__header" },
         React.createElement("div", { className: "dashboardSection__headerRow" },
@@ -15420,8 +15443,7 @@ function AuditLogPage() {
   if (loading) return React.createElement(PageSkeleton, { path: "/audit-log" });
   return React.createElement(
     "div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Audit Log"),
-    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement(PageHead, { title: "Audit Log", lead: "Every change anyone made, newest first." }),
     React.createElement("div", { className: "resvSearchBar auditFilterBar" },
       select("Actor",  actorFilt,  setActorFilt,  "All actors",  actors.map((a) => [a, a])),
       select("Action", actionFilt, setActionFilt, "All actions", actions.map((a) => [a, a])),
@@ -16023,8 +16045,7 @@ function PlaceholderPage({ title }) {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement("h1", { className: "page__title" }, title),
-    React.createElement("div", { className: "page__titleUnderline" }),
+    React.createElement(PageHead, { title }),
     React.createElement(
       "p",
       { className: "page__body" },
@@ -17045,13 +17066,7 @@ function PreRentalCheckPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Pre-Rental Check"),
-    React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement(
-      "p",
-      { className: "aiTabDesc" },
-      "An automated text is sent to each customer the business day before their pickup. No staff involvement required."
-    ),
+    React.createElement(PageHead, { title: "Pre-Rental Check", lead: "Each renter gets a text the business day before pickup. Nothing to do unless one needs you." }),
     React.createElement(
       "section",
       { className: "dashboardSection" },
@@ -17830,6 +17845,8 @@ function RentalAgreementsPage() {
   const [srchLast,  setSrchLast]  = React.useState("");
   const [srchPhone, setSrchPhone] = React.useState("");
   const [srchRes,   setSrchRes]   = React.useState("");
+  // One search for any renter, phone or code (overnight-nov17).
+  const [srchAny, setSrchAny] = React.useState("");
 
   const [srchPickup,      setSrchPickup]      = React.useState("");
   const [pickupOpen,      setPickupOpen]      = React.useState(false);
@@ -17958,6 +17975,13 @@ function RentalAgreementsPage() {
     if (srchLast   && !last.toLowerCase().includes(srchLast.toLowerCase()))    return false;
     if (srchPhone  && !(r.phone || "").includes(srchPhone))                    return false;
     if (srchRes    && !(r.resCode || "").toLowerCase().includes(srchRes.toLowerCase())) return false;
+    const term = srchAny.trim().toLowerCase();
+    if (term) {
+      const compact = term.replace(/[^a-z0-9]/g, ""), digits = term.replace(/\D/g, "");
+      if (!(String(r.customer || "").toLowerCase().includes(term)
+        || (compact.length >= 3 && String(r.resCode || "").toLowerCase().replace(/[^a-z0-9]/g, "").includes(compact))
+        || (digits.length >= 4 && String(r.phone || "").replace(/\D/g, "").includes(digits)))) return false;
+    }
     if (srchPickup && r.date !== srchPickup)                                   return false;
     if (srchReturn && r.returnDate !== srchReturn)                             return false;
     return true;
@@ -17965,16 +17989,18 @@ function RentalAgreementsPage() {
   const filtered = reservations.filter((r) => r.rentalAgreementStatus === activeTab && matchesSearch(r));
 
   return React.createElement("div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Rental Agreements"),
-    React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement("div", { className: "resvSearchBar" },
-      renderDatePicker("Pickup date",  srchPickup, setSrchPickup, pickupOpen, setPickupOpen, pickupAnchor, setPickupAnchor, pickupMonth, setPickupMonth),
-      renderDatePicker("Return date",  srchReturn, setSrchReturn, returnOpen, setReturnOpen, returnAnchor, setReturnAnchor, returnMonth, setReturnMonth),
-      React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "First name",   value: srchFirst, onChange: (e) => setSrchFirst(e.target.value) }),
-      React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Last name",    value: srchLast,  onChange: (e) => setSrchLast(e.target.value)  }),
-      React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Phone number", value: srchPhone, onChange: (e) => setSrchPhone(e.target.value) }),
-      React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Res Code",   value: srchRes,   onChange: (e) => setSrchRes(e.target.value)   })
-    ),
+    // Rental Agreements, rebuilt (overnight-nov17): one search, the two
+    // dates as filters, the statuses as tabs.
+    React.createElement("header", { className: "listHead" },
+      React.createElement("h1", { className: "page__title" }, "Rental Agreements")),
+    React.createElement("div", { className: "listTools" },
+      React.createElement("div", { className: "listSearch" },
+        React.createElement(Icon, { name: "search", size: 18, className: "listSearch__icon" }),
+        React.createElement("input", { className: "flInput listSearch__input", type: "search", value: srchAny, placeholder: "Search any renter, phone or code",
+          "aria-label": "Search rental agreements by renter, phone or code", onChange: (e) => setSrchAny(e.target.value) })),
+      React.createElement("div", { className: "resvSearchBar listTools__dates" },
+        renderDatePicker("Pickup date",  srchPickup, setSrchPickup, pickupOpen, setPickupOpen, pickupAnchor, setPickupAnchor, pickupMonth, setPickupMonth),
+        renderDatePicker("Return date",  srchReturn, setSrchReturn, returnOpen, setReturnOpen, returnAnchor, setReturnAnchor, returnMonth, setReturnMonth))),
     React.createElement(StatusTabs, {
       label: "Rental agreement status", value: activeTab,
       onChange: (v) => { setActiveTab(v); setSelectedId(null); },
@@ -27545,6 +27571,7 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
 .listSearch{ position: relative; flex: 1 1 280px; min-width: 0; max-width: 440px; }
 .listSearch__icon{ position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--fl-ink-3); pointer-events: none; }
 .listSearch__input{ padding-left: 40px; min-height: 44px; border-radius: var(--fl-radius-pill); }
+.listTools__dates{ margin: 0; padding: 0; background: none; border: 0; flex-wrap: wrap; }
 .segmented{ display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: var(--fl-radius-pill); background: var(--fl-sunken); flex-wrap: wrap; }
 .segmented__opt{ display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 var(--fl-space-4); border: 0; border-radius: var(--fl-radius-pill); background: none;
   font: 500 14px/1 var(--fl-font); color: var(--fl-ink-2); cursor: pointer; white-space: nowrap; transition: background var(--fl-dur-fast) var(--fl-ease-out), color var(--fl-dur-fast) var(--fl-ease-out); }
@@ -27556,6 +27583,10 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
   .segmented{ overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
   .segmented__opt{ min-height: var(--fl-tap); }
 }
+/* The vehicle page (overnight-nov17) */
+.vehHead__title{ display: flex; align-items: center; gap: var(--fl-space-3); flex-wrap: wrap; }
+.vehHead__title .flPlate{ height: 34px; padding: 0 12px; font-size: 18px; border-width: 2px; border-radius: 7px; }
+.vehHead__car{ font-size: var(--fl-text-lg); font-weight: 500; color: var(--fl-ink-2); }
 /* The customer page (overnight-nov17) */
 .custHead{ display: flex; align-items: flex-start; justify-content: space-between; gap: var(--fl-space-4); flex-wrap: wrap; margin-bottom: var(--fl-space-5); }
 .custHead__who{ min-width: 0; }
@@ -27641,6 +27672,11 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
 .tabs__tab--on{ color: var(--fl-ink); font-weight: 600; border-bottom-color: var(--fl-ink); }
 .reports__panel{ margin-top: var(--fl-space-4); }
 @media (max-width: 767px){ .reports__branch{ width: 100%; } .reports__custom{ flex-direction: column; } .reports__custom .flInput{ width: 100%; } }
+/* Work-list headers (overnight-nov17) */
+.pageHead{ align-items: flex-end; }
+.pageHead__text{ min-width: 0; display: grid; gap: var(--fl-space-1); }
+.pageHead__lead{ margin: 0; color: var(--fl-ink-3); font-size: 15px; line-height: 1.45; max-width: 64ch; }
+.pageHead__actions{ display: flex; gap: var(--fl-space-2); flex-wrap: wrap; }
 /* Home (overnight-nov17) */
 .homeHead{ display: flex; align-items: flex-end; justify-content: space-between; gap: var(--fl-space-4); flex-wrap: wrap; margin-bottom: var(--fl-space-6); }
 .homeHead__title{ margin: 0; }
