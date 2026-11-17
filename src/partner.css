@@ -165,6 +165,6 @@ textarea.input{ min-height: 88px; padding: var(--fl-space-3); line-height: var(-
   /* The name is in the foot; on a phone the top bar is the logo, the bell
      and Book (found on staging: the name squeezed to 31px, the bell to 34). */
   .pp__who{ display: none; }
-  .pp__book{ min-height: 40px; padding: 0 14px; }
+  .pp__book{ min-height: 44px; padding: 0 14px; }
 }
 @media (prefers-reduced-motion: reduce){ *, *::before, *::after{ animation: none !important; transition: none !important; } }
