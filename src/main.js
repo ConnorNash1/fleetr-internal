@@ -10871,6 +10871,60 @@ function InvoicingSection() {
 // After a payment is saved: the Worker switches off the agreement's open
 // payment links whose balance it paid. Not waited for, and a failure is
 // harmless: the Worker's 30-minute run does the same.
+// ── Card on file (overnight-nov17, Part 4) ──────────────────────────────────
+// The card a renter saved through Stripe (card_on_file.sql in fleetr-infra):
+// held at pickup for the estimate plus the company's deposit, charged at
+// close. The Worker does the Stripe side; a failure lands in Needs you.
+async function chargeCardOnFile(agreementId) {
+  try {
+    return await stripeCall("card-charge", { agreementId });
+  } catch (e) {
+    const msg = String(e.message || "");
+    if (/no_card|not_connected|nothing_owing|charges_off|demo|not_closed/.test(msg)) return { ok: false, quiet: true };
+    appAlert("The card on file could not be charged. It is in Needs you, and the payment link below still works.", { title: "Card not charged" });
+    return { ok: false };
+  }
+}
+function CardOnFilePanel({ resCode, agreementId, status }) {
+  const el = React.createElement;
+  const [info, setInfo] = React.useState(null);
+  const [busy, setBusy] = React.useState("");
+  const [msg, setMsg] = React.useState("");
+  const load = React.useCallback(() => {
+    supabase.rpc("card_on_file_for", { p_res_code: resCode }).then(({ data }) => setInfo(data && data.ok ? data : { ok: false }));
+  }, [resCode]);
+  React.useEffect(() => { if (resCode) load(); }, [resCode, load]);
+  if (!info || !info.ok) return null;
+  const c = info.card;
+  const holds = (info.holds || []).filter((h) => !agreementId || h.agreementId === agreementId);
+  const held = holds.find((h) => h.status === "held");
+  const settled = holds.find((h) => ["captured", "charged"].includes(h.status));
+  const failed = holds.find((h) => h.status === "failed");
+  const money = (n) => `$${Number(n || 0).toFixed(2)}`;
+  const run = async (key, route) => {
+    setBusy(key); setMsg("");
+    try {
+      const out = await stripeCall(route, { agreementId });
+      setMsg(route === "card-hold" ? (out.ok ? `Held ${money(out.amount)}.` : "The hold did not go through. It is in Needs you.")
+        : out.ok ? (out.released ? "Nothing owing: the hold was released." : `Charged ${money(out.charged)}.`) : "The card could not be charged. It is in Needs you.");
+    } catch (e) { setMsg("That did not work. Try again, or send the payment link."); }
+    setBusy(""); load();
+  };
+  if (!c && !holds.length) return el("div", { className: "cardOnFile cardOnFile--none" }, el(Icon, { name: "card", size: 18 }),
+    el("span", null, "No card saved. The renter can save one when they check in on their phone."));
+  return el("div", { className: "cardOnFile" },
+    el("div", { className: "cardOnFile__head" }, el(Icon, { name: "card", size: 18 }),
+      el("strong", null, c ? `${c.brand ? c.brand[0].toUpperCase() + c.brand.slice(1) : "Card"} ending ${c.last4}` : "Card on file"),
+      c && el("small", null, `Saved ${c.savedFrom === "fleetr.ai" ? "at booking on fleetr.ai" : "at check-in"}`)),
+    held && el("p", { className: "cardOnFile__line" }, `${money(held.amount)} held at pickup${Number(held.deposit) > 0 ? `, with a ${money(held.deposit)} deposit` : ""}. It is charged when the rental closes.`),
+    settled && el("p", { className: "cardOnFile__line cardOnFile__line--ok" }, `${money(settled.settledAmount)} charged ${settled.status === "captured" ? "from the hold" : "to the card"} at close.`),
+    failed && !settled && el("p", { className: "cardOnFile__line cardOnFile__line--bad" }, failed.error || "A charge failed."),
+    msg && el("p", { className: "cardOnFile__line", role: "status" }, msg),
+    el("div", { className: "cardOnFile__actions" },
+      c && !held && !settled && status === "open_rental_agreement" && el(Button, { variant: "secondary", loading: busy === "hold", onClick: () => run("hold", "card-hold") }, "Place hold"),
+      (c || held) && !settled && status === "closed" && el(Button, { variant: "secondary", loading: busy === "charge", onClick: () => run("charge", "card-charge") }, failed ? "Try the card again" : "Charge the card")));
+}
+
 function closePaidLinks(agreementId) {
   if (!agreementId) return;
   stripeCall("close-paid-links", { agreementId }).catch((e) => console.warn("paid links not switched off yet:", e.message));
@@ -10887,6 +10941,51 @@ async function stripeCall(route, body) {
   const data = await res.json().catch(() => null);
   if (!res.ok || !data || !data.ok) throw new Error((data && (data.message || data.error)) || "The payment service could not be reached.");
   return data;
+}
+
+// Card on file settings (overnight-nov17, Part 4): the deposit held at
+// pickup with the estimate, and whether holds and charges at close happen.
+// Whole dollars, as every price is. Exec only (set_card_settings).
+function CardOnFileSettings() {
+  const { currentUser } = React.useContext(AppContext);
+  const el = React.createElement;
+  const isExec = roleAtLeast(currentUser?.role, "Exec");
+  const [saved, setSaved] = React.useState(null);
+  const [d, setD] = React.useState(null);
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState("");
+  React.useEffect(() => {
+    supabase.rpc("my_card_settings")
+      .then(({ data: got }) => {
+        const data = got && got.ok ? got : null;
+        const v = { deposit: data ? String(Math.round(Number(data.depositAmount))) : "0", hold: data ? !!data.holdAtPickup : true, charge: data ? !!data.chargeAtClose : true };
+        setSaved(v); setD(v);
+      });
+  }, [currentUser?.operatorId]);
+  if (!d) return null;
+  const changed = JSON.stringify(d) !== JSON.stringify(saved);
+  const valid = /^\d{1,4}$/.test(d.deposit) && Number(d.deposit) <= 5000;
+  const save = async () => {
+    setBusy(true); setMsg("");
+    const { data, error } = await supabase.rpc("set_card_settings", { p_deposit: Number(d.deposit), p_hold: d.hold, p_charge: d.charge });
+    setBusy(false);
+    if (error || !data || !data.ok) { setMsg(data && data.reason === "bad_amount" ? "A deposit is whole dollars, from $0 to $5,000." : "That did not save. Try again."); return; }
+    setSaved(d); setMsg("Saved.");
+  };
+  const toggle = (k, label, hint) => el("label", { className: "cardSettings__toggle" },
+    el("input", { type: "checkbox", checked: d[k], disabled: !isExec, onChange: (e) => setD({ ...d, [k]: e.target.checked }) }),
+    el("span", null, el("strong", null, label), el("small", null, hint)));
+  return el("div", { className: "cardSettings" },
+    el("h4", { className: "cardSettings__title" }, "Saved cards"),
+    el("p", { className: "closeRentalHint" }, "Renters can save a card when they book on fleetr.ai or check in on their phone. Payment links stay as the backup."),
+    toggle("hold", "Hold at pickup", "The rental's estimate plus the deposit below, held on the card when the renter signs for the car."),
+    toggle("charge", "Charge at close", "The final total, charged to the card when the rental closes. The receipt goes by text and email."),
+    el(Field, { label: "Deposit held at pickup", htmlFor: "card-deposit", hint: "Released when the rental closes, less anything owed." },
+      el("div", { className: "flInputAffix", style: { maxWidth: "160px" } }, el("span", null, "$"),
+        el("input", { id: "card-deposit", className: "flInput", inputMode: "numeric", maxLength: 4, disabled: !isExec, value: d.deposit,
+          onChange: (e) => setD({ ...d, deposit: e.target.value.replace(/[^\d]/g, "") }) }))),
+    isExec && el("div", { className: "cardSettings__actions" }, el(Button, { onClick: save, disabled: !changed || !valid, loading: busy }, "Save")),
+    msg && el("p", { className: "closeRentalHint", role: "status" }, msg));
 }
 
 function StripeSection() {
@@ -10929,7 +11028,8 @@ function StripeSection() {
     canConnect && !status.chargesEnabled && el("button", {
       type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, disabled: busy, onClick: connect,
     }, busy ? "Opening Stripe…" : status.connected ? "Finish Stripe setup" : "Connect Stripe"),
-    el(FieldError, { text: error }));
+    el(FieldError, { text: error }),
+    status.chargesEnabled && el(CardOnFileSettings));
 }
 
 // ─── Billing ─────────────────────────────────────────────────────────────────
@@ -20627,7 +20727,9 @@ function CustomerPageView({ onDiscard }) {
       setReservations((prev) =>
         prev.map((r) => r.resCode === resCode ? { ...r, rentalAgreementStatus: status } : r)
       );
-      syncRAStatus(resCode, status);
+      const synced = syncRAStatus(resCode, status);
+      // Closed: the final total goes on the card on file, if there is one.
+      if (status === "closed" && ra && ra.id) Promise.resolve(synced).then(() => chargeCardOnFile(ra.id));
     }, { tableName: "reservations", recordId: resCode, description: `Rental agreement status ${rentalAgreementStatus} -> ${status}.`,
          warning: `Change ${resCode} from ${statusLabel(rentalAgreementStatus)} to ${statusLabel(status)}?` });
   };
@@ -21335,6 +21437,7 @@ function CustomerPageView({ onDiscard }) {
             )
           ),
       React.createElement("button", { type: "button", className: "addPaymentBtn", onClick: addPayment }, "+ Add Payment"),
+      resCode && React.createElement(CardOnFilePanel, { resCode, agreementId: ra?.id || null, status: rentalAgreementStatus }),
       ra?.id && React.createElement(StripePayLink, { agreementId: ra.id, unsaved: chargesEdited, retail: btSrcCat === "Retail", owes: linkOwes, saveLines: saveLinkLines, billToName: btSrcName || "", notYet: payLinkNotYet(rentalAgreementStatus) }),
       // A retail customer has one total paid and one balance, as at the top.
       btSrcCat === "Retail" && React.createElement("div", { className: "paymentsTotals" },
@@ -27201,6 +27304,23 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
 @media (prefers-reduced-motion: reduce){ .gs__body--fwd, .gs__body--back{ animation: none; } }
 
 /* ── Partners ── */
+.cardOnFile{ display: grid; gap: var(--fl-space-2); margin: var(--fl-space-3) 0; padding: var(--fl-space-3) var(--fl-space-4); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); background: var(--fl-surface); }
+.cardOnFile--none{ display: flex; align-items: center; gap: var(--fl-space-2); color: var(--fl-ink-3); font-size: 14px; background: var(--fl-paper); }
+.cardOnFile__head{ display: flex; align-items: center; gap: var(--fl-space-2); flex-wrap: wrap; }
+.cardOnFile__head strong{ font-weight: 600; }
+.cardOnFile__head small{ color: var(--fl-ink-3); font-size: var(--fl-text-sm); }
+.cardOnFile__line{ margin: 0; font-size: 14px; color: var(--fl-ink-2); line-height: 1.45; }
+.cardOnFile__line--ok{ color: var(--fl-success); font-weight: 500; }
+.cardOnFile__line--bad{ color: var(--fl-danger); font-weight: 500; }
+.cardOnFile__actions{ display: flex; gap: var(--fl-space-2); flex-wrap: wrap; }
+.cardOnFile__actions:empty{ display: none; }
+.cardSettings{ display: grid; gap: var(--fl-space-3); margin-top: var(--fl-space-5); padding-top: var(--fl-space-5); border-top: 1px solid var(--fl-line-soft); }
+.cardSettings__title{ margin: 0; font-size: var(--fl-text-base); font-weight: 600; }
+.cardSettings__toggle{ display: flex; align-items: flex-start; gap: var(--fl-space-3); cursor: pointer; }
+.cardSettings__toggle input{ margin-top: 3px; }
+.cardSettings__toggle span{ display: grid; gap: 2px; }
+.cardSettings__toggle small{ color: var(--fl-ink-3); font-size: var(--fl-text-sm); line-height: 1.45; }
+.cardSettings__actions{ display: flex; }
 .needsYou__tag--partner{ background: var(--fl-info-soft); color: var(--fl-info); }
 .partners__head{ display: flex; align-items: flex-start; justify-content: space-between; gap: var(--fl-space-4); flex-wrap: wrap; margin-bottom: var(--fl-space-6); }
 .partners__lead{ margin: var(--fl-space-2) 0 0; color: var(--fl-ink-3); max-width: 60ch; line-height: var(--fl-leading); }
