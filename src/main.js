@@ -7947,7 +7947,9 @@ function AddVehicleForm({ onAdded, stayOnForm }) {
           vehicleClass: f.vehicleClass, colour: f.colour.trim() || null, province: f.province,
           tankSizeLiters: null, pmIntervalKm: null, lastPmOdometer: null,
           currentOdometer: distanceToKm(Number(f.odometer)), currentFuelLevel: f.fuelLevel,
-          winterTires: "No", status: "Needs Cleaning", currentRenter: null, dueBack: null, fileType: null,
+          // Ready to rent (your answer of 2026-11-16): a new company's first
+          // renter found no car while the only one was Needs Cleaning.
+          winterTires: "No", status: "Available", currentRenter: null, dueBack: null, fileType: null,
         };
         const res = await supabase.from("fleet").insert(row);
         if (res.error) {
@@ -15450,7 +15452,7 @@ function FleetrCommandBar() {
           const resCode = await generateUniqueResCode();
           insertData = { ...data, resCode };
         } else if (table === "fleet") {
-          insertData = { status: "Needs Cleaning", winterTires: "No", currentRenter: null, dueBack: null, fileType: null, ...data };
+          insertData = { status: "Available", winterTires: "No", currentRenter: null, dueBack: null, fileType: null, ...data };
         }
         ({ error } = await supabase.from(table).insert(insertData));
         if (!error && setLocal) setLocal((prev) => [...prev, insertData]);
@@ -20267,6 +20269,9 @@ function CustomerPageView({ onDiscard }) {
   };
 
   const isCardType = (type) => ["Visa", "Mastercard", "Amex"].includes(type);
+  // How insurers, body shops and companies usually pay (your answer of
+  // 2026-11-16): the name is the payer's, not a cardholder's.
+  const OTHER_PAYMENT_TYPES = ["Cheque", "E-transfer", "Bank transfer (EFT)"];
 
   const fmtPayment = (p) => {
     const card = p.type === "Stripe" ? (p.last4 ? `Card Ending in ${p.last4}, paid online` : "Card, paid online")
@@ -20440,7 +20445,7 @@ function CustomerPageView({ onDiscard }) {
                     onChange: (e) => updatePayment(p.id, "type", e.target.value),
                   },
                     // Fuel paid on Gas Collections shows as such.
-                    [...["Visa", "Mastercard", "Amex", "Debit", "Cash"], ...(p.type === FUEL_PAYMENT_TYPE ? [FUEL_PAYMENT_TYPE] : [])].map((t) =>
+                    [...["Visa", "Mastercard", "Amex", "Debit", "Cash"], ...OTHER_PAYMENT_TYPES, ...(p.type === FUEL_PAYMENT_TYPE ? [FUEL_PAYMENT_TYPE] : [])].map((t) =>
                       React.createElement("option", { key: t, value: t }, t)
                     )
                   ),
@@ -20452,7 +20457,7 @@ function CustomerPageView({ onDiscard }) {
                   }),
                   React.createElement("input", {
                     className: "resFormInput paymentName",
-                    type: "text", placeholder: "Cardholder name",
+                    type: "text", placeholder: OTHER_PAYMENT_TYPES.includes(p.type) ? "Payer name" : "Cardholder name",
                     value: p.cardholderName,
                     onChange: (e) => updatePayment(p.id, "cardholderName", e.target.value),
                   }),
