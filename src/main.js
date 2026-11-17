@@ -18023,6 +18023,21 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
 
   const setGas = (value) => setReadings((prev) => ({ ...prev, gasIndex: Number(value) }));
 
+  // The renter returned on their phone: their odometer and fuel readings fill
+  // the step, for staff to check (overnight-nov17, automation 6). Only into
+  // an empty step, so nothing staff typed is replaced.
+  const fromRenter = row && (row.returnMileage != null || FUEL_LABELS.includes(row.returnFuelLevel));
+  const [prefilled, setPrefilled] = React.useState(false);
+  React.useEffect(() => {
+    if (!fromRenter || String(mileage).trim() !== "" || gasIndex !== null) return;
+    const km = Number(row.returnMileage);
+    const fuel = FUEL_LABELS.indexOf(row.returnFuelLevel);
+    setReadings((prev) => ({ ...prev,
+      mileage: Number.isFinite(km) && km > 0 ? String(Math.round(kmToDistance(km))) : prev.mileage,
+      gasIndex: fuel >= 0 ? fuel : prev.gasIndex }));
+    setPrefilled(true);
+  }, [rentalAgreementId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleNext = () => {
     setAttempted(true);
     if (mileageError || gasError || lowError) return;
@@ -18040,6 +18055,8 @@ function CloseRentalReadingsStep({ row, rentalAgreementId, readings, setReadings
         row ? [row.customer, row.plate || null].filter(Boolean).join(" · ") : "Rental not found")
     ),
     React.createElement("h2", { className: "closeRentalStepTitle" }, L.stepTitle),
+    prefilled && React.createElement("p", { className: "closeRentalHint closeRentalPrefilled", role: "status" },
+      "Filled in from the renter's return on their phone. Check both against the car before you continue."),
     React.createElement("div", { className: "closeRentalForm" },
       React.createElement("label", { className: "resFormGroup" },
         React.createElement("span", { className: "resFormLabel" }, `${L.mileageLabel} (${unit})`),
@@ -27417,6 +27434,7 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
 .cardSettings__toggle span{ display: grid; gap: 2px; }
 .cardSettings__toggle small{ color: var(--fl-ink-3); font-size: var(--fl-text-sm); line-height: 1.45; }
 .cardSettings__actions{ display: flex; }
+.closeRentalPrefilled{ padding: var(--fl-space-3) var(--fl-space-4); border-radius: var(--fl-radius); background: var(--fl-info-soft); color: var(--fl-info); font-weight: 500; }
 .needsYou__tag--agent{ background: var(--fl-ink); color: var(--fl-paper); }
 .needsYou__open--static{ cursor: default; }
 .agentCard{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--fl-space-6); padding: var(--fl-space-4) var(--fl-space-5) var(--fl-space-5); }
