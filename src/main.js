@@ -4534,9 +4534,13 @@ function ReturnsCurveCard({ days, upcoming, onOpen }) {
 // out, sold out is a soft grey with no number, and a class with no cars at
 // the branch is named once under the grid ("can't be booked here"), never
 // "sold out for the next year".
+// Running low (Nov 17, after the live check showed a third of the cells
+// warm): under the class's own low mark where it has one, else a quarter or
+// less of its cars free, and only for a class of three or more. One free of
+// one is a class fully open, not running low.
 const availCellState = (free, total, below) => (!(Number(total) > 0) ? "none"
   : !(Number(free) > 0) ? "sold"
-  : (below != null && free < below) || Number(free) === 1 ? "low" : "ok");
+  : (below != null ? Number(free) < Number(below) : Number(total) >= 3 && Number(free) <= Math.max(1, Math.floor(Number(total) / 4))) ? "low" : "ok");
 const availNoVehicles = (c) => !(c.total || []).some((n) => Number(n) > 0);
 const AGRID_DOW = ["S", "M", "T", "W", "T", "F", "S"];
 
@@ -4780,12 +4784,24 @@ function NeedsYou() {
     open && el("div", { className: "dashboardSection__body" },
       items === null && el("div", { className: "skelBox avail__skel", role: "status", "aria-label": "Loading" }),
       items && count === 0 && el("p", { className: "closeRentalHint" }, "Nothing needs you right now."),
-      agentExceptions.length > 0 && el("ul", { className: "needsYou" }, agentExceptions.map((x) => el("li", { key: x.id, className: "needsYou__item" },
-        el("div", { className: "needsYou__open needsYou__open--static" },
-          el("span", { className: "needsYou__tag needsYou__tag--agent" }, "fleetr agent"),
-          el("span", { className: "needsYou__who" }, x.subject || ""),
-          el("span", { className: "needsYou__what" }, x.summary)),
-        el("button", { type: "button", className: "needsYou__done", disabled: !!busy, onClick: () => resolveAgent(x) }, busy === x.id ? "Saving…" : "Dealt with")))),
+      // The agent's alerts group like everything else (Nov 17: two "no Small
+      // car ready" rows sat one under the other).
+      agentExceptions.length > 0 && (() => {
+        const row = (x) => el("li", { key: x.id, className: "needsYou__item" },
+          el("div", { className: "needsYou__open needsYou__open--static" },
+            el("span", { className: "needsYou__tag needsYou__tag--agent" }, "fleetr agent"),
+            el("span", { className: "needsYou__who" }, x.subject || ""),
+            el("span", { className: "needsYou__what" }, x.summary)),
+          el("button", { type: "button", className: "needsYou__done", disabled: !!busy, onClick: () => resolveAgent(x) }, busy === x.id ? "Saving…" : "Dealt with"));
+        if (agentExceptions.length === 1) return el("ul", { className: "needsYou" }, row(agentExceptions[0]));
+        const isOpen = !!openGroups.agent;
+        return el("ul", { className: "needsYou" }, el("li", { className: `needsYou__group${isOpen ? " needsYou__group--open" : ""}` },
+          el("button", { type: "button", className: "needsYou__groupHead", "aria-expanded": isOpen, onClick: () => setOpenGroups((o) => ({ ...o, agent: !o.agent })) },
+            el("span", { className: "needsYou__tag needsYou__tag--agent" }, "fleetr agent"),
+            el("span", { className: "needsYou__groupLabel" }, `${agentExceptions.length} alerts from the agent to check`),
+            el("span", { className: "needsYou__chevron", "aria-hidden": "true" }, isOpen ? "\u25be" : "\u25b8")),
+          isOpen && el("ul", { className: "needsYou needsYou--inner" }, agentExceptions.map(row))));
+      })(),
       partnerParts.length > 0 && el("ul", { className: "needsYou" }, el("li", { className: "needsYou__item" },
         el("button", { type: "button", className: "needsYou__open", onClick: () => navigate("/partners") },
           el("span", { className: "needsYou__tag needsYou__tag--partner" }, "Partners"),
@@ -7542,8 +7558,9 @@ function FleetVehiclesPage() {
         React.createElement("h2", { className: "fleetNotes__title" }, React.createElement(Icon, { name: "alert", size: 16 }), "Needs details"),
         React.createElement("ul", { className: "fleetNotes__list" }, lines.map(([key, head, why, rows]) =>
           React.createElement("li", { key, className: "fleetNotes__item" },
-            React.createElement("span", { className: "fleetNotes__head" }, head),
-            React.createElement("span", { className: "fleetNotes__why" }, why),
+            React.createElement("p", { className: "fleetNotes__text" },
+              React.createElement("span", { className: "fleetNotes__head" }, head),
+              React.createElement("span", { className: "fleetNotes__why" }, why)),
             React.createElement("span", { className: "fleetNotes__plates" }, rows.slice(0, 12).map((v) => React.createElement(PlateLink, { key: v.id || v.plate, plate: v.plate })),
               rows.length > 12 && React.createElement("span", { className: "fleetNotes__more" }, `and ${rows.length - 12} more`))))));
     })(),
@@ -24276,12 +24293,13 @@ body, * {
   padding: 2px 7px;
   border-radius: 999px;
   background: #E2DFD9;
-  color: #6B6965;
+  color: #4A4844;
   transition: background-color 150ms ease, color 150ms ease;
 }
+/* Nov 17: dark on terracotta reads at 7:1 (white was 2.5:1). */
 .statusTab--active .statusTab__count{
   background: #F4845F;
-  color: #F9F9F7;
+  color: #1F1E1D;
 }
 @media (max-width: 599px){
   .statusTabs{
@@ -26857,7 +26875,7 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
   cursor: pointer;
 }
 .dateField__text{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dateField--empty .dateField__text{ color: #9A9893; }
+.dateField--empty .dateField__text{ color: #6B6A66; } /* Nov 17: 5:1, it was 2.8:1 */
 .dateField__icon{ flex-shrink: 0; color: #8A8984; }
 .dateField--open{
   border-color: #F4845F !important;
@@ -27764,7 +27782,7 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
 .partners__people > li{ display: flex; flex-wrap: wrap; align-items: center; gap: var(--fl-space-2) var(--fl-space-3); }
 .partners__person{ flex: 1; min-width: 0; display: grid; }
 .partners__person strong{ font-weight: 600; font-size: 14px; }
-.partners__person small{ color: var(--fl-ink-3); font-size: var(--fl-text-sm); overflow: hidden; text-overflow: ellipsis; }
+.partners__person small{ color: var(--fl-ink-3); font-size: var(--fl-text-sm); overflow-wrap: anywhere; } /* Nov 17: the whole address, wrapped, never cut off */
 .partners__nobody{ color: var(--fl-ink-3); font-size: 14px; }
 .partners__mini{ min-height: 32px; padding: 0 var(--fl-space-2); border: 0; background: none; color: var(--fl-ink-2); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; font: 500 var(--fl-text-sm)/1 var(--fl-font); }
 .partners__link{ flex-basis: 100%; display: flex; gap: var(--fl-space-2); }
@@ -28047,6 +28065,27 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
 .partners__branch{ display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; color: var(--fl-ink); cursor: pointer; }
 .partners__branch input{ width: 18px; height: 18px; accent-color: var(--fl-brand); }
 .partners__branch small{ color: var(--fl-ink-3); }
+.fleetNotes__text{ margin: 0; }
+/* Phones, found by the Nov 17 checks at 390px: nothing wider than the
+   screen, nothing cut off. */
+@media (max-width: 767px){
+  /* The quick days and date presets as a grid of equal buttons, never a
+     strip wider than the screen (it pushed the search box to 545px). */
+  .segmented{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); min-width: 0; max-width: 100%; overflow: visible; border-radius: 16px; }
+  .segmented > :last-child:nth-child(3n + 2){ grid-column: span 2; }
+  .segmented__opt{ justify-content: center; white-space: normal; text-align: center; line-height: 1.2; padding: 0 var(--fl-space-2); }
+  .resvDatePickerWrap{ display: flex; }
+  .resvDatePickerWrap > .segmented__opt{ flex: 1; }
+  .listTools > *{ min-width: 0; max-width: 100%; }
+  /* Report tabs wrap onto a second line rather than hiding off the edge. */
+  .tabs{ flex-wrap: wrap; overflow: visible; }
+  /* Words that were cut off with an ellipsis wrap instead. */
+  .custFacts__main, .homeToday__who strong, .homeToday__who small, .needsYou__who{ white-space: normal; overflow: visible; text-overflow: clip; }
+  .custFacts__link, .partners small{ overflow-wrap: anywhere; white-space: normal; max-width: 100%; }
+  /* A bar's label on its own line above the bar, so "Online (fleetr.ai)" reads whole. */
+  .reportBars__row{ grid-template-columns: 1fr minmax(64px, auto); row-gap: 4px; }
+  .reportBars__name{ grid-column: 1 / -1; white-space: normal; overflow: visible; text-overflow: clip; }
+}
 /* end fleetr design system 1.0 */
 `;
 document.head.appendChild(style);
