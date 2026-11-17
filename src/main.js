@@ -4594,6 +4594,60 @@ function needsYouText(i) {
   }
 }
 
+// ── fleetr agent (overnight-nov17, Part 5) ──────────────────────────────────
+// What the agent did lately and the cars to clean next (my_agent_feed,
+// agent.sql in fleetr-infra). Its exceptions are in Needs you. Shown only
+// while the agent is on for the company (demo companies for now).
+const AGENT_POLL_MS = 120000;
+let agentFeedCache = null;
+function useAgentFeed() {
+  const [feed, setFeed] = React.useState(agentFeedCache);
+  const load = React.useCallback(() => supabase.rpc("my_agent_feed").then(({ data }) => {
+    agentFeedCache = data && data.ok ? data : null; setFeed(agentFeedCache);
+  }).catch(() => null), []);
+  React.useEffect(() => {
+    load();
+    const t = setInterval(() => { if (document.visibilityState === "visible") load(); }, AGENT_POLL_MS);
+    return () => clearInterval(t);
+  }, [load]);
+  return [feed, load];
+}
+const agentWhen = (iso) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : ampm(d.toLocaleString("en-CA", { weekday: "short", hour: "numeric", minute: "2-digit" }));
+};
+const agentPickup = (s) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/.exec(String(s || ""));
+  if (!m) return s || "";
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
+  return ampm(d.toLocaleString("en-CA", { weekday: "short", hour: "numeric", minute: "2-digit" }));
+};
+function AgentCard() {
+  const el = React.createElement;
+  const [feed] = useAgentFeed();
+  const [open, setOpen] = React.useState(true);
+  if (!feed || !feed.enabled) return null;
+  const clean = feed.cleanNext || [];
+  const actions = feed.actions || [];
+  return el(CompanyStep, { title: "fleetr agent", open, onToggle: () => setOpen((o) => !o) },
+    open && el("div", { className: "agentCard" },
+      el("div", { className: "agentCard__col" },
+        el("h3", { className: "agentCard__h" }, "Clean next"),
+        clean.length === 0
+          ? el("p", { className: "agentCard__quiet" }, "Every pickup in the next 24 hours has a car ready.")
+          : el("ol", { className: "agentCard__queue" }, clean.map((q, i) => el("li", { key: `${q.locationId}:${q.vehicleClass}` },
+              el("span", { className: "agentCard__class" }, q.vehicleClass, el("small", null, `${q.pickups} pickup${q.pickups === 1 ? "" : "s"} from ${agentPickup(q.firstPickup)}, ${q.ready} ready${feed && clean.some((x) => x.branch !== q.branch) ? `, ${q.branch}` : ""}`)),
+              el("span", { className: "agentCard__plates" }, (q.clean || []).length
+                ? (q.clean || []).map((c) => el(Plate, { key: c.plate }, c.plate))
+                : el(Chip, { tone: q.soon ? "danger" : "warning" }, "None to clean")))))),
+      el("div", { className: "agentCard__col" },
+        el("h3", { className: "agentCard__h" }, "Done for you"),
+        actions.length === 0
+          ? el("p", { className: "agentCard__quiet" }, "Nothing yet today. The agent checks every 30 minutes.")
+          : el("ul", { className: "agentCard__log" }, actions.slice(0, 6).map((a) => el("li", { key: a.id },
+              el("span", null, a.summary), el("small", null, agentWhen(a.at))))))));
+}
+
 function NeedsYou() {
   const el = React.createElement;
   const { setOpenCustomer } = React.useContext(AppContext);
@@ -4604,6 +4658,15 @@ function NeedsYou() {
   const [error, setError] = React.useState("");
   // What partners are waiting on (partner_portal.sql), one line to the Partners page.
   const [partnerWait, setPartnerWait] = React.useState(null);
+  const [agentFeed, reloadAgent] = useAgentFeed();
+  const agentExceptions = (agentFeed && agentFeed.exceptions) || [];
+  const resolveAgent = async (x) => {
+    setBusy(x.id); setError("");
+    const { data, error: err } = await supabase.rpc("agent_resolve", { p_id: x.id });
+    if (err || !data || !data.ok) setError("That did not work. Try again.");
+    await reloadAgent();
+    setBusy("");
+  };
   const load = React.useCallback(async () => {
     supabase.rpc("my_partner_needs_you").then(({ data: pw }) => setPartnerWait(pw || null)).catch(() => null);
     const { data, error: err } = await (takeHomeEarly("needs_you") || supabase.rpc("needs_you"));
@@ -4633,11 +4696,17 @@ function NeedsYou() {
   const pw = partnerWait || {};
   const partnerParts = [[pw.bookings, "booking", "bookings", "to confirm"], [pw.extensions, "extension", "extensions", "asked for"], [pw.transfers, "bank transfer", "bank transfers", "to look for"]]
     .filter(([n]) => Number(n) > 0).map(([n, one, many, what]) => `${n} ${Number(n) === 1 ? one : many} ${what}`);
-  const count = (items ? items.length : 0) + (partnerParts.length ? 1 : 0);
+  const count = (items ? items.length : 0) + (partnerParts.length ? 1 : 0) + agentExceptions.length;
   return el(CompanyStep, { title: count ? `Needs you (${count})` : "Needs you", open, onToggle: () => setOpen((o) => !o) },
     open && el("div", { className: "dashboardSection__body" },
       items === null && el("div", { className: "skelBox avail__skel", role: "status", "aria-label": "Loading" }),
       items && count === 0 && el("p", { className: "closeRentalHint" }, "Nothing needs you right now."),
+      agentExceptions.length > 0 && el("ul", { className: "needsYou" }, agentExceptions.map((x) => el("li", { key: x.id, className: "needsYou__item" },
+        el("div", { className: "needsYou__open needsYou__open--static" },
+          el("span", { className: "needsYou__tag needsYou__tag--agent" }, "fleetr agent"),
+          el("span", { className: "needsYou__who" }, x.subject || ""),
+          el("span", { className: "needsYou__what" }, x.summary)),
+        el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px", flexShrink: 0 }, disabled: !!busy, onClick: () => resolveAgent(x) }, busy === x.id ? "Saving…" : "Dealt with")))),
       partnerParts.length > 0 && el("ul", { className: "needsYou" }, el("li", { className: "needsYou__item" },
         el("button", { type: "button", className: "needsYou__open", onClick: () => navigate("/partners") },
           el("span", { className: "needsYou__tag needsYou__tag--partner" }, "Partners"),
@@ -4866,6 +4935,7 @@ function DashboardPage() {
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement(HomeAvailability),
     React.createElement(NeedsYou),
+    React.createElement(AgentCard),
     React.createElement("div", { className: "dashboardCtaRow" },
       React.createElement("button", {
         type: "button", className: "closeRentalCta", onClick: () => navigate("/close-rental"),
@@ -10946,6 +11016,31 @@ async function stripeCall(route, body) {
 // Card on file settings (overnight-nov17, Part 4): the deposit held at
 // pickup with the estimate, and whether holds and charges at close happen.
 // Whole dollars, as every price is. Exec only (set_card_settings).
+// The agent's switch (agent.sql): an Exec turns it on or off; for now only a
+// demo company can turn it on.
+function AgentSettings() {
+  const { currentUser } = React.useContext(AppContext);
+  const el = React.createElement;
+  const [feed, reload] = useAgentFeed();
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState("");
+  if (!feed || !roleAtLeast(currentUser?.role, "Exec") || (!feed.demo && !feed.enabled)) return null;
+  const flip = async () => {
+    setBusy(true); setMsg("");
+    const { data, error } = await supabase.rpc("set_agent_enabled", { p_on: !feed.enabled });
+    setBusy(false);
+    if (error || !data || !data.ok) { setMsg(data && data.reason === "demo_only" ? "The agent is in testing with demo companies for now." : "That did not save. Try again."); return; }
+    await reload();
+  };
+  return el("div", { className: "cardSettings" },
+    el("h4", { className: "cardSettings__title" }, "fleetr agent"),
+    el("p", { className: "closeRentalHint" }, "Does the routine work every 30 minutes: texts the payment link for a balance left at close, keeps a Clean next list so every pickup has a car, follows up unpaid invoices, and logs what it did. Only what needs a person goes to Needs you."),
+    el("label", { className: "cardSettings__toggle" },
+      el("input", { type: "checkbox", checked: !!feed.enabled, disabled: busy, onChange: flip }),
+      el("span", null, el("strong", null, feed.enabled ? "On" : "Off"), el("small", null, "In testing with demo companies."))),
+    msg && el("p", { className: "closeRentalHint", role: "status" }, msg));
+}
+
 function CardOnFileSettings() {
   const { currentUser } = React.useContext(AppContext);
   const el = React.createElement;
@@ -11029,7 +11124,8 @@ function StripeSection() {
       type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, disabled: busy, onClick: connect,
     }, busy ? "Opening Stripe…" : status.connected ? "Finish Stripe setup" : "Connect Stripe"),
     el(FieldError, { text: error }),
-    status.chargesEnabled && el(CardOnFileSettings));
+    status.chargesEnabled && el(CardOnFileSettings),
+    el(AgentSettings));
 }
 
 // ─── Billing ─────────────────────────────────────────────────────────────────
@@ -27321,6 +27417,20 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
 .cardSettings__toggle span{ display: grid; gap: 2px; }
 .cardSettings__toggle small{ color: var(--fl-ink-3); font-size: var(--fl-text-sm); line-height: 1.45; }
 .cardSettings__actions{ display: flex; }
+.needsYou__tag--agent{ background: var(--fl-ink); color: var(--fl-paper); }
+.needsYou__open--static{ cursor: default; }
+.agentCard{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--fl-space-6); padding: var(--fl-space-4) var(--fl-space-5) var(--fl-space-5); }
+.agentCard__h{ margin: 0 0 var(--fl-space-3); font-size: var(--fl-text-sm); font-weight: 600; color: var(--fl-ink-3); }
+.agentCard__quiet{ margin: 0; font-size: 14px; color: var(--fl-ink-3); line-height: 1.45; }
+.agentCard__queue{ list-style: none; margin: 0; padding: 0; display: grid; gap: var(--fl-space-3); counter-reset: q; }
+.agentCard__queue li{ display: flex; align-items: center; justify-content: space-between; gap: var(--fl-space-3); flex-wrap: wrap; }
+.agentCard__class{ display: grid; gap: 2px; font-weight: 600; font-size: 15px; }
+.agentCard__class small{ font-weight: 400; color: var(--fl-ink-3); font-size: var(--fl-text-sm); }
+.agentCard__plates{ display: flex; gap: 6px; flex-wrap: wrap; }
+.agentCard__log{ list-style: none; margin: 0; padding: 0; display: grid; gap: var(--fl-space-3); }
+.agentCard__log li{ display: grid; gap: 2px; font-size: 14px; line-height: 1.45; }
+.agentCard__log small{ color: var(--fl-ink-3); font-size: var(--fl-text-xs); }
+@media (max-width: 767px){ .agentCard{ grid-template-columns: minmax(0, 1fr); gap: var(--fl-space-5); padding: var(--fl-space-4); } }
 .needsYou__tag--partner{ background: var(--fl-info-soft); color: var(--fl-info); }
 .partners__head{ display: flex; align-items: flex-start; justify-content: space-between; gap: var(--fl-space-4); flex-wrap: wrap; margin-bottom: var(--fl-space-6); }
 .partners__lead{ margin: var(--fl-space-2) 0 0; color: var(--fl-ink-3); max-width: 60ch; line-height: var(--fl-leading); }
