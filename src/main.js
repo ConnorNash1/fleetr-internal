@@ -26220,7 +26220,18 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
   .resvDateClear, .noteBtn, .mobileHamburger{ min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
   .aiControl, .resolveClaimBtn, .loginBtn, .statusTab, .auditClearBtn, .resvInlineBtn, .joinCodeRotate,
   .resvSearchInput, .fleetFilterInput, .fleetFilterSelect, .gasOwedInput, .gasStatusSelect,
-  select.resFormInput, .mobileTopbar__signOut, .customerPageSaveBtn, .closeRentalCta, .fleetGroupHeader{ min-height: 44px; }
+  select.resFormInput, .mobileTopbar__signOut, .customerPageSaveBtn, .closeRentalCta, .fleetGroupHeader,
+  .paymentRow .resFormInput, .addPaymentBtn, .paymentsTotals .resFormInput,
+  input.resFormInput, .resvPageTab, .unsavedBar__discard, .unsavedBar__save,
+  .addV__mini, .resModalSubmit, .resModalCancel, .addVehicleInput, .miniBtn, .inlineNumber, .tankSizeInput,
+  .pmCompleteBtn, .vehicleStatusSelect, .damageSection__head, input[type="range"].closeRentalFuel{ min-height: 44px; }
+  .avail__cell{ height: 44px; }
+  /* A checkbox or radio with no label around it to tap: the box itself. */
+  input[type="checkbox"]:not(label input), input[type="radio"]:not(label input){ width: 44px; height: 44px; margin: 0; }
+  /* One with a label: the whole label, 44px tall (the contract terms choice
+     and the fleetr.ai and invoice switches were 20 to 39px). */
+  label:has(> input[type="checkbox"]), label:has(> input[type="radio"]){ min-height: 44px; display: flex; align-items: center; gap: 8px; }
+  .paymentRemoveBtn{ min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
   .homeAvail__cell{ height: 44px; }
   .customerLink, .plateLink, .rentalAgreementLink{ padding-block: 14px; margin-block: -14px; }
   .statCard__head{ min-height: 44px; padding-block: 11px; margin: -11px 0 -3px; }
