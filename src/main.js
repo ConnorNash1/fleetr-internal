@@ -235,7 +235,13 @@ function readStoredSession() {
     // A stored profile is not a session on its own. Without a live Supabase
     // token behind it, it is just JSON someone could have typed into
     // localStorage, so it is refused.
-    if (!supabase.auth.session()) return null;
+    const live = supabase.auth.session();
+    if (!live) return null;
+    // And it must be this person's (overnight-nov17, hardening): a stored
+    // profile is never adopted over a token that belongs to someone else.
+    // The partner portal keeps its own sign-in under a separate key, so this
+    // is a guard, not a fix for something seen.
+    if (!live.user || live.user.id !== user.id) return null;
     // Rebuilt rather than adopted, so only literal true survives. A profile
     // stored before features existed has none, and reads as all off.
     companyFeatures = toFeatureMap(Object.entries(features || {})
@@ -5885,7 +5891,7 @@ function VehicleEconomics({ vehicle }) {
 }
 
 function VehicleDetailPage() {
-  const { fleet, setFleet, reservations, rentalAgreements, damageClaims, guardAction } = React.useContext(AppContext);
+  const { fleet, setFleet, reservations, rentalAgreements, damageClaims, guardAction, archivedVehicles } = React.useContext(AppContext);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -6023,6 +6029,12 @@ function VehicleDetailPage() {
   if (!plate) {
     return React.createElement(NotFoundState, { title: "Vehicle Detail", text: "No vehicle selected.", backTo: "/fleet/vehicles", backLabel: "Vehicles" });
   }
+  // A plate that is not in the fleet showed an empty vehicle ("Not read
+  // yet", "Nobody") as if it existed (found on staging, overnight-nov17).
+  if (!vehicle.plate && !(archivedVehicles || []).some((v) => v.plate === plate)) {
+    return React.createElement(NotFoundState, { title: "Vehicle", text: `No vehicle with the plate ${plate} in this fleet. It may have been removed, or the plate is written differently.`,
+      backTo: "/fleet/vehicles", backLabel: "Vehicles" });
+  }
 
   return React.createElement(
     "div", { className: "page" },
@@ -6049,7 +6061,7 @@ function VehicleDetailPage() {
     React.createElement("div", { className: "custFacts" },
       [["Odometer", latestRa?.mileage != null ? fmtDistance(latestRa.mileage) : vehicle.currentOdometer != null ? fmtDistance(vehicle.currentOdometer) : "Not read yet", ""],
        ["Fuel", fuelText(latestRa?.fuelAtPickup || vehicle.currentFuelLevel) || "Not read yet", ""],
-       ["With", activeRa ? (activeRa.customer || "A renter") : "Nobody", activeRa ? `Due back ${activeRa.returnDate || "not set"}` : "On the lot"],
+       ["With", activeRa ? (activeRa.customer || "A renter") : "Nobody", activeRa ? (activeRa.returnDate ? `Due back ${shortDay(activeRa.returnDate)}` : "Return date not set") : "On the lot"],
        ["Province", vehicle.province || "Not set", vehicle.vin ? `VIN ${vehicle.vin}` : ""]].map(([label, main, sub]) =>
         React.createElement("div", { key: label, className: "custFacts__item" },
           React.createElement("span", { className: "custFacts__label" }, label),
@@ -27584,6 +27596,7 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
   .segmented__opt{ min-height: var(--fl-tap); }
 }
 /* The vehicle page (overnight-nov17) */
+@media (max-width: 767px){ .custFacts__link{ display: inline-flex; align-items: center; min-height: 44px; } }
 .vehHead__title{ display: flex; align-items: center; gap: var(--fl-space-3); flex-wrap: wrap; }
 .vehHead__title .flPlate{ height: 34px; padding: 0 12px; font-size: 18px; border-width: 2px; border-radius: 7px; }
 .vehHead__car{ font-size: var(--fl-text-lg); font-weight: 500; color: var(--fl-ink-2); }
