@@ -162,6 +162,9 @@ textarea.input{ min-height: 88px; padding: var(--fl-space-3); line-height: var(-
   .pp__tab{ flex: 1; min-height: 56px; padding: 0 4px; border-bottom: 0; border-top: 2px solid transparent; margin: 0; }
   .pp__tab[aria-selected="true"]{ border-top-color: var(--fl-ink); }
   .pp__main{ padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
+  /* The sticky Book and Send buttons sit above the bottom tab bar, not under
+     it (Nov 17, found at 390: the bar covered "Book a replacement rental"). */
+  .pp__tabs ~ .pp__main .foot{ bottom: calc(57px + env(safe-area-inset-bottom, 0px)); padding-bottom: var(--fl-space-3); }
   /* The name is in the foot; on a phone the top bar is the logo, the bell
      and Book (found on staging: the name squeezed to 31px, the bell to 34). */
   .pp__who{ display: none; }

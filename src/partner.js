@@ -192,13 +192,17 @@ function Book({ home, branchId, onBooked, onCancel }) {
     }).catch(() => null).finally(() => { if (live) setDecoding(false); });
     return () => { live = false; };
   }, [v.vin]);
+  // A daily limit can only be checked against this partner's own rates; with
+  // none set up (found on staging: Louie's Collision Repair), it books by class.
+  const priced = home.classes.some((c) => classRate(c) != null);
+  const approve = priced ? f.approve : "class";
   const limit = Number(f.limit) > 0 ? Number(f.limit) : null;
   const within = limit != null ? classesWithin(home.classes, limit) : [];
   // With a class approved, the one picked, else the like-for-like match once
   // the repair vehicle is filled in. With a limit, the one picked if it fits,
   // else the best the limit pays for.
   const matched = v.make.trim() && v.model.trim() ? matchClass(v, home.classes) : null;
-  const cid = f.approve === "class" ? (f.classId || (matched ? matched.id : ""))
+  const cid = approve === "class" ? (f.classId || (matched ? matched.id : ""))
     : (within.some((c) => c.id === f.classId) ? f.classId : (within[0] ? within[0].id : ""));
   const chosen = home.classes.find((c) => c.id === cid) || null;
   const days = /^\d{1,3}$/.test(f.days) ? Number(f.days) : 0;
@@ -207,7 +211,7 @@ function Book({ home, branchId, onBooked, onCancel }) {
     reference: !f.reference.trim() ? (insurer ? "Add the claim number." : "Add the repair order number.") : "",
     name: !f.firstName.trim() || !f.lastName.trim() ? "Add the renter's first and last name." : "",
     phone: f.phone.replace(/\D/g, "").length < 10 ? "Add the renter's mobile number, with the area code." : "",
-    cls: f.approve === "limit" ? (!limit ? "Add the daily limit." : !within.length ? `No class is priced at ${money(limit)} a day or less. Call the branch.` : "")
+    cls: approve === "limit" ? (!limit ? "Add the daily limit." : !within.length ? `No class is priced at ${money(limit)} a day or less. Call the branch.` : "")
       : !cid ? "Pick the approved class." : "",
     days: !days || days > 120 ? "Add the estimated repair days, 1 to 120." : "",
     pick: !f.pickDate || !f.locationId ? "Pick the pickup day." : "",
@@ -220,7 +224,7 @@ function Book({ home, branchId, onBooked, onCancel }) {
     setBusy(true); setError("");
     const out = await rpc("partner_book", { p: { locationId: f.locationId, classId: cid, pickup: `${f.pickDate} ${f.pickTime}`, return: `${retDate} ${f.pickTime}`,
       firstName: f.firstName, lastName: f.lastName, phone: f.phone, email: f.email, reference: f.reference, note: f.note,
-      dailyLimit: f.approve === "limit" ? String(limit) : "", repairDays: String(days),
+      dailyLimit: approve === "limit" ? String(limit) : "", repairDays: String(days),
       repairVehicle: { year: v.year, make: v.make, model: v.model, vin: v.vin.trim().toUpperCase() } } });
     setBusy(false);
     if (!out.ok) { setError(reasonText(out.reason)); return; }
@@ -241,10 +245,12 @@ function Book({ home, branchId, onBooked, onCancel }) {
       ff("phone", "Mobile number", { type: "tel", inputMode: "tel", autoComplete: "off", hint: "They get a text with a link to check in, so pickup takes a minute." }), show("phone")),
     h("section", { className: "book__sec", "aria-labelledby": "bk-ok" },
       h("h2", { className: "book__h", id: "bk-ok" }, "Approved"),
-      h("div", { className: "segs", role: "radiogroup", "aria-label": "What was approved" },
-        [["class", "A class"], ["limit", "A daily limit"]].map(([k, label]) => h("button", { key: k, type: "button", role: "radio", "aria-checked": f.approve === k,
-          className: f.approve === k ? "on" : "", onClick: () => set("approve", k) }, label))),
-      f.approve === "class"
+      priced
+        ? h("div", { className: "segs", role: "radiogroup", "aria-label": "What was approved" },
+            [["class", "A class"], ["limit", "A daily limit"]].map(([k, label]) => h("button", { key: k, type: "button", role: "radio", "aria-checked": approve === k,
+              className: approve === k ? "on" : "", onClick: () => set("approve", k) }, label)))
+        : h("p", { className: "note" }, `Your rates aren't set up with ${home.company} yet, so pick the approved class. The branch prices it.`),
+      approve === "class"
         ? h(Field, { label: "Class" }, h("select", { className: "input", value: cid, onChange: (e) => set("classId", e.target.value) },
             h("option", { value: "" }, "Pick a class"), home.classes.map((c) => h("option", { key: c.id, value: c.id }, classLabel(c)))))
         : h("div", { className: "grid2" },
@@ -253,7 +259,8 @@ function Book({ home, branchId, onBooked, onCancel }) {
               !within.length && h("option", { value: "" }, limit ? "None within the limit" : "Add the limit first"),
               within.map((c) => h("option", { key: c.id, value: c.id }, classLabel(c)))))),
       show("cls"),
-      chosen && h("p", { className: "note" }, `${chosen.name}${classRate(chosen) != null ? ` at ${money(classRate(chosen))} a day` : ""}${f.approve === "class" && matched && chosen.id === matched.id && !f.classId ? `, matched to the ${[v.year, v.make, v.model].filter(Boolean).join(" ")}` : ""}.`)),
+      // Only when it adds something: the price, or the match it came from.
+      chosen && (classRate(chosen) != null || (approve === "class" && matched && chosen.id === matched.id && !f.classId)) && h("p", { className: "note" }, `${chosen.name}${classRate(chosen) != null ? ` at ${money(classRate(chosen))} a day` : ""}${approve === "class" && matched && chosen.id === matched.id && !f.classId ? `, matched to the ${[v.year, v.make, v.model].filter(Boolean).join(" ")}` : ""}.`)),
     h("section", { className: "book__sec", "aria-labelledby": "bk-when" },
       h("h2", { className: "book__h", id: "bk-when" }, "Repair and pickup"),
       h("div", { className: "grid2" },
@@ -303,7 +310,7 @@ function Rentals({ home, reload, flash }) {
   const row = (r) => h("div", { key: r.resCode, className: "item" },
       h("div", { className: "item__top" }, h("span", { className: "item__title" }, r.customer), h("span", { className: `chip chip--${r.stage}` }, STAGE[r.stage] || r.stage)),
       h("div", { className: "item__meta" }, `${r.vehicleClass}${r.plate ? `, ${r.plate}` : ""}. ${fmtDay(r.date)} to ${fmtDay(r.returnDate)}.`),
-      h("div", { className: "item__meta" }, h("span", { className: "code" }, r.resCode), r.claimNumber ? ` · Claim ${r.claimNumber}` : r.repairOrder ? ` · RO ${r.repairOrder}` : "",
+      h("div", { className: "item__meta" }, h("span", { className: "code" }, r.resCode), r.claimNumber ? ` · ${/^claim/i.test(r.claimNumber) ? "" : "Claim "}${r.claimNumber}` : r.repairOrder ? ` · ${/^ro\b/i.test(r.repairOrder) ? "" : "RO "}${r.repairOrder}` : "",
         r.repairVehicle && r.repairVehicle.make ? ` · ${[r.repairVehicle.year, r.repairVehicle.make, r.repairVehicle.model].filter(Boolean).join(" ")}` : ""),
       r.extension === "requested" && h("div", { className: "item__meta" }, "Extension asked for, waiting for the branch."),
       ["booked", "out"].includes(r.stage) && r.extension !== "requested" && (ext && ext.resCode === r.resCode
