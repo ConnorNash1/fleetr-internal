@@ -3651,6 +3651,11 @@ function ReservationsPage() {
   const [srchPhone, setSrchPhone] = React.useState("");
   const [srchRes,   setSrchRes]   = React.useState("");
   const [srchDate,  setSrchDate]  = React.useState(todayIso);
+  // One search for any renter, phone or code, across every date; and the
+  // days to show when nothing is typed: a day (today unless picked), the
+  // next 7 days, or everything upcoming.
+  const [srchAny, setSrchAny] = React.useState("");
+  const [range, setRange] = React.useState("day");
   // Opened from a fleet notification: the reservations in one class over a
   // run of days (#/reservations?class=Medium%20SUV&from=2026-11-01&to=2026-11-30).
   const location = useLocation();
@@ -3712,7 +3717,18 @@ function ReservationsPage() {
     if (srchLast  && !last.toLowerCase().includes(srchLast.toLowerCase()))   return false;
     if (srchPhone && !(r.phone || "").includes(srchPhone))                    return false;
     if (srchRes   && !r.resCode.toLowerCase().includes(srchRes.toLowerCase())) return false;
-    if (srchDate  && r.date !== srchDate)                                     return false;
+    const term = srchAny.trim().toLowerCase();
+    if (term) {
+      const compact = term.replace(/[^a-z0-9]/g, ""), digits = term.replace(/\D/g, "");
+      const hit = String(r.customer || "").toLowerCase().includes(term)
+        || (compact.length >= 3 && String(r.resCode || "").toLowerCase().replace(/[^a-z0-9]/g, "").includes(compact))
+        || (digits.length >= 4 && String(r.phone || "").replace(/\D/g, "").includes(digits));
+      if (!hit) return false;
+    } else if (!linkFilter) {
+      if (range === "day" && srchDate && r.date !== srchDate) return false;
+      if (range === "week" && ((r.date || "") < todayIso || (r.date || "") > isoOffset(6))) return false;
+      if (range === "upcoming" && (r.date || "") < todayIso) return false;
+    }
     if (linkFilter) {
       if (linkFilter.vehicleClass && String(r.vehicleClass || "").trim().toLowerCase() !== linkFilter.vehicleClass.trim().toLowerCase()) return false;
       if (linkFilter.from && (r.returnDate || r.date || "") < linkFilter.from) return false;
@@ -3815,78 +3831,52 @@ function ReservationsPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Reservations"),
-    React.createElement("div", { className: "page__titleUnderline" }),
-    React.createElement(
-      "div",
-      { className: "resvSearchBar" },
-      React.createElement("button", { type: "button", className: "resvInlineBtn", onClick: () => setShowModal(true) }, "+ New Reservation"),
+    // Reservations, rebuilt (overnight-nov17): find one booking, or see a
+    // day's. One search across every date; quick day ranges; one primary
+    // action, New reservation.
+    React.createElement("header", { className: "listHead" },
+      React.createElement("h1", { className: "page__title" }, "Reservations"),
+      React.createElement(Button, { onClick: () => setShowModal(true) }, React.createElement(Icon, { name: "plus", size: 18 }), "New reservation")),
+    React.createElement("div", { className: "listTools" },
+      React.createElement("div", { className: "listSearch" },
+        React.createElement(Icon, { name: "search", size: 18, className: "listSearch__icon" }),
+        React.createElement("input", { className: "flInput listSearch__input", type: "search", value: srchAny, placeholder: "Search any renter, phone or code",
+          "aria-label": "Search reservations by renter, phone or code", onChange: (e) => setSrchAny(e.target.value) })),
+      !srchAny.trim() && React.createElement("div", { className: "segmented", role: "radiogroup", "aria-label": "Days" },
+        [["today", "Today"], ["tomorrow", "Tomorrow"], ["week", "Next 7 days"], ["upcoming", "Upcoming"]].map(([k, label]) => {
+          const on = k === "today" ? range === "day" && srchDate === todayIso : k === "tomorrow" ? range === "day" && srchDate === isoOffset(1) : range === k;
+          return React.createElement("button", { key: k, type: "button", role: "radio", "aria-checked": on, className: `segmented__opt${on ? " segmented__opt--on" : ""}`,
+            onClick: () => { if (k === "today" || k === "tomorrow") { setRange("day"); setSrchDate(k === "today" ? todayIso : isoOffset(1)); } else setRange(k); } }, label);
+        }),
+        React.createElement("div", { className: "resvDatePickerWrap" },
+          React.createElement("button", {
+            type: "button", role: "radio",
+            "aria-checked": range === "day" && !!srchDate && srchDate !== todayIso && srchDate !== isoOffset(1),
+            className: `segmented__opt${range === "day" && srchDate && srchDate !== todayIso && srchDate !== isoOffset(1) ? " segmented__opt--on" : ""}`,
+            onClick: (e) => { setDatePickerAnchor(anchorAt(e.currentTarget)); setDatePickerOpen((o) => !o); },
+          }, React.createElement(Icon, { name: "calendar", size: 16 }), range === "day" && srchDate && srchDate !== todayIso && srchDate !== isoOffset(1) ? filterDateLabel : "Pick a date"),
+          datePickerOpen && (() => {
+            const { monthStart, cells } = getFilterCalendarDays();
+            return React.createElement("div", { className: "calendarPopover", style: { left: `${datePickerAnchor.x}px`, top: `${datePickerAnchor.y}px` } },
+              React.createElement("div", { className: "calendarHeader" },
+                React.createElement("button", { type: "button", className: "calendarArrow", onClick: () => moveFilterMonth(-1) }, "<"),
+                React.createElement("div", { className: "calendarMonthLabel" }, monthStart.toLocaleDateString("en-CA", { month: "long", year: "numeric" })),
+                React.createElement("button", { type: "button", className: "calendarArrow", onClick: () => moveFilterMonth(1) }, ">")),
+              React.createElement("div", { className: "calendarWeekdays" },
+                ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((d) => React.createElement("div", { key: d, className: "calendarWeekday" }, d))),
+              React.createElement("div", { className: "calendarGrid" },
+                cells.map((iso, idx) => React.createElement("button", {
+                  type: "button", key: `fday-${idx}`,
+                  className: !iso ? "calendarDay calendarDay--empty"
+                    : iso === todayIso ? iso === srchDate ? "calendarDay calendarDay--today calendarDay--selected" : "calendarDay calendarDay--today"
+                    : iso === srchDate ? "calendarDay calendarDay--selected" : "calendarDay",
+                  disabled: !iso,
+                  onClick: () => { if (!iso) return; setRange("day"); setSrchDate(iso); setDatePickerOpen(false); },
+                }, iso ? Number(iso.slice(-2)) : ""))));
+          })())),
       linkFilter && React.createElement("span", { className: "resvLinkFilter" },
         linkFilterLabel,
-        React.createElement("button", { type: "button", className: "resvDateClear", "aria-label": "Clear this filter", onClick: clearLinkFilter }, "×")),
-      React.createElement(
-        "div",
-        { className: "resvDatePickerWrap" },
-        React.createElement(
-          "button",
-          {
-            type: "button",
-            className: srchDate ? "resvSearchInput resvDateBtn resvDateBtn--active" : "resvSearchInput resvDateBtn",
-            onClick: (e) => {
-              setDatePickerAnchor(anchorAt(e.currentTarget));
-              setDatePickerOpen((o) => !o);
-            },
-          },
-          filterDateLabel
-        ),
-        srchDate && React.createElement(
-          "button",
-          { type: "button", className: "resvDateClear", onClick: () => { setSrchDate(""); setFilterPickerMonth(null); } },
-          "×"
-        ),
-        datePickerOpen && (() => {
-          const { monthStart, cells } = getFilterCalendarDays();
-          return React.createElement(
-            "div",
-            { className: "calendarPopover", style: { left: `${datePickerAnchor.x}px`, top: `${datePickerAnchor.y}px` } },
-            React.createElement(
-              "div",
-              { className: "calendarHeader" },
-              React.createElement("button", { type: "button", className: "calendarArrow", onClick: () => moveFilterMonth(-1) }, "<"),
-              React.createElement("div", { className: "calendarMonthLabel" }, monthStart.toLocaleDateString("en-CA", { month: "long", year: "numeric" })),
-              React.createElement("button", { type: "button", className: "calendarArrow", onClick: () => moveFilterMonth(1) }, ">")
-            ),
-            React.createElement(
-              "div",
-              { className: "calendarWeekdays" },
-              ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((d) =>
-                React.createElement("div", { key: d, className: "calendarWeekday" }, d)
-              )
-            ),
-            React.createElement(
-              "div",
-              { className: "calendarGrid" },
-              cells.map((iso, idx) =>
-                React.createElement("button", {
-                  type: "button",
-                  key: `fday-${idx}`,
-                  className: !iso ? "calendarDay calendarDay--empty"
-                    : iso === todayIso
-                      ? iso === srchDate ? "calendarDay calendarDay--today calendarDay--selected" : "calendarDay calendarDay--today"
-                      : iso === srchDate ? "calendarDay calendarDay--selected" : "calendarDay",
-                  disabled: !iso,
-                  onClick: () => { if (!iso) return; setSrchDate(iso); setDatePickerOpen(false); },
-                }, iso ? Number(iso.slice(-2)) : "")
-              )
-            )
-          );
-        })()
-      ),
-      React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "First name",   value: srchFirst, onChange: (e) => setSrchFirst(e.target.value) }),
-      React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Last name",    value: srchLast,  onChange: (e) => setSrchLast(e.target.value)  }),
-      React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Phone number", value: srchPhone, onChange: (e) => setSrchPhone(e.target.value) }),
-      React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Res Code",     value: srchRes,   onChange: (e) => setSrchRes(e.target.value)   })
-    ),
+        React.createElement("button", { type: "button", className: "resvDateClear", "aria-label": "Clear this filter", onClick: clearLinkFilter }, "×"))),
     React.createElement(
       "section",
       { className: "dashboardSection" },
@@ -3896,7 +3886,9 @@ function ReservationsPage() {
         React.createElement(
           "div",
           { className: "dashboardSection__headerRow" },
-          React.createElement("span", null, "Reservations")
+          React.createElement("span", null, srchAny.trim()
+            ? `${filtered.length} match${filtered.length === 1 ? "" : "es"}`
+            : `${filtered.length} reservation${filtered.length === 1 ? "" : "s"}${range === "week" ? " in the next 7 days" : range === "upcoming" ? " upcoming" : srchDate === todayIso ? " today" : srchDate === isoOffset(1) ? " tomorrow" : srchDate ? ` on ${filterDateLabel}` : ""}`)
         )
       ),
       React.createElement(
@@ -4725,6 +4717,110 @@ function NeedsYou() {
       el(FieldError, { text: error })));
 }
 
+// ── Home's header: the day, a search for any renter, code or plate, and the
+// one primary action, New reservation. ──
+const homeGreeting = (d = new Date()) => (d.getHours() < 12 ? "Good morning" : d.getHours() < 18 ? "Good afternoon" : "Good evening");
+function homeSearchResults(q, reservations, fleet) {
+  const term = String(q || "").trim().toLowerCase();
+  if (term.length < 2) return [];
+  const digits = term.replace(/\D/g, "");
+  const compact = term.replace(/[^a-z0-9]/g, "");
+  const people = (reservations || []).filter((r) => {
+    const code = String(r.resCode || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    return String(r.customer || "").toLowerCase().includes(term)
+      || (compact.length >= 3 && code.includes(compact))
+      || (digits.length >= 4 && String(r.phone || "").replace(/\D/g, "").includes(digits));
+  }).slice(0, 6).map((r) => ({ kind: "renter", key: `r:${r.resCode}`, title: r.customer || "Renter", sub: [r.resCode, r.vehicleClass, r.date].filter(Boolean).join(", "), r }));
+  const cars = compact.length >= 2 ? (fleet || []).filter((v) => String(v.plate || "").toLowerCase().replace(/[^a-z0-9]/g, "").includes(compact)).slice(0, 4)
+    .map((v) => ({ kind: "car", key: `v:${v.id}`, title: v.plate, sub: [`${v.make || ""} ${v.model || ""}`.trim(), v.status].filter(Boolean).join(", "), v })) : [];
+  return [...people, ...cars];
+}
+function HomeHeader({ onNew }) {
+  const { reservations, fleet, currentUser, setOpenCustomer } = React.useContext(AppContext);
+  const navigate = useNavigate();
+  const el = React.createElement;
+  const [q, setQ] = React.useState("");
+  const [active, setActive] = React.useState(0);
+  const results = homeSearchResults(q, reservations, fleet);
+  const go = (x) => {
+    if (!x) return;
+    setQ("");
+    if (x.kind === "renter") { setOpenCustomer({ name: x.r.customer || "Customer", resCode: x.r.resCode }); navigate(customerPath(x.r.resCode)); }
+    else navigate(vehiclePath(x.v.plate));
+  };
+  const first = String(currentUser?.name || "").trim().split(/\s+/)[0];
+  const day = new Date().toLocaleDateString("en-CA", { weekday: "long", month: "long", day: "numeric" });
+  return el("header", { className: "homeHead" },
+    el("div", { className: "homeHead__text" },
+      el("h1", { className: "page__title homeHead__title" }, "Home"),
+      el("p", { className: "homeHead__day" }, `${homeGreeting()}${first ? `, ${first}` : ""}. ${day}.`)),
+    el("div", { className: "homeHead__actions" },
+      el("div", { className: "homeSearch", role: "combobox", "aria-expanded": results.length > 0, "aria-haspopup": "listbox" },
+        el(Icon, { name: "search", size: 18, className: "homeSearch__icon" }),
+        el("input", { className: "flInput homeSearch__input", type: "search", value: q, placeholder: "Find a renter, code or plate",
+          "aria-label": "Find a renter, reservation code or plate", "aria-controls": "home-search-list",
+          onChange: (e) => { setQ(e.target.value); setActive(0); },
+          onKeyDown: (e) => {
+            if (e.key === "ArrowDown") { e.preventDefault(); setActive((a) => Math.min(a + 1, results.length - 1)); }
+            else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(a - 1, 0)); }
+            else if (e.key === "Enter") { e.preventDefault(); go(results[active]); }
+            else if (e.key === "Escape") setQ("");
+          } }),
+        q.trim().length >= 2 && el("ul", { className: "homeSearch__list", id: "home-search-list", role: "listbox" },
+          results.length === 0
+            ? el("li", { className: "homeSearch__none" }, "No renter, code or plate matches.")
+            : results.map((x, i) => el("li", { key: x.key, role: "option", "aria-selected": i === active },
+                el("button", { type: "button", className: `homeSearch__item${i === active ? " homeSearch__item--active" : ""}`, onMouseDown: (e) => e.preventDefault(), onClick: () => go(x) },
+                  x.kind === "car" ? el(Plate, null, x.title) : el("strong", null, x.title),
+                  el("small", null, x.sub)))))),
+      el(Button, { onClick: onNew, className: "homeHead__new" }, el(Icon, { name: "plus", size: 18 }), "New reservation")));
+}
+
+// ── Today: pickups and returns, side by side, each row opening the renter. ──
+function HomeToday({ actions }) {
+  const { reservations, rentalAgreements, setOpenCustomer } = React.useContext(AppContext);
+  const navigate = useNavigate();
+  const el = React.createElement;
+  const today = isoOffset(0);
+  const raOf = (r) => (rentalAgreements || []).find((a) => a.resCode === r.resCode) || null;
+  const status = (r) => (raOf(r)?.rentalAgreementStatus || r.rentalAgreementStatus || "reservation");
+  const byTime = (a, b) => parseTimeToMinutes(pickupTime12(a)) - parseTimeToMinutes(pickupTime12(b));
+  const pickups = (reservations || []).filter((r) => r.date === today && status(r) !== "closed").slice().sort(byTime);
+  // A return's time as a pickup's is read: its meridiem is kept apart.
+  const returnTime12 = (r) => pickupTime12({ time: r.returnTime, pickupMeridiem: r.returnMeridiem });
+  const returns = (reservations || []).filter((r) => r.returnDate === today && ["open_rental_agreement", "customer_return", "close_pending"].includes(status(r)))
+    .slice().sort((a, b) => parseTimeToMinutes(returnTime12(a) || "11:59 PM") - parseTimeToMinutes(returnTime12(b) || "11:59 PM"));
+  const open = (r) => { setOpenCustomer({ name: r.customer || "Customer", resCode: r.resCode }); navigate(customerPath(r.resCode)); };
+  const pickupChip = (r) => {
+    const st = status(r);
+    return st === "reservation" ? (r.preRentalCheck && /^Pre-Rental Check'd/i.test(r.preRentalCheck) ? el(Chip, { tone: "success" }, "Checked in") : el(Chip, null, "Booked"))
+      : el(Chip, { tone: "brand" }, "Out");
+  };
+  const returnChip = (r) => {
+    const st = status(r);
+    return st === "customer_return" ? el(Chip, { tone: "warning" }, "Back, to close") : st === "close_pending" ? el(Chip, { tone: "warning" }, "Close pending") : el(Chip, null, "Due");
+  };
+  const list = (rows, chip, timeOf, empty) => rows.length === 0
+    ? el("p", { className: "homeToday__empty" }, empty)
+    : el("ul", { className: "homeToday__list" }, rows.map((r) => el("li", { key: r.resCode },
+        el("button", { type: "button", className: "homeToday__row", onClick: () => open(r) },
+          el("span", { className: "homeToday__time" }, timeOf(r) || ""),
+          el("span", { className: "homeToday__who" }, el("strong", null, r.customer || "Renter"), el("small", null, [r.vehicleClass, r.resCode].filter(Boolean).join(", "))),
+          chip(r)))));
+  const remaining = pickups.filter((r) => status(r) === "reservation").length;
+  return el("section", { className: "homeToday", "aria-label": "Today" },
+    el("div", { className: "flCard homeToday__col" },
+      el("div", { className: "homeToday__head" },
+        el("h2", { className: "homeToday__title" }, "Pickups today", el("span", { className: "homeToday__count" }, pickups.length ? `${remaining} of ${pickups.length} to go` : "")),
+        el("button", { type: "button", className: "homeToday__link", onClick: () => navigate("/reservations") }, "All reservations")),
+      list(pickups, pickupChip, (r) => pickupTime12(r), "No pickups today.")),
+    el("div", { className: "flCard homeToday__col" },
+      el("div", { className: "homeToday__head" },
+        el("h2", { className: "homeToday__title" }, "Due back today", el("span", { className: "homeToday__count" }, returns.length ? String(returns.length) : "")),
+        el("div", { className: "homeToday__actions" }, actions)),
+      list(returns, returnChip, returnTime12, "Nothing due back today.")));
+}
+
 function DashboardStats() {
   const { reservations } = React.useContext(AppContext);
   const navigate = useNavigate();
@@ -4931,79 +5027,26 @@ function DashboardPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Home"),
-    React.createElement("div", { className: "page__titleUnderline" }),
+    // Home, rebuilt (overnight-nov17): what counter staff open it for. Find
+    // a renter or book one from the top; the 30 days and Needs you, as they
+    // were; then today, pickups and returns side by side, with Close Rental
+    // and Switch Out beside the returns they finish. The full reservations
+    // list is the Reservations page.
+    React.createElement(HomeHeader, { onNew: () => { setForm(emptyResForm()); setShowModal(true); } }),
     React.createElement(HomeAvailability),
     React.createElement(NeedsYou),
     React.createElement(AgentCard),
-    React.createElement("div", { className: "dashboardCtaRow" },
-      React.createElement("button", {
-        type: "button", className: "closeRentalCta", onClick: () => navigate("/close-rental"),
-      }, "Close Rental"),
-      React.createElement("button", {
-        type: "button", className: "closeRentalCta", onClick: () => navigate("/switch-out"),
-      }, "Switch Out")
-    ),
+    React.createElement(HomeToday, {
+      actions: [
+        React.createElement("button", {
+          key: "close", type: "button", className: "closeRentalCta homeToday__cta", onClick: () => navigate("/close-rental"),
+        }, "Close Rental"),
+        React.createElement("button", {
+          key: "switch", type: "button", className: "closeRentalCta homeToday__cta homeToday__cta--quiet", onClick: () => navigate("/switch-out"),
+        }, "Switch Out"),
+      ],
+    }),
     React.createElement("div", { className: "dashboardGrid" }, [
-      // ── Section 1: Reservations ──────────────────────────────────────────
-      React.createElement(
-        CompanyStep, { key: "reservations", title: "Reservations", open: !collapsedSections.reservations, onToggle: () => toggleSection("reservations") },
-        !collapsedSections.reservations &&
-          React.createElement(
-            "div",
-            { className: "dashboardSection__body" },
-            React.createElement("div", { className: "resvSearchBar" },
-              React.createElement("button", { type: "button", className: "resvInlineBtn", onClick: () => setShowModal(true) }, "+ New Reservation"),
-              React.createElement("div", { className: "resvDatePickerWrap" },
-                React.createElement("button", {
-                  type: "button",
-                  className: srchDate ? "resvSearchInput resvDateBtn resvDateBtn--active" : "resvSearchInput resvDateBtn",
-                  onClick: (e) => {
-                    setDatePickerAnchor(anchorAt(e.currentTarget));
-                    setDatePickerOpen((o) => !o);
-                  },
-                }, filterDateLabel),
-                srchDate && React.createElement("button", {
-                  type: "button", className: "resvDateClear",
-                  onClick: () => { setSrchDate(""); setFilterPickerMonth(null); },
-                }, "×"),
-                datePickerOpen && (() => {
-                  const { monthStart, cells } = getFilterCalendarDays();
-                  return React.createElement("div", { className: "calendarPopover", style: { left: `${datePickerAnchor.x}px`, top: `${datePickerAnchor.y}px` } },
-                    React.createElement("div", { className: "calendarHeader" },
-                      React.createElement("button", { type: "button", className: "calendarArrow", onClick: () => moveFilterMonth(-1) }, "<"),
-                      React.createElement("div", { className: "calendarMonthLabel" }, monthStart.toLocaleDateString("en-CA", { month: "long", year: "numeric" })),
-                      React.createElement("button", { type: "button", className: "calendarArrow", onClick: () => moveFilterMonth(1) }, ">")
-                    ),
-                    React.createElement("div", { className: "calendarWeekdays" },
-                      ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((d) =>
-                        React.createElement("div", { key: d, className: "calendarWeekday" }, d)
-                      )
-                    ),
-                    React.createElement("div", { className: "calendarGrid" },
-                      cells.map((iso, idx) =>
-                        React.createElement("button", {
-                          type: "button", key: `fday-${idx}`,
-                          className: !iso ? "calendarDay calendarDay--empty"
-                            : iso === todayIso
-                              ? iso === srchDate ? "calendarDay calendarDay--today calendarDay--selected" : "calendarDay calendarDay--today"
-                              : iso === srchDate ? "calendarDay calendarDay--selected" : "calendarDay",
-                          disabled: !iso,
-                          onClick: () => { if (!iso) return; setSrchDate(iso); setDatePickerOpen(false); },
-                        }, iso ? Number(iso.slice(-2)) : "")
-                      )
-                    )
-                  );
-                })()
-              ),
-              React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "First name",   value: srchFirst, onChange: (e) => setSrchFirst(e.target.value) }),
-              React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Last name",    value: srchLast,  onChange: (e) => setSrchLast(e.target.value)  }),
-              React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Phone number", value: srchPhone, onChange: (e) => setSrchPhone(e.target.value) }),
-              React.createElement("input", { className: "resvSearchInput", type: "text", placeholder: "Res Code",     value: srchRes,   onChange: (e) => setSrchRes(e.target.value)   })
-            ),
-            React.createElement(ReservationsTable, { rows: resFiltered })
-          )
-      ),
       // ── Section 2: Vehicle Status ────────────────────────────────
       React.createElement(
         CompanyStep, { key: "fleetAvailability", title: "Vehicle Status", open: !collapsedSections.fleetAvailability, onToggle: () => toggleSection("fleetAvailability") },
@@ -20481,6 +20524,26 @@ function StripePayLink({ agreementId, unsaved, retail, owes, saveLines, billToNa
     el(FieldError, { text: error }));
 }
 
+// The customer page's facts strip: when and where the car goes out and
+// comes back, which car, and how to reach the renter.
+function CustomerFacts({ record, ra }) {
+  const el = React.createElement;
+  if (!record) return null;
+  const day = (iso) => { const d = isoToDate(iso); return d ? d.toLocaleDateString("en-CA", { weekday: "short", month: "short", day: "numeric" }) : ""; };
+  const out = pickupTime12(record), back = pickupTime12({ time: record.returnTime, pickupMeridiem: record.returnMeridiem });
+  const plate = ra?.plate || record.plate || "";
+  const fact = (label, main, sub) => el("div", { className: "custFacts__item" },
+    el("span", { className: "custFacts__label" }, label),
+    el("span", { className: "custFacts__main" }, main || "Not set"),
+    sub ? el("span", { className: "custFacts__sub" }, sub) : null);
+  return el("div", { className: "custFacts" },
+    fact("Pickup", [day(record.date), out].filter(Boolean).join(", "), record.location || ""),
+    fact("Return", [day(record.returnDate), back].filter(Boolean).join(", "), ra?.returnedAt ? "Returned" : ""),
+    fact("Vehicle", plate ? el(Plate, null, plate) : record.vehicleClass, plate ? record.vehicleClass : "Picked at check-in"),
+    fact("Contact", record.phone ? el("a", { href: `tel:${String(record.phone).replace(/[^\d+]/g, "")}`, className: "custFacts__link" }, record.phone) : "No phone",
+      record.email ? el("a", { href: `mailto:${record.email}`, className: "custFacts__link" }, record.email) : ""));
+}
+
 function CustomerPageView({ onDiscard }) {
   const { openCustomer, reservations, setReservations, rentalAgreements, setRentalAgreements, fleet, syncRAStatus, guardAction, logAudit, damageClaims, setDamageClaims, currentUser } = React.useContext(AppContext);
   const navigate = useNavigate();
@@ -20807,7 +20870,7 @@ function CustomerPageView({ onDiscard }) {
   };
 
   const [sect, setSect] = React.useState({
-    resInfo: true, vehicles: true, ratesBilling: true, charges: true, notes: true, rentalAgreementOptions: true,
+    resInfo: false, vehicles: true, ratesBilling: true, charges: false, notes: true, rentalAgreementOptions: true,
   });
   const toggle = (key) => setSect((prev) => ({ ...prev, [key]: !prev[key] }));
 
@@ -21690,68 +21753,60 @@ function CustomerPageView({ onDiscard }) {
       onSave: handleSave,
       onDiscard,
     }),
-    React.createElement("h1", { className: "page__title" }, name),
-    resCode && React.createElement(
-      "div",
-      { className: "customerPageMeta" },
-      // The source as plain text after the code: "NEZ 657 115 · fleetr.ai".
-      React.createElement("span", { className: "customerPageMetaCode" }, (() => {
-        const raw = String(localRecord?.source || "").trim();
-        const src = /^fleetr\.ai( bookings)?$/i.test(raw) || (!raw && localRecord?.bookingChannel === "fleetr.ai") ? "fleetr.ai" : raw;
-        return src ? `${resCode} \u00b7 ${src}` : resCode;
-      })()),
-      (() => {
-        const raStatus = rentalAgreementStatus;
-        if (!raStatus || raStatus === "reservation") return null;
-        const cls = raBadgeClass(raStatus, { meta: true });
-        return React.createElement("span", { className: cls }, statusLabel(raStatus));
-      })(),
-      localRecord?.customerChangedAt && React.createElement(ChangedByCustomerTag, { meta: true }),
-      ra?.customerExtendedAt && React.createElement(ExtendedByCustomerTag, { meta: true })
-    ),
-    React.createElement("div", { className: "page__titleUnderline" }),
+    // The customer page, rebuilt (overnight-nov17): who, where the rental
+    // stands and what to do next at the top; the facts staff look up most in
+    // one strip; the charges and the reservation open below, notes beside.
+    React.createElement("header", { className: "custHead" },
+      React.createElement("div", { className: "custHead__who" },
+        React.createElement("h1", { className: "page__title" }, name),
+        resCode && React.createElement(
+          "div",
+          { className: "customerPageMeta" },
+          // The source as plain text after the code: "NEZ 657 115 · fleetr.ai".
+          React.createElement("span", { className: "customerPageMetaCode" }, (() => {
+            const raw = String(localRecord?.source || "").trim();
+            const src = /^fleetr\.ai( bookings)?$/i.test(raw) || (!raw && localRecord?.bookingChannel === "fleetr.ai") ? "fleetr.ai" : raw;
+            return src ? `${resCode} \u00b7 ${src}` : resCode;
+          })()),
+          (() => {
+            const raStatus = rentalAgreementStatus;
+            if (!raStatus || raStatus === "reservation") return null;
+            const cls = raBadgeClass(raStatus, { meta: true });
+            return React.createElement("span", { className: cls }, statusLabel(raStatus));
+          })(),
+          localRecord?.customerChangedAt && React.createElement(ChangedByCustomerTag, { meta: true }),
+          ra?.customerExtendedAt && React.createElement(ExtendedByCustomerTag, { meta: true })
+        ),
+      ),
+      React.createElement("div", { className: "custHead__actions" }, rentalAgreementOptionsBody())),
     localRecord?.customerChangedAt && React.createElement(CustomerChangesNote, { resCode }),
     ra?.customerExtendedAt && React.createElement(CustomerExtensionsNote, { resCode }),
     ra?.id && React.createElement(NameMismatchWarning, { rentalAgreementId: ra.id }),
-    makeSection("resInfo",      "Reservation Information", resInfoBody),
-    makeSection("vehicles",     "Vehicles",               vehiclesBody),
-    makeSection("ratesBilling", "Rates & Billing",        ratesBillingBody),
-    makeSection("charges", "Charges & Payments",   chargesBody),
-    makeSection("notes", "Notes",
-      React.createElement("div", { style: { padding: "14px" } },
-        customerNotesLog.length === 0
-          ? React.createElement("p", { style: { color: "#6B6A66", fontStyle: "italic", margin: "0 0 12px" } }, "No notes yet.")
-          : React.createElement("div", { style: { marginBottom: "12px" } },
-              customerNotesLog.map((n, i) =>
-                React.createElement("div", { key: i, style: { marginBottom: "8px", padding: "8px 10px", background: "#131f1e", borderRadius: "6px" } },
-                  React.createElement("div", { style: { fontSize: "0.72rem", color: "#6B6A66", marginBottom: "3px" } },
-                    (n.author || "ADJ") + (n.at
-                      ? " · " + new Date(n.at).toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", hour12: true })
-                      : "")
-                  ),
-                  React.createElement("div", { style: { fontSize: "0.9rem", color: "#E7E5E0" } }, n.text)
-                )
-              )
-            ),
-        React.createElement("div", { style: { display: "flex", gap: "8px", marginTop: "4px" } },
-          React.createElement("input", {
-            className: "resFormInput", type: "text", placeholder: "Add a note…",
-            value: customerNoteInput,
-            onChange: (e) => setCustomerNoteInput(e.target.value),
-            onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); handleAddCustomerNote(); } },
-            style: { flex: 1 },
-          }),
-          React.createElement("button", {
-            type: "button", className: "addPaymentBtn",
-            style: { whiteSpace: "nowrap", flexShrink: 0 },
-            onClick: handleAddCustomerNote,
-          }, "Save Note")
-        )
-      )
-    ),
-    makeSection("rentalAgreementOptions", "Rental Agreement Options",
-      React.createElement("div", { className: "customerRentalAgreementOptions" }, rentalAgreementOptionsBody())
-    )
+    React.createElement(CustomerFacts, { record: localRecord, ra }),
+    React.createElement("div", { className: "custLayout" },
+      React.createElement("div", { className: "custMain" },
+        makeSection("charges", "Charges & Payments",   chargesBody),
+        makeSection("resInfo",      "Reservation Information", resInfoBody),
+        makeSection("vehicles",     "Vehicles",               vehiclesBody),
+        makeSection("ratesBilling", "Rates & Billing",        ratesBillingBody)),
+      React.createElement("aside", { className: "custSide" },
+        React.createElement("section", { className: "flCard custNotes", "aria-label": "Notes" },
+          React.createElement("h2", { className: "custNotes__title" }, "Notes"),
+          customerNotesLog.length === 0
+            ? React.createElement("p", { className: "custNotes__empty" }, "No notes yet. Anything the next person should know goes here.")
+            : React.createElement("ol", { className: "custNotes__list" },
+                customerNotesLog.map((n, i) => React.createElement("li", { key: i, className: "custNotes__item" },
+                  React.createElement("p", { className: "custNotes__text" }, n.text),
+                  React.createElement("small", { className: "custNotes__by" }, (n.author || "ADJ") + (n.at
+                    ? `, ${ampm(new Date(n.at).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))}` : ""))))),
+          React.createElement("div", { className: "custNotes__add" },
+            React.createElement("input", {
+              className: "flInput", type: "text", placeholder: "Add a note", "aria-label": "Add a note",
+              value: customerNoteInput,
+              onChange: (e) => setCustomerNoteInput(e.target.value),
+              onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); handleAddCustomerNote(); } },
+            }),
+            React.createElement(Button, { variant: "secondary", onClick: handleAddCustomerNote, disabled: !customerNoteInput.trim() }, "Save Note")))))
   );
 }
 
@@ -27435,6 +27490,107 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
 .cardSettings__toggle small{ color: var(--fl-ink-3); font-size: var(--fl-text-sm); line-height: 1.45; }
 .cardSettings__actions{ display: flex; }
 .closeRentalPrefilled{ padding: var(--fl-space-3) var(--fl-space-4); border-radius: var(--fl-radius); background: var(--fl-info-soft); color: var(--fl-info); font-weight: 500; }
+/* List pages (overnight-nov17): a header with the one primary action, then
+   one search and the few filters people use, then the list. */
+.listHead{ display: flex; align-items: center; justify-content: space-between; gap: var(--fl-space-4); flex-wrap: wrap; margin-bottom: var(--fl-space-5); }
+.listHead .page__title{ margin: 0; }
+.listTools{ display: flex; align-items: center; gap: var(--fl-space-3); flex-wrap: wrap; margin-bottom: var(--fl-space-4); }
+.listSearch{ position: relative; flex: 1 1 280px; min-width: 0; max-width: 440px; }
+.listSearch__icon{ position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--fl-ink-3); pointer-events: none; }
+.listSearch__input{ padding-left: 40px; min-height: 44px; border-radius: var(--fl-radius-pill); }
+.segmented{ display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: var(--fl-radius-pill); background: var(--fl-sunken); flex-wrap: wrap; }
+.segmented__opt{ display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 var(--fl-space-4); border: 0; border-radius: var(--fl-radius-pill); background: none;
+  font: 500 14px/1 var(--fl-font); color: var(--fl-ink-2); cursor: pointer; white-space: nowrap; transition: background var(--fl-dur-fast) var(--fl-ease-out), color var(--fl-dur-fast) var(--fl-ease-out); }
+.segmented__opt:hover{ color: var(--fl-ink); }
+.segmented__opt--on{ background: var(--fl-surface); color: var(--fl-ink); font-weight: 600; box-shadow: var(--fl-shadow-xs); }
+@media (max-width: 767px){
+  .listTools{ flex-direction: column; align-items: stretch; }
+  .listSearch{ max-width: none; flex-basis: auto; }
+  .segmented{ overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .segmented__opt{ min-height: var(--fl-tap); }
+}
+/* The customer page (overnight-nov17) */
+.custHead{ display: flex; align-items: flex-start; justify-content: space-between; gap: var(--fl-space-4); flex-wrap: wrap; margin-bottom: var(--fl-space-5); }
+.custHead__who{ min-width: 0; }
+.custHead__who .page__title{ margin: 0 0 6px; }
+.custHead__actions .customerRentalAgreementBtnRow{ display: flex; gap: var(--fl-space-2); flex-wrap: wrap; margin: 0; }
+.custHead__actions .customerRentalAgreementBtn{ min-height: 44px; padding: 0 var(--fl-space-4); border-radius: var(--fl-radius); border: 1px solid var(--fl-line); background: var(--fl-surface);
+  color: var(--fl-ink); font: 600 14px/1 var(--fl-font); cursor: pointer; box-shadow: var(--fl-shadow-xs); }
+.custHead__actions .customerRentalAgreementBtn:hover{ background: var(--fl-hover); }
+.custHead__actions .customerRentalAgreementBtn--pending, .custHead__actions .customerRentalAgreementBtn--close{ background: var(--fl-brand); border-color: transparent; color: var(--fl-on-brand); }
+.custHead__actions .customerRentalAgreementBtn--pending:hover, .custHead__actions .customerRentalAgreementBtn--close:hover{ background: var(--fl-brand-hover); }
+.custHead__actions .customerRentalAgreementClosed{ display: inline-flex; align-items: center; min-height: 44px; color: var(--fl-ink-3); font-size: 14px; }
+.custFacts{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: var(--fl-space-5); background: var(--fl-surface); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); }
+.custFacts__item{ display: grid; gap: 4px; align-content: start; padding: var(--fl-space-4) var(--fl-space-5); border-left: 1px solid var(--fl-line-soft); min-width: 0; }
+.custFacts__item:first-child{ border-left: 0; }
+.custFacts__label{ font-size: var(--fl-text-xs); font-weight: 500; color: var(--fl-ink-3); }
+.custFacts__main{ font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.custFacts__sub{ font-size: var(--fl-text-sm); color: var(--fl-ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.custFacts__link{ color: inherit; text-decoration: none; }
+.custFacts__link:hover{ text-decoration: underline; }
+.custLayout{ display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: var(--fl-space-5); align-items: start; }
+.custMain{ display: grid; gap: var(--fl-space-4); min-width: 0; }
+.custSide{ position: sticky; top: var(--fl-space-4); }
+.custNotes{ display: grid; gap: var(--fl-space-3); }
+.custNotes__title{ margin: 0; font-size: var(--fl-text-base); font-weight: 600; }
+.custNotes__empty{ margin: 0; color: var(--fl-ink-3); font-size: 14px; line-height: 1.45; }
+.custNotes__list{ list-style: none; margin: 0; padding: 0; display: grid; gap: var(--fl-space-3); max-height: 420px; overflow-y: auto; }
+.custNotes__item{ padding: var(--fl-space-3); border-radius: var(--fl-radius); background: var(--fl-sunken); }
+.custNotes__text{ margin: 0; font-size: 14px; line-height: 1.45; color: var(--fl-ink); white-space: pre-wrap; }
+.custNotes__by{ display: block; margin-top: 4px; font-size: var(--fl-text-xs); color: var(--fl-ink-3); }
+.custNotes__add{ display: grid; gap: var(--fl-space-2); }
+@media (max-width: 1023px){ .custLayout{ grid-template-columns: minmax(0, 1fr); } .custSide{ position: static; } }
+@media (max-width: 767px){
+  .custFacts{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .custFacts__item:nth-child(3){ border-left: 0; }
+  .custFacts__item:nth-child(n+3){ border-top: 1px solid var(--fl-line-soft); }
+  .custFacts__item{ padding: var(--fl-space-3) var(--fl-space-4); }
+  .custHead__actions{ width: 100%; }
+  .custHead__actions .customerRentalAgreementBtn{ flex: 1; }
+}
+/* Home (overnight-nov17) */
+.homeHead{ display: flex; align-items: flex-end; justify-content: space-between; gap: var(--fl-space-4); flex-wrap: wrap; margin-bottom: var(--fl-space-6); }
+.homeHead__title{ margin: 0; }
+.homeHead__day{ margin: 4px 0 0; color: var(--fl-ink-3); font-size: var(--fl-text-base); }
+.homeHead__actions{ display: flex; align-items: center; gap: var(--fl-space-3); flex: 1 1 420px; justify-content: flex-end; max-width: 620px; }
+.homeSearch{ position: relative; flex: 1; min-width: 0; }
+.homeSearch__icon{ position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--fl-ink-3); pointer-events: none; }
+.homeSearch__input{ padding-left: 40px; min-height: 44px; border-radius: var(--fl-radius-pill); }
+.homeSearch__list{ position: absolute; z-index: 40; left: 0; right: 0; top: calc(100% + 6px); list-style: none; margin: 0; padding: 6px; background: var(--fl-surface);
+  border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); box-shadow: var(--fl-shadow-md); max-height: 360px; overflow-y: auto; }
+.homeSearch__item{ width: 100%; display: flex; align-items: center; gap: var(--fl-space-3); min-height: 48px; padding: 6px 10px; border: 0; border-radius: var(--fl-radius); background: none;
+  text-align: left; cursor: pointer; font-family: var(--fl-font); color: var(--fl-ink); }
+.homeSearch__item small{ color: var(--fl-ink-3); font-size: var(--fl-text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.homeSearch__item--active, .homeSearch__item:hover{ background: var(--fl-hover); }
+.homeSearch__none{ padding: 12px; color: var(--fl-ink-3); font-size: 14px; }
+.homeHead__new{ flex: none; min-height: 44px; }
+.homeToday{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--fl-space-4); margin: var(--fl-space-5) 0; }
+.homeToday__col{ padding: 0; overflow: hidden; }
+.homeToday__head{ display: flex; align-items: center; justify-content: space-between; gap: var(--fl-space-3); flex-wrap: wrap; padding: var(--fl-space-4) var(--fl-space-5); border-bottom: 1px solid var(--fl-line-soft); }
+.homeToday__title{ margin: 0; font-size: var(--fl-text-base); font-weight: 600; display: flex; align-items: baseline; gap: var(--fl-space-2); }
+.homeToday__count{ font-size: var(--fl-text-sm); font-weight: 500; color: var(--fl-ink-3); }
+.homeToday__link{ min-height: 36px; border: 0; background: none; color: var(--fl-brand-text); font: 500 var(--fl-text-sm)/1 var(--fl-font); cursor: pointer; }
+.homeToday__actions{ display: flex; gap: var(--fl-space-2); }
+.homeToday__cta{ min-height: 40px; padding: 0 var(--fl-space-4); border-radius: var(--fl-radius); font: 600 14px/1 var(--fl-font); }
+.homeToday__cta--quiet{ background: var(--fl-surface); border: 1px solid var(--fl-line); color: var(--fl-ink); }
+.homeToday__list{ list-style: none; margin: 0; padding: 0; max-height: 420px; overflow-y: auto; }
+.homeToday__row{ width: 100%; display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; align-items: center; gap: var(--fl-space-3); min-height: 56px;
+  padding: 8px var(--fl-space-5); border: 0; border-top: 1px solid var(--fl-line-soft); background: none; text-align: left; cursor: pointer; font-family: var(--fl-font); color: var(--fl-ink); }
+.homeToday__list li:first-child .homeToday__row{ border-top: 0; }
+.homeToday__row:hover{ background: var(--fl-brand-wash); }
+.homeToday__time{ font-variant-numeric: tabular-nums; font-weight: 600; font-size: 14px; }
+.homeToday__who{ display: grid; gap: 2px; min-width: 0; }
+.homeToday__who strong{ font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.homeToday__who small{ color: var(--fl-ink-3); font-size: var(--fl-text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.homeToday__empty{ margin: 0; padding: var(--fl-space-6) var(--fl-space-5); color: var(--fl-ink-3); font-size: 14px; }
+@media (max-width: 767px){
+  .homeHead{ align-items: stretch; margin-bottom: var(--fl-space-4); }
+  .homeHead__actions{ flex-direction: column; align-items: stretch; flex-basis: 100%; max-width: none; }
+  .homeToday{ grid-template-columns: minmax(0, 1fr); }
+  .homeToday__row{ grid-template-columns: 64px minmax(0, 1fr) auto; padding: 8px var(--fl-space-4); }
+  .homeToday__head{ padding: var(--fl-space-3) var(--fl-space-4); }
+  .homeToday__cta, .homeToday__link{ min-height: 44px; }
+}
 .needsYou__tag--agent{ background: var(--fl-ink); color: var(--fl-paper); }
 .needsYou__open--static{ cursor: default; }
 .agentCard{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--fl-space-6); padding: var(--fl-space-4) var(--fl-space-5) var(--fl-space-5); }
@@ -27651,6 +27807,9 @@ textarea.flInput{ padding: var(--fl-space-3); min-height: 96px; line-height: var
   .resModal, .appDialog, .vsToast, .flToast, .resModalBackdrop, .appDialogBackdrop, .flSkeleton, .flSpinner{ animation: none; }
   .flBtn:active:not(:disabled), .flPress:active, .loginBtn:active:not(:disabled), .resModalSubmit:active:not(:disabled), .resModalCancel:active, .appDialog__main:active, .appDialog__cancel:active{ transform: none; }
 }
+/* Status badges in sentence case, the status colours as they were. */
+.rentalAgreementBadge{ text-transform: none; letter-spacing: 0; font-weight: 600; font-size: 12px; }
+.rentalAgreementBadge--meta{ font-size: 14px; padding: 4px 14px 4px 10px; }
 /* end fleetr design system 1.0 */
 `;
 document.head.appendChild(style);
