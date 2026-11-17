@@ -525,6 +525,19 @@ function vehicleClassOptions(current) {
   return withCurrentOption(mine, current);
 }
 
+// The classes a reservation can be made for at a branch: active ones with at
+// least one vehicle there. A class with no vehicles at the branch cannot be
+// booked anywhere (Nov 17): fleetr.ai already counts it as never free. Before
+// the fleet has loaded at all, every active class, so the form is never empty
+// for a moment. A record's own class stays a choice.
+function bookableClassOptions(current, fleet, locationId) {
+  const all = vehicleClassOptions("");
+  if (!Array.isArray(fleet) || fleet.length === 0) return withCurrentOption(all, current);
+  const have = new Set(fleet.filter((v) => !locationId || v.locationId === locationId)
+    .map((v) => String(v.vehicleClass || "").trim().toLowerCase()));
+  return withCurrentOption(all.filter((c) => have.has(String(c).trim().toLowerCase())), current);
+}
+
 function defaultVehicleClass() {
   return vehicleClassOptions("")[0] || "";
 }
@@ -808,7 +821,7 @@ Fleet table fields:
 Fleet operation rules:
 - To update a vehicle's status, use operation "update" with match on "id" and data containing the new "status".
 - When marking a "Ready Returns" vehicle as collected (changing its status to any other status), also include currentRenter: null, dueBack: null, fileType: null in data.
-- To add a vehicle to the fleet, use operation "insert". ALL of these are required and the action is rejected without them: plate, province, year, make, model, colour, tankSizeLiters, pmIntervalKm, vehicleClass, vin, currentOdometer, currentFuelLevel. Do not include status or winterTires in data -- those defaults are applied automatically.
+- To add a vehicle to the fleet, use operation "insert". ALL of these are required and the action is rejected without them: plate, province, year, make, model, colour, tankSizeLiters, pmIntervalKm, vehicleClass, vin, currentOdometer, currentFuelLevel. The one exception: a vehicle in an electric class has no fuel tank, so leave tankSizeLiters out for it and never ask for one. Do not include status or winterTires in data -- those defaults are applied automatically.
 - currentOdometer and currentFuelLevel are the vehicle's readings right now, which its first rental starts from. currentOdometer is a whole number of KILOMETRES; if the user gives miles, convert (1 mile = 1.609344 km) and round. currentFuelLevel must be exactly one of: Empty, ⅛, ¼, ⅜, ½, ⅝, ¾, ⅞, Full. If the user says "half" or "three quarters", send the matching one.
 - tankSizeLiters is the fuel tank size in LITRES and pmIntervalKm is the service interval in KILOMETRES. If the user gives gallons or miles, convert before sending: 1 gallon = 3.785411784 litres, 1 mile = 1.609344 km. Both must be positive numbers.
 - If the user has not given every required field, do NOT emit an insert action. Ask for the missing ones in "message" instead.
@@ -1876,6 +1889,25 @@ function useSinglePicker(open, close) {
     if (closeOpenPicker && closeOpenPicker !== mine) closeOpenPicker();
     closeOpenPicker = mine;
     return () => { if (closeOpenPicker === mine) closeOpenPicker = null; };
+  }, [open]);
+}
+
+// A calendar popover closes on Esc or a click outside it (Nov 17: they only
+// closed when a day was picked). The close waits a tick, so a click on the
+// button that opened it, which toggles it shut, is not undone.
+function usePopoverDismiss(open, close) {
+  const closeRef = React.useRef(close);
+  closeRef.current = close;
+  React.useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); closeRef.current(); } };
+    const onClick = (e) => {
+      if (e.target && e.target.closest && e.target.closest(".calendarPopover")) return;
+      setTimeout(() => closeRef.current(), 0);
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("click", onClick, true);
+    return () => { window.removeEventListener("keydown", onKey, true); window.removeEventListener("click", onClick, true); };
   }, [open]);
 }
 
@@ -3639,7 +3671,7 @@ function ReservationsTable({ rows: given }) {
 }
 
 function ReservationsPage() {
-  const { reservations, setReservations, currentUser } = React.useContext(AppContext);
+  const { reservations, setReservations, currentUser, fleet } = React.useContext(AppContext);
   const navigate = useNavigate();
   const todayIso = isoOffset(0);
   const [showModal, setShowModal] = React.useState(false);
@@ -3681,6 +3713,7 @@ function ReservationsPage() {
   const [datePickerOpen, setDatePickerOpen]   = React.useState(false);
   const [datePickerAnchor, setDatePickerAnchor] = React.useState({ x: 0, y: 0 });
   useAnchorFollow(datePickerOpen, datePickerAnchor, setDatePickerAnchor, () => setDatePickerOpen(false));
+  usePopoverDismiss(datePickerOpen, () => setDatePickerOpen(false));
   const [filterPickerMonth, setFilterPickerMonth] = React.useState(null);
 
   const fmtDate = (iso) => {
@@ -3849,7 +3882,7 @@ function ReservationsPage() {
         React.createElement("input", { className: "flInput listSearch__input", type: "search", value: srchAny, placeholder: "Search any renter, phone or code",
           "aria-label": "Search reservations by renter, phone or code", onChange: (e) => setSrchAny(e.target.value) })),
       !srchAny.trim() && React.createElement("div", { className: "segmented", role: "radiogroup", "aria-label": "Days" },
-        [["today", "Today"], ["tomorrow", "Tomorrow"], ["week", "Next 7 days"], ["upcoming", "Upcoming"]].map(([k, label]) => {
+        [["today", "Today"], ["tomorrow", "Tomorrow"], ["week", "Next 7 days"], ["upcoming", "All upcoming"]].map(([k, label]) => {
           const on = k === "today" ? range === "day" && srchDate === todayIso : k === "tomorrow" ? range === "day" && srchDate === isoOffset(1) : range === k;
           return React.createElement("button", { key: k, type: "button", role: "radio", "aria-checked": on, className: `segmented__opt${on ? " segmented__opt--on" : ""}`,
             onClick: () => { if (k === "today" || k === "tomorrow") { setRange("day"); setSrchDate(k === "today" ? todayIso : isoOffset(1)); } else setRange(k); } }, label);
@@ -3966,7 +3999,7 @@ function ReservationsPage() {
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Vehicle Class"),
                 React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => setForm((p) => withDailyRate({ ...p, vehicleClass: e.target.value })) },
-                  vehicleClassOptions(form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
+                  bookableClassOptions(form.vehicleClass, fleet, currentUser?.locationId).map((c) => React.createElement("option", { key: c, value: c }, c))
                 ),
                 fieldErr("vehicleClass")
               )
@@ -4041,6 +4074,7 @@ function NonDriveIntakeSection({ standalone }) {
   const [openDatePickerId, setOpenDatePickerId] = React.useState(null);
   const [datePickerAnchor, setDatePickerAnchor] = React.useState({ x: 0, y: 0 });
   useAnchorFollow(openDatePickerId != null, datePickerAnchor, setDatePickerAnchor, () => setOpenDatePickerId(null));
+  usePopoverDismiss(openDatePickerId != null, () => setOpenDatePickerId(null));
   const [pickerMonthByRow, setPickerMonthByRow] = React.useState({});
   const [collapsed, setCollapsed] = React.useState(true);
 
@@ -4493,15 +4527,65 @@ function ReturnsCurveCard({ days, upcoming, onOpen }) {
                 r.vehicleClass && el("div", { className: "nextPickups__what" }, r.vehicleClass)))))));
 }
 
+// ─── The availability grid (Nov 17) ──────────────────────────────────────────
+// One grid for Home, Vehicles and Reports: classes down the side, days
+// across, each day's free cars in its cell, from branch_availability. Calm by
+// design: a day with cars is quiet, running low is the one thing that stands
+// out, sold out is a soft grey with no number, and a class with no cars at
+// the branch is named once under the grid ("can't be booked here"), never
+// "sold out for the next year".
+const availCellState = (free, total, below) => (!(Number(total) > 0) ? "none"
+  : !(Number(free) > 0) ? "sold"
+  : (below != null && free < below) || Number(free) === 1 ? "low" : "ok");
+const availNoVehicles = (c) => !(c.total || []).some((n) => Number(n) > 0);
+const AGRID_DOW = ["S", "M", "T", "W", "T", "F", "S"];
+
+function AvailGrid({ data, from = 0, days, onPick, label }) {
+  const el = React.createElement;
+  const count = Math.max(1, Math.min(days, (data.classes[0]?.free || []).length - from || days));
+  const dates = Array.from({ length: count }, (_, i) => dayAfter(data.start, from + i));
+  const todayIso = isoOffset(0);
+  const stocked = data.classes.filter((c) => !availNoVehicles(c));
+  const empty = data.classes.filter(availNoVehicles);
+  const grid = { gridTemplateColumns: `minmax(112px, 156px) repeat(${count}, minmax(30px, 1fr))`, minWidth: `${132 + count * 30}px` };
+  const month = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-CA", { month: "short", timeZone: "UTC" }).replace(".", "");
+  return el("div", { className: "agrid" },
+    stocked.length === 0
+      ? el("p", { className: "agrid__none" }, "No vehicles at this branch yet.")
+      : el("div", { className: "agrid__scroll", role: "region", "aria-label": label || "Availability", tabIndex: 0 },
+          el("div", { className: "agrid__grid", style: grid },
+            el("span", { className: "agrid__corner", "aria-hidden": "true" }),
+            dates.map((d, i) => {
+              const wd = new Date(`${d}T12:00:00Z`).getUTCDay();
+              return el("span", { key: d, className: `agrid__day${d === todayIso ? " agrid__day--today" : ""}${wd === 0 || wd === 6 ? " agrid__day--weekend" : ""}`, title: shortDay(d) },
+                el("span", { className: "agrid__dow" }, i === 0 || d.slice(8) === "01" ? month(d) : AGRID_DOW[wd]),
+                el("span", { className: "agrid__num" }, Number(d.slice(8))));
+            }),
+            stocked.map((c) => el(React.Fragment, { key: c.name },
+              el("span", { className: "agrid__class", title: c.name }, c.name),
+              dates.map((d, i) => {
+                const free = c.free[from + i], total = c.total[from + i];
+                const st = availCellState(free, total, c.below);
+                const text = `${c.name}, ${shortDay(d)}: ${st === "sold" ? "sold out" : `${free} of ${total} free`}`;
+                const cls = `agrid__cell agrid__cell--${st}${d === todayIso ? " agrid__cell--today" : ""}`;
+                return onPick
+                  ? el("button", { key: d, type: "button", className: cls, title: text, "aria-label": text, onClick: () => onPick(c.name, d, text) }, st === "sold" ? "" : free)
+                  : el("span", { key: d, className: cls, title: text, "aria-label": text, role: "img" }, st === "sold" ? "" : free);
+              }))))),
+    empty.length > 0 && el("p", { className: "agrid__empty" },
+      el("strong", null, "No vehicles here: "), `${empty.map((c) => c.name).join(", ")}. ${empty.length === 1 ? "It can't" : "They can't"} be booked at this branch until a vehicle is added.`),
+    stocked.length > 0 && el("div", { className: "agrid__legend" },
+      el("span", null, el("span", { className: "agrid__swatch agrid__swatch--ok" }, "3"), "Cars free that day"),
+      el("span", null, el("span", { className: "agrid__swatch agrid__cell--low" }, "1"), "Running low"),
+      el("span", null, el("span", { className: "agrid__swatch agrid__cell--sold" }), "Sold out")));
+}
+
 // ─── Home: availability, the next 30 days ────────────────────────────────────
 // Classes down the side, days across, each day's free vehicles in its cell,
 // shaded from plenty to sold out, from branch_availability (the same numbers
 // as Reports > Availability). A class with nothing free in the 30 days shows
 // the next day it has one instead.
 const HOME_AVAIL_DAYS = 30;
-const homeShade = (free, total, below) => (free <= 0 ? "sold"
-  : (below != null && free < below) || free === 1 ? "low"
-  : total > 0 && free / total < 0.5 ? "some" : "plenty");
 
 function useHomeBranch() {
   const { currentUser } = React.useContext(AppContext);
@@ -4516,10 +4600,11 @@ function useHomeBranch() {
   return branch;
 }
 
-function HomeAvailability() {
+function HomeAvailability({ title = "Availability, next 30 days" } = {}) {
   const el = React.createElement;
   const navigate = useNavigate();
   const branch = useHomeBranch();
+  const isMobile = useMobile();
   const [open, setOpen] = React.useState(true);
   const [data, setData] = React.useState(null);
   const [error, setError] = React.useState("");
@@ -4535,42 +4620,14 @@ function HomeAvailability() {
     });
     return () => { live = false; };
   }, [branch]);
-  const days = data ? Array.from({ length: HOME_AVAIL_DAYS }, (_, i) => dayAfter(data.start, i)) : [];
-  const open30 = (c) => c.free.slice(0, HOME_AVAIL_DAYS).some((n) => n > 0);
-  const nextOpen = (c) => {
-    const i = c.free.findIndex((n, k) => k >= HOME_AVAIL_DAYS && n > 0);
-    return i < 0 ? null : dayAfter(data.start, i);
-  };
   const go = (cls, from) => navigate(`/reports?${new URLSearchParams({ section: "availability", branch, class: cls, from }).toString()}`);
-  const columns = { gridTemplateColumns: `minmax(96px, 140px) repeat(${HOME_AVAIL_DAYS}, minmax(24px, 1fr))` };
-  return el(CompanyStep, { title: "Availability, next 30 days", open, onToggle: () => setOpen((o) => !o) },
+  // Two weeks on a phone, the month from a tablet up.
+  const days = isMobile ? 14 : HOME_AVAIL_DAYS;
+  return el(CompanyStep, { title: isMobile ? title.replace("30 days", "14 days") : title, open, onToggle: () => setOpen((o) => !o) },
     open && el("div", { className: "dashboardSection__body" },
       el(FieldError, { text: error }),
       !data && !error && el("div", { className: "skelBox avail__skel", role: "status", "aria-label": "Loading availability" }),
-      data && data.classes.length === 0 && el("p", { className: "closeRentalHint" }, "No vehicles at this branch yet"),
-      data && data.classes.length > 0 && el(React.Fragment, null,
-        el("div", { className: "homeAvail__scroll" },
-          el("div", { className: "homeAvail", style: columns },
-            el("span", null),
-            days.map((d, i) => el("span", { key: d, className: "homeAvail__day", title: shortDay(d) },
-              (i === 0 || d.slice(8) === "01") && el("span", { className: "homeAvail__month" },
-                new Date(`${d}T12:00:00Z`).toLocaleDateString("en-CA", { month: "short", timeZone: "UTC" }).replace(".", "")),
-              Number(d.slice(8)))),
-            data.classes.map((c) => el(React.Fragment, { key: c.name },
-              el("span", { className: "avail__class", title: c.name }, c.name),
-              open30(c)
-                ? days.map((d, i) => {
-                    const free = c.free[i], total = c.total[i];
-                    const text = `${c.name}, ${shortDay(d)}: ${free} of ${total} free`;
-                    return el("button", { key: d, type: "button", title: text, "aria-label": text, onClick: () => go(c.name, d),
-                      className: `homeAvail__cell homeAvail__cell--${homeShade(free, total, c.below)}` }, free);
-                  })
-                : el("button", { type: "button", className: "homeAvail__cell homeAvail__cell--sold homeAvail__none",
-                    style: { gridColumn: `span ${HOME_AVAIL_DAYS}` }, onClick: () => go(c.name, nextOpen(c) || days[0]) },
-                    nextOpen(c) ? `Sold out for 30 days. Next open ${shortDay(nextOpen(c))}` : "Sold out for the next year"))))),
-        el("div", { className: "homeAvail__legend", "aria-hidden": "true" },
-          [["plenty", "Plenty"], ["some", "Fewer"], ["low", "Low"], ["sold", "Sold out"]].map(([k, label]) =>
-            el("span", { key: k }, el("span", { className: `homeAvail__swatch homeAvail__cell--${k}` }), label))))));
+      data && el(AvailGrid, { data, days, label: "Availability by class and day", onPick: (cls, d) => go(cls, d) })));
 }
 
 // ─── Home: Needs you ─────────────────────────────────────────────────────────
@@ -4585,7 +4642,7 @@ function needsYouText(i) {
     case "disputed":   return ["Disputed charge", `${needsMoney(i.amount)} card payment disputed${i.detail ? ` (${String(i.detail).replace(/_/g, " ")})` : ""}`];
     case "failed":     return ["Failed payment", `${needsMoney(i.amount)} card payment failed${i.detail ? `: ${i.detail}` : ""}`];
     case "damage":     return ["Damage claim to approve", `${i.detail || "Damage reported"}${i.status === "in_review" ? ", in review" : ""}`];
-    case "unreturned": return ["Not returned, no contact", `Due back ${i.due ? ampm(new Date(`${i.due}Z`).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" })) : ""}${i.phone ? `. Call ${i.phone}` : ""}`];
+    case "unreturned": return ["Not returned, no contact", `Due back ${i.due ? ampm(new Date(`${i.due}Z`).toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" })) : ""}${i.texted ? `. Texted ${ampm(new Date(i.texted).toLocaleString("en-CA", { hour: "numeric", minute: "2-digit" }))}, no reply` : ""}${i.phone ? `. Call ${i.phone}` : ""}`];
     case "incident":   return [i.incident === "accident" ? "Accident" : "Breakdown", i.detail || "Reported at a switch out"];
     case "id_problem": return ["ID problem", `License says ${i.licenceLastName || "?"}, the booking says ${i.reservationLastName || "?"}`];
     default:           return ["Needs a look", ""];
@@ -4646,6 +4703,29 @@ function AgentCard() {
               el("span", null, a.summary), el("small", null, agentWhen(a.at))))))));
 }
 
+// Needs you, grouped (Nov 17): one of a kind is a row of its own; two or more
+// of a kind are one row ("8 damage claims to approve") that opens the list
+// in place. Most urgent kinds first.
+const NEEDS_YOU_GROUPS = [
+  ["unreturned", "not returned, no contact", "not returned, no contact"],
+  ["incident", "accident or breakdown", "accidents or breakdowns"],
+  ["disputed", "disputed charge", "disputed charges"],
+  ["failed", "failed payment", "failed payments"],
+  ["id_problem", "ID problem to check", "ID problems to check"],
+  ["damage", "damage claim to approve", "damage claims to approve"],
+];
+function needsYouGroups(items) {
+  const order = NEEDS_YOU_GROUPS.map(([k]) => k);
+  const by = new Map();
+  for (const i of items || []) { if (!by.has(i.kind)) by.set(i.kind, []); by.get(i.kind).push(i); }
+  return [...by.entries()]
+    .sort(([a], [b]) => (order.indexOf(a) < 0 ? 99 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 99 : order.indexOf(b)))
+    .map(([kind, list]) => {
+      const g = NEEDS_YOU_GROUPS.find(([k]) => k === kind);
+      return { kind, list, label: g ? `${list.length} ${list.length === 1 ? g[1] : g[2]}` : `${list.length} to look at` };
+    });
+}
+
 function NeedsYou() {
   const el = React.createElement;
   const { setOpenCustomer } = React.useContext(AppContext);
@@ -4656,6 +4736,7 @@ function NeedsYou() {
   const [error, setError] = React.useState("");
   // What partners are waiting on (partner_portal.sql), one line to the Partners page.
   const [partnerWait, setPartnerWait] = React.useState(null);
+  const [openGroups, setOpenGroups] = React.useState({});
   const [agentFeed, reloadAgent] = useAgentFeed();
   const agentExceptions = (agentFeed && agentFeed.exceptions) || [];
   const resolveAgent = async (x) => {
@@ -4704,21 +4785,34 @@ function NeedsYou() {
           el("span", { className: "needsYou__tag needsYou__tag--agent" }, "fleetr agent"),
           el("span", { className: "needsYou__who" }, x.subject || ""),
           el("span", { className: "needsYou__what" }, x.summary)),
-        el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px", flexShrink: 0 }, disabled: !!busy, onClick: () => resolveAgent(x) }, busy === x.id ? "Saving…" : "Dealt with")))),
+        el("button", { type: "button", className: "needsYou__done", disabled: !!busy, onClick: () => resolveAgent(x) }, busy === x.id ? "Saving…" : "Dealt with")))),
       partnerParts.length > 0 && el("ul", { className: "needsYou" }, el("li", { className: "needsYou__item" },
         el("button", { type: "button", className: "needsYou__open", onClick: () => navigate("/partners") },
           el("span", { className: "needsYou__tag needsYou__tag--partner" }, "Partners"),
           el("span", { className: "needsYou__what" }, partnerParts.join(", "))))),
-      items && items.length > 0 && el("ul", { className: "needsYou" }, items.map((i) => {
-        const [title, detail] = needsYouText(i);
-        return el("li", { key: `${i.kind}:${i.id}`, className: "needsYou__item" },
-          el("button", { type: "button", className: "needsYou__open", onClick: () => follow(i) },
-            el("span", { className: `needsYou__tag needsYou__tag--${i.kind}` }, title),
-            el("span", { className: "needsYou__who" }, [i.customer, i.resCode, i.plate].filter(Boolean).join(" · ")),
-            detail && el("span", { className: "needsYou__what" }, detail)),
-          ["disputed", "failed", "incident"].includes(i.kind) && el("button", {
-            type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px", flexShrink: 0 }, disabled: !!busy, onClick: () => settle(i),
-          }, busy === i.id ? "Saving…" : "Dealt with"));
+      items && items.length > 0 && el("ul", { className: "needsYou" }, needsYouGroups(items).flatMap((g) => {
+        const row = (i) => {
+          const [title, detail] = needsYouText(i);
+          return el("li", { key: `${i.kind}:${i.id}`, className: "needsYou__item" },
+            el("button", { type: "button", className: "needsYou__open", onClick: () => follow(i) },
+              el("span", { className: `needsYou__tag needsYou__tag--${i.kind}` }, title),
+              el("span", { className: "needsYou__who" }, [i.customer, i.resCode, i.plate].filter(Boolean).join(" · ")),
+              detail && el("span", { className: "needsYou__what" }, detail)),
+            ["disputed", "failed", "incident"].includes(i.kind) && el("button", {
+              type: "button", className: "needsYou__done", disabled: !!busy, onClick: () => settle(i),
+            }, busy === i.id ? "Saving…" : "Dealt with"));
+        };
+        if (g.list.length === 1) return [row(g.list[0])];
+        const isOpen = !!openGroups[g.kind];
+        return [el("li", { key: `group:${g.kind}`, className: `needsYou__group${isOpen ? " needsYou__group--open" : ""}` },
+          el("button", { type: "button", className: "needsYou__groupHead", "aria-expanded": isOpen,
+            onClick: () => setOpenGroups((o) => ({ ...o, [g.kind]: !o[g.kind] })) },
+            el("span", { className: `needsYou__tag needsYou__tag--${g.kind}` }, needsYouText(g.list[0])[0]),
+            el("span", { className: "needsYou__groupLabel" }, g.label),
+            el("span", { className: "needsYou__chevron", "aria-hidden": "true" }, isOpen ? "\u25be" : "\u25b8")),
+          isOpen && el("ul", { className: "needsYou needsYou--inner" }, g.list.map(row),
+            g.kind === "damage" && el("li", { className: "needsYou__more" },
+              el("button", { type: "button", className: "homeToday__link", onClick: () => navigate("/fleet/damage-claims") }, "Open Damage Claims"))))];
       })),
       el(FieldError, { text: error })));
 }
@@ -5033,15 +5127,15 @@ function DashboardPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    // Home, rebuilt (overnight-nov17): what counter staff open it for. Find
-    // a renter or book one from the top; the 30 days and Needs you, as they
-    // were; then today, pickups and returns side by side, with Close Rental
-    // and Switch Out beside the returns they finish. The full reservations
-    // list is the Reservations page.
+    // Home, cut down (Nov 17) to what a branch needs at a glance: the next
+    // 30 days and Needs you at the top (as asked on Nov 14), today's pickups
+    // and returns (with Close Rental and Switch Out beside the returns they
+    // finish), then what the agent did. The vehicle board is the Vehicles
+    // page, the intake list its own page, and the pickup charts that repeated
+    // today's list are gone.
     React.createElement(HomeHeader, { onNew: () => { setForm(emptyResForm()); setShowModal(true); } }),
     React.createElement(HomeAvailability),
     React.createElement(NeedsYou),
-    React.createElement(AgentCard),
     React.createElement(HomeToday, {
       actions: [
         React.createElement("button", {
@@ -5052,170 +5146,7 @@ function DashboardPage() {
         }, "Switch Out"),
       ],
     }),
-    React.createElement("div", { className: "dashboardGrid" }, [
-      // ── Section 2: Vehicle Status ────────────────────────────────
-      React.createElement(
-        CompanyStep, { key: "fleetAvailability", title: "Vehicle Status", open: !collapsedSections.fleetAvailability, onToggle: () => toggleSection("fleetAvailability") },
-        !collapsedSections.fleetAvailability &&
-          React.createElement(
-            "div",
-            { className: "dashboardSection__body" },
-            (() => {
-              const fmtShort = (iso) => {
-                if (!iso) return "";
-                const d = new Date(`${iso}T00:00:00`);
-                return Number.isNaN(d.getTime()) ? iso
-                  : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
-              };
-              const fleetStatusClass = (status) =>
-                status === "Available" ? "fleetStatus--available"
-                : status === "Needs Cleaning" ? "fleetStatus--cleaning"
-                : status === "PM" ? "fleetStatus--pm"
-                : status === "Damaged" ? "fleetStatus--damaged"
-                : status === "On Rent" ? "fleetStatus--onRent"
-                : "";
-              // Mobile: one stacked card per vehicle, the pattern the
-              // reservations list above already uses, so nothing is wider than
-              // the screen.
-              const noneCard = () => React.createElement("div", { className: "resvEmpty" }, "None");
-              const fleetCards = (rows, showStatus) =>
-                rows.length === 0 ? [noneCard()] : rows.map((v) =>
-                  React.createElement("div", { key: v.id, className: `dashCard ${statusDrag.rowClass(v)}`, ...statusDrag.rowProps(v) },
-                    React.createElement("div", { className: "dashCard__header" },
-                      React.createElement("span", null, `${v.make} ${v.model}`),
-                      React.createElement(PlateLink, { plate: v.plate })
-                    ),
-                    React.createElement("div", { className: "dashCard__meta" },
-                      v.vehicleClass && React.createElement("span", { className: "dashCard__chip" }, v.vehicleClass),
-                      showStatus && React.createElement("span", { className: `dashCard__chip ${fleetStatusClass(v.status)}` }, v.status)
-                    )
-                  )
-                );
-              const fleetTable = (rows, showStatus) =>
-                React.createElement(
-                  "table",
-                  { className: "dashboardTable" },
-                  React.createElement("thead", null,
-                    React.createElement("tr", null,
-                      ["Plate", "Vehicle", "Class", ...(showStatus ? ["Status"] : [])].map((col) =>
-                        React.createElement("th", { key: col }, col)
-                      )
-                    )
-                  ),
-                  React.createElement("tbody", null,
-                    rows.length === 0
-                      ? React.createElement("tr", null, React.createElement("td", { colSpan: showStatus ? 4 : 3, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
-                      : rows.map((v) => {
-                          const statusClass = fleetStatusClass(v.status);
-                          return React.createElement("tr", { key: v.id, className: statusDrag.rowClass(v), ...statusDrag.rowProps(v) },
-                            React.createElement("td", null, React.createElement(PlateLink, { plate: v.plate })),
-                            React.createElement("td", null, `${v.make} ${v.model}`),
-                            React.createElement("td", null, v.vehicleClass),
-                            ...(showStatus ? [React.createElement("td", null, React.createElement("span", { className: statusClass }, v.status))] : [])
-                          );
-                        })
-                  )
-                );
-
-              const avail    = fleet.filter((v) => v.status === "Available");
-              const cleaning = fleet.filter((v) => v.status === "Needs Cleaning");
-              // A Switch Out's replacement, waiting for its renter: it was in no
-              // group, so the groups did not add up to the fleet.
-              const readyPickup = fleet.filter((v) => v.status === "Ready for Pickup");
-              // Due for PM, or moved to PM by hand.
-              const pm     = fleet.filter((v) => v.needsPm || v.status === "PM");
-              const damaged  = fleet.filter((v) => v.status === "Damaged");
-              const onRent   = fleet.filter((v) => v.status === "On Rent");
-
-              const group = (label, cls, key, rows, showStatus, children) =>
-                React.createElement("div", { className: `fleetGroup${statusDrag.groupClass(VS_GROUP_STATUS[key])}`, ...statusDrag.groupProps(VS_GROUP_STATUS[key]) },
-                  React.createElement("div", {
-                    className: `fleetGroupHeader fleetGroupHeader--${cls}`,
-                    ...barToggle(() => toggleFleetGroup(key), !fleetGroupCollapsed[key]),
-                  },
-                    React.createElement("span", null, label),
-                    React.createElement("div", { className: "fleetGroupHeaderRight" },
-                      React.createElement("span", { className: "fleetGroupCount" }, rows.length),
-                      React.createElement("span", { className: "fleetGroupChevron", "aria-hidden": "true" }, fleetGroupCollapsed[key] ? "\u25b8" : "\u25be")
-                    )
-                  ),
-                  ...(fleetGroupCollapsed[key] ? [] : (children || (isMobile ? fleetCards(rows, showStatus) : [fleetTable(rows, showStatus)])))
-                );
-
-              return React.createElement(React.Fragment, null,
-                group("Available", "available", "available", avail, false),
-                group("Needs Cleaning", "cleaning", "needsCleaning", cleaning, false),
-                readyPickup.length > 0 && group("Ready for Pickup", "readyPickup", "readyPickup", readyPickup, false),
-                // Ready Returns — two sub-sections: returned & ready + projected
-                React.createElement("div", { className: `fleetGroup${statusDrag.groupClass("Ready Returns")}`, ...statusDrag.groupProps("Ready Returns") },
-                  React.createElement("div", {
-                    className: "fleetGroupHeader fleetGroupHeader--readyReturns",
-                    ...barToggle(() => toggleFleetGroup("readyReturns"), !fleetGroupCollapsed.readyReturns),
-                  },
-                    React.createElement("span", null, "Ready Returns"),
-                    React.createElement("div", { className: "fleetGroupHeaderRight" },
-                      React.createElement("span", { className: "fleetGroupCount" }, readyReturns.length),
-                      React.createElement("span", { className: "fleetGroupChevron", "aria-hidden": "true" }, fleetGroupCollapsed.readyReturns ? "\u25b8" : "\u25be")
-                    )
-                  ),
-                  ...(!fleetGroupCollapsed.readyReturns && isMobile
-                    ? (readyReturns.length === 0 ? [noneCard()] : readyReturns.map((r) => {
-                        const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
-                        const loc = matchRA?.returnVehicleLocation || "";
-                        return React.createElement("div", { key: r.id, className: `dashCard ${statusDrag.rowClass(r)}`, ...statusDrag.rowProps(r) },
-                          React.createElement("div", { className: "dashCard__header" },
-                            React.createElement("span", null, `${r.make} ${r.model}`),
-                            React.createElement(PlateLink, { plate: r.plate })
-                          ),
-                          (r.fileType || loc) && React.createElement("div", { className: "dashCard__meta" },
-                            r.fileType && React.createElement("span", { className: "dashCard__chip" }, r.fileType),
-                            loc && React.createElement("span", { className: "dashCard__chip" }, loc)
-                          )
-                        );
-                      }))
-                    : []),
-                  ...(!fleetGroupCollapsed.readyReturns && !isMobile ? [
-                    React.createElement("table", { className: "dashboardTable" },
-                      React.createElement("thead", null,
-                        React.createElement("tr", null,
-                          ["Plate", "Vehicle", "Type", "Location"].map((col) =>
-                            React.createElement("th", { key: col }, col)
-                          )
-                        )
-                      ),
-                      React.createElement("tbody", null,
-                        readyReturns.length === 0
-                          ? React.createElement("tr", null, React.createElement("td", { colSpan: 4, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
-                          : readyReturns.map((r) => {
-                              const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
-                              const loc = matchRA?.returnVehicleLocation || "";
-                              return React.createElement("tr", { key: r.id, className: statusDrag.rowClass(r), ...statusDrag.rowProps(r) },
-                                React.createElement("td", null, React.createElement(PlateLink, { plate: r.plate })),
-                                React.createElement("td", null, `${r.make} ${r.model}`),
-                                React.createElement("td", null, r.fileType || ""),
-                                React.createElement("td", null, loc)
-                              );
-                            })
-                      )
-                    ),
-                  ] : [])
-                ),
-                group("Preventative Maintenance", "pm", "pm", pm, false),
-                group("Damaged", "damaged", "damaged", damaged, false),
-                group("On Rent", "onRent", "onRent", onRent, true),
-                statusDrag.layer
-              );
-            })()
-          )
-      ),
-      // ── Section 3: Non-Drive Intake ──────────────────────────────────
-      // Not rendered at all when off. dashboardGrid spaces its children with
-      // gap, so the sections either side close up with nothing left between.
-      isFeatureEnabled("non_drive_intake") &&
-        React.createElement(NonDriveIntakeSection, { key: "nonDriveIntake", standalone: false }),
-    ]),
-    // Today's numbers and the week ahead, under the sections.
-    React.createElement(DashboardStats),
+    React.createElement(AgentCard),
     showModal && React.createElement(
       "div",
       { className: "resModalBackdrop", onClick: () => setShowModal(false) },
@@ -5278,7 +5209,7 @@ function DashboardPage() {
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Vehicle Class"),
                 React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => setForm((p) => withDailyRate({ ...p, vehicleClass: e.target.value })) },
-                  vehicleClassOptions(form.vehicleClass).map((c) => React.createElement("option", { key: c, value: c }, c))
+                  bookableClassOptions(form.vehicleClass, fleet, currentUser?.locationId).map((c) => React.createElement("option", { key: c, value: c }, c))
                 ),
                 fieldErr("vehicleClass")
               )
@@ -5406,10 +5337,7 @@ function NewPickupPicker({ initial, label, busy, onSave, onClose }) {
   const [day, setDay]   = React.useState(String(initial || "").slice(0, 10));
   const [time, setTime] = React.useState(String(initial || "").slice(11, 16));
   return React.createElement("div", { className: "readyStatusWrap", style: { flexWrap: "wrap", gap: "6px" } },
-    React.createElement("input", {
-      type: "date", className: "resvSearchInput", value: day, "aria-label": "New pickup date",
-      onChange: (e) => setDay(e.target.value),
-    }),
+    React.createElement(DateField, { className: "resvSearchInput", value: day, ariaLabel: "New pickup date", onChange: setDay }),
     React.createElement("select", {
       className: "resvSearchInput", value: time, "aria-label": "New pickup time",
       onChange: (e) => setTime(e.target.value),
@@ -5873,8 +5801,8 @@ function VehicleEconomics({ vehicle }) {
         el("input", { className: "resFormInput btDollarInput", type: "text", inputMode: "decimal", placeholder: "0.00",
           "aria-label": form.kind === "purchase" ? "Purchase price" : form.kind === "value" ? "Market value" : "Amount",
           value: form.amount, onChange: (e) => setForm({ ...form, amount: numberTyped(e.target.value, { digits: 7, decimals: 2 }) }) })),
-      el("input", { className: "resFormInput", type: "date", max: today, value: form.date, "aria-label": "Date",
-        onChange: (e) => setForm({ ...form, date: e.target.value }), style: { width: "auto" } }),
+      el(DateField, { className: "resFormInput", max: today, value: form.date, ariaLabel: "Date",
+        onChange: (v) => setForm({ ...form, date: v }), style: { width: "auto" } }),
       ["maintenance", "damage"].includes(form.kind) && el("input", { className: "resFormInput", type: "text", placeholder: "What was done",
         value: form.note, onChange: (e) => setForm({ ...form, note: e.target.value }), style: { flex: "1 1 180px" } }),
       el("button", { type: "button", className: "loginBtn", style: smallBtn, disabled: busy || !(Number(form.amount) >= 0) || form.amount === "" || !form.date, onClick: save },
@@ -6080,7 +6008,8 @@ function VehicleDetailPage() {
           ? fmtDistance(latestRa.mileage)
           : vehicle.currentOdometer != null ? fmtDistance(vehicle.currentOdometer) : "\u00b7"),
         detailRow("Fuel Level", fuelText(latestRa?.fuelAtPickup || vehicle.currentFuelLevel)),
-        React.createElement(
+        // An electric vehicle has no tank to size.
+        !vehicleIsElectric(vehicle) && React.createElement(
           "div", { className: "vehicleDetailRow" },
           React.createElement("span", { className: "vehicleDetailLabel" }, "Tank Size"),
           React.createElement("span", { className: "vehicleDetailControl" },
@@ -6097,7 +6026,7 @@ function VehicleDetailPage() {
               React.createElement("span", { className: "tankSizeMissing", title: "Gas charges cannot be calculated automatically until this is set" }, "Not set")
           )
         ),
-        numberErr.column === "tankSizeLiters" && React.createElement(FieldError, { text: numberErr.text }),
+        !vehicleIsElectric(vehicle) && numberErr.column === "tankSizeLiters" && React.createElement(FieldError, { text: numberErr.text }),
       )
     ),
 
@@ -7262,8 +7191,20 @@ function validateStartingReadings(v) {
   return { ok: true, error: null, odometer: Math.round(n), fuelLevel: fuel };
 }
 
+// Electric classes (marked by the standard class list) have no fuel tank, so
+// their vehicles are never asked for a tank size or flagged for one (Nov 17).
+function classIsElectric(name) {
+  if (!companyLists || !name) return false;
+  const n = String(name).trim().toLowerCase();
+  const c = companyLists.vehicleClasses.find((x) => String(x.name).trim().toLowerCase() === n);
+  return !!(c && c.electric);
+}
+const vehicleIsElectric = (v) => classIsElectric(v && v.vehicleClass);
+
 function validateVehicle(v) {
+  const electric = vehicleIsElectric(v);
   const missing = VEHICLE_REQUIRED_FIELDS
+    .filter(([, key]) => !(electric && key === "tankSizeLiters"))
     .filter(([, key]) => String(v?.[key] ?? "").trim() === "")
     .map(([label]) => label);
   if (missing.length) {
@@ -7279,7 +7220,7 @@ function validateVehicle(v) {
   // value rather than a blank field.
   const tank = parseFloat(v.tankSizeLiters);
   const pm   = parseFloat(v.pmIntervalKm);
-  if (!Number.isFinite(tank) || tank <= 0) return { ok: false, missing: [], error: "Tank size must be a positive number." };
+  if (!electric && (!Number.isFinite(tank) || tank <= 0)) return { ok: false, missing: [], error: "Tank size must be a positive number." };
   if (!Number.isFinite(pm)   || pm   <= 0) return { ok: false, missing: [], error: "Needs PM Every must be a positive number." };
 
   // Same rule the edit path applies, so the form and the AI cannot disagree
@@ -7579,103 +7520,75 @@ function FleetVehiclesPage() {
     React.createElement("header", { className: "listHead" },
       React.createElement("h1", { className: "page__title" }, "Vehicles"),
       React.createElement(Button, { onClick: () => navigate("/fleet/additions") }, React.createElement(Icon, { name: "plus", size: 18 }), "Add vehicle")),
-    React.createElement(FleetStatusStrip, { fleet: filtered, onPick: (key) => {
-      setFleetGroupCollapsed((prev) => ({ ...prev, [key]: false }));
-      setTimeout(() => { const n = document.querySelector(`[data-fleet-group="${key}"]`); if (n) n.scrollIntoView({ block: "start", behavior: "smooth" }); }, 60);
-    } }),
     React.createElement("div", { className: "listTools" }, React.createElement(FleetFilterBar, { filterState })),
 
-    // Tank size is manual, so missing values are surfaced here rather than
-    // failing quietly at return time as a skipped gas charge.
+    // What the fleet is missing, in one calm card (Nov 17: three coloured
+    // banners before). Tank size never for an electric vehicle.
     (() => {
-      const missing = fleet.filter((v) => v.tankSizeLiters == null);
-      if (missing.length === 0) return null;
-      return React.createElement("div", { className: "tankSizeBanner" },
-        React.createElement("strong", null, `${missing.length} vehicle${missing.length === 1 ? "" : "s"} missing tank size: `),
-        "gas charges can't be calculated automatically for ",
-        missing.length === 1 ? "it" : "them",
-        ". Set it on each vehicle's detail page: ",
-        React.createElement("span", { className: "tankSizeBannerPlates" },
-          missing.map((v) => v.plate).join(", ")
-        )
-      );
-    })(),
-
-    // Same treatment for a missing PM interval: without it the automatic
-    // trigger can never fire for that vehicle.
-    (() => {
-      const missing = fleet.filter((v) => v.pmIntervalKm == null);
-      if (missing.length === 0) return null;
-      return React.createElement("div", { className: "tankSizeBanner" },
-        React.createElement("strong", null, `${missing.length} vehicle${missing.length === 1 ? "" : "s"} missing a PM interval: `),
-        "preventative maintenance won't be flagged automatically for ",
-        missing.length === 1 ? "it" : "them",
-        ". Set it on each vehicle's detail page: ",
-        React.createElement("span", { className: "tankSizeBannerPlates" },
-          missing.map((v) => v.plate).join(", ")
-        )
-      );
-    })(),
-
-    // Vehicles that came back already due for PM skip the Ready Returns queue,
-    // because status is single-valued and PM takes precedence to stop the car
-    // going straight back out. Surfaced here so that step is not silently lost.
-    (() => {
+      const noTank = fleet.filter((v) => v.tankSizeLiters == null && !vehicleIsElectric(v));
+      const noPm = fleet.filter((v) => v.pmIntervalKm == null);
       const duePm = fleet.filter((v) => v.needsPm);
-      if (duePm.length === 0) return null;
-      return React.createElement("div", { className: "pmBanner" },
-        React.createElement("strong", null, `${duePm.length} vehicle${duePm.length === 1 ? "" : "s"} due for preventative maintenance: `),
-        React.createElement("span", { className: "pmBannerPlates" }, duePm.map((v) => v.plate).join(", ")),
-        ". ",
-        duePm.length === 1
-          ? "It keeps its current status until moved on, then switches to PM automatically. Use PM Complete on its detail page once serviced."
-          : "They keep their current status until moved on, then switch to PM automatically. Use PM Complete on each one's detail page once serviced."
-      );
+      const cars = (n) => `${n} vehicle${n === 1 ? "" : "s"}`;
+      const them = (n) => (n === 1 ? "it" : "them");
+      const lines = [
+        noTank.length > 0 && ["tank", `${cars(noTank.length)} missing a tank size`, `: gas charges can't be worked out for ${them(noTank.length)}.`, noTank],
+        noPm.length > 0 && ["pmint", `${cars(noPm.length)} missing a PM interval`, `: maintenance won't be flagged for ${them(noPm.length)}.`, noPm],
+        duePm.length > 0 && ["pmdue", `${cars(duePm.length)} due for maintenance`, duePm.length === 1
+          ? ". " + "It keeps its current status until moved on, then switches to PM automatically. Use PM Complete on its detail page once serviced."
+          : ". " + "They keep their current status until moved on, then switch to PM automatically. Use PM Complete on each one's detail page once serviced.", duePm],
+      ].filter(Boolean);
+      if (!lines.length) return null;
+      return React.createElement("section", { className: "fleetNotes", "aria-label": "Vehicles missing details" },
+        React.createElement("h2", { className: "fleetNotes__title" }, React.createElement(Icon, { name: "alert", size: 16 }), "Needs details"),
+        React.createElement("ul", { className: "fleetNotes__list" }, lines.map(([key, head, why, rows]) =>
+          React.createElement("li", { key, className: "fleetNotes__item" },
+            React.createElement("span", { className: "fleetNotes__head" }, head),
+            React.createElement("span", { className: "fleetNotes__why" }, why),
+            React.createElement("span", { className: "fleetNotes__plates" }, rows.slice(0, 12).map((v) => React.createElement(PlateLink, { key: v.id || v.plate, plate: v.plate })),
+              rows.length > 12 && React.createElement("span", { className: "fleetNotes__more" }, `and ${rows.length - 12} more`))))));
     })(),
 
     React.createElement(
-      CompanyStep, { title: "Vehicle Status", open: !sectionCollapsed, onToggle: () => setSectionCollapsed((c) => !c) },
+      CompanyStep, { title: "Vehicle status", open: !sectionCollapsed, onToggle: () => setSectionCollapsed((c) => !c) },
       !sectionCollapsed &&
         React.createElement(
           "div",
           { className: "dashboardSection__body" },
           (() => {
-            const colSpan = 4; // Plate + Vehicle + Class + Status
-
+            // Every group has the same five columns (Nov 17): Plate, Vehicle,
+            // Class, Details (what that group needs to know) and Status.
+            const COLS = ["Plate", "Vehicle", "Class", "Details", "Status"];
+            const raFor = (v) => (rentalAgreements || []).find((a) => a.plate === v.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
+            const details = (v) => {
+              if (v.status === "Ready Returns") return [v.fileType, raFor(v)?.returnVehicleLocation].filter(Boolean).join(" · ");
+              if (v.status === "On Rent") return [v.currentRenter, v.dueBack && `due ${v.dueBack}`].filter(Boolean).join(" · ");
+              if (v.needsPm && v.status !== "PM") return "Due for maintenance";
+              return "";
+            };
             const fleetTable = (rows) =>
               React.createElement(
                 "table",
-                { className: "dashboardTable" },
+                { className: "dashboardTable fleetTable" },
                 React.createElement("thead", null,
-                  React.createElement("tr", null,
-                    ["Plate", "Vehicle", "Class", "Status"].map((col) =>
-                      React.createElement("th", { key: col }, col)
-                    )
-                  )
-                ),
+                  React.createElement("tr", null, COLS.map((col) => React.createElement("th", { key: col }, col)))),
                 React.createElement("tbody", null,
                   rows.length === 0
-                    ? React.createElement("tr", null, React.createElement("td", { colSpan, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
+                    ? React.createElement("tr", null, React.createElement("td", { colSpan: COLS.length, className: "fleetTable__none" }, "None"))
                     : rows.map((v) =>
                         React.createElement("tr", { key: v.id, className: statusDrag.rowClass(v), ...statusDrag.rowProps(v) },
                           React.createElement("td", null, React.createElement(PlateLink, { plate: v.plate })),
-                          React.createElement("td", null, `${v.make} ${v.model}`),
+                          React.createElement("td", null, `${v.make || ""} ${v.model || ""}`.trim()),
                           React.createElement("td", null, v.vehicleClass),
+                          React.createElement("td", { className: "fleetTable__details" }, details(v)),
                           React.createElement("td", null,
                             React.createElement("select", {
                               className: "gasStatusSelect",
                               value: v.status || "",
+                              "aria-label": `Status of ${v.plate}`,
                               onChange: (e) => handleStatusChange(v, e.target.value),
                             },
                               FLEET_STATUS_OPTS.filter((s) => s.value !== "All").map((s) =>
-                                React.createElement("option", { key: s.value, value: s.value }, s.label)
-                              )
-                            )
-                          )
-                        )
-                      )
-                )
-              );
+                                React.createElement("option", { key: s.value, value: s.value }, s.label))))))));
 
             const avail    = filtered.filter((v) => v.status === "Available");
             const cleaning = filtered.filter((v) => v.status === "Needs Cleaning");
@@ -7686,8 +7599,10 @@ function FleetVehiclesPage() {
             const onRent   = filtered.filter((v) => v.status === "On Rent");
             const filteredRR = filtered.filter((v) => v.status === "Ready Returns");
 
-            const group = (label, cls, key, rows, children) =>
-              React.createElement("div", { className: `fleetGroup${statusDrag.groupClass(VS_GROUP_STATUS[key])}`, "data-fleet-group": key, ...statusDrag.groupProps(VS_GROUP_STATUS[key]) },
+            // The count is shown once, on the group's own bar.
+            const group = (label, cls, key, rows) =>
+              React.createElement("div", { className: `fleetGroup${statusDrag.groupClass(VS_GROUP_STATUS[key])}`, "data-fleet-group": key,
+                ...statusDrag.groupProps(VS_GROUP_STATUS[key]) },
                 React.createElement("div", {
                   className: `fleetGroupHeader fleetGroupHeader--${cls}`,
                   ...barToggle(() => toggleFleetGroup(key), !fleetGroupCollapsed[key]),
@@ -7696,56 +7611,24 @@ function FleetVehiclesPage() {
                   React.createElement("span", null, label),
                   React.createElement("span", { className: "fleetGroupCount" }, rows.length)
                 ),
-                ...(fleetGroupCollapsed[key] ? [] : (children || [fleetTable(rows)]))
+                ...(fleetGroupCollapsed[key] ? [] : [fleetTable(rows)])
               );
 
             return React.createElement(React.Fragment, null,
               group("Available", "available", "available", avail),
-              group("Needs Cleaning", "cleaning", "needsCleaning", cleaning),
-              readyPickup.length > 0 && group("Ready for Pickup", "readyPickup", "readyPickup", readyPickup),
-              React.createElement("div", { className: `fleetGroup${statusDrag.groupClass("Ready Returns")}`, ...statusDrag.groupProps("Ready Returns") },
-                React.createElement("div", {
-                  className: "fleetGroupHeader fleetGroupHeader--readyReturns",
-                  ...barToggle(() => toggleFleetGroup("readyReturns"), !fleetGroupCollapsed.readyReturns),
-                },
-                  React.createElement("span", { className: "fleetGroupChevron", "aria-hidden": "true" }, fleetGroupCollapsed.readyReturns ? "\u25b8" : "\u25be"),
-                  React.createElement("span", null, "Ready Returns"),
-                  React.createElement("span", { className: "fleetGroupCount" }, filteredRR.length)
-                ),
-                ...(!fleetGroupCollapsed.readyReturns ? [
-                  React.createElement("table", { className: "dashboardTable" },
-                    React.createElement("thead", null,
-                      React.createElement("tr", null,
-                        ["Plate", "Vehicle", "Type", "Location"].map((col) =>
-                          React.createElement("th", { key: col }, col)
-                        )
-                      )
-                    ),
-                    React.createElement("tbody", null,
-                      filteredRR.length === 0
-                        ? React.createElement("tr", null, React.createElement("td", { colSpan: 4, style: { color: "#aaa", fontStyle: "italic" } }, "None"))
-                        : filteredRR.map((r) => {
-                            const matchRA = (rentalAgreements || []).find((a) => a.plate === r.plate && RA_IN_READY_RETURNS.includes(a.rentalAgreementStatus));
-                            const loc = matchRA?.returnVehicleLocation || "";
-                            return React.createElement("tr", { key: r.id, className: statusDrag.rowClass(r), ...statusDrag.rowProps(r) },
-                              React.createElement("td", null, React.createElement(PlateLink, { plate: r.plate })),
-                              React.createElement("td", null, `${r.make} ${r.model}`),
-                              React.createElement("td", null, r.fileType || ""),
-                              React.createElement("td", null, loc)
-                            );
-                          })
-                    )
-                  ),
-                ] : [])
-              ),
-              group("Preventative Maintenance", "pm", "pm", pm),
+              group("Needs cleaning", "cleaning", "needsCleaning", cleaning),
+              readyPickup.length > 0 && group("Ready for pickup", "readyPickup", "readyPickup", readyPickup),
+              group("Ready returns", "readyReturns", "readyReturns", filteredRR),
+              group("Maintenance", "pm", "pm", pm),
               group("Damaged", "damaged", "damaged", damaged),
-              group("On Rent", "onRent", "onRent", onRent),
+              group("On rent", "onRent", "onRent", onRent),
               statusDrag.layer
             );
           })()
         )
     ),
+    // The month ahead by class, the same grid as Home (Nov 17).
+    React.createElement(HomeAvailability, { title: "Availability, next 30 days" }),
     // Sending a vehicle to another branch, and receiving one, on the page the
     // sidebar opens. It was only on the old Branch Fleet page, which nothing
     // in the sidebar reaches.
@@ -8814,7 +8697,9 @@ function AvailabilityReport({ branchPick }) {
   const [error, setError] = React.useState("");
   const [start, setStart] = React.useState(0);
   const [picked, setPicked] = React.useState("");
-  const span = isMobile ? 14 : 90;
+  // Looking forward (Nov 17): its own start date and how far to look, not
+  // the past-period picker the other reports use.
+  const [span, setSpan] = React.useState(isMobile ? 14 : 30);
 
   React.useEffect(() => {
     if (!branch) return undefined;
@@ -8827,51 +8712,41 @@ function AvailabilityReport({ branchPick }) {
       const from = asked.get("from");
       if (from) {
         const days = Math.round((Date.parse(from) - Date.parse(out.start)) / 86400000);
-        setStart(Math.max(0, Math.min(days, AVAILABILITY_DAYS - span)));
+        setStart(Math.max(0, Math.min(days, AVAILABILITY_DAYS - 1)));
       }
     });
     return () => { live = false; };
   }, [branch]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const end = Math.min(start + span, AVAILABILITY_DAYS);
-  const dates = data ? Array.from({ length: end - start }, (_, i) => dayAfter(data.start, start + i)) : [];
-  const months = [];
-  dates.forEach((d) => {
-    const name = new Date(`${d}T12:00:00Z`).toLocaleDateString("en-CA", { month: "short", year: "numeric", timeZone: "UTC" }).replace(".", "");
-    if (months.length && months[months.length - 1].name === name) months[months.length - 1].n += 1;
-    else months.push({ name, n: 1 });
-  });
-  const rows = data ? data.classes.filter((c) => !cls || c.name === cls) : [];
+  const lastStart = Math.max(0, AVAILABILITY_DAYS - span);
+  const from = Math.min(start, lastStart);
+  const end = Math.min(from + span, AVAILABILITY_DAYS);
+  const shown = data ? { ...data, classes: data.classes.filter((c) => !cls || c.name === cls) } : null;
   const ranges = data ? data.ranges.filter((r) => !cls || r.vehicleClass === cls) : [];
-  const columns = { gridTemplateColumns: `minmax(84px, 120px) repeat(${dates.length || 1}, minmax(0, 1fr))` };
-  const move = (by) => { setStart((v) => Math.max(0, Math.min(v + by, AVAILABILITY_DAYS - span))); setPicked(""); };
+  const move = (by) => { setStart(Math.max(0, Math.min(from + by, lastStart))); setPicked(""); };
+  const pickDay = (iso) => {
+    if (!data || !iso) return;
+    setStart(Math.max(0, Math.min(Math.round((Date.parse(iso) - Date.parse(data.start)) / 86400000), lastStart)));
+    setPicked("");
+  };
 
   return el("div", { className: "avail" },
     el("div", { className: "avail__bar" },
-      data && el("select", { className: "resFormInput avail__pick", "aria-label": "Vehicle class", value: cls, onChange: (e) => setCls(e.target.value) },
+      data && el(DateField, { className: "flInput avail__from", ariaLabel: "From", value: dayAfter(data.start, from),
+        min: data.start, max: dayAfter(data.start, lastStart), onChange: pickDay }),
+      el("div", { className: "segmented", role: "radiogroup", "aria-label": "How far ahead" },
+        [[14, "2 weeks"], [30, "30 days"], [90, "90 days"]].map(([n, label]) => el("button", { key: n, type: "button", role: "radio", "aria-checked": span === n,
+          className: `segmented__opt${span === n ? " segmented__opt--on" : ""}`, onClick: () => { setSpan(n); setPicked(""); } }, label))),
+      data && el("select", { className: "flInput avail__pick", "aria-label": "Vehicle class", value: cls, onChange: (e) => setCls(e.target.value) },
         el("option", { value: "" }, "All classes"), data.classes.map((c) => el("option", { key: c.name, value: c.name }, c.name))),
       el("div", { className: "avail__move" },
-        el("button", { type: "button", className: "miniBtn", disabled: start === 0, onClick: () => move(-span) }, "Previous"),
-        el("button", { type: "button", className: "miniBtn", disabled: end >= AVAILABILITY_DAYS, onClick: () => move(span) }, "Next"))),
+        el("button", { type: "button", className: "miniBtn avail__step", disabled: from === 0, onClick: () => move(-span), "aria-label": `Previous ${span} days` }, "Previous"),
+        el("button", { type: "button", className: "miniBtn avail__step", disabled: end >= AVAILABILITY_DAYS, onClick: () => move(span), "aria-label": `Next ${span} days` }, "Next"))),
     el(FieldError, { text: error }),
     !data && !error && el("div", { className: "skelBox avail__skel", role: "status", "aria-label": "Loading availability" }),
-    data && rows.length === 0 && el("p", { className: "closeRentalHint" }, "No vehicles at this branch yet"),
-    data && rows.length > 0 && el(React.Fragment, null,
-      el("div", { className: "avail__grid", style: columns },
-        el("span", null),
-        months.map((m) => el("span", { key: m.name, className: "avail__month", style: { gridColumn: `span ${m.n}` } }, m.name)),
-        isMobile && el("span", null),
-        isMobile && dates.map((d) => el("span", { key: d, className: "avail__day" }, Number(d.slice(8)))),
-        rows.map((c) => el(React.Fragment, { key: c.name },
-          el("span", { className: "avail__class", title: c.name }, c.name),
-          dates.map((d, i) => {
-            const free = c.free[start + i], total = c.total[start + i];
-            const text = `${shortDay(d)}: ${free} of ${total} free`;
-            return el("button", { key: d, type: "button", title: text, "aria-label": `${c.name}, ${text}`,
-              className: `avail__cell avail__cell--${availabilityState(free, c.below)}`, onClick: () => setPicked(`${c.name}, ${text}`) });
-          })))),
-      picked && el("div", { className: "avail__picked", role: "status" }, picked),
-      ranges.length > 0 && el("ul", { className: "avail__list" }, ranges.map((r) => el("li", { key: `${r.kind}:${r.vehicleClass}:${r.from}` }, availabilityLine(r))))));
+    shown && el(AvailGrid, { data: shown, from, days: end - from, label: "Availability by class and day", onPick: (c, d, text) => setPicked(text) }),
+    picked && el("div", { className: "avail__picked", role: "status" }, picked),
+    ranges.length > 0 && el("ul", { className: "avail__list" }, ranges.map((r) => el("li", { key: `${r.kind}:${r.vehicleClass}:${r.from}` }, availabilityLine(r)))));
 }
 
 // ─── Reports ───────────────────────────────────────────────────────────────────
@@ -8894,7 +8769,18 @@ function reportRange(preset, custom) {
   return { from: isoDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - n + 1)), to: today };
 }
 const reportPct = (n) => (n == null ? "·" : `${(Number(n) * 100).toFixed(1)}%`);
-const reportMoney = (n, cents) => (n == null ? "·" : `$${Number(n).toLocaleString("en-CA", { minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: cents ? 2 : 0 })}`);
+// Money in reports (Nov 17): whole dollars for totals, cents only for the
+// per-day figures where they matter (cents true). A loss reads -$1,234.
+const reportMoney = (n, cents) => (n == null ? "·"
+  : `${Number(n) < 0 ? "-" : ""}$${Math.abs(Number(n)).toLocaleString("en-CA", { minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: cents ? 2 : 0 })}`);
+// A chart's top as a clean number (Nov 17): the smallest 1, 2 or 5
+// times a power of ten at or above the largest value, so the axis reads
+// 0, 500, 1,000, never 0, 612, 1,224.
+function niceTop(max) {
+  const m = Math.max(Number(max) || 0, 1e-9);
+  const p = 10 ** Math.floor(Math.log10(m));
+  return [1, 2, 5, 10].map((f) => f * p).find((v) => v >= m - 1e-9);
+}
 // The change from the previous period, as a share; points for a rate.
 function reportChange(now, prev, kind) {
   if (now == null || prev == null) return null;
@@ -8924,7 +8810,7 @@ function ReportTrend({ series, prevSeries, valueKey, format, label }) {
   const prev = (prevSeries || []).map((p) => Number(p[valueKey]) || 0);
   const n = Math.max(now.length, prev.length, 2);
   const max = Math.max(1e-9, ...now, ...prev);
-  const top = valueKey === "rate" ? Math.min(1, Math.ceil(max * 10) / 10 || 1) : max * 1.1;
+  const top = valueKey === "rate" ? Math.min(1, Math.ceil(max * 10) / 10 || 1) : Math.max(1, niceTop(max));
   const x = (i) => PL + (i * (W - PL - PR)) / (n - 1);
   const y = (v) => PT + (H - PT - PB) * (1 - v / top);
   const path = (vals) => vals.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
@@ -9082,7 +8968,7 @@ function OwedReport({ data }) {
   const o = data.owed;
   return el(React.Fragment, null,
     el("div", { className: "reportKpis" },
-      el(ReportKpi, { title: "Owed by insurers, body shops and companies", value: reportMoney(o.total, true), note: "today, by when the rental closed" })),
+      el(ReportKpi, { title: "Owed by insurers, body shops and companies", value: reportMoney(o.total), note: "today, by when the rental closed" })),
     o.accounts.length === 0 ? el("p", { className: "closeRentalHint" }, "Nothing owed.")
       : el(React.Fragment, null,
           el("div", { className: "reportLegend" }, REPORT_AGE.map(([k, label, color]) =>
@@ -9091,10 +8977,10 @@ function OwedReport({ data }) {
             el("thead", null, el("tr", null, ["Account", "Owed", "", ...REPORT_AGE.map(([, label]) => label)].map((h, i) => el("th", { key: i }, h)))),
             el("tbody", null, o.accounts.map((a) => el("tr", { key: a.name },
               el("td", null, a.name, el("div", { className: "closeRentalHint", style: { margin: 0 } }, `${a.billingType === "insurance" ? "Insurer" : a.billingType === "bodyshop_dealership" ? "Body shop" : "Company"}, ${a.invoices} rental${a.invoices === 1 ? "" : "s"}`)),
-              el("td", null, el("strong", null, reportMoney(a.total, true))),
-              el("td", { style: { minWidth: 140 } }, el("div", { className: "reportStack", title: REPORT_AGE.map(([k, label]) => `${label}: ${reportMoney(a[k], true)}`).join(", ") },
+              el("td", null, el("strong", null, reportMoney(a.total))),
+              el("td", { style: { minWidth: 140 } }, el("div", { className: "reportStack", title: REPORT_AGE.map(([k, label]) => `${label}: ${reportMoney(a[k])}`).join(", ") },
                 REPORT_AGE.map(([k, , color]) => Number(a[k]) > 0 && el("span", { key: k, style: { width: `${a[k] / a.total * 100}%`, background: color } })))),
-              ...REPORT_AGE.map(([k]) => el("td", { key: k }, Number(a[k]) ? reportMoney(a[k], true) : "·"))))))));
+              ...REPORT_AGE.map(([k]) => el("td", { key: k }, Number(a[k]) ? reportMoney(a[k]) : "·"))))))));
 }
 
 function EconomicsReport({ data }) {
@@ -9171,22 +9057,25 @@ function ReportsPage() {
   // first. A tab per report instead of six boxes to open.
   const [tab, setTab] = React.useState(() => (SECTS.some((x) => x.key === asked) ? asked : SECTS[0].key));
   const current = SECTS.find((x) => x.key === tab) || SECTS[0];
+  // Availability looks forward with its own dates (Nov 17), so the past
+  // period and its comparison are not shown with it.
+  const pastOn = reportsOn && current.key !== "availability";
   const days = range.from && range.to ? Math.round((Date.parse(range.to) - Date.parse(range.from)) / 86400000) + 1 : 0;
   return el("div", { className: "page companySetup reports" },
     el("header", { className: "listHead" },
       el("h1", { className: "page__title" }, "Reports"),
-      reportsOn && days > 0 && el("span", { className: "reports__range" },
+      pastOn && days > 0 && el("span", { className: "reports__range" },
         `${shortDay(range.from)} to ${shortDay(range.to)}, compared with the ${days} day${days === 1 ? "" : "s"} before`)),
     el("div", { className: "listTools reports__tools" },
       isExec && el("select", { className: "flInput reports__branch", "aria-label": "Branch", value: branch, onChange: (e) => setBranch(e.target.value) },
         el("option", { value: "company" }, "Whole company"),
         branches.map((b) => el("option", { key: b.id, value: b.id }, b.name))),
-      reportsOn && el("div", { className: "segmented", role: "radiogroup", "aria-label": "Dates" },
+      pastOn && el("div", { className: "segmented", role: "radiogroup", "aria-label": "Dates" },
         REPORT_PRESETS.map(([k, label]) => el("button", { key: k, type: "button", role: "radio", "aria-checked": preset === k,
           className: `segmented__opt${preset === k ? " segmented__opt--on" : ""}`, onClick: () => setPreset(k) }, label))),
-      reportsOn && preset === "custom" && el("div", { className: "reports__custom" },
-        el("input", { className: "flInput", type: "date", "aria-label": "From", value: custom.from, max: custom.to, onChange: (e) => setCustom((c) => ({ ...c, from: e.target.value })) }),
-        el("input", { className: "flInput", type: "date", "aria-label": "To", value: custom.to, min: custom.from, onChange: (e) => setCustom((c) => ({ ...c, to: e.target.value })) }))),
+      pastOn && preset === "custom" && el("div", { className: "reports__custom" },
+        el(DateField, { className: "flInput", ariaLabel: "From", value: custom.from, max: custom.to, onChange: (v) => setCustom((c) => ({ ...c, from: v })) }),
+        el(DateField, { className: "flInput", ariaLabel: "To", value: custom.to, min: custom.from, onChange: (v) => setCustom((c) => ({ ...c, to: v })) }))),
     reportsOn && data && el(ReportRecommendations, { items: data.recommend, here }),
     el("nav", { className: "tabs", role: "tablist", "aria-label": "Reports" },
       SECTS.map(({ key, title }) => el("button", { key, type: "button", role: "tab", id: `report-tab-${key}`, "aria-selected": key === current.key, "aria-controls": `report-${key}`,
@@ -10352,6 +10241,7 @@ const PARTNER_REFUSALS = {
   staff_email: "That address belongs to someone on your staff. Use their work address at the partner.",
   already_joined: "That person has already joined the portal.", not_found: "That's no longer waiting. It may have been handled already.",
   too_long: "Keep the bank details under 600 characters.",
+  no_branch: "Pick at least one branch they book at.",
 };
 const partnerRefusal = (r) => PARTNER_REFUSALS[r] || "That didn't work. Try again.";
 let partnerCountCache = { at: 0, value: null, pending: null };
@@ -10378,8 +10268,23 @@ function PartnersPage() {
   const [adding, setAdding] = React.useState(false);
   const [newP, setNewP] = React.useState({ name: "", kind: "body_shop" });
   const [inviteFor, setInviteFor] = React.useState("");
-  const [invite, setInvite] = React.useState({ name: "", email: "" });
+  const [invite, setInvite] = React.useState({ name: "", email: "", branches: [] });
   const [links, setLinks] = React.useState({});
+  // The company's branches, and the one this person is working at, so an
+  // invite ties the partner to the inviting branch unless others are picked
+  // (Nov 17). The picker shows only for a company with more than one.
+  const [inviteBranches, setInviteBranches] = React.useState({ list: [], here: "" });
+  React.useEffect(() => {
+    if (!isAdmin) return undefined;
+    let live = true;
+    Promise.all([supabase.from("locations").select("id,name,active").order("name"), supabase.rpc("my_acting_location")]).then(([l, a]) => {
+      if (!live) return;
+      setInviteBranches({ list: (l.data || []).filter((b) => b.active !== false),
+        here: (a.data && a.data.ok && a.data.locationId) || currentUser?.locationId || "" });
+    }).catch(() => null);
+    return () => { live = false; };
+  }, [isAdmin]); // eslint-disable-line react-hooks/exhaustive-deps
+  const startInvite = (p) => { setInviteFor(p.id); setInvite({ name: "", email: "", branches: inviteBranches.here ? [inviteBranches.here] : [] }); };
   const [settings, setSettings] = React.useState(null);
   const load = React.useCallback(async () => {
     const { data: d, error: err } = await supabase.rpc("partners_overview");
@@ -10406,7 +10311,8 @@ function PartnersPage() {
   const fmt = (iso) => (iso ? new Date(`${String(iso).slice(0, 10)}T12:00:00`).toLocaleDateString("en-CA", { month: "short", day: "numeric" }) : "");
   const waiting = data.requests.length + data.extensions.length + data.transfers.length;
   const sendInvite = async (p) => {
-    const d = await act(`invite:${p.id}`, "invite_partner_user", { p_partner_id: p.id, p_name: invite.name, p_email: invite.email });
+    const d = await act(`invite:${p.id}`, "invite_partner_user", { p_partner_id: p.id, p_name: invite.name, p_email: invite.email,
+      p_location_ids: invite.branches.length ? invite.branches : null });
     if (!d) return;
     let link = `${window.location.origin}/partner#invite=${d.token}`;
     let sent = false;
@@ -10417,7 +10323,7 @@ function PartnersPage() {
       if (out && out.ok) { sent = !!out.sent; link = out.link || link; }
     } catch (e) { /* the link below still works */ }
     setLinks((l) => ({ ...l, [d.id]: link }));
-    setInvite({ name: "", email: "" }); setInviteFor("");
+    setInvite({ name: "", email: "", branches: [] }); setInviteFor("");
     flash(sent ? `Invite sent to ${d.email}.` : `Invite made for ${d.email}. Copy the link below and send it to them.`);
   };
   return el("div", { className: "page partners" },
@@ -10487,12 +10393,19 @@ function PartnersPage() {
                     el("div", { className: "partners__inviteRow" },
                       el(Field, { label: "Name", htmlFor: `inv-name-${p.id}` }, el("input", { id: `inv-name-${p.id}`, className: "flInput", value: invite.name, maxLength: 80, autoFocus: true, onChange: (e) => setInvite({ ...invite, name: e.target.value }) })),
                       el(Field, { label: "Work email", htmlFor: `inv-email-${p.id}` }, el("input", { id: `inv-email-${p.id}`, className: "flInput", type: "email", inputMode: "email", value: invite.email, maxLength: 200, onChange: (e) => setInvite({ ...invite, email: e.target.value }) }))),
+                    inviteBranches.list.length > 1 && el("fieldset", { className: "partners__branches" },
+                      el("legend", null, "Books at"),
+                      inviteBranches.list.map((b) => el("label", { key: b.id, className: "partners__branch" },
+                        el("input", { type: "checkbox", checked: invite.branches.includes(b.id),
+                          onChange: (e) => setInvite({ ...invite, branches: e.target.checked ? [...invite.branches, b.id] : invite.branches.filter((x) => x !== b.id) }) }),
+                        el("span", null, b.name, b.id === inviteBranches.here && el("small", null, " (this branch)"))))),
                     el(FieldError, { text: error[`invite:${p.id}`] }),
                     el("div", { className: "partners__formActions" }, el(Button, { variant: "quiet", onClick: () => setInviteFor("") }, "Cancel"),
-                      el(Button, { type: "submit", disabled: !invite.name.trim() || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(invite.email.trim()), loading: busy === `invite:${p.id}` }, "Send invite")))
+                      el(Button, { type: "submit", disabled: !invite.name.trim() || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(invite.email.trim())
+                        || (inviteBranches.list.length > 1 && invite.branches.length === 0), loading: busy === `invite:${p.id}` }, "Send invite")))
                 : el("div", { className: "partners__formActions" },
                     el(Button, { variant: "quiet", onClick: () => act(`p:${p.id}`, "save_partner", { p_id: p.id, p_name: p.name, p_kind: p.kind, p_active: !p.active }) }, p.active ? "Turn off" : "Turn on"),
-                    p.active && el(Button, { variant: "secondary", onClick: () => { setInviteFor(p.id); setInvite({ name: "", email: "" }); } }, "Invite someone")))))),
+                    p.active && el(Button, { variant: "secondary", onClick: () => startInvite(p) }, "Invite someone")))))),
 
     el("section", { className: "partners__section" },
       el("h2", { className: "partners__h2" }, "How partners book"),
@@ -15681,8 +15594,14 @@ function notificationAge(iso) {
 // What needs doing first, then the ranges, soonest first with sold out above
 // low, then the resolved ones.
 const NOTE_RANGE_KINDS = ["class_sold_out", "class_low"];
+// What the bell counts (Nov 17): only what someone has to act on. A staff
+// member waiting to be let in, and a class booked past the cars there are
+// (a transfer or a call is needed). Sold out and low dates, new bookings,
+// searches and renters' own changes are there to read, not counted.
+const BELL_ATTENTION_KINDS = ["staff_pending", "class_shortage"];
+const needsAttention = (n) => BELL_ATTENTION_KINDS.includes(n.kind);
 function notificationOrder(a, b) {
-  const group = (n) => (n.resolvedAt ? 2 : NOTE_RANGE_KINDS.includes(n.kind) ? 1 : 0);
+  const group = (n) => (n.resolvedAt ? 2 : needsAttention(n) ? 0 : NOTE_RANGE_KINDS.includes(n.kind) ? 1 : 0.5);
   return group(a) - group(b)
     || (group(a) > 0 ? String(a.rangeFrom || "").localeCompare(String(b.rangeFrom || "")) : 0)
     || (group(a) > 0 ? NOTE_RANGE_KINDS.indexOf(a.kind) - NOTE_RANGE_KINDS.indexOf(b.kind) : 0)
@@ -15705,7 +15624,8 @@ function NotificationBell() {
     const [list, count] = await Promise.all([
       supabase.from("notifications").select("id,kind,title,body,link,locationId,createdAt,readAt,rangeFrom,resolvedAt")
         .order("createdAt", { ascending: false }).limit(200),
-      supabase.from("notifications").select("id", { count: "exact", head: true }).is("readAt", null).is("resolvedAt", null),
+      supabase.from("notifications").select("id", { count: "exact", head: true }).is("readAt", null).is("resolvedAt", null)
+        .in("kind", BELL_ATTENTION_KINDS),
     ]);
     if (list.error) { setError("Notifications could not be loaded."); return; }
     setError("");
@@ -15786,7 +15706,7 @@ function NotificationBell() {
   return el(React.Fragment, null,
     el("button", {
       ref: btnRef, type: "button", onClick: toggle,
-      "aria-label": unread ? `Notifications, ${unread} unread` : "Notifications",
+      "aria-label": unread ? `Notifications, ${unread} need${unread === 1 ? "s" : ""} attention` : "Notifications",
       "aria-expanded": open, "aria-haspopup": "true",
       style: {
         marginLeft: "auto", position: "relative", display: "inline-flex", alignItems: "center", gap: "6px",
@@ -16023,7 +15943,19 @@ function Sidebar({ collapsed, onToggle }) {
     window.addEventListener("resize", place);
     return () => { clearTimeout(t); window.removeEventListener("resize", place); };
   }, [location.pathname, collapsed]);
-  return el("aside", { className: collapsed ? "sidebar sidebar--collapsed" : "sidebar", ref: asideRef },
+  // The menu scrolls between the logo and the signed-in person, so its last
+  // items can never sit behind the footer (Nov 17: Partners and below did).
+  const [more, setMore] = React.useState(false);
+  React.useLayoutEffect(() => {
+    const box = asideRef.current;
+    if (!box) return undefined;
+    const check = () => setMore(box.scrollHeight - box.scrollTop - box.clientHeight > 4);
+    check();
+    box.addEventListener("scroll", check, { passive: true });
+    window.addEventListener("resize", check);
+    return () => { box.removeEventListener("scroll", check); window.removeEventListener("resize", check); };
+  }, [collapsed, currentUser?.role]);
+  return el("aside", { className: collapsed ? "sidebar sidebar--collapsed" : "sidebar" },
     el("div", { className: "sidebar__top" },
       el("span", { className: "sidebar__logo" }, fleetrLogo("light", 26)),
       el("span", { className: "sidebar__icon" }, fleetrIcon("light", 22)),
@@ -16032,6 +15964,7 @@ function Sidebar({ collapsed, onToggle }) {
         "aria-label": collapsed ? "Expand sidebar" : "Collapse sidebar", title: collapsed ? "Expand sidebar" : "Collapse sidebar",
       }, el("svg", { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2.2, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
         el("path", { d: collapsed ? "M9 18l6-6-6-6" : "M15 18l-6-6 6-6" })))),
+    el("div", { className: `sidebar__scroll${more ? " sidebar__scroll--more" : ""}`, ref: asideRef },
     marker && el("span", { className: "nav__marker", "aria-hidden": "true",
       style: { transform: `translateY(${marker.top}px)`, left: `${marker.left}px`, width: `${marker.width}px`, height: `${marker.height}px` } }),
     visibleNavSections(currentUser?.role).map((section) =>
@@ -16047,11 +15980,35 @@ function Sidebar({ collapsed, onToggle }) {
             },
               el(NavIcon, { path: item.path }),
               el("span", { className: "nav__label" }, item.label),
-              badges[item.path] > 0 && el("span", { className: "nav__badge", "aria-label": `${badges[item.path]} overdue` }, badges[item.path])))))),
+              badges[item.path] > 0 && el("span", { className: "nav__badge", "aria-label": `${badges[item.path]} overdue` }, badges[item.path]))))))),
     el("div", { className: "sidebar__foot" }, el(NavUser, null)));
 }
 
 // ─── PlaceholderPage ─────────────────────────────────────────────────────────
+
+// An address the app has no page for (Nov 17, replacing the placeholder):
+// what happened in plain words, the address itself so a typo shows, the way
+// home, and the pages people most often meant.
+function NotFoundPage() {
+  const el = React.createElement;
+  const navigate = useNavigate();
+  const location = useLocation();
+  const asked = `${location.pathname}${location.search}`;
+  const links = [["/reservations", "Reservations", "calendar"], ["/rental-agreements", "Rental agreements", "file"], ["/fleet/vehicles", "Vehicles", "car"]];
+  return el("div", { className: "page notFound" },
+    el("div", { className: "notFound__card", role: "main", "aria-labelledby": "notFoundTitle" },
+      el("span", { className: "notFound__code", "aria-hidden": "true" }, "404"),
+      el("h1", { className: "notFound__title", id: "notFoundTitle" }, "This page isn't here"),
+      el("p", { className: "notFound__text" }, "The address may have a typo, or the page has moved. Nothing was changed."),
+      el("code", { className: "notFound__path", title: asked }, asked),
+      el("div", { className: "notFound__actions" },
+        el(Button, { onClick: () => navigate("/") }, "Go to Home"),
+        window.history.length > 1 && el(Button, { variant: "secondary", onClick: () => navigate(-1) }, "Go back")),
+      el("nav", { className: "notFound__links", "aria-label": "Common pages" },
+        el("span", { className: "notFound__linksLabel" }, "Or open"),
+        links.map(([to, label, icon]) => el("button", { key: to, type: "button", className: "notFound__link", onClick: () => navigate(to) },
+          el(Icon, { name: icon, size: 16 }), label)))));
+}
 
 function PlaceholderPage({ title }) {
   return React.createElement(
@@ -17870,6 +17827,8 @@ function RentalAgreementsPage() {
   const [returnAnchor,    setReturnAnchor]    = React.useState({ x: 0, y: 0 });
   useAnchorFollow(pickupOpen, pickupAnchor, setPickupAnchor, () => setPickupOpen(false));
   useAnchorFollow(returnOpen, returnAnchor, setReturnAnchor, () => setReturnOpen(false));
+  usePopoverDismiss(pickupOpen, () => setPickupOpen(false));
+  usePopoverDismiss(returnOpen, () => setReturnOpen(false));
   const [returnMonth,     setReturnMonth]     = React.useState(null);
 
   const todayIso = isoOffset(0);
@@ -20329,7 +20288,7 @@ function useChargeTotals({ lineItems, payments, salesTaxes, billToCategory }, { 
       const { data, error } = await fetchChargeTotals({ lineItems, payments, salesTaxes, billToCategory });
       if (!live) return;
       if (error || !data) console.warn("charge_totals failed:", error);
-      else setTotals(data);
+      else setTotals({ ...data, forKey: key });
     }, 150);
     return () => { live = false; clearTimeout(timer); };
   }, [key, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -20453,6 +20412,19 @@ function customerCandidate({ resInfoForm, ratesForm, billToForm, customerVehicle
     vehicleMake:     customerVehicleForm.make,
     vehicleModel:    customerVehicleForm.model,
   };
+}
+
+// One field of a candidate as the unsaved check and Save compare it: money
+// by its value, so the saved "59.00" and a typed or refilled "59" are the
+// same rate. Opening a page must never look like an edit (Nov 17).
+const CANDIDATE_MONEY = new Set(["dailyRate"]);
+function candidateValue(key, v) {
+  const t = String(v ?? "").trim();
+  if (CANDIDATE_MONEY.has(key) && t !== "" && Number.isFinite(Number(t))) return String(Number(t));
+  return t;
+}
+function candidateChanges(before, after) {
+  return Object.fromEntries(Object.entries(after).filter(([k, v]) => candidateValue(k, before[k]) !== candidateValue(k, v)));
 }
 
 // The bar at the foot of the screen while a page has unsaved changes:
@@ -20656,6 +20628,7 @@ function CustomerPageView({ onDiscard }) {
   const [openCal,  setOpenCal]  = React.useState(null);
   const [calAnchor, setCalAnchor] = React.useState({ x: 0, y: 0 });
   useAnchorFollow(openCal != null, calAnchor, setCalAnchor, () => setOpenCal(null));
+  usePopoverDismiss(openCal != null, () => setOpenCal(null));
   const [calMonths, setCalMonths] = React.useState({});
   const todayIso = isoOffset(0);
 
@@ -20809,8 +20782,10 @@ function CustomerPageView({ onDiscard }) {
   React.useEffect(() => { fetchRecord(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Hydrate all form states whenever localRecord changes (initial load or post-save re-fetch)
+  const hydratedFrom = React.useRef(null);
   React.useEffect(() => {
     if (!localRecord) return;
+    hydratedFrom.current = localRecord;
     const forms = customerFormsFrom(localRecord);
     setResInfoForm(forms.resInfoForm);
     setRatesForm(forms.ratesForm);
@@ -20883,9 +20858,11 @@ function CustomerPageView({ onDiscard }) {
   // Charges and payments are changed by hand; the reservation's fields are
   // compared with what is saved.
   const [chargesEdited, setChargesEdited] = React.useState(false);
-  const dirty = !!localRecord && (chargesEdited
-    || JSON.stringify(customerCandidate({ resInfoForm, ratesForm, billToForm, customerVehicleForm }))
-       !== JSON.stringify(customerCandidate(customerFormsFrom(localRecord))));
+  // Only once the forms hold the record: on the render that brings a record
+  // in, the forms are still empty until the hydrate effect has run.
+  const dirty = !!localRecord && hydratedFrom.current === localRecord && (chargesEdited
+    || Object.keys(candidateChanges(customerCandidate(customerFormsFrom(localRecord)),
+         customerCandidate({ resInfoForm, ratesForm, billToForm, customerVehicleForm }))).length > 0);
   useLeaveGuard(dirty && saveStatus !== "saving");
 
   const handleSave = async () => {
@@ -20900,11 +20877,7 @@ function CustomerPageView({ onDiscard }) {
       // own format ("19:19" became "07:19 PM", "8:00" became "800"), with
       // only a payment added.
       const before = localRecord ? customerCandidate(customerFormsFrom(localRecord)) : {};
-      const patch = Object.fromEntries(
-        Object.entries(candidate).filter(
-          ([k, v]) => String(before[k] ?? "") !== String(v ?? "")
-        )
-      );
+      const patch = candidateChanges(before, candidate);
       if (Object.keys(patch).length > 0) {
         const res = await supabase.from("reservations").update(patch).eq("resCode", resCode);
         console.log("reservations save — patch:", patch, "response:", res);
@@ -21448,6 +21421,18 @@ function CustomerPageView({ onDiscard }) {
     billToTotal, customerTotal, subTotal, allTaxLines, billToTaxLines, customerTaxLines,
     billToDue, customerDue, grandTotal, billToPaid, customerPaid, totalPaid, billToBalance, customerBalance,
   } = chargeTotalsNow || NO_CHARGE_TOTALS;
+  // Until charge_totals has answered for this reservation's own lines (the
+  // record in the forms, its agreement's charges in), every total is a
+  // shimmer the width of a figure, never $0.00 from the empty default lines
+  // (Nov 17). After that, an edit keeps the last totals until the new ones
+  // come.
+  const pageSettled = !!localRecord && hydratedFrom.current === localRecord && (!ra?.id || raHydratedId.current === ra.id);
+  const totalsFresh = !!chargeTotalsNow
+    && chargeTotalsNow.forKey === JSON.stringify([lineItems || [], payments || [], salesTaxes || [], btSrcCat || null]);
+  const [totalsShown, setTotalsShown] = React.useState(false);
+  React.useEffect(() => { if (pageSettled && totalsFresh) setTotalsShown(true); }, [pageSettled, totalsFresh]);
+  const totalMoney = (n, suffix = "") => totalsShown ? fmtMoney(n) + suffix
+    : React.createElement("span", { className: "skelText chargesSkel", role: "status", "aria-label": "Loading" }, "$000.00");
 
   // What each party owes as shown here, for a payment link; null until the
   // totals are in. Charge lines priced here since they were saved are saved
@@ -21562,12 +21547,12 @@ function CustomerPageView({ onDiscard }) {
       ),
       React.createElement("div", { className: "chargesTotalRow chargesTotalRow--section" },
         React.createElement("span", { className: "chargesTotalLabel" }, `${title.split(" ")[0]} Total`),
-        React.createElement("span", { className: "chargesTotalValue" }, fmtMoney(sectionTotal))
+        React.createElement("span", { className: "chargesTotalValue" }, totalMoney(sectionTotal))
       ),
       taxLines.map((l) =>
         React.createElement("div", { key: l.label, className: "chargesTotalRow" },
           React.createElement("span", { className: "chargesTotalLabel" }, l.label),
-          React.createElement("span", { className: "chargesTotalValue" }, fmtMoney(l.amount))
+          React.createElement("span", { className: "chargesTotalValue" }, totalMoney(l.amount))
         ))
     );
 
@@ -21610,7 +21595,7 @@ function CustomerPageView({ onDiscard }) {
       // Grand Total
       React.createElement("div", { className: "chargesTotalRow chargesTotalRow--grand" },
         React.createElement("span", { className: "chargesTotalLabel" }, "Grand Total"),
-        React.createElement("span", { className: "chargesTotalValue" }, fmtMoney(grandTotal))
+        React.createElement("span", { className: "chargesTotalValue" }, totalMoney(grandTotal))
       )
     ),
 
@@ -21623,17 +21608,17 @@ function CustomerPageView({ onDiscard }) {
         ? React.createElement("div", { className: "chargesInfoRow" },
             React.createElement("div", { className: "chargesInfoItem" },
               React.createElement("span", { className: "chargesInfoLabel" }, "Balance owing"),
-              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(grandTotal - totalPaid))
+              React.createElement("span", { className: "chargesInfoValue" }, totalMoney(grandTotal - totalPaid))
             )
           )
         : React.createElement("div", { className: "chargesInfoRow" },
             React.createElement("div", { className: "chargesInfoItem" },
               React.createElement("span", { className: "chargesInfoLabel" }, "Bill-To Owes"),
-              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(Math.max(0, billToBalance)))
+              React.createElement("span", { className: "chargesInfoValue" }, totalMoney(Math.max(0, billToBalance)))
             ),
             React.createElement("div", { className: "chargesInfoItem" },
               React.createElement("span", { className: "chargesInfoLabel" }, "Customer Owes"),
-              React.createElement("span", { className: "chargesInfoValue" }, fmtMoney(Math.max(0, customerBalance)))
+              React.createElement("span", { className: "chargesInfoValue" }, totalMoney(Math.max(0, customerBalance)))
             )
           ),
       // Payments list
@@ -21704,7 +21689,7 @@ function CustomerPageView({ onDiscard }) {
       btSrcCat === "Retail" && React.createElement("div", { className: "paymentsTotals" },
         React.createElement("div", { className: "chargesTotalRow" },
           React.createElement("span", { className: "chargesTotalLabel" }, "Paid"),
-          React.createElement("span", { className: "chargesTotalValue" }, fmtMoney(totalPaid))
+          React.createElement("span", { className: "chargesTotalValue" }, totalMoney(totalPaid))
         ),
         React.createElement("div", { className: "chargesTotalRow chargesTotalRow--balance" },
           React.createElement("span", { className: "chargesTotalLabel" }, "Balance owing"),
@@ -21712,13 +21697,13 @@ function CustomerPageView({ onDiscard }) {
             className: grandTotal - totalPaid > 0 ? "chargesTotalValue chargesTotalValue--owing"
               : grandTotal - totalPaid < 0 ? "chargesTotalValue chargesTotalValue--credit"
               : "chargesTotalValue",
-          }, fmtMoney(Math.abs(grandTotal - totalPaid)) + (grandTotal - totalPaid < 0 ? " CR" : grandTotal - totalPaid > 0 ? " owing" : ""))
+          }, totalMoney(Math.abs(grandTotal - totalPaid), grandTotal - totalPaid < 0 ? " CR" : grandTotal - totalPaid > 0 ? " owing" : ""))
         )
       ),
       btSrcCat !== "Retail" && React.createElement("div", { className: "paymentsTotals" },
         React.createElement("div", { className: "chargesTotalRow" },
           React.createElement("span", { className: "chargesTotalLabel" }, "Bill-To Paid"),
-          React.createElement("span", { className: "chargesTotalValue" }, fmtMoney(billToPaid))
+          React.createElement("span", { className: "chargesTotalValue" }, totalMoney(billToPaid))
         ),
         React.createElement("div", { className: "chargesTotalRow chargesTotalRow--balance" },
           React.createElement("span", { className: "chargesTotalLabel" }, "Bill-To Balance"),
@@ -21726,11 +21711,11 @@ function CustomerPageView({ onDiscard }) {
             className: billToBalance > 0 ? "chargesTotalValue chargesTotalValue--owing"
               : billToBalance < 0 ? "chargesTotalValue chargesTotalValue--credit"
               : "chargesTotalValue",
-          }, fmtMoney(Math.abs(billToBalance)) + (billToBalance < 0 ? " CR" : billToBalance > 0 ? " owing" : ""))
+          }, totalMoney(Math.abs(billToBalance), billToBalance < 0 ? " CR" : billToBalance > 0 ? " owing" : ""))
         ),
         React.createElement("div", { className: "chargesTotalRow" },
           React.createElement("span", { className: "chargesTotalLabel" }, "Customer Paid"),
-          React.createElement("span", { className: "chargesTotalValue" }, fmtMoney(customerPaid))
+          React.createElement("span", { className: "chargesTotalValue" }, totalMoney(customerPaid))
         ),
         React.createElement("div", { className: "chargesTotalRow chargesTotalRow--balance" },
           React.createElement("span", { className: "chargesTotalLabel" }, "Customer Balance"),
@@ -21738,7 +21723,7 @@ function CustomerPageView({ onDiscard }) {
             className: customerBalance > 0 ? "chargesTotalValue chargesTotalValue--owing"
               : customerBalance < 0 ? "chargesTotalValue chargesTotalValue--credit"
               : "chargesTotalValue",
-          }, fmtMoney(Math.abs(customerBalance)) + (customerBalance < 0 ? " CR" : customerBalance > 0 ? " owing" : ""))
+          }, totalMoney(Math.abs(customerBalance), customerBalance < 0 ? " CR" : customerBalance > 0 ? " owing" : ""))
         )
       )
     )
@@ -22093,8 +22078,7 @@ function AppRoutes() {
       ),
     React.createElement(Route, {
       path: "*",
-      element: React.createElement(PlaceholderPage, { title: "Not Found" }),
-
+      element: React.createElement(NotFoundPage),
     })
   );
 }
@@ -22913,7 +22897,7 @@ body, * {
     left: 0;
     bottom: 0;
     width: 290px;
-    overflow-y: auto;
+    overflow: hidden;
     /* Scrolls by wheel, trackpad and touch, with no scrollbar drawn and no
        gutter kept for one, so the menu sits flush against the page. */
     scrollbar-width: none;
@@ -26591,9 +26575,15 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 }
 /* Stays at the bottom of the window when the menu is taller than it. The
    sidebar's own 16px bottom padding is taken back so no strip shows below. */
+/* Nov 17: three rows, the logo, the menu and the person. Only the menu
+   scrolls, so nothing can be hidden behind the footer; a soft fade at its
+   foot says there is more below. */
+.sidebar__scroll{ position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
+  scrollbar-width: none; -ms-overflow-style: none; padding-bottom: 8px; }
+.sidebar__scroll::-webkit-scrollbar{ display: none; width: 0; height: 0; }
+.sidebar__scroll--more{ -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to bottom, #000 calc(100% - 40px), transparent); }
 .sidebar__foot{
-  margin-top: auto; padding: 12px 14px 20px; border-top: 1px solid rgba(255, 255, 255, 0.08);
-  position: sticky; bottom: -16px; z-index: 2; background: #1F1E1D;
+  flex: none; padding: 12px 14px 4px; border-top: 1px solid rgba(255, 255, 255, 0.08); background: #1F1E1D;
 }
 .navUser{
   display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px;
@@ -26789,6 +26779,7 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
   box-shadow: none !important;
 }
 @keyframes skelSheen{ from{ background-position: 150% 0; } to{ background-position: -50% 0; } }
+.chargesSkel{ display: inline-block; line-height: 1.2; }
 .skelText{ border-radius: 6px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 .skelBox::before, .skelBox::after{ visibility: hidden; animation: none; }
 .skelPage ::placeholder{ color: transparent; }
@@ -26940,7 +26931,8 @@ select.resFormInput, select.addVehicleInput, select.resvSearchInput, select.audi
   cursor: pointer;
   transition: background-color 0.12s ease;
 }
-.dateFieldPanel__day:hover{ background: rgba(31, 30, 29, 0.06); }
+.dateFieldPanel__day:hover:not(:disabled){ background: rgba(31, 30, 29, 0.06); }
+.dateFieldPanel__day:disabled{ color: #C9C7C1; cursor: default; }
 .dateFieldPanel__day--today{ box-shadow: inset 0 0 0 1px #F4845F; font-weight: 600; }
 .dateFieldPanel__day--on, .dateFieldPanel__day--on:hover{ background: #F4845F; box-shadow: none; font-weight: 600; }
 .dateFieldPanel button:focus-visible{ outline: 2px solid rgba(244, 132, 95, 0.6); outline-offset: 1px; }
@@ -27580,9 +27572,12 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
 .listHead{ display: flex; align-items: center; justify-content: space-between; gap: var(--fl-space-4); flex-wrap: wrap; margin-bottom: var(--fl-space-5); }
 .listHead .page__title{ margin: 0; }
 .listTools{ display: flex; align-items: center; gap: var(--fl-space-3); flex-wrap: wrap; margin-bottom: var(--fl-space-4); }
+/* Nov 17: the icon's room is set with the parent class, so the shared
+   .flInput padding declared later cannot take it back (it did, and the icon
+   sat on the placeholder). */
 .listSearch{ position: relative; flex: 1 1 280px; min-width: 0; max-width: 440px; }
 .listSearch__icon{ position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--fl-ink-3); pointer-events: none; }
-.listSearch__input{ padding-left: 40px; min-height: 44px; border-radius: var(--fl-radius-pill); }
+.listSearch .listSearch__input{ padding-left: 40px; min-height: 44px; border-radius: var(--fl-radius-pill); }
 .listTools__dates{ margin: 0; padding: 0; background: none; border: 0; flex-wrap: wrap; }
 .segmented{ display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: var(--fl-radius-pill); background: var(--fl-sunken); flex-wrap: wrap; }
 .segmented__opt{ display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 var(--fl-space-4); border: 0; border-radius: var(--fl-radius-pill); background: none;
@@ -27697,7 +27692,7 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
 .homeHead__actions{ display: flex; align-items: center; gap: var(--fl-space-3); flex: 1 1 420px; justify-content: flex-end; max-width: 620px; }
 .homeSearch{ position: relative; flex: 1; min-width: 0; }
 .homeSearch__icon{ position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--fl-ink-3); pointer-events: none; }
-.homeSearch__input{ padding-left: 40px; min-height: 44px; border-radius: var(--fl-radius-pill); }
+.homeSearch .homeSearch__input{ padding-left: 40px; min-height: 44px; border-radius: var(--fl-radius-pill); }
 .homeSearch__list{ position: absolute; z-index: 40; left: 0; right: 0; top: calc(100% + 6px); list-style: none; margin: 0; padding: 6px; background: var(--fl-surface);
   border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); box-shadow: var(--fl-shadow-md); max-height: 360px; overflow-y: auto; }
 .homeSearch__item{ width: 100%; display: flex; align-items: center; gap: var(--fl-space-3); min-height: 48px; padding: 6px 10px; border: 0; border-radius: var(--fl-radius); background: none;
@@ -27925,6 +27920,18 @@ textarea.flInput{ padding: var(--fl-space-3); min-height: 96px; line-height: var
 .flCard--flat{ box-shadow: none; }
 .flCard__title{ margin: 0 0 4px; font-size: var(--fl-text-md); font-weight: 600; letter-spacing: -0.01em; }
 .flCard__desc{ margin: 0; color: var(--fl-ink-3); font-size: 14px; line-height: var(--fl-leading); }
+/* 404 (Nov 17) */
+.notFound{ display: grid; place-items: center; min-height: 70vh; }
+.notFound__card{ width: 100%; max-width: 520px; display: grid; justify-items: center; gap: var(--fl-space-3); text-align: center; padding: var(--fl-space-8) var(--fl-space-5); }
+.notFound__code{ font-size: 56px; font-weight: 700; letter-spacing: -0.03em; line-height: 1; color: var(--fl-line-strong, #D9D6CF); }
+.notFound__title{ margin: 0; font-size: var(--fl-text-xl, 24px); font-weight: 600; letter-spacing: -0.01em; color: var(--fl-ink); }
+.notFound__text{ margin: 0; max-width: 40ch; color: var(--fl-ink-2); line-height: var(--fl-leading); }
+.notFound__path{ max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px 12px; border-radius: var(--fl-radius); background: var(--fl-sunken); color: var(--fl-ink-2); font-size: 13px; }
+.notFound__actions{ display: flex; gap: var(--fl-space-2); flex-wrap: wrap; justify-content: center; margin-top: var(--fl-space-2); }
+.notFound__links{ display: flex; align-items: center; gap: var(--fl-space-2); flex-wrap: wrap; justify-content: center; margin-top: var(--fl-space-5); padding-top: var(--fl-space-5); border-top: 1px solid var(--fl-line); width: 100%; }
+.notFound__linksLabel{ color: var(--fl-ink-3); font-size: 14px; }
+.notFound__link{ display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 var(--fl-space-3); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-pill); background: var(--fl-surface); color: var(--fl-ink); font: 500 14px/1 var(--fl-font); cursor: pointer; }
+.notFound__link:hover{ border-color: var(--fl-ink-3); }
 .flEmpty, .flError{ display: grid; justify-items: center; gap: var(--fl-space-2); text-align: center; padding: var(--fl-space-9) var(--fl-space-6); }
 .flEmpty__icon, .flError__icon{ width: 48px; height: 48px; display: grid; place-items: center; border-radius: var(--fl-radius-pill); background: var(--fl-sunken); color: var(--fl-ink-3); margin-bottom: var(--fl-space-2); }
 .flError__icon{ background: var(--fl-danger-soft); color: var(--fl-danger); }
@@ -27952,6 +27959,94 @@ textarea.flInput{ padding: var(--fl-space-3); min-height: 96px; line-height: var
 /* Status badges in sentence case, the status colours as they were. */
 .rentalAgreementBadge{ text-transform: none; letter-spacing: 0; font-weight: 600; font-size: 12px; }
 .rentalAgreementBadge--meta{ font-size: 14px; padding: 4px 14px 4px 10px; }
+/* The availability grid (Nov 17): calm. A day with cars is quiet ink on
+   white, running low is the one warm cell, sold out a soft grey with no
+   number, today marked in the header, weekends a shade lighter. */
+.agrid{ display: grid; gap: var(--fl-space-3); }
+.agrid__scroll{ overflow-x: auto; max-width: 100%; border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); background: var(--fl-surface); -webkit-overflow-scrolling: touch; }
+.agrid__scroll:focus-visible{ outline: 2px solid var(--fl-brand); outline-offset: 2px; }
+.agrid__grid{ display: grid; width: 100%; }
+.agrid__corner, .agrid__class{ position: sticky; left: 0; z-index: 1; background: var(--fl-surface); box-shadow: 1px 0 0 var(--fl-line); }
+.agrid__class{ display: flex; align-items: center; min-height: 38px; padding: 0 var(--fl-space-3); border-top: 1px solid var(--fl-line);
+  font: 500 13px/1.2 var(--fl-font); color: var(--fl-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agrid__day{ display: grid; justify-items: center; align-content: end; gap: 2px; padding: 8px 0 6px; color: var(--fl-ink-3); }
+.agrid__day--weekend{ background: #FAF9F6; }
+.agrid__dow{ font-size: 10.5px; font-weight: 500; line-height: 1; text-transform: none; }
+.agrid__num{ font: 600 12px/1 var(--fl-font); color: var(--fl-ink-2); font-variant-numeric: tabular-nums; min-width: 22px; padding: 3px 0; border-radius: 999px; text-align: center; }
+.agrid__day--today .agrid__dow{ color: var(--fl-ink); font-weight: 600; }
+.agrid__day--today .agrid__num{ background: var(--fl-ink); color: #F9F9F7; }
+.agrid__cell{ display: grid; place-items: center; min-height: 38px; padding: 0; margin: 0; border: 0; border-top: 1px solid var(--fl-line); border-radius: 0;
+  background: transparent; font: 500 12.5px/1 var(--fl-font); color: var(--fl-ink-2); font-variant-numeric: tabular-nums; }
+button.agrid__cell{ cursor: pointer; transition: background var(--fl-dur-fast) var(--fl-ease-out); }
+button.agrid__cell:hover{ background: var(--fl-sunken); }
+button.agrid__cell:focus-visible{ outline: 2px solid var(--fl-brand); outline-offset: -2px; }
+.agrid__cell--low{ background: #FFF1E2; color: #8A3B07; font-weight: 600; }
+button.agrid__cell--low:hover{ background: #FFE6CC; }
+.agrid__cell--sold{ background: #F3F2EF; }
+button.agrid__cell--sold:hover{ background: #ECEBE7; }
+.agrid__cell--today{ box-shadow: inset 1px 0 0 rgba(31, 30, 29, 0.12), inset -1px 0 0 rgba(31, 30, 29, 0.12); }
+.agrid__legend{ display: flex; align-items: center; flex-wrap: wrap; gap: var(--fl-space-2) var(--fl-space-5); font-size: 13px; color: var(--fl-ink-3); }
+.agrid__legend > span{ display: inline-flex; align-items: center; gap: 8px; }
+.agrid__swatch{ display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 5px; border: 1px solid var(--fl-line);
+  font: 500 11px/1 var(--fl-font); color: var(--fl-ink-2); background: var(--fl-surface); }
+.agrid__swatch.agrid__cell--low{ color: #8A3B07; font-weight: 600; border-color: #F6D3AE; }
+.agrid__empty{ margin: 0; font-size: 13.5px; color: var(--fl-ink-2); line-height: var(--fl-leading); }
+.agrid__empty strong{ font-weight: 600; color: var(--fl-ink); }
+.agrid__none{ margin: 0; color: var(--fl-ink-3); }
+/* Needs you, grouped (Nov 17) */
+.needsYou__group{ border-bottom: 1px solid #EEEDE9; }
+.needsYou__group:last-child{ border-bottom: 0; }
+.needsYou__groupHead{ display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; padding: 8px 0; border: 0; background: none;
+  font: inherit; color: var(--fl-ink); text-align: left; cursor: pointer; }
+.needsYou__groupHead .needsYou__tag{ grid-row: auto; flex: none; }
+.needsYou__groupLabel{ flex: 1; min-width: 0; font-size: 14px; font-weight: 600; }
+.needsYou__groupHead:hover .needsYou__groupLabel{ text-decoration: underline; text-underline-offset: 3px; }
+.needsYou__chevron{ flex: none; color: var(--fl-ink-3); font-size: 12px; }
+.needsYou--inner{ padding: 0 0 8px var(--fl-space-4); border-left: 2px solid var(--fl-line); margin-left: 6px; }
+.needsYou--inner .needsYou__item{ padding: 8px 0; }
+.needsYou__more{ padding: 6px 0 2px; }
+.needsYou__done{ flex: none; min-height: 36px; padding: 0 12px; border: 1px solid var(--fl-line); border-radius: var(--fl-radius-pill); background: var(--fl-surface);
+  font: 500 13px/1 var(--fl-font); color: var(--fl-ink); cursor: pointer; }
+.needsYou__done:hover:not(:disabled){ border-color: var(--fl-ink-3); }
+@media (max-width: 767px), (pointer: coarse){
+  .needsYou__done{ min-height: 44px; }
+  .needsYou__open{ grid-template-columns: 1fr; }
+  .needsYou__tag{ grid-row: auto; }
+}
+/* Vehicles (Nov 17): fewer coloured blocks. A group's bar is white with
+   its status colour kept as the dot; the count is neutral and shown once. */
+.fleetGroup .fleetGroupHeader{ background: var(--fl-surface); color: var(--fl-ink); border-bottom: 1px solid var(--fl-line); min-height: 48px; }
+.fleetGroup .fleetGroupHeader:hover{ background: var(--fl-sunken); }
+.fleetGroup .fleetGroupHeader::before{ width: 10px; height: 10px; }
+.fleetGroup .fleetGroupCount{ background: var(--fl-sunken) !important; color: var(--fl-ink-2) !important; font-weight: 600; min-width: 28px; text-align: center; }
+.fleetTable td.fleetTable__details{ color: var(--fl-ink-2); font-size: 13.5px; }
+.fleetTable td.fleetTable__none{ color: var(--fl-ink-3); font-style: normal; }
+.fleetTable th:nth-child(1){ width: 120px; } .fleetTable th:nth-child(3){ width: 140px; } .fleetTable th:nth-child(5){ width: 190px; }
+.fleetNotes{ margin: 0 0 var(--fl-space-4); padding: var(--fl-space-4) var(--fl-space-5); border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); background: var(--fl-surface); }
+.fleetNotes__title{ display: flex; align-items: center; gap: 8px; margin: 0 0 var(--fl-space-2); font-size: 14px; font-weight: 600; color: var(--fl-ink); }
+.fleetNotes__title svg{ color: #B4570E; }
+.fleetNotes__list{ margin: 0; padding: 0; list-style: none; display: grid; gap: var(--fl-space-2); }
+.fleetNotes__item{ font-size: 13.5px; line-height: 1.5; color: var(--fl-ink-2); }
+.fleetNotes__head{ font-weight: 600; color: var(--fl-ink); }
+.fleetNotes__plates{ display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.fleetNotes__more{ align-self: center; color: var(--fl-ink-3); font-size: 13px; }
+/* Reports > Availability's own controls (Nov 17) */
+.avail__bar{ display: flex; align-items: center; flex-wrap: wrap; gap: var(--fl-space-2) var(--fl-space-3); margin-bottom: var(--fl-space-3); }
+.avail__bar .avail__from{ width: auto; min-width: 190px; }
+.avail__bar .avail__pick{ width: auto; min-width: 160px; }
+.avail__move{ display: flex; gap: var(--fl-space-2); margin-left: auto; }
+.avail__step{ min-height: 40px; padding: 0 var(--fl-space-3); }
+@media (max-width: 767px), (pointer: coarse){
+  .segmented__opt, .avail__step{ min-height: 44px; }
+  .avail__move{ margin-left: 0; }
+  .avail__bar .avail__from, .avail__bar .avail__pick{ flex: 1 1 160px; }
+}
+/* Partners: which branches an invited partner books at (Nov 17) */
+.partners__branches{ margin: var(--fl-space-3) 0 0; padding: 0; border: 0; display: flex; flex-wrap: wrap; gap: var(--fl-space-2) var(--fl-space-4); }
+.partners__branches legend{ width: 100%; margin-bottom: var(--fl-space-2); font-size: 13px; font-weight: 600; color: var(--fl-ink-2); }
+.partners__branch{ display: inline-flex; align-items: center; gap: 8px; min-height: 44px; font-size: 14px; color: var(--fl-ink); cursor: pointer; }
+.partners__branch input{ width: 18px; height: 18px; accent-color: var(--fl-brand); }
+.partners__branch small{ color: var(--fl-ink-3); }
 /* end fleetr design system 1.0 */
 `;
 document.head.appendChild(style);
@@ -28004,7 +28099,7 @@ const isoToDate = (iso) => {
 };
 const DATE_FIELD_CHEVRON = { prev: "M15 18l-6-6 6-6", next: "M9 18l6-6-6-6" };
 
-function DateField({ value, onChange, className, placeholder, clearable, disabled, ariaLabel, invalid: bad }) {
+function DateField({ value, onChange, className, placeholder, clearable, disabled, ariaLabel, invalid: bad, min, max, style }) {
   const el = React.createElement;
   const picked = isoToDate(value);
   const [open, setOpen] = React.useState(false);
@@ -28070,7 +28165,7 @@ function DateField({ value, onChange, className, placeholder, clearable, disable
   const trigger = el("button", {
       type: "button", ref: triggerRef, disabled,
       className: `${className || "resFormInput"} dateField${picked ? "" : " dateField--empty"}${open ? " dateField--open" : ""}`,
-      "aria-haspopup": "dialog", "aria-expanded": open, "aria-label": ariaLabel, ...invalid(!!bad),
+      "aria-haspopup": "dialog", "aria-expanded": open, "aria-label": ariaLabel, ...invalid(!!bad), style,
       onClick: toggle,
     },
       el("span", { className: "dateField__text" }, picked
@@ -28102,6 +28197,9 @@ function DateField({ value, onChange, className, placeholder, clearable, disable
                   key: iso, type: "button", role: "gridcell", "aria-selected": iso === value,
                   "aria-label": isoToDate(iso).toLocaleDateString("en-CA", { weekday: "long", month: "long", day: "numeric", year: "numeric" }),
                   className: `dateFieldPanel__day${iso === value ? " dateFieldPanel__day--on" : ""}${iso === todayIso ? " dateFieldPanel__day--today" : ""}`,
+                  // Outside min and max (Nov 17: the browser's date boxes this
+                  // replaced had them).
+                  disabled: (min && iso < min) || (max && iso > max) || undefined,
                   onClick: () => commit(iso),
                 }, Number(iso.slice(-2))))))),
       document.body));

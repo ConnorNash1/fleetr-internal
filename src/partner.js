@@ -34,6 +34,7 @@ const REASONS = {
   already_asked: "You've already asked to extend this rental. The branch will answer soon.",
   bad_date: "Pick a new return date after the current one.", already_sent: "You've already told the branch about this transfer.",
   not_found: "That's no longer here. Reload to see the latest.", try_again: "Try again in a moment.",
+  bad_limit: "Check the daily limit.", over_limit: "That class costs more than the daily limit. Pick one within it.",
 };
 const reasonText = (r) => REASONS[r] || "That didn't work. Try again, or call the branch.";
 const rpc = async (fn, args) => {
@@ -156,22 +157,28 @@ function Availability({ home, branchId, setBranchId, onBook }) {
     h("div", { className: "foot" }, h(Btn, { lg: true, onClick: onBook }, "Book a replacement rental")));
 }
 
-// ── Booking: the repair vehicle, then when, then who ──
+// ── Booking (Nov 17): what an insurer or shop has to hand comes first: the
+// claim or repair order number, the renter, the approved class or a daily
+// limit, and the estimated repair days. The car being repaired, its VIN, an
+// email and a note are optional, after. One form, one button.
+const addDays = (iso, n) => { const d = new Date(`${iso}T12:00:00`); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+const classRate = (c) => (c && c.dailyRate != null && c.dailyRate !== "" ? Number(c.dailyRate) : null);
+// Within a daily limit: classes priced for this partner at or under it, the
+// dearest first, so the default is the best car the limit pays for.
+function classesWithin(classes, limit) {
+  return (classes || []).filter((c) => classRate(c) != null && classRate(c) <= limit).sort((x, y) => classRate(y) - classRate(x));
+}
 function Book({ home, branchId, onBooked, onCancel }) {
   const insurer = home.partner.kind === "insurer";
-  const [step, setStep] = React.useState(0);
-  const [v, setV] = React.useState({ vin: "", year: "", make: "", model: "", bodyClass: "" });
+  const [f, setF] = React.useState({ reference: "", firstName: "", lastName: "", phone: "", approve: "class", classId: "", limit: "",
+    days: "", pickDate: isoDay(1), pickTime: "09:00", locationId: branchId || (home.branches[0] && home.branches[0].id) || "", email: "", note: "" });
+  const [v, setV] = React.useState({ vin: "", year: "", make: "", model: "" });
+  const [more, setMore] = React.useState(false);
   const [decoding, setDecoding] = React.useState(false);
-  const [classId, setClassId] = React.useState("");
-  const [f, setF] = React.useState({ locationId: branchId || (home.branches[0] && home.branches[0].id) || "", pickDate: isoDay(1), pickTime: "09:00",
-    retDate: isoDay(8), retTime: "09:00", firstName: "", lastName: "", phone: "", email: "", reference: "", note: "" });
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState("");
-  const set = (k, val) => setF((p) => ({ ...p, [k]: val }));
-  // The match is the class until the partner picks another (found on staging:
-  // after a VIN filled the car in, no class was selected and Next stayed grey).
-  const matched = v.make.trim() && v.model.trim() ? matchClass(v, home.classes) : null;
-  const cid = classId || (matched ? matched.id : "");
+  const [tried, setTried] = React.useState(false);
+  const set = (k, val) => setF((x) => ({ ...x, [k]: val }));
   // A VIN fills in the rest, from the US government's free decoder.
   React.useEffect(() => {
     const vin = v.vin.trim().toUpperCase();
@@ -181,62 +188,96 @@ function Book({ home, branchId, onBooked, onCancel }) {
     fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/${encodeURIComponent(vin)}?format=json`).then((r) => r.json()).then((d) => {
       const x = d && d.Results && d.Results[0];
       if (!live || !x) return;
-      setV((p) => ({ ...p, year: x.ModelYear || p.year, make: x.Make ? x.Make.charAt(0) + x.Make.slice(1).toLowerCase() : p.make, model: x.Model || p.model, bodyClass: x.BodyClass || "" }));
-      setClassId("");
+      setV((p) => ({ ...p, year: x.ModelYear || p.year, make: x.Make ? x.Make.charAt(0) + x.Make.slice(1).toLowerCase() : p.make, model: x.Model || p.model }));
     }).catch(() => null).finally(() => { if (live) setDecoding(false); });
     return () => { live = false; };
   }, [v.vin]);
+  const limit = Number(f.limit) > 0 ? Number(f.limit) : null;
+  const within = limit != null ? classesWithin(home.classes, limit) : [];
+  // With a class approved, the one picked, else the like-for-like match once
+  // the repair vehicle is filled in. With a limit, the one picked if it fits,
+  // else the best the limit pays for.
+  const matched = v.make.trim() && v.model.trim() ? matchClass(v, home.classes) : null;
+  const cid = f.approve === "class" ? (f.classId || (matched ? matched.id : ""))
+    : (within.some((c) => c.id === f.classId) ? f.classId : (within[0] ? within[0].id : ""));
   const chosen = home.classes.find((c) => c.id === cid) || null;
-  const can = [
-    () => !!(v.make.trim() && v.model.trim() && cid),
-    () => !!(f.locationId && f.pickDate && f.retDate && `${f.retDate} ${f.retTime}` > `${f.pickDate} ${f.pickTime}`),
-    () => !!(f.firstName.trim() && f.lastName.trim() && f.phone.replace(/\D/g, "").length >= 10 && f.reference.trim()),
-  ];
+  const days = /^\d{1,3}$/.test(f.days) ? Number(f.days) : 0;
+  const retDate = days ? addDays(f.pickDate, days) : "";
+  const problems = {
+    reference: !f.reference.trim() ? (insurer ? "Add the claim number." : "Add the repair order number.") : "",
+    name: !f.firstName.trim() || !f.lastName.trim() ? "Add the renter's first and last name." : "",
+    phone: f.phone.replace(/\D/g, "").length < 10 ? "Add the renter's mobile number, with the area code." : "",
+    cls: f.approve === "limit" ? (!limit ? "Add the daily limit." : !within.length ? `No class is priced at ${money(limit)} a day or less. Call the branch.` : "")
+      : !cid ? "Pick the approved class." : "",
+    days: !days || days > 120 ? "Add the estimated repair days, 1 to 120." : "",
+    pick: !f.pickDate || !f.locationId ? "Pick the pickup day." : "",
+  };
+  const ok = !Object.values(problems).some(Boolean);
+  const show = (k) => (tried && problems[k] ? h("small", { className: "error", role: "alert" }, problems[k]) : null);
   const book = async () => {
+    setTried(true);
+    if (!ok) return;
     setBusy(true); setError("");
-    const out = await rpc("partner_book", { p: { locationId: f.locationId, classId: cid, pickup: `${f.pickDate} ${f.pickTime}`, return: `${f.retDate} ${f.retTime}`,
+    const out = await rpc("partner_book", { p: { locationId: f.locationId, classId: cid, pickup: `${f.pickDate} ${f.pickTime}`, return: `${retDate} ${f.pickTime}`,
       firstName: f.firstName, lastName: f.lastName, phone: f.phone, email: f.email, reference: f.reference, note: f.note,
+      dailyLimit: f.approve === "limit" ? String(limit) : "", repairDays: String(days),
       repairVehicle: { year: v.year, make: v.make, model: v.model, vin: v.vin.trim().toUpperCase() } } });
     setBusy(false);
-    if (!out.ok) { setError(reasonText(out.reason)); if (out.reason === "not_available") setStep(1); return; }
+    if (!out.ok) { setError(reasonText(out.reason)); return; }
     onBooked(out);
   };
-  const vf = (k, label, props = {}) => h(Field, { label }, Input({ value: v[k], onChange: (e) => { const val = e.target.value; setV((p) => ({ ...p, [k]: val })); if (k !== "vin") setClassId(""); }, ...props }));
   const ff = (k, label, props = {}) => h(Field, { label, hint: props.hint }, Input({ value: f[k], onChange: (e) => set(k, e.target.value), ...props, hint: undefined }));
-  return h("div", null,
-    h("div", { className: "steps", "aria-hidden": "true" }, [0, 1, 2].map((i) => h("span", { key: i, className: i <= step ? "on" : "" }))),
-    step === 0 && h("div", { className: "stack" },
-      h("h1", { className: "pp__h1" }, "The car being repaired"),
-      h("p", { className: "pp__lead" }, "We match the rental to it, like for like. A VIN fills in the rest."),
-      vf("vin", "VIN (optional)", { maxLength: 17, autoCapitalize: "characters", spellCheck: false, placeholder: "17 characters" }),
+  const vf = (k, label, props = {}) => h(Field, { label }, Input({ value: v[k], onChange: (e) => { const val = e.target.value; setV((x) => ({ ...x, [k]: val })); }, ...props }));
+  const classLabel = (c) => (classRate(c) != null ? `${c.name}, ${money(classRate(c))}/day` : c.name);
+  return h("div", { className: "book" },
+    h("h1", { className: "pp__h1" }, "Book a replacement rental"),
+    h("p", { className: "pp__lead" }, "The essentials first. The car being repaired and the rest are optional."),
+    h("section", { className: "book__sec", "aria-labelledby": "bk-ref" },
+      h("h2", { className: "book__h", id: "bk-ref" }, insurer ? "The claim" : "The repair"),
+      ff("reference", insurer ? "Claim number" : "Repair order number", { autoCapitalize: "characters", maxLength: 40, autoComplete: "off" }), show("reference")),
+    h("section", { className: "book__sec", "aria-labelledby": "bk-who" },
+      h("h2", { className: "book__h", id: "bk-who" }, "Renter"),
+      h("div", { className: "grid2" }, ff("firstName", "First name", { autoComplete: "off" }), ff("lastName", "Last name", { autoComplete: "off" })), show("name"),
+      ff("phone", "Mobile number", { type: "tel", inputMode: "tel", autoComplete: "off", hint: "They get a text with a link to check in, so pickup takes a minute." }), show("phone")),
+    h("section", { className: "book__sec", "aria-labelledby": "bk-ok" },
+      h("h2", { className: "book__h", id: "bk-ok" }, "Approved"),
+      h("div", { className: "segs", role: "radiogroup", "aria-label": "What was approved" },
+        [["class", "A class"], ["limit", "A daily limit"]].map(([k, label]) => h("button", { key: k, type: "button", role: "radio", "aria-checked": f.approve === k,
+          className: f.approve === k ? "on" : "", onClick: () => set("approve", k) }, label))),
+      f.approve === "class"
+        ? h(Field, { label: "Class" }, h("select", { className: "input", value: cid, onChange: (e) => set("classId", e.target.value) },
+            h("option", { value: "" }, "Pick a class"), home.classes.map((c) => h("option", { key: c.id, value: c.id }, classLabel(c)))))
+        : h("div", { className: "grid2" },
+            h(Field, { label: "Daily limit ($)" }, Input({ value: f.limit, inputMode: "decimal", maxLength: 7, placeholder: "50", onChange: (e) => set("limit", e.target.value.replace(/[^0-9.]/g, "")) })),
+            h(Field, { label: "Class within it" }, h("select", { className: "input", value: cid, disabled: !within.length, onChange: (e) => set("classId", e.target.value) },
+              !within.length && h("option", { value: "" }, limit ? "None within the limit" : "Add the limit first"),
+              within.map((c) => h("option", { key: c.id, value: c.id }, classLabel(c)))))),
+      show("cls"),
+      chosen && h("p", { className: "note" }, `${chosen.name}${classRate(chosen) != null ? ` at ${money(classRate(chosen))} a day` : ""}${f.approve === "class" && matched && chosen.id === matched.id && !f.classId ? `, matched to the ${[v.year, v.make, v.model].filter(Boolean).join(" ")}` : ""}.`)),
+    h("section", { className: "book__sec", "aria-labelledby": "bk-when" },
+      h("h2", { className: "book__h", id: "bk-when" }, "Repair and pickup"),
+      h("div", { className: "grid2" },
+        ff("days", "Estimated repair days", { inputMode: "numeric", maxLength: 3, placeholder: "7" }),
+        home.branches.length > 1 && h(Field, { label: "Branch" }, h("select", { className: "input", value: f.locationId, onChange: (e) => set("locationId", e.target.value) },
+          home.branches.map((b) => h("option", { key: b.id, value: b.id }, b.name))))),
+      show("days"),
+      h("div", { className: "grid2" }, ff("pickDate", "Pickup date", { type: "date", min: isoDay(0) }), ff("pickTime", "Time", { type: "time", step: 900 })), show("pick"),
+      retDate && h("p", { className: "note" }, `Back about ${fmtDay(retDate)}. You can ask to extend later.`)),
+    h("button", { type: "button", className: "book__more", "aria-expanded": more, onClick: () => setMore((m) => !m) },
+      h("span", null, more ? "Hide the optional details" : "Add the car being repaired, an email or a note"), h("span", { "aria-hidden": "true" }, more ? "−" : "+")),
+    more && h("section", { className: "book__sec book__sec--more", "aria-label": "Optional details" },
+      vf("vin", "VIN of the car being repaired", { maxLength: 17, autoCapitalize: "characters", spellCheck: false, placeholder: "17 characters" }),
       decoding && h("p", { className: "note" }, "Reading the VIN…"),
       h("div", { className: "grid2" }, vf("year", "Year", { inputMode: "numeric", maxLength: 4 }), vf("make", "Make", { autoComplete: "off" })),
       vf("model", "Model", { autoComplete: "off" }),
-      v.make && v.model && h("div", { className: "match" },
-        h("span", null, h("strong", null, chosen ? chosen.name : "Pick a class"), h("small", null, chosen && matched && chosen.id === matched.id ? `Matched to the ${[v.year, v.make, v.model].filter(Boolean).join(" ")}` : "Your choice")),
-        h("select", { className: "input", "aria-label": "Rental class", value: cid, onChange: (e) => setClassId(e.target.value) },
-          home.classes.map((c) => h("option", { key: c.id, value: c.id }, c.dailyRate != null ? `${c.name}, ${money(c.dailyRate)}/day` : c.name))))),
-    step === 1 && h("div", { className: "stack" },
-      h("h1", { className: "pp__h1" }, "When"),
-      h("p", { className: "pp__lead" }, `Pickup, and when you expect the repair to be done. You can ask to extend later.`),
-      home.branches.length > 1 && h(Field, { label: "Branch" }, h("select", { className: "input", value: f.locationId, onChange: (e) => set("locationId", e.target.value) },
-        home.branches.map((b) => h("option", { key: b.id, value: b.id }, b.name)))),
-      h("div", { className: "grid2" }, ff("pickDate", "Pickup date", { type: "date", min: isoDay(0) }), ff("pickTime", "Time", { type: "time", step: 900 })),
-      h("div", { className: "grid2" }, ff("retDate", "Expected return", { type: "date", min: f.pickDate }), ff("retTime", "Time", { type: "time", step: 900 }))),
-    step === 2 && h("div", { className: "stack" },
-      h("h1", { className: "pp__h1" }, "Who's renting"),
-      h("p", { className: "pp__lead" }, "The renter gets a text with a link to check in on their phone, so pickup takes a minute."),
-      h("div", { className: "grid2" }, ff("firstName", "First name", { autoComplete: "off" }), ff("lastName", "Last name", { autoComplete: "off" })),
-      ff("phone", "Mobile number", { type: "tel", inputMode: "tel", autoComplete: "off" }),
-      ff("email", "Email (optional)", { type: "email", inputMode: "email", autoComplete: "off" }),
-      ff("reference", insurer ? "Claim number" : "Repair order number", { autoCapitalize: "characters", maxLength: 40 }),
-      h(Field, { label: "Note for the branch (optional)" }, h("textarea", { className: "input", value: f.note, maxLength: 300, onChange: (e) => set("note", e.target.value) })),
-      h("p", { className: "note" }, home.bookingMode === "auto" ? "It's booked as soon as you send it." : `${home.company} confirms each booking. You'll be notified here.`)),
-    error && h("p", { className: "error", role: "alert", style: { marginTop: 16 } }, error),
+      ff("email", "Renter's email", { type: "email", inputMode: "email", autoComplete: "off" }),
+      h(Field, { label: "Note for the branch" }, h("textarea", { className: "input", value: f.note, maxLength: 300, onChange: (e) => set("note", e.target.value) }))),
+    h("p", { className: "note" }, home.bookingMode === "auto" ? "It's booked as soon as you send it." : `${home.company} confirms each booking. You'll be notified here.`),
+    error && h("p", { className: "error", role: "alert" }, error),
+    tried && !ok && h("p", { className: "error", role: "alert" }, "Fill in the fields marked above."),
     h("div", { className: "foot" },
-      h(Btn, { variant: "secondary", lg: true, onClick: () => (step === 0 ? onCancel() : setStep(step - 1)), disabled: busy }, step === 0 ? "Cancel" : "Back"),
-      step < 2 ? h(Btn, { lg: true, onClick: () => setStep(step + 1), disabled: !can[step]() }, "Next")
-        : h(Btn, { lg: true, onClick: book, loading: busy, disabled: !can[2]() }, home.bookingMode === "auto" ? "Book" : "Send booking")));
+      h(Btn, { variant: "secondary", lg: true, onClick: onCancel, disabled: busy }, "Cancel"),
+      h(Btn, { lg: true, onClick: book, loading: busy }, home.bookingMode === "auto" ? "Book" : "Send booking")));
 }
 
 // ── Rentals ──

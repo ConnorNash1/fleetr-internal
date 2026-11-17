@@ -50,12 +50,18 @@ for f in "${FILES[@]}"; do perl -0pi -e 's/\A---\s*\n---\s*\n//' "$f"; done
 # Cloudflare Pages takes its domains from the project, not a CNAME file.
 rm -f "$DIR/CNAME"
 
-BANNER='<div id="fleetr-staging-banner" role="note" style="position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:2147483647;background:#FDB022;color:#1F1E1D;font:600 12px/1.2 system-ui,-apple-system,sans-serif;padding:5px 12px;border-radius:0 0 8px 8px;pointer-events:none;white-space:nowrap">Staging &middot; test data, nothing is sent</div>'
+# The banner (Nov 17): on a phone, a thin strip at the very top of the page,
+# in the page's flow, so it sits above each app's sticky header and scrolls
+# away instead of covering the logo and menu (it did, fixed over them). From
+# 768px wide, where the headers leave room, the small pill over the top
+# centre as before.
+BANNER='<style>#fleetr-staging-banner{display:block;position:relative;z-index:2147483647;background:#FDB022;color:#1F1E1D;font:600 12px/1.2 system-ui,-apple-system,sans-serif;padding:4px 12px;text-align:center;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}@media (min-width:768px){#fleetr-staging-banner{position:fixed;top:0;left:50%;transform:translateX(-50%);padding:5px 12px;border-radius:0 0 8px 8px}}</style><div id="fleetr-staging-banner" role="note">Staging &middot; test data, nothing is sent</div>'
 export BANNER
 while IFS= read -r -d '' f; do
-  # A page with no </head> or </body> (demo.html) gets them at its end.
+  # First thing in the body; a page with no <head> or <body> (demo.html)
+  # gets them at its end.
   perl -0pi -e 's{</head>}{<meta name="robots" content="noindex, nofollow" />\n</head>}i or $_ .= qq{\n<meta name="robots" content="noindex, nofollow" />};
-                s{</body>}{$ENV{BANNER}\n</body>}i or $_ .= "\n$ENV{BANNER}\n"' "$f"
+                s{(<body\b[^>]*>)}{$1\n$ENV{BANNER}}i or $_ .= "\n$ENV{BANNER}\n"' "$f"
 done < <(find "$DIR" -type f -name '*.html' -not -path '*/.git/*' -print0)
 
 # Nothing may still point at production.
