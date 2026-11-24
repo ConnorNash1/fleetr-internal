@@ -21941,6 +21941,9 @@ function CustomerPageView({ onDiscard }) {
     ra?.customerExtendedAt && React.createElement(CustomerExtensionsNote, { resCode }),
     ra?.id && React.createElement(NameMismatchWarning, { rentalAgreementId: ra.id }),
     React.createElement(CustomerFacts, { record: localRecord, ra }),
+    // Nov 24: the layout's own width decides whether Notes sits beside the
+    // rental or below it (custLayoutWrap, a size container).
+    React.createElement("div", { className: "custLayoutWrap" },
     React.createElement("div", { className: "custLayout" },
       React.createElement("div", { className: "custMain" },
         makeSection("charges", "Charges & Payments",   chargesBody),
@@ -21964,7 +21967,7 @@ function CustomerPageView({ onDiscard }) {
               onChange: (e) => setCustomerNoteInput(e.target.value),
               onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); handleAddCustomerNote(); } },
             }),
-            React.createElement(Button, { variant: "secondary", onClick: handleAddCustomerNote, disabled: !customerNoteInput.trim() }, "Save Note")))))
+            React.createElement(Button, { variant: "secondary", onClick: handleAddCustomerNote, disabled: !customerNoteInput.trim() }, "Save Note"))))))
   );
 }
 
@@ -27492,9 +27495,9 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
   /* A partner's email on one line, ending in "…" if it must. */
   .partners__person small{ overflow-wrap: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
-/* Nov 24, desktop: a rental's tables sit beside its side panel, so their
-   cells have a little less padding: Drivers fits on one line, and Vehicles
-   fits once the sidebar is folded (with it open, Vehicles scrolls in its box). */
+/* Nov 24, desktop: a rental's tables have a little less padding, so with
+   Notes beside them (sidebar folded) Vehicles and Drivers still fit on one
+   line; with the sidebar open Notes moves below (custLayoutWrap). */
 @media (min-width: 768px){
   .custMain .dashboardSection .dashboardTable th, .custMain .dashboardSection .dashboardTable td,
   .custMain .dashboardTable th, .custMain .dashboardTable td{ padding-left: 8px; padding-right: 8px; }
@@ -27776,6 +27779,11 @@ textarea:not([readonly]):focus{ outline: none; border-color: #F4845F; }
 .custNotes__by{ display: block; margin-top: 4px; font-size: var(--fl-text-xs); color: var(--fl-ink-3); }
 .custNotes__add{ display: grid; gap: var(--fl-space-2); }
 @media (max-width: 1023px){ .custLayout{ grid-template-columns: minmax(0, 1fr); } .custSide{ position: static; } }
+/* Nov 24: Notes goes below the rental whenever the rental's column would be
+   too narrow for its widest table (Vehicles) beside it: at 1440 with the
+   sidebar open. With the sidebar folded there is room, and it stays beside. */
+.custLayoutWrap{ container: custlayout / inline-size; }
+@container custlayout (max-width: 1279px){ .custLayout{ grid-template-columns: minmax(0, 1fr); } .custSide{ position: static; } }
 @media (max-width: 767px){
   .custFacts{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .custFacts__item:nth-child(3){ border-left: 0; }
