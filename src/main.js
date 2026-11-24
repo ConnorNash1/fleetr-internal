@@ -2730,7 +2730,7 @@ const PAGE_SKELETONS = {
     skTitle("Ongoing Damage Claims"),
     skFleetFilter(),
     skSection(skHead("Active Claims", "0 active"), skTable(
-      ["Plate", "Vehicle", "Customer", "Res Code", "Damage Description", "Status", "Rentable", "Action"],
+      ["Plate", "Vehicle", "Customer", "Res Code", "Description", "Status", "Rentable", "Action"],
       [skPlate, "Toyota Corolla", skCustomer.map(skLink), skLink(skCode), "Scratch on the rear bumper, passenger side",
         skB("span", "claimStatus claimStatus--open", "Open"), "Not recorded", skB("button", "aiControl", "Resolve")]))),
 
@@ -5614,7 +5614,7 @@ function NoShowsPage() {
         tabRows.length === 0
           ? React.createElement("div", { className: "resvEmpty" },
               activeTab === "missed" ? "No missed pickups." : "No no-shows cancelled in the last 7 days.")
-          : React.createElement("table", { className: "dashboardTable" },
+          : React.createElement("table", { className: "dashboardTable noShowsTable" },
               React.createElement("thead", null,
                 React.createElement("tr", null, columns.map((col, i) => React.createElement("th", { key: col || `c${i}` }, col)))),
               React.createElement("tbody", null, tabRows.map(activeTab === "missed" ? missedRow : cancelledRow))
@@ -8493,7 +8493,7 @@ function FleetDamageClaimsPage() {
           React.createElement("col", { key: k, className: `claimsTable__${k}` }))),
       React.createElement("thead", null,
         React.createElement("tr", null,
-          ["Plate", "Vehicle", "Customer", "Res Code", "Damage Description", "Status", "Rentable", showResolve ? "Action" : ""].map((col, i) =>
+          ["Plate", "Vehicle", "Customer", "Res Code", "Description", "Status", "Rentable", showResolve ? "Action" : ""].map((col, i) =>
             React.createElement("th", { key: `${i}:${col}` }, col)
           )
         )
@@ -27459,8 +27459,8 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
    and ends in "…". */
 @media (min-width: 768px){
   .claimsTable{ table-layout: fixed; }
-  .claimsTable th, .claimsTable td{ white-space: nowrap; overflow-wrap: normal; overflow: hidden; text-overflow: ellipsis;
-    padding-left: 12px; padding-right: 12px; vertical-align: middle; }
+  .claimsTable th, .claimsTable td{ white-space: nowrap; overflow-wrap: normal; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+  section .dashboardTable.claimsTable th, section .dashboardTable.claimsTable td{ padding-left: 12px; padding-right: 12px; }
   .claimsTable td *{ flex-wrap: nowrap; }
   .claimsTable td button{ white-space: nowrap; }
   /* Every row as high as one with Mark as Resolved, in both tables. */
@@ -27468,9 +27468,9 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
   /* Each column fits its value (measured on staging at 1440); the
      description takes what is left, all of it with the sidebar folded, and
      ends in "…" with the whole of it on hover when there is not room. */
-  .claimsTable__plate{ width: 96px; }
-  .claimsTable__vehicle{ width: 212px; }
-  .claimsTable__customer{ width: 166px; }
+  .claimsTable__plate{ width: 86px; }
+  .claimsTable__vehicle{ width: 208px; }
+  .claimsTable__customer{ width: 152px; }
   .claimsTable__res{ width: 118px; }
   .claimsTable__status{ width: 108px; }
   .claimsTable__rentable{ width: 108px; }
@@ -27478,6 +27478,17 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 }
 /* A phone shows each claim as a card, as before: no empty Action line. */
 @media (max-width: 767px){ .claimsTable td:empty{ display: none; } }
+/* Nov 24, desktop: no table cell wraps or breaks a word, on any screen.
+   Each value stays on one line; phones keep their cards. */
+@media (min-width: 768px){
+  .dashboardTable th, .dashboardTable td{ white-space: nowrap; overflow-wrap: normal; }
+  .dashboardTable td *{ flex-wrap: nowrap; }
+  .dashboardTable td button{ white-space: nowrap; }
+  /* No Shows has seven columns and two buttons: a little less padding fits it. */
+  section .dashboardTable.noShowsTable th, section .dashboardTable.noShowsTable td{ padding-left: 12px; padding-right: 12px; }
+  /* A partner's email on one line, ending in "…" if it must. */
+  .partners__person small{ overflow-wrap: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
 /* Nov 24, desktop: Reservations never wraps. Dates, times, codes, names and
    sources each stay on one line. */
 @media (min-width: 768px){
