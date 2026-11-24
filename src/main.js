@@ -712,6 +712,11 @@ function ndiSourceOptions(current) {
 // Takes the source as stored, with or without a specific source after it. A
 // source the company's list does not have (an old record, or the list did not
 // load) has no billing type: its name is not taken as a guess at one.
+// Retail (Nov 24) is the one source for customers paying for themselves:
+// fleetr.ai bookings, walk-ins and phone bookings, at the same rates. Staff can
+// always pick it and set its rates; its on and off is only List on fleetr.ai.
+const sourceInUse = (x) => !!x && (!!x.active || x.standardKey === "fleetr_ai");
+
 function sourceBillingType(source) {
   const name = splitList(source)[0];
   const known = companyLists && companyLists.sources.find((x) => x.name === name);
@@ -8828,7 +8833,19 @@ function AvailabilityReport({ branchPick }) {
 // reports.sql): the dates asked and the same number of days just before, to
 // compare. An Exec picks a branch or the whole company.
 const REPORT_PRESETS = [["7", "Last 7 days"], ["30", "Last 30 days"], ["90", "Last 90 days"], ["month", "This month"], ["lastMonth", "Last month"], ["custom", "Custom"]];
-const REPORT_SOURCE_LABEL = { walkin: "Walk-in", online: "Online (fleetr.ai)", insurance: "Insurance", bodyshop: "Body shop", corporate: "Corporate" };
+const REPORT_SOURCE_LABEL = { retail: "Retail", insurance: "Insurance", bodyshop: "Body shop", corporate: "Corporate" };
+// Reports by source (Nov 24): Walk-in and Online are one Retail line. A report
+// still split the old way has the two added together.
+function reportBySource(rows) {
+  const out = [];
+  for (const s of rows || []) {
+    const type = s.type === "walkin" || s.type === "online" ? "retail" : s.type;
+    const have = out.find((x) => x.type === type);
+    if (have) { have.total = Number(have.total || 0) + Number(s.total || 0); have.prev = Number(have.prev || 0) + Number(s.prev || 0); }
+    else out.push({ ...s, type });
+  }
+  return out;
+}
 const REPORT_INK = "#1F1E1D", REPORT_MUTED = "#6B6A66", REPORT_GRID = "#EEEDE9", REPORT_MARK = "#E06D47", REPORT_PREV = "#8A8883";
 // Older owed money, darker: one hue, light to dark.
 const REPORT_AGE = [["b0", "0 to 30 days", "#F9C9B6"], ["b31", "31 to 60", "#F4A07F"], ["b61", "61 to 90", "#E06D47"], ["b91", "Over 90", "#A8492B"]];
@@ -9011,7 +9028,7 @@ function RevenueReport({ data }) {
     el("h3", { className: "reportH" }, "Each day"),
     el(ReportTrend, { series: r.series, prevSeries: r.prevSeries, valueKey: "total", format: (v) => reportMoney(v), label: "Revenue each day" }),
     el("h3", { className: "reportH" }, "By source"),
-    el(ReportBars, { rows: (r.bySource || []).map((s) => ({ name: REPORT_SOURCE_LABEL[s.type], value: s.total, prev: s.prev })), format: (v) => reportMoney(v), label: "Revenue by source" }),
+    el(ReportBars, { rows: reportBySource(r.bySource).map((s) => ({ name: REPORT_SOURCE_LABEL[s.type], value: s.total, prev: s.prev })), format: (v) => reportMoney(v), label: "Revenue by source" }),
     el("h3", { className: "reportH" }, "By class"),
     el(ReportBars, { rows: (r.byClass || []).map((c) => ({ name: c.name, value: c.total, prev: c.prev })), format: (v) => reportMoney(v), label: "Revenue by class" }),
     el("p", { className: "closeRentalHint" }, "Rentals that closed in these dates: their charges before tax. The average daily rate is the vehicle charge per rental day."));
@@ -9820,11 +9837,6 @@ function GuidedSetup() {
 
   const lists = () => companyLists || {};
   const fleetrSource = () => (lists().sources || []).find((x) => x.standardKey === "fleetr_ai") || null;
-  // Walk-in and phone renters pay the online rate, so the Rates screen saves
-  // each rate to both: then the rates are in place whether or not the company
-  // is on fleetr.ai.
-  const walkInSource = () => (lists().sources || []).find((x) => x.standardKey === "walk_in")
-    || (lists().sources || []).find((x) => /^walk-in/i.test(String(x.name || "")) && x.billingType === "retail") || null;
   const classes = () => (lists().vehicleClasses || []).filter((c) => c.active);
 
   // Everything the screens start from, read once and again after a save.
@@ -9966,13 +9978,12 @@ function GuidedSetup() {
     },
     rates: async () => {
       const src = fleetrSource();
-      if (!src) throw new Error("The fleetr.ai source is missing. Add it under Sources on the Company page.");
-      for (const x of [src, walkInSource()].filter(Boolean)) {
-        const saved = lists().rates[x.name] || {};
-        for (const c of classes()) {
-          const v = Number(d.rates[c.name]);
-          if (saved[c.name] !== v) await rpc("set_daily_rate", { p_class_id: c.id, p_source_id: x.id, p_amount: v });
-        }
+      if (!src) throw new Error("The Retail source is missing. Add it under Sources on the Company page.");
+      // Retail is the rate for fleetr.ai, walk-in and phone alike (Nov 24).
+      const saved = lists().rates[src.name] || {};
+      for (const c of classes()) {
+        const v = Number(d.rates[c.name]);
+        if (saved[c.name] !== v) await rpc("set_daily_rate", { p_class_id: c.id, p_source_id: src.id, p_amount: v });
       }
     },
     discounts: async () => {
@@ -10625,7 +10636,7 @@ function CompanyPage() {
   // whether it is done. defaults marks one only fleetr's defaults complete.
   const partsOf = (st) => {
     const classes = (lists.vehicleClasses || []).filter((c) => c.active);
-    const sources = (lists.sources || []).filter((x) => x.active);
+    const sources = (lists.sources || []).filter(sourceInUse);
     const detail = (key) => { const it = itemOf(key); return it && !it.done && Array.isArray(it.detail) ? it.detail : []; };
     switch (st.key) {
       case "business": {
@@ -11955,7 +11966,7 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
           el("span", { "aria-hidden": "true" }),
           switching ? "Saving\u2026" : "List on fleetr.ai"),
         el("p", { className: "closeRentalHint" },
-          "On: fleetr.ai is a source under Rates, with a whole-dollar rate for every vehicle class, and staff can pick it for walk-in and phone customers too."),
+          "On: fleetr.ai books at your Retail rates, a whole dollar rate for every vehicle class, the same rates walk-in and phone customers pay."),
         el(FieldError, { text: switchError }),
         loadError && el("div", { className: "loginError" }, loadError),
         editors("show")),
@@ -11988,7 +11999,7 @@ function ListingSection({ branches, branchSetup, onTimeZoneSet, part, onSaved, d
         React.createElement("input", { type: "checkbox", checked: fleetrOn, disabled: switching, onChange: (e) => setListed(e.target.checked) }),
         switching ? "Saving…" : "List on fleetr.ai"),
       React.createElement("p", { className: "closeRentalHint" },
-        "On: fleetr.ai is a source under Rates, with a whole-dollar rate for every vehicle class, and staff can pick it for walk-in and phone customers too."),
+        "On: fleetr.ai books at your Retail rates, a whole dollar rate for every vehicle class, the same rates walk-in and phone customers pay."),
       React.createElement(FieldError, { text: switchError })),
     loadError && React.createElement("div", { className: "loginError" }, loadError),
     !listings && !loadError && React.createElement(SkeletonFrame, null, open.map((b) => part === "listing"
@@ -13604,7 +13615,7 @@ const LIST_REASONS = {
   name_taken:       "There is already a date pricing period with that name.",
   bad_season:       "That date pricing period is not part of this company.",
   bad_period:       "Choose weekly or monthly.",
-  fleetr_ai_source: "The fleetr.ai source is what the website books at, so it cannot be deleted. Turn off List on fleetr.ai instead.",
+  fleetr_ai_source: "Retail is the source the website books at, and walk-in and phone customers use it too, so it cannot be deleted.",
   nothing_picked:   "Tick at least one vehicle class.",
   not_standard:     "That vehicle class is not on the list.",
   bad_models:       "Keep the example models to 120 characters.",
@@ -14508,7 +14519,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
 
   const { pickupLocations, vehicleClasses, sources, protectionProducts, rates, periodRates, seasons } = companyLists;
   const activeClasses  = vehicleClasses.filter((c) => c.active);
-  const activeSources  = sources.filter((x) => x.active);
+  const activeSources  = sources.filter(sourceInUse);
 
   // A closed branch is listed only if it still has pickup locations to show.
   const pickupBranches = (branches || []).filter((b) =>
@@ -14607,15 +14618,16 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
       "Add each business that sends you rentals, like an insurer or body shop, so it can have its own rates.",
       "sources",
       table("640px", listHeads("Source", "Who pays"),
-        // fleetr.ai shows only while List on fleetr.ai is on.
-        sources.filter((x) => x.standardKey !== "fleetr_ai" || x.active).map((entry, i, shown) => {
+        // Retail always shows (Nov 24): walk-in and phone customers use it
+        // whether or not List on fleetr.ai is on.
+        sources.map((x) => (x.standardKey === "fleetr_ai" ? { ...x, active: true } : x)).map((entry, i, shown) => {
           const isOpen = !!openSources[entry.id];
           const n = entry.details.length;
           const rows = [entryRow({
             at: "sources", kind: "source", entry,
             reorder: { listKey: "sources", list: shown, index: i, saveCall: saveSource },
-            // fleetr.ai keeps its name and who pays, and is never deleted: the
-            // website books at it. List on fleetr.ai switches it on and off.
+            // Retail keeps its name and who pays, and is never deleted: the
+            // website books at it. List on fleetr.ai switches fleetr.ai on and off.
             fixed: entry.standardKey === "fleetr_ai",
             rename: entry.standardKey ? null : (name) => ["save_source", {
               p_id: entry.id, p_name: name, p_billing_type: entry.billingType, p_sort: null,
@@ -14699,16 +14711,15 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
       };
       // Same as another source: every daily, weekly and monthly rate, copied
       // into this source, to change cell by cell afterwards. Offered from
-      // fleetr.ai, and from Walk-in or phone for any third source; never into
-      // fleetr.ai, whose rates stay whole dollars.
+      // Retail for any other source; never into Retail, whose rates stay whole
+      // dollars.
       const setIn = (x, c, col) => {
         if (col === "day") return rates[x.name] && rates[x.name][c.name] != null ? Number(rates[x.name][c.name]) : null;
         const pr = periodRates[x.name] && periodRates[x.name][c.name];
         return pr && pr[col] != null ? Number(pr[col]) : null;
       };
       const copySources = !src || src.standardKey === "fleetr_ai" ? []
-        : rateSources.filter((x) => x.id !== src.id
-            && (x.standardKey === "fleetr_ai" || String(x.name).trim().toLowerCase() === "walk-in or phone"));
+        : rateSources.filter((x) => x.id !== src.id && x.standardKey === "fleetr_ai");
       const copyFrom = async (from) => {
         const changes = activeClasses.flatMap((c) => COLS.map(([col]) => ({ c, col, to: setIn(from, c, col), was: setIn(src, c, col) })))
           .filter((x) => x.to !== x.was);
@@ -14871,7 +14882,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
         const reorder = { listKey: "products", list: protectionProducts, index: i, saveCall: saveProduct };
         const dragging = drag && drag.listKey === "products";
         const blocks = protection.blocks.filter((b) => b.productId === pr.id);
-        const freeSources = sources.filter((x) => x.active && !blocks.some((b) => b.sourceId === x.id));
+        const freeSources = sources.filter((x) => sourceInUse(x) && !blocks.some((b) => b.sourceId === x.id));
         const defaultOf = (c) => {
           const row = protection.defaults.find((d) => d.productId === pr.id && d.vehicleClassId === c.id);
           return row ? Number(row.amount) : null;
@@ -20400,7 +20411,7 @@ function sourceCatsFor(current) {
     const cats = {};
     companyLists.sources.forEach((x) => {
       const isCurrent = x.name === curCat;
-      if (!x.active && !isCurrent) return;
+      if (!sourceInUse(x) && !isCurrent) return;
       if (x.billingType === "insurance" && !isFeatureEnabled("insurance_rentals") && !isCurrent) return;
       cats[x.name] = x.details.filter((d) => d.active).map((d) => d.name);
     });
