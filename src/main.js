@@ -15280,7 +15280,7 @@ function StaffPage({ embedded, onChanged } = {}) {
       !loading && staff.length > 0 && React.createElement(
         "div", { style: { overflowX: "auto" } },
         React.createElement(
-        "table", { className: "dashboardTable", style: { minWidth: "760px" } },
+        "table", { className: "dashboardTable staffTable", style: { minWidth: "760px" } },
         React.createElement("thead", null, React.createElement("tr", null,
           ["Username", "Name", "Role", "Branch", "Status", ""].map((h) =>
             React.createElement("th", { key: h }, h)))),
@@ -15296,8 +15296,11 @@ function StaffPage({ embedded, onChanged } = {}) {
               row.role === "Exec" ? "Company-wide" : branchName(row.locationId)),
             React.createElement("td", null, row.active ? "Active" : "Deactivated"),
             // Was nowrap, which pushed the last controls off the right edge
-            // once the row grew from two buttons to four and a picker.
-            React.createElement("td", { style: { display: "flex", flexWrap: "wrap", gap: "6px", alignItems: "center" } },
+            // once the row grew from two buttons to four and a picker. Nov 24:
+            // one line on a desktop, sized to fit (staffActions); a phone
+            // still wraps them. The cell stays a table cell, so every row is
+            // the same height.
+            React.createElement("td", { className: "staffActions" }, React.createElement("div", { className: "staffActions__row" },
               // Your own row carries no buttons. An Admin who demotes or
               // deactivates themselves has locked the company out of its own
               // staff administration, and there is nobody left with the rights
@@ -15348,7 +15351,7 @@ function StaffPage({ embedded, onChanged } = {}) {
                         style: { width: "auto", padding: "6px 10px" },
                         disabled: busyId === row.id,
                         onClick: () => reassign(row),
-                      }, "Move")))));
+                      }, "Move"))))));
         }))
       ))
     )
@@ -27489,6 +27492,16 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
   /* A partner's email on one line, ending in "…" if it must. */
   .partners__person small{ overflow-wrap: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
+/* People: a staff member's controls in a row; on one line on a desktop. */
+.staffActions__row{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+@media (min-width: 768px){
+  .staffActions__row{ flex-wrap: nowrap; gap: 5px; }
+  .dashboardSection .dashboardTable.staffTable th, .dashboardSection .dashboardTable.staffTable td{ padding-left: 10px; padding-right: 10px; }
+  .staffActions select{ max-width: 140px; }
+}
+/* Nov 24, desktop: in a table where some rows hold a picker (People, Sources),
+   every row is as high as those, so a row of plain text is not shorter. */
+@media (min-width: 768px){ .dashboardTable:has(tbody select) tbody tr{ height: 60px; } }
 /* Nov 24, desktop: Reservations never wraps. Dates, times, codes, names and
    sources each stay on one line. */
 @media (min-width: 768px){
