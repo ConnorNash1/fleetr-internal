@@ -27492,6 +27492,13 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
   /* A partner's email on one line, ending in "…" if it must. */
   .partners__person small{ overflow-wrap: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
+/* Nov 24, desktop: a rental's tables sit beside its side panel, so their
+   cells have a little less padding: Drivers fits on one line, and Vehicles
+   fits once the sidebar is folded (with it open, Vehicles scrolls in its box). */
+@media (min-width: 768px){
+  .custMain .dashboardSection .dashboardTable th, .custMain .dashboardSection .dashboardTable td,
+  .custMain .dashboardTable th, .custMain .dashboardTable td{ padding-left: 8px; padding-right: 8px; }
+}
 /* People: a staff member's controls in a row; on one line on a desktop. */
 .staffActions__row{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 @media (min-width: 768px){
