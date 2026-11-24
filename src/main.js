@@ -5205,6 +5205,7 @@ function DashboardPage() {
         }, "Switch Out"),
       ],
     }),
+    !isMobile && React.createElement(VehicleStatusStep),
     React.createElement(AgentCard),
     showModal && React.createElement(
       "div",
@@ -6505,21 +6506,20 @@ function useVehicleStatusDrag() {
 
 // ─── FleetPage ────────────────────────────────────────────────────────────────
 
-function FleetPage() {
-  const { fleet, setFleet, rentalAgreements, guardAction } = React.useContext(AppContext);
+// Vehicle Status, on Branch Fleet and on Home (brought back Nov 24): the
+// branch's vehicles by status. Every status group starts closed and opens on
+// a click.
+function VehicleStatusStep() {
+  const { fleet, rentalAgreements } = React.useContext(AppContext);
   const readyReturns = fleet.filter((v) => v.status === "Ready Returns");
   const [collapsed, setCollapsed] = React.useState(false);
   const [fleetGroupCollapsed, setFleetGroupCollapsed] = React.useState({
-    available: true, needsCleaning: true, readyReturns: true, pm: true, damaged: true, onRent: true,
+    available: true, needsCleaning: true, readyPickup: true, readyReturns: true, pm: true, damaged: true, onRent: true,
   });
   const toggleFleetGroup = (key) =>
     setFleetGroupCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
 
   return React.createElement(
-    "div",
-    { className: "page" },
-    React.createElement(PageHead, { title: "Branch Fleet" }),
-    React.createElement(
       CompanyStep, { title: "Vehicle Status", open: !collapsed, onToggle: () => setCollapsed((c) => !c) },
       !collapsed &&
         React.createElement(
@@ -6628,7 +6628,16 @@ function FleetPage() {
             );
           })()
         )
-    ),
+    );
+}
+
+function FleetPage() {
+  const { fleet, setFleet } = React.useContext(AppContext);
+  return React.createElement(
+    "div",
+    { className: "page" },
+    React.createElement(PageHead, { title: "Branch Fleet" }),
+    React.createElement(VehicleStatusStep),
     React.createElement(VehicleTransfers, { fleet, setFleet })
   );
 }
