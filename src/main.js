@@ -4732,6 +4732,41 @@ function needsYouGroups(items) {
     });
 }
 
+// The agent's alerts in Needs you (Nov 24): only the ones a person still has
+// to act on, grouped by what they are. A "no car ready" alert stays only while
+// the agent's own Clean next still has that class short for a pickup soon at
+// that branch, once per class and branch, and reads from it; one for a pickup
+// that has passed or been covered drops out (it stays in the agent's log).
+// Everything the agent did by itself is in its card, never here.
+const AGENT_NEEDS = [
+  ["no_car", "pickup with no car ready", "pickups with no car ready"],
+  ["payment_link_failed", "payment link to send by hand", "payment links to send by hand"],
+  ["invoice_overdue", "overdue invoice to chase", "overdue invoices to chase"],
+];
+function agentNeeds(feed) {
+  const short = ((feed && feed.cleanNext) || []).filter((q) => q.soon && Number(q.short) > 0);
+  const latest = new Map();
+  const rows = [];
+  for (const x of (feed && feed.exceptions) || []) {
+    if (x.kind !== "no_car") { rows.push({ x, n: 1, what: x.summary }); continue; }
+    const q = short.find((c) => String(c.vehicleClass).toLowerCase() === String(x.subject || "").toLowerCase()
+      && String(x.summary || "").includes(` at ${c.branch}:`));
+    if (!q) continue;
+    const n = Number(q.short) || 1;
+    latest.set(`${q.locationId}:${q.vehicleClass}`, { x, n,
+      what: `No ${q.vehicleClass} ready for the ${agentPickup(q.firstPickup)} pickup at ${q.branch}: ${q.pickups} booked, ${q.ready} ready${(q.clean || []).length ? `, ${(q.clean || []).length} to clean` : ""}.` });
+  }
+  rows.push(...latest.values());
+  return AGENT_NEEDS.map(([kind, one, many]) => {
+    const list = rows.filter((r) => r.x.kind === kind);
+    const n = list.reduce((t, r) => t + r.n, 0);
+    return { kind, list, n, label: `${n} ${n === 1 ? one : many}` };
+  }).concat((() => {
+    const list = rows.filter((r) => !AGENT_NEEDS.some(([k]) => k === r.x.kind));
+    return [{ kind: "agent_other", list, n: list.length, label: `${list.length} from the agent to look at` }];
+  })()).filter((g) => g.list.length > 0);
+}
+
 function NeedsYou() {
   const el = React.createElement;
   const { setOpenCustomer } = React.useContext(AppContext);
@@ -4744,7 +4779,8 @@ function NeedsYou() {
   const [partnerWait, setPartnerWait] = React.useState(null);
   const [openGroups, setOpenGroups] = React.useState({});
   const [agentFeed, reloadAgent] = useAgentFeed();
-  const agentExceptions = (agentFeed && agentFeed.exceptions) || [];
+  const agentGroups = agentNeeds(agentFeed);
+  const agentCount = agentGroups.reduce((t, g) => t + g.n, 0);
   const resolveAgent = async (x) => {
     setBusy(x.id); setError("");
     const { data, error: err } = await supabase.rpc("agent_resolve", { p_id: x.id });
@@ -4781,29 +4817,30 @@ function NeedsYou() {
   const pw = partnerWait || {};
   const partnerParts = [[pw.bookings, "booking", "bookings", "to confirm"], [pw.extensions, "extension", "extensions", "asked for"], [pw.transfers, "bank transfer", "bank transfers", "to look for"]]
     .filter(([n]) => Number(n) > 0).map(([n, one, many, what]) => `${n} ${Number(n) === 1 ? one : many} ${what}`);
-  const count = (items ? items.length : 0) + (partnerParts.length ? 1 : 0) + agentExceptions.length;
+  const count = (items ? items.length : 0) + (partnerParts.length ? 1 : 0) + agentCount;
   return el(CompanyStep, { title: count ? `Needs you (${count})` : "Needs you", open, onToggle: () => setOpen((o) => !o) },
     open && el("div", { className: "dashboardSection__body" },
       items === null && el("div", { className: "skelBox avail__skel", role: "status", "aria-label": "Loading" }),
       items && count === 0 && el("p", { className: "closeRentalHint" }, "Nothing needs you right now."),
       // The agent's alerts group like everything else (Nov 17: two "no Small
-      // car ready" rows sat one under the other).
-      agentExceptions.length > 0 && (() => {
-        const row = (x) => el("li", { key: x.id, className: "needsYou__item" },
+      // car ready" rows sat one under the other), one group per kind (Nov 24).
+      agentGroups.length > 0 && el("ul", { className: "needsYou" }, agentGroups.map((g) => {
+        const row = ({ x, what }) => el("li", { key: x.id, className: "needsYou__item" },
           el("div", { className: "needsYou__open needsYou__open--static" },
             el("span", { className: "needsYou__tag needsYou__tag--agent" }, "fleetr agent"),
             el("span", { className: "needsYou__who" }, x.subject || ""),
-            el("span", { className: "needsYou__what" }, x.summary)),
+            el("span", { className: "needsYou__what" }, what)),
           el("button", { type: "button", className: "needsYou__done", disabled: !!busy, onClick: () => resolveAgent(x) }, busy === x.id ? "Saving…" : "Dealt with"));
-        if (agentExceptions.length === 1) return el("ul", { className: "needsYou" }, row(agentExceptions[0]));
-        const isOpen = !!openGroups.agent;
-        return el("ul", { className: "needsYou" }, el("li", { className: `needsYou__group${isOpen ? " needsYou__group--open" : ""}` },
-          el("button", { type: "button", className: "needsYou__groupHead", "aria-expanded": isOpen, onClick: () => setOpenGroups((o) => ({ ...o, agent: !o.agent })) },
+        if (g.list.length === 1 && g.n === 1) return row(g.list[0]);
+        const key = `agent:${g.kind}`;
+        const isOpen = !!openGroups[key];
+        return el("li", { key, className: `needsYou__group${isOpen ? " needsYou__group--open" : ""}` },
+          el("button", { type: "button", className: "needsYou__groupHead", "aria-expanded": isOpen, onClick: () => setOpenGroups((o) => ({ ...o, [key]: !o[key] })) },
             el("span", { className: "needsYou__tag needsYou__tag--agent" }, "fleetr agent"),
-            el("span", { className: "needsYou__groupLabel" }, `${agentExceptions.length} alerts from the agent to check`),
+            el("span", { className: "needsYou__groupLabel" }, g.label),
             el("span", { className: "needsYou__chevron", "aria-hidden": "true" }, isOpen ? "\u25be" : "\u25b8")),
-          isOpen && el("ul", { className: "needsYou needsYou--inner" }, agentExceptions.map(row))));
-      })(),
+          isOpen && el("ul", { className: "needsYou needsYou--inner" }, g.list.map(row)));
+      })),
       partnerParts.length > 0 && el("ul", { className: "needsYou" }, el("li", { className: "needsYou__item" },
         el("button", { type: "button", className: "needsYou__open", onClick: () => navigate("/partners") },
           el("span", { className: "needsYou__tag needsYou__tag--partner" }, "Partners"),
