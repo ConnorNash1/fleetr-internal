@@ -26635,6 +26635,9 @@ select.resFormInput.avail__pick{ width: auto; max-width: 100%; font-size: 16px; 
 .sidebar--collapsed .sidebar__foot{ padding: 12px 8px 20px; }
 .sidebar--collapsed .navUser{ justify-content: center; padding: 6px 0; }
 .sidebar--collapsed .navUser__text{ display: none; }
+/* Nov 24: with the sidebar folded on a desktop, the page uses the full width
+   it frees, so tables, the availability grid and cards all get wider. */
+@media (min-width: 901px){ .app--rail .page{ max-width: none; } }
 @media (min-width: 768px) and (max-width: 900px){
   .sidebar__collapse{ display: none; }
   .sidebar__top{ justify-content: center; padding: 2px 0 4px; }
