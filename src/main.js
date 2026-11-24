@@ -8478,13 +8478,18 @@ function FleetDamageClaimsPage() {
     }, { tableName: "damage_claims", recordId: claim.resCode || claim.id, description: `Damage claim marked resolved${claim.plate ? ` on ${claim.plate}` : ""}.` });
   };
 
+  // Nov 24: Active and Settled / Closed share one set of column widths, every
+  // row one line high; a long description ends in "…" with the whole of it on
+  // hover. Settled keeps the Action column's room, empty, so the two line up.
   const renderTable = (claims, showResolve) =>
-    React.createElement("table", { className: "dashboardTable" },
+    React.createElement("table", { className: "dashboardTable claimsTable" },
+      React.createElement("colgroup", null,
+        ["plate", "vehicle", "customer", "res", "desc", "status", "rentable", "action"].map((k) =>
+          React.createElement("col", { key: k, className: `claimsTable__${k}` }))),
       React.createElement("thead", null,
         React.createElement("tr", null,
-          [...["Plate", "Vehicle", "Customer", "Res Code", "Damage Description", "Status", "Rentable"],
-           ...(showResolve ? ["Action"] : [])].map((col) =>
-            React.createElement("th", { key: col }, col)
+          ["Plate", "Vehicle", "Customer", "Res Code", "Damage Description", "Status", "Rentable", showResolve ? "Action" : ""].map((col, i) =>
+            React.createElement("th", { key: `${i}:${col}` }, col)
           )
         )
       ),
@@ -8509,12 +8514,12 @@ function FleetDamageClaimsPage() {
                 onClick: () => navigate(agreementPath(c.resCode)),
               }, c.resCode)
             ),
-            React.createElement("td", null, c.description),
+            React.createElement("td", { className: "claimsTable__descCell", title: c.description || "" }, c.description),
             React.createElement("td", null,
               React.createElement("span", { className: CLAIM_CLS[c.claimStatus] || "claimStatus" }, c.claimStatus)
             ),
             React.createElement("td", null, vehicleRentableLabel(c.vehicleRentable)),
-            showResolve && React.createElement("td", null,
+            React.createElement("td", null, showResolve &&
               React.createElement("button", {
                 type: "button",
                 className: "resolveClaimBtn",
@@ -27438,6 +27443,24 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .dashboardTable td button{ white-space: normal; }
 .dashboardTable th{ overflow-wrap: normal; }
 .dashboardSection__body, .companyStep__body > .dashboardSection__body{ overflow-x: visible; }
+/* Nov 24, desktop: Damage Claims, Active and Settled / Closed, one set of
+   column widths and one line per row; the description takes what is left
+   and ends in "…". */
+@media (min-width: 768px){
+  .claimsTable{ table-layout: fixed; }
+  .claimsTable th, .claimsTable td{ white-space: nowrap; overflow-wrap: normal; overflow: hidden; text-overflow: ellipsis; }
+  .claimsTable td *{ flex-wrap: nowrap; }
+  .claimsTable td button{ white-space: nowrap; }
+  .claimsTable__plate{ width: 112px; }
+  .claimsTable__vehicle{ width: 15%; }
+  .claimsTable__customer{ width: 14%; }
+  .claimsTable__res{ width: 104px; }
+  .claimsTable__status{ width: 104px; }
+  .claimsTable__rentable{ width: 108px; }
+  .claimsTable__action{ width: 164px; }
+}
+/* A phone shows each claim as a card, as before: no empty Action line. */
+@media (max-width: 767px){ .claimsTable td:empty{ display: none; } }
 /* Nov 24, desktop: Reservations never wraps. Dates, times, codes, names and
    sources each stay on one line. */
 @media (min-width: 768px){
