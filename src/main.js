@@ -8506,8 +8506,8 @@ function FleetDamageClaimsPage() {
                 ? React.createElement(PlateLink, { plate: c.plate })
                 : "·"
             ),
-            React.createElement("td", null, c.vehicle),
-            React.createElement("td", null,
+            React.createElement("td", { title: c.vehicle || "" }, c.vehicle),
+            React.createElement("td", { title: c.customer || "" },
               React.createElement("button", {
                 type: "button", className: "rentalAgreementLink rentalAgreementLink--dark",
                 onClick: () => navigate(agreementPath(c.resCode)),
@@ -27459,16 +27459,22 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
    and ends in "…". */
 @media (min-width: 768px){
   .claimsTable{ table-layout: fixed; }
-  .claimsTable th, .claimsTable td{ white-space: nowrap; overflow-wrap: normal; overflow: hidden; text-overflow: ellipsis; }
+  .claimsTable th, .claimsTable td{ white-space: nowrap; overflow-wrap: normal; overflow: hidden; text-overflow: ellipsis;
+    padding-left: 12px; padding-right: 12px; vertical-align: middle; }
   .claimsTable td *{ flex-wrap: nowrap; }
   .claimsTable td button{ white-space: nowrap; }
-  .claimsTable__plate{ width: 112px; }
-  .claimsTable__vehicle{ width: 15%; }
-  .claimsTable__customer{ width: 14%; }
-  .claimsTable__res{ width: 104px; }
-  .claimsTable__status{ width: 104px; }
+  /* Every row as high as one with Mark as Resolved, in both tables. */
+  .claimsTable tbody tr{ height: 53px; }
+  /* Each column fits its value (measured on staging at 1440); the
+     description takes what is left, all of it with the sidebar folded, and
+     ends in "…" with the whole of it on hover when there is not room. */
+  .claimsTable__plate{ width: 96px; }
+  .claimsTable__vehicle{ width: 212px; }
+  .claimsTable__customer{ width: 166px; }
+  .claimsTable__res{ width: 118px; }
+  .claimsTable__status{ width: 108px; }
   .claimsTable__rentable{ width: 108px; }
-  .claimsTable__action{ width: 164px; }
+  .claimsTable__action{ width: 150px; }
 }
 /* A phone shows each claim as a card, as before: no empty Action line. */
 @media (max-width: 767px){ .claimsTable td:empty{ display: none; } }
