@@ -4551,7 +4551,9 @@ function AvailGrid({ data, from = 0, days, onPick, label }) {
   const todayIso = isoOffset(0);
   const stocked = data.classes.filter((c) => !availNoVehicles(c));
   const empty = data.classes.filter(availNoVehicles);
-  const grid = { gridTemplateColumns: `minmax(112px, 156px) repeat(${count}, minmax(30px, 1fr))`, minWidth: `${132 + count * 30}px` };
+  const isMobile = useMobile();
+  const dayMin = isMobile ? 30 : 28;
+  const grid = { gridTemplateColumns: `minmax(112px, 156px) repeat(${count}, minmax(${dayMin}px, 1fr))`, minWidth: `${(isMobile ? 132 : 112) + count * dayMin}px` };
   const month = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-CA", { month: "short", timeZone: "UTC" }).replace(".", "");
   return el("div", { className: "agrid" },
     stocked.length === 0
@@ -27985,6 +27987,12 @@ textarea.flInput{ padding: var(--fl-space-3); min-height: 96px; line-height: var
    number, today marked in the header, weekends a shade lighter. */
 .agrid{ display: grid; gap: var(--fl-space-3); }
 .agrid__scroll{ overflow-x: auto; max-width: 100%; border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); background: var(--fl-surface); -webkit-overflow-scrolling: touch; }
+/* Nov 24, desktop: if the days can't all fit, scrolling moves a whole day
+   at a time and stops on a day column, never halfway through one. */
+@media (min-width: 768px){
+  .agrid__scroll{ scroll-snap-type: x mandatory; scroll-padding-left: 112px; }
+  .agrid__day{ scroll-snap-align: start; }
+}
 .agrid__scroll:focus-visible{ outline: 2px solid var(--fl-brand); outline-offset: 2px; }
 .agrid__grid{ display: grid; width: 100%; }
 .agrid__corner, .agrid__class{ position: sticky; left: 0; z-index: 1; background: var(--fl-surface); box-shadow: 1px 0 0 var(--fl-line); }
