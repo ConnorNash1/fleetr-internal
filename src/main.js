@@ -3624,18 +3624,22 @@ function CancelledReservations() {
 function ReservationsTable({ rows: given }) {
   const { setReservations } = React.useContext(AppContext);
   const rows = given.slice().sort(byPickup);
+  // Nov 24, desktop: no Location column while everything shown is at one
+  // branch (a single branch is selected); it comes back when rows span more.
+  const isMobile = useMobile();
+  const oneBranch = !isMobile && new Set(rows.map((r) => String(r.location || "").trim())).size <= 1;
   // "Oct 22, 2026", as both pages wrote it with their own fmtDate.
   const fmtDate = (iso) => {
     const d = new Date(`${iso}T00:00:00`);
     return Number.isNaN(d.getTime()) ? iso
       : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
   };
-  const cols = ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Source", "Notes"];
+  const cols = ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Source", "Notes"].filter((c) => !(oneBranch && c === "Location"));
   return rows.length === 0
     ? React.createElement("div", { className: "resvEmpty" }, "No reservations found.")
     : React.createElement(
       "table",
-      { className: "dashboardTable" },
+      { className: "dashboardTable resvTable" },
       React.createElement("thead", null,
         React.createElement("tr", null, cols.map((col) => React.createElement("th", { key: col }, col)))
       ),
@@ -3644,7 +3648,7 @@ function ReservationsTable({ rows: given }) {
           React.createElement("tr", { key: row.resCode, className: row.fromNonDrive ? "dashboardRow--fromNonDrive" : "" },
             React.createElement("td", { key: `${row.resCode}-date` }, fmtDate(row.date)),
             React.createElement("td", { key: `${row.resCode}-time` }, pickupTime12(row)),
-            React.createElement("td", { key: `${row.resCode}-loc` }, row.location),
+            !oneBranch && React.createElement("td", { key: `${row.resCode}-loc` }, row.location),
             React.createElement("td", { key: `${row.resCode}-res` }, React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.resCode })),
             React.createElement("td", { key: `${row.resCode}-cust` },
               React.createElement(CustomerLink, { name: row.customer, resCode: row.resCode, label: row.customer }),
@@ -27425,6 +27429,12 @@ body.vsDragging, body.vsDragging *{ cursor: grabbing !important; -webkit-user-se
 .dashboardTable td button{ white-space: normal; }
 .dashboardTable th{ overflow-wrap: normal; }
 .dashboardSection__body, .companyStep__body > .dashboardSection__body{ overflow-x: visible; }
+/* Nov 24, desktop: Reservations never wraps. Dates, times, codes, names and
+   sources each stay on one line. */
+@media (min-width: 768px){
+  .resvTable th, .resvTable td{ white-space: nowrap; overflow-wrap: normal; }
+  .resvTable td *{ flex-wrap: nowrap; }
+}
 @media (max-width: 767px){
   .dashboardTable, .dashboardTable tbody, .dashboardTable tr, .dashboardTable td{ display: block; width: 100%; box-sizing: border-box; }
   .dashboardTable thead{ display: none; }
