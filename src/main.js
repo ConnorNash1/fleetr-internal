@@ -713,7 +713,7 @@ function ndiSourceOptions(current) {
 // source the company's list does not have (an old record, or the list did not
 // load) has no billing type: its name is not taken as a guess at one.
 // Retail (Nov 24) is the one source for customers paying for themselves:
-// fleetr.ai bookings, walk-ins and phone bookings, at the same rates. Staff can
+// bookings on fleetr.ai, walk-ins and phone bookings, at the same rates. Staff can
 // always pick it and set its rates; its on and off is only List on fleetr.ai.
 const sourceInUse = (x) => !!x && (!!x.active || x.standardKey === "fleetr_ai");
 
