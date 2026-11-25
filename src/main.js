@@ -28343,6 +28343,11 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
   .chargesRow > .chargesTd--total{ grid-column: 3; grid-row: 1; }
   .chargesRow > .chargesTd--qty{ grid-column: 2; grid-row: 2; }
   .chargesRow > .chargesTd--amt{ grid-column: 3; grid-row: 2; }
+  /* Search bars: a search field takes the row; two date pickers share it
+     evenly, edge to edge. */
+  .resvSearchBar > input.resvSearchInput{ flex: 1 1 100%; width: auto; min-width: 0; }
+  .resvSearchBar > .resvDatePickerWrap{ flex: 1 1 0; min-width: 0; }
+  .resvSearchBar > .resvDatePickerWrap > .resvDateBtn{ width: 100%; min-width: 0; }
   /* The renter's email gets the whole width, so it stays in one piece, and
      so does the fact before it, so no cell is left empty beside it. */
   .custFacts__item:has(a[href^="mailto:"]),
@@ -28353,10 +28358,14 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
      province with the VIN each across the card, so the VIN is never cut. */
   .custFacts--vehicle .custFacts__item:nth-child(n+3){ grid-column: 1 / -1; border-left: 0; }
 }
-/* Touch: availability days are a finger wide and tall (the grid scrolls). */
+/* Touch: availability days are a finger wide and tall (the grid scrolls),
+   and the new-version card's Refresh is a full-size target. */
 @media (max-width: 767px), (pointer: coarse){
   .agrid__cell, .agrid__class{ min-height: var(--fl-tap); }
+  .updateCard__refresh{ min-height: var(--fl-tap); padding: 0 var(--fl-space-2); }
 }
+/* Refresh reads as a link in the darker brand text colour. */
+.updateCard__refresh{ color: var(--fl-brand-text); }
 
 /* A text link beside a button sits on the button's centre line. */
 .customerPageTopBar .rentalAgreementBackBtn{ align-self: center; }
