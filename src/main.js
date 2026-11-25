@@ -28233,6 +28233,90 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
   .reportBars__name{ grid-column: 1 / -1; white-space: normal; overflow: visible; text-overflow: clip; }
 }
 /* end fleetr design system 1.0 */
+
+/* ── Design layer, meta-design-test (Nov 25) ─────────────────────────────────
+   Approach adapted from Astryx (github.com/meta/astryx, MIT licence,
+   Copyright (c) 2026 Meta Platforms, Inc.): its design principles and token
+   roles, rebuilt here in fleetr's own CSS with fleetr's colours. No Astryx
+   code is included. What it takes:
+   - spacing on a 4px grid, gaps growing from local (4 to 8) to group (12 to
+     16) to section (24 to 32), and space before boxes;
+   - corners by role: inner 6, control 10, container 12;
+   - one edge language per surface: a quiet border, no shadow, on cards;
+     shadows only for things that float;
+   - type roles: page heading, section heading, body, label, supporting text,
+     semibold not heavy, sentence case, no shouted labels;
+   - controls of one height in a row: 36px with a mouse, 44px to a finger;
+   - scarce emphasis: terracotta for the one primary action, neutral tints for
+     hover and selection, status colours unchanged;
+   - focus as an outline, never a shadow;
+   - motion that settles (fast 125ms, medium 300ms, no bounce), and none at all
+     under reduced motion.
+   The logo and the brand terracotta are unchanged. */
+:root{
+  --fl-radius-lg: 12px;
+  --fl-line: rgba(31, 30, 29, 0.10); --fl-line-soft: rgba(31, 30, 29, 0.06);
+  --fl-tint-hover: rgba(31, 30, 29, 0.04); --fl-tint-press: rgba(31, 30, 29, 0.08);
+  --fl-shadow-xs: none;
+  --fl-shadow-sm: 0 2px 4px rgba(31, 30, 29, 0.05), 0 4px 8px rgba(31, 30, 29, 0.08);
+  --fl-shadow-md: 0 2px 4px rgba(31, 30, 29, 0.05), 0 4px 12px rgba(31, 30, 29, 0.10);
+  --fl-shadow-lg: 0 4px 6px rgba(31, 30, 29, 0.10), 0 12px 24px rgba(31, 30, 29, 0.15);
+  --fl-ease-out: cubic-bezier(0.24, 1, 0.4, 1); --fl-ease-in: cubic-bezier(0.3, 0, 0.6, 0.6);
+  --fl-dur-fast: 125ms; --fl-dur: 200ms; --fl-dur-slow: 300ms;
+  --fl-control: 36px;
+}
+@media (prefers-reduced-motion: reduce){
+  :root{ --fl-dur-fast: 0ms; --fl-dur: 0ms; --fl-dur-slow: 0ms; }
+  *, *::before, *::after{ animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+/* Focus: an outline that traces the control, distinct from any shadow. */
+[data-keys] :focus-visible{ box-shadow: none; outline: 2px solid var(--fl-brand-press); outline-offset: 2px; }
+
+/* Type roles. */
+.page__title{ font-size: 26px; line-height: 32px; font-weight: 600; letter-spacing: -0.015em; }
+.page__titleUnderline{ margin: 0 0 var(--fl-space-6); }
+.companyStep__title, .dashboardSection__header, .resModalTitle, .appDialog__title{ font-weight: 600; letter-spacing: -0.01em; }
+.companyStep__title{ font-size: 17px; line-height: 24px; }
+.dashboardSection__header{ font-size: 15px; line-height: 22px; }
+
+/* Cards: a quiet border, container corners, no shadow; sections apart. */
+.companyStep, .dashboardSection, .statCard, .flCard{ border-radius: var(--fl-radius-lg); box-shadow: none; }
+.companyStep{ margin-bottom: var(--fl-space-4); }
+.companyStep--current{ box-shadow: 0 0 0 1px var(--cs-terra); }
+.companyStep__head:hover{ background: var(--fl-tint-hover); }
+
+/* Tables: sentence-case labels, 12px sides, a neutral hover. */
+.dashboardTable th{ font-size: 13px; font-weight: 600; color: var(--fl-ink-3); text-transform: none; letter-spacing: 0; padding: 10px var(--fl-space-3); }
+.dashboardTable td{ padding: 11px var(--fl-space-3); }
+.dashboardTable th:first-child, .dashboardTable td:first-child{ padding-left: var(--fl-space-4); }
+.dashboardTable th:last-child, .dashboardTable td:last-child{ padding-right: var(--fl-space-4); }
+.dashboardTable tbody tr:hover{ background: var(--fl-tint-hover); }
+
+/* Chips and badges: 20px pills, supporting size, medium weight. */
+.flChip{ min-height: 22px; padding: 0 var(--fl-space-2); font-size: 12px; font-weight: 500; }
+
+/* Buttons: hover and press as tints over the surface, not new colours. */
+.flBtn--secondary:hover:not(:disabled), .resModalCancel:hover, .appDialog__cancel:hover, .unsavedBar__discard:hover{ background: var(--fl-surface); background-image: linear-gradient(var(--fl-tint-hover), var(--fl-tint-hover)); }
+.flBtn--quiet:hover:not(:disabled){ background: var(--fl-tint-hover); }
+.flBtn:active:not(:disabled), .flPress:active{ transform: none; filter: brightness(0.96); }
+
+/* Navigation: 260px, items as soft pills; the selected one a tint that
+   follows its corners, its icon terracotta, no stripe against the curve. */
+@media (min-width: 901px){
+  .app:not(.app--rail){ grid-template-columns: 260px 1fr; }
+  .app:not(.app--rail) .sidebar{ width: 260px; }
+}
+.nav__item{ min-height: 36px; padding: 8px var(--fl-space-3); }
+.nav__item--active{ box-shadow: none; }
+.nav__marker{ border-left: 0; border-radius: var(--fl-radius); background: rgba(244, 132, 95, 0.18); }
+
+/* Desktop with a mouse: controls in a row share one height. */
+@media (min-width: 1024px) and (pointer: fine){
+  .flBtn{ min-height: var(--fl-control); padding: 0 var(--fl-space-4); }
+  .flInput, .resFormInput, .resvSearchInput, .fleetFilterInput, .fleetFilterSelect{ min-height: var(--fl-control); }
+  .content{ padding: var(--fl-space-7) var(--fl-space-8) var(--fl-space-9); }
+}
+/* end design layer, meta-design-test */
 `;
 document.head.appendChild(style);
 
