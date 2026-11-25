@@ -28313,7 +28313,9 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
 /* Desktop with a mouse: controls in a row share one height. */
 @media (min-width: 1024px) and (pointer: fine){
   .flBtn{ min-height: var(--fl-control); padding: 0 var(--fl-space-4); }
-  .flInput, .resFormInput, .resvSearchInput, .fleetFilterInput, .fleetFilterSelect{ min-height: var(--fl-control); }
+  .flInput, .resFormInput, .resvSearchInput, .fleetFilterInput, .fleetFilterSelect{ min-height: var(--fl-control); box-sizing: border-box; }
+  .loginBtn{ min-height: var(--fl-control); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; }
+  td .loginBtn{ min-height: 32px; }
   .content{ padding: var(--fl-space-7) var(--fl-space-8) var(--fl-space-9); }
 }
 /* end design layer, meta-design-test */
