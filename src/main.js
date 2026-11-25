@@ -6052,7 +6052,7 @@ function VehicleDetailPage() {
           vehicle.vehicleClass && React.createElement(Chip, null, vehicle.vehicleClass))),
       activeRa && React.createElement("div", { className: "custHead__actions" },
         React.createElement(Button, { variant: "secondary", onClick: () => navigate(customerPath(activeRa.resCode)) }, `Open ${activeRa.customer || "the renter"}'s rental`))),
-    React.createElement("div", { className: "custFacts" },
+    React.createElement("div", { className: "custFacts custFacts--vehicle" },
       [["Odometer", latestRa?.mileage != null ? fmtDistance(latestRa.mileage) : vehicle.currentOdometer != null ? fmtDistance(vehicle.currentOdometer) : "Not read yet", ""],
        ["Fuel", fuelText(latestRa?.fuelAtPickup || vehicle.currentFuelLevel) || "Not read yet", ""],
        ["With", activeRa ? (activeRa.customer || "A renter") : "Nobody", activeRa ? (activeRa.returnDate ? `Due back ${shortDay(activeRa.returnDate)}` : "Return date not set") : "On the lot"],
@@ -28343,8 +28343,15 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
   .chargesRow > .chargesTd--total{ grid-column: 3; grid-row: 1; }
   .chargesRow > .chargesTd--qty{ grid-column: 2; grid-row: 2; }
   .chargesRow > .chargesTd--amt{ grid-column: 3; grid-row: 2; }
-  /* The renter's email gets the whole width, so it stays in one piece. */
-  .custFacts__item:has(a[href^="mailto:"]){ grid-column: 1 / -1; }
+  /* The renter's email gets the whole width, so it stays in one piece, and
+     so does the fact before it, so no cell is left empty beside it. */
+  .custFacts__item:has(a[href^="mailto:"]),
+  .custFacts__item:has(+ .custFacts__item a[href^="mailto:"]){ grid-column: 1 / -1; border-left: 0; }
+  /* A fact too long for its half wraps at a space instead of being cut off. */
+  .custFacts__main, .custFacts__sub{ white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: break-word; }
+  /* A vehicle: odometer and fuel side by side, then who has it and the
+     province with the VIN each across the card, so the VIN is never cut. */
+  .custFacts--vehicle .custFacts__item:nth-child(n+3){ grid-column: 1 / -1; border-left: 0; }
 }
 /* Touch: availability days are a finger wide and tall (the grid scrolls). */
 @media (max-width: 767px), (pointer: coarse){
