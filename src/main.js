@@ -28314,6 +28314,7 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
 @media (min-width: 1024px) and (pointer: fine){
   .flBtn{ min-height: var(--fl-control); padding: 0 var(--fl-space-4); }
   .flInput, .resFormInput, .resvSearchInput, .fleetFilterInput, .fleetFilterSelect{ min-height: var(--fl-control); box-sizing: border-box; }
+  input.resFormInput:not([type=checkbox]):not([type=radio]), select.resFormInput{ height: var(--fl-control); padding-top: 0; padding-bottom: 0; }
   .loginBtn{ min-height: var(--fl-control); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; }
   td .loginBtn{ min-height: 32px; }
   .content{ padding: var(--fl-space-7) var(--fl-space-8) var(--fl-space-9); }
