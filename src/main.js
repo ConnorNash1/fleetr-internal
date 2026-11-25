@@ -28310,12 +28310,16 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
 .nav__item--active{ box-shadow: none; }
 .nav__marker{ border-left: 0; border-radius: var(--fl-radius); background: rgba(244, 132, 95, 0.18); }
 
+/* A text link beside a button sits on the button's centre line. */
+.customerPageTopBar .rentalAgreementBackBtn{ align-self: center; }
+
 /* Desktop with a mouse: controls in a row share one height. */
 @media (min-width: 1024px) and (pointer: fine){
   .flBtn{ min-height: var(--fl-control); padding: 0 var(--fl-space-4); }
   .flInput, .resFormInput, .resvSearchInput, .fleetFilterInput, .fleetFilterSelect{ min-height: var(--fl-control); box-sizing: border-box; }
   input.resFormInput:not([type=checkbox]):not([type=radio]), select.resFormInput{ height: var(--fl-control); padding-top: 0; padding-bottom: 0; }
-  .loginBtn{ min-height: var(--fl-control); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; }
+  .loginBtn, .customerPageSaveBtn, .resModalSubmit, .resModalCancel, .resModalSave, .appDialog__main, .appDialog__cancel,
+  .unsavedBar__save, .unsavedBar__discard{ min-height: var(--fl-control); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; }
   td .loginBtn{ min-height: 32px; }
   .content{ padding: var(--fl-space-7) var(--fl-space-8) var(--fl-space-9); }
 }
