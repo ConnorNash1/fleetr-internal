@@ -4561,7 +4561,8 @@ function AvailGrid({ data, from = 0, days, onPick, label }) {
   const stocked = data.classes.filter((c) => !availNoVehicles(c));
   const empty = data.classes.filter(availNoVehicles);
   const isMobile = useMobile();
-  const dayMin = isMobile ? 30 : 28;
+  // A day is a finger wide on a phone (44px, the touch control size); the grid scrolls.
+  const dayMin = isMobile ? 44 : 28;
   const grid = { gridTemplateColumns: `minmax(112px, 156px) repeat(${count}, minmax(${dayMin}px, 1fr))`, minWidth: `${(isMobile ? 132 : 112) + count * dayMin}px` };
   const month = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-CA", { month: "short", timeZone: "UTC" }).replace(".", "");
   return el("div", { className: "agrid" },
@@ -28309,6 +28310,46 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
 .nav__item{ min-height: 36px; padding: 8px var(--fl-space-3); }
 .nav__item--active{ box-shadow: none; }
 .nav__marker{ border-left: 0; border-radius: var(--fl-radius); background: rgba(244, 132, 95, 0.18); }
+
+/* Type roles, the last labels still in spaced capitals: section heads at
+   13px semibold, field labels at 12px, badges at 12px medium, as written. */
+.cdetailSubGroup, .chargesSectionHeader, .gasSettingSubhead, .vehicleDetailSubHeader{ font-size: 13px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+.chargesInfoLabel, .chargesTh{ font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--fl-ink-3); }
+.chargesTotalLabel{ font-weight: 600; letter-spacing: 0; text-transform: none; }
+.claimStatus, .pmDueBadge{ font-size: 12px; font-weight: 500; line-height: 18px; letter-spacing: 0; text-transform: none; }
+.mobileNavSectionHeader{ font-size: var(--fl-text-xs); font-weight: 500; text-transform: none; letter-spacing: 0; color: rgba(249, 249, 247, 0.46); }
+
+/* A partner's name and email keep the line; the chip and Turn off move
+   under them when the row is too narrow, so the email never splits. */
+.partners__person{ flex: 1 1 auto; }
+
+/* Phones. */
+@media (max-width: 767px){
+  /* Table cards: an edge, no shadow; column names in sentence case. */
+  .dashboardTable tbody tr{ box-shadow: none; }
+  .dashboardTable td::before{ font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--fl-ink-3); }
+  /* A value with a detail line under it: the two stack beside the label. */
+  .dashboardTable td:has(> .closeRentalHint){ display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; align-items: start; }
+  .dashboardTable td:has(> .closeRentalHint)::before{ grid-row: 1 / span 2; }
+  .dashboardTable td > .closeRentalHint{ grid-column: 2; overflow-wrap: normal; }
+  /* Charges: each line two rows, item and total, then quantity and rate,
+     inside the card instead of running past its edge. */
+  .chargesTable tr:has(> th){ display: none; }
+  .chargesTable, .chargesTable tbody{ display: block; }
+  .chargesRow{ display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 6px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--fl-line-soft); }
+  .chargesRow > .chargesTd{ padding: 0; border-bottom: 0; }
+  .chargesRow > .chargesTd--check{ grid-column: 1; grid-row: 1 / span 2; align-self: start; padding-top: 2px; }
+  .chargesRow > .chargesTd--label{ grid-column: 2; grid-row: 1; }
+  .chargesRow > .chargesTd--total{ grid-column: 3; grid-row: 1; }
+  .chargesRow > .chargesTd--qty{ grid-column: 2; grid-row: 2; }
+  .chargesRow > .chargesTd--amt{ grid-column: 3; grid-row: 2; }
+  /* The renter's email gets the whole width, so it stays in one piece. */
+  .custFacts__item:has(a[href^="mailto:"]){ grid-column: 1 / -1; }
+}
+/* Touch: availability days are a finger wide and tall (the grid scrolls). */
+@media (max-width: 767px), (pointer: coarse){
+  .agrid__cell, .agrid__class{ min-height: var(--fl-tap); }
+}
 
 /* A text link beside a button sits on the button's centre line. */
 .customerPageTopBar .rentalAgreementBackBtn{ align-self: center; }
