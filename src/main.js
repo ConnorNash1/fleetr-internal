@@ -11057,7 +11057,7 @@ async function chargeCardOnFile(agreementId) {
     return await stripeCall("card-charge", { agreementId });
   } catch (e) {
     const msg = String(e.message || "");
-    if (/no_card|not_connected|nothing_owing|charges_off|demo|not_closed/.test(msg)) return { ok: false, quiet: true };
+    if (/no_card|not_connected|nothing_owing|charges_off|cards_off|demo|not_closed/.test(msg)) return { ok: false, quiet: true };
     appAlert("The card on file could not be charged. It is in Needs you, and the payment link below still works.", { title: "Card not charged" });
     return { ok: false };
   }
@@ -11156,11 +11156,16 @@ function CardOnFileSettings() {
   const [d, setD] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState("");
+  // Nov 25: Card payments on or off (off to start: no card step anywhere), and
+  // while it is on, the security deposit and Card hold on bill-to rentals.
+  // Holds and the charge at return follow from these; the two old switches
+  // for them are gone.
   React.useEffect(() => {
     supabase.rpc("my_card_settings")
       .then(({ data: got }) => {
         const data = got && got.ok ? got : null;
-        const v = { deposit: data ? String(Math.round(Number(data.depositAmount))) : "0", hold: data ? !!data.holdAtPickup : true, charge: data ? !!data.chargeAtClose : true };
+        const v = { on: data ? !!data.cardPayments : false, deposit: data ? String(Math.round(Number(data.depositAmount))) : "0",
+          billTo: data && ["off", "optional", "required"].includes(data.billToHold) ? data.billToHold : "off" };
         setSaved(v); setD(v);
       });
   }, [currentUser?.operatorId]);
@@ -11169,23 +11174,29 @@ function CardOnFileSettings() {
   const valid = /^\d{1,4}$/.test(d.deposit) && Number(d.deposit) <= 5000;
   const save = async () => {
     setBusy(true); setMsg("");
-    const { data, error } = await supabase.rpc("set_card_settings", { p_deposit: Number(d.deposit), p_hold: d.hold, p_charge: d.charge });
+    const { data, error } = await supabase.rpc("set_card_settings", { p_card_payments: d.on, p_deposit: Number(d.deposit), p_bill_to_hold: d.billTo });
     setBusy(false);
     if (error || !data || !data.ok) { setMsg(data && data.reason === "bad_amount" ? "A deposit is whole dollars, from $0 to $5,000." : "That did not save. Try again."); return; }
     setSaved(d); setMsg("Saved.");
   };
-  const toggle = (k, label, hint) => el("label", { className: "cardSettings__toggle" },
-    el("input", { type: "checkbox", checked: d[k], disabled: !isExec, onChange: (e) => setD({ ...d, [k]: e.target.checked }) }),
-    el("span", null, el("strong", null, label), el("small", null, hint)));
+  const BILL_TO = [["off", "Off"], ["optional", "Optional"], ["required", "Required"]];
   return el("div", { className: "cardSettings" },
-    el("h4", { className: "cardSettings__title" }, "Saved cards"),
-    el("p", { className: "closeRentalHint" }, "Renters can save a card when they book on fleetr.ai or check in on their phone. Payment links stay as the backup."),
-    toggle("hold", "Hold at pickup", "The rental's estimate plus the deposit below, held on the card when the renter signs for the car."),
-    toggle("charge", "Charge at close", "The final total, charged to the card when the rental closes. The receipt goes by text and email."),
-    el(Field, { label: "Deposit held at pickup", htmlFor: "card-deposit", hint: "Released when the rental closes, less anything owed." },
+    el("h4", { className: "cardSettings__title" }, "Card payments"),
+    el("label", { className: "cardSettings__toggle" },
+      el("input", { type: "checkbox", checked: d.on, disabled: !isExec, onChange: (e) => setD({ ...d, on: e.target.checked }) }),
+      el("span", null, el("strong", null, d.on ? "On" : "Off"),
+        el("small", null, d.on
+          ? "Renters give a card when they check in. A hold goes on at pickup and the final total is charged at return."
+          : "No card step when renters book or check in. Use your own payment system."))),
+    d.on && el(Field, { label: "Security deposit", htmlFor: "card-deposit", hint: "Held with the renter's estimate at pickup, and released at return less anything owed." },
       el("div", { className: "flInputAffix", style: { maxWidth: "160px" } }, el("span", null, "$"),
         el("input", { id: "card-deposit", className: "flInput", inputMode: "numeric", maxLength: 4, disabled: !isExec, value: d.deposit,
           onChange: (e) => setD({ ...d, deposit: e.target.value.replace(/[^\d]/g, "") }) }))),
+    d.on && el(Field, { label: "Card hold on bill-to rentals", htmlFor: "card-bill-to",
+      hint: "When an insurer, body shop or corporate account pays the whole rental. Optional lets the renter tap Not now. The hold is the security deposit only, charged only for extras like fuel or extra days." },
+      el("select", { id: "card-bill-to", className: "flInput", style: { maxWidth: "200px" }, disabled: !isExec, value: d.billTo,
+        onChange: (e) => setD({ ...d, billTo: e.target.value }) },
+        BILL_TO.map(([v, label]) => el("option", { key: v, value: v }, label)))),
     isExec && el("div", { className: "cardSettings__actions" }, el(Button, { onClick: save, disabled: !changed || !valid, loading: busy }, "Save")),
     msg && el("p", { className: "closeRentalHint", role: "status" }, msg));
 }
