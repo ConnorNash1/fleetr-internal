@@ -28292,6 +28292,10 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
 .dashboardTable th:first-child, .dashboardTable td:first-child{ padding-left: var(--fl-space-4); }
 .dashboardTable th:last-child, .dashboardTable td:last-child{ padding-right: var(--fl-space-4); }
 .dashboardTable tbody tr:hover{ background: var(--fl-tint-hover); }
+/* The same header type inside a Company step or a staff page, where an
+   older, more specific rule set it in spaced capitals; its spacing stays. */
+.companyStep__body .dashboardTable th, .staffPage .dashboardTable th{ font-size: 13px; font-weight: 600; color: var(--fl-ink-3); text-transform: none; letter-spacing: 0; }
+.companyStep__body .dashboardTable tbody tr:hover, .staffPage .dashboardTable tbody tr:hover{ background: var(--fl-tint-hover); }
 
 /* Chips and badges: 20px pills, supporting size, medium weight. */
 .flChip{ min-height: 22px; padding: 0 var(--fl-space-2); font-size: 12px; font-weight: 500; }
