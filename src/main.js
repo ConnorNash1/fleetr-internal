@@ -1232,37 +1232,37 @@ const NAV_SECTIONS = [
     header: "Rentals",
     items: [
       { label: "Reservations", path: "/reservations" },
-      { label: "Rental Agreements", path: "/rental-agreements" },
+      { label: "Rental agreements", path: "/rental-agreements" },
     ],
   },
   {
     header: "Fleet",
     items: [
       { label: "Vehicles",                path: "/fleet/vehicles"      },
-      { label: "Additions and Deletions", path: "/fleet/additions"      },
-      { label: "Gas Collections",         path: "/fleet/gas-collections" },
-      { label: "Ongoing Damage Claims",   path: "/fleet/damage-claims"  },
+      { label: "Additions and deletions", path: "/fleet/additions"      },
+      { label: "Gas collections",         path: "/fleet/gas-collections" },
+      { label: "Ongoing damage claims",   path: "/fleet/damage-claims"  },
     ],
   },
   {
     header: "Customer texts",
     items: [
-      { label: "Non-Drive's", path: "/arms", feature: "non_drive_intake" },
-      { label: "Pre-Rental Check", path: "/pre-rental-check", feature: "pre_rental_check" },
-      { label: "Overdue Rentals", path: "/overdue-rentals" },
-      { label: "Unknown Repair Date", path: "/time-of-repair", feature: "unknown_repair_date" },
+      { label: "Non-drive's", path: "/arms", feature: "non_drive_intake" },
+      { label: "Pre-rental check", path: "/pre-rental-check", feature: "pre_rental_check" },
+      { label: "Overdue rentals", path: "/overdue-rentals" },
+      { label: "Unknown repair date", path: "/time-of-repair", feature: "unknown_repair_date" },
 
-      { label: "No Shows", path: "/no-shows", feature: "no_shows" },
+      { label: "No shows", path: "/no-shows", feature: "no_shows" },
     ],
   },
   {
     header: "Branch",
     items: [
       { label: "Reports", path: "/reports", feature: "reports" },
-      { label: "Audit Log", path: "/audit-log", feature: "audit_log" },
+      { label: "Audit log", path: "/audit-log", feature: "audit_log" },
       { label: "Partners", path: "/partners", minRole: "Admin" },
       { label: "Company", path: "/company" },
-      { label: "Your Account", path: "/account" },
+      { label: "Your account", path: "/account" },
     ],
   },
 ];
@@ -2653,9 +2653,9 @@ const PAGE_SKELETONS = {
   "/dashboard": () => skEl("div", { className: "page" },
     skTitle("Home"),
     skStep("Availability, next 30 days"), skStep("Needs you"),
-    skEl("div", { className: "dashboardCtaRow" }, skB("button", "closeRentalCta", "Close Rental", "c"), skB("button", "closeRentalCta", "Switch Out", "s")),
+    skEl("div", { className: "dashboardCtaRow" }, skB("button", "closeRentalCta", "Close rental", "c"), skB("button", "closeRentalCta", "Switch Out", "s")),
     skEl("div", { className: "dashboardGrid" },
-      skStep("Reservations"), skStep("Vehicle Status"), isFeatureEnabled("non_drive_intake") && skStep("Non-Drive Intake")),
+      skStep("Reservations"), skStep("Vehicle status"), isFeatureEnabled("non_drive_intake") && skStep("Non-drive intake")),
     skEl("div", { className: "dashStats" },
       skEl("div", { className: "dashStats__cards" },
         skEl("div", { className: "statCard statCard--lift" },
@@ -2687,25 +2687,25 @@ const PAGE_SKELETONS = {
     skEl("div", { className: "resvSearchBar" },
       skEl("button", { type: "button", tabIndex: -1, className: "resvInlineBtn" }, skT("+ New Reservation")),
       skDateBtn(skDay, true),
-      skSearchInputs(["First name", "Last name", "Phone number", "Res Code"])),
+      skSearchInputs(["First name", "Last name", "Phone number", "Res code"])),
     skSection(skHead("Reservations"), skTable(
-      ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Source", "Notes"],
+      ["Date", "Time", "Location", "Res code", "Customer", "Vehicle class", "Source", "Notes"],
       [skDay, "10:00 AM", "Airport", skLink(skCode), skCustomer.map(skLink), ["Small car", "Medium SUV"], ["fleetr.ai", "Intact Insurance"], skT("    ")]))),
 
   "/rental-agreements": () => skEl("div", { className: "page" },
-    skTitle("Rental Agreements"),
+    skTitle("Rental agreements"),
     skEl("div", { className: "resvSearchBar" },
       skDateBtn("Pickup date"), skDateBtn("Return date"),
-      skSearchInputs(["First name", "Last name", "Phone number", "Res Code"])),
+      skSearchInputs(["First name", "Last name", "Phone number", "Res code"])),
     skTabs(["Open", "Customer return", "Close pending", "Closed"]),
     skSection(null, skTable(
-      ["Res Code", "Customer", "Vehicle", "Pickup Date", "Status"],
+      ["Res code", "Customer", "Vehicle", "Pickup date", "Status"],
       [skLink(skCode), skCustomer.map(skLink), skPlate, skDay, skB("span", "rentalAgreementBadge rentalAgreementBadge--open", "Open")]))),
 
   "/fleet/vehicles": () => skEl("div", { className: "page" },
     skTitle("Vehicles"),
     skFleetFilter(),
-    skStep("Vehicle Status", undefined, true, skEl("div", { className: "dashboardSection__body" },
+    skStep("Vehicle status", undefined, true, skEl("div", { className: "dashboardSection__body" },
       ["Available", "Needs cleaning", "Ready returns", "Preventative maintenance", "Damaged", "On rent"].map((label) =>
         skEl("div", { key: label, className: "fleetGroup" },
           skEl("div", { className: "fleetGroupHeader" },
@@ -2714,56 +2714,56 @@ const PAGE_SKELETONS = {
             skEl("span", { className: "fleetGroupCount" }, "0"))))))),
 
   "/fleet/additions": () => skEl("div", { className: "page companySetup" },
-    skEl("h1", { className: "companySetup__title" }, skT("Additions and Deletions")),
+    skEl("h1", { className: "companySetup__title" }, skT("Additions and deletions")),
     skFleetFilter(),
-    skStep("Add Vehicle to Fleet", "add"), skStep("Retire Vehicle", "retire"), skStep("Archived Vehicles", "archived")),
+    skStep("Add vehicle to fleet", "add"), skStep("Retire vehicle", "retire"), skStep("Archived vehicles", "archived")),
 
   "/fleet/gas-collections": () => skEl("div", { className: "page" },
-    skTitle("Gas Collections"),
+    skTitle("Gas collections"),
     skSection(skHead("Outstanding balances", "0 outstanding"), skTable(
-      ["Customer", "Res Code", "Plate", "Gas owed", "Payment status"],
+      ["Customer", "Res code", "Plate", "Gas owed", "Payment status"],
       [skCustomer.map(skLink), skLink(skCode), skPlate,
         skEl("div", { className: "gasOwedWrap" }, skEl("span", { className: "gasOwedDollar" }, skT("$")), skEl("input", { className: "gasOwedInput", type: "number", tabIndex: -1, readOnly: true })),
         skEl("select", { className: "gasStatusSelect", tabIndex: -1 }, skEl("option", null, "Unpaid"))]))),
 
   "/fleet/damage-claims": () => skEl("div", { className: "page" },
-    skTitle("Ongoing Damage Claims"),
+    skTitle("Ongoing damage claims"),
     skFleetFilter(),
-    skSection(skHead("Active Claims", "0 active"), skTable(
-      ["Plate", "Vehicle", "Customer", "Res Code", "Description", "Status", "Rentable", "Action"],
+    skSection(skHead("Active claims", "0 active"), skTable(
+      ["Plate", "Vehicle", "Customer", "Res code", "Description", "Status", "Rentable", "Action"],
       [skPlate, "Toyota Corolla", skCustomer.map(skLink), skLink(skCode), "Scratch on the rear bumper, passenger side",
         skB("span", "claimStatus claimStatus--open", "Open"), "Not recorded", skB("button", "aiControl", "Resolve")]))),
 
-  "/arms": () => skEl("div", { className: "page" }, skTitle("Non-Drive Intake"), skStep("Non-Drive Intake")),
+  "/arms": () => skEl("div", { className: "page" }, skTitle("Non-drive intake"), skStep("Non-drive intake")),
 
   "/pre-rental-check": () => skEl("div", { className: "page" },
-    skTitle("Pre-Rental Check"),
+    skTitle("Pre-rental check"),
     skEl("p", { className: "aiTabDesc" }, skT("An automated text is sent to each customer the business day before their pickup. No staff involvement required.")),
     skSection([skEl("span", { key: "t" }, skT("Tomorrow’s Pickups · Friday, October 30, 2026"))], skTable(
-      ["Time", "Location", "Res Code", "Customer", "Vehicle Class", "Text Status"],
+      ["Time", "Location", "Res code", "Customer", "Vehicle class", "Text status"],
       ["10:00 AM", "Airport", skLink(skCode), skCustomer.map(skLink), ["Small car", "Medium SUV"], "Not sent yet"]))),
 
   "/overdue-rentals": () => skEl("div", { className: "page" },
-    skTitle("Overdue Rentals"),
+    skTitle("Overdue rentals"),
     skEl("p", { className: "aiTabDesc" }, skT("Rental agreements past their return date. The customer gets a text automatically. Customers with no response are moved to Manual Follow-Up.")),
     skSection(skHead("Overdue", "Reminders are texted automatically", "autoTextNote"), skTable(
-      ["Res Code", "Customer", "Phone", "Plate", "Due Date", "Status"],
+      ["Res code", "Customer", "Phone", "Plate", "Due date", "Status"],
       [skLink(skCode), skCustomer.map(skLink), "709 555 0110", skPlate, skDay,
         skEl("div", { className: "readyStatusWrap" }, skB("button", "aiControl", "Reached", 1), skB("button", "aiControl", "No reply", 2, { marginLeft: "6px" }))]))),
 
   "/time-of-repair": () => skEl("div", { className: "page" },
-    skTitle("Unknown Repair Date"),
-    skSection(skHead("Awaiting Confirmed Repair Date", "0 reservations pending"), skTable(
-      ["Customer", "Res Code", "Bodyshop / Dealership", "Confirm Repair Date"],
+    skTitle("Unknown repair date"),
+    skSection(skHead("Awaiting confirmed repair date", "0 reservations pending"), skTable(
+      ["Customer", "Res code", "Bodyshop / dealership", "Confirm repair date"],
       [skCustomer.map(skLink), skLink(skCode), "Intact Insurance",
         skEl(DateField, { className: "torDateInput", value: "", placeholder: "Pick date", ariaLabel: "Repair date", onChange: skNoop })]))),
 
   "/no-shows": () => skEl("div", { className: "page" },
-    skTitle("No Shows"),
+    skTitle("No shows"),
     skTabs(["Missed pickup", "Cancelled"]),
     skEl("p", { className: "aiTabDesc" }, skT("The customer had not arrived 2 hours after pickup. The missed pickup text goes out automatically, with a link to change the pickup time. Not picked up or moved by the cutoff, the reservation is cancelled and the customer is texted.")),
     skSection(skHead("Missed pickup", "Texts go out automatically", "autoTextNote"), skTable(
-      ["Customer", "Vehicle Class", "Pickup", "Missed Pickup Text", "Cutoff", "Outcome", ""],
+      ["Customer", "Vehicle class", "Pickup", "Missed pickup text", "Cutoff", "Outcome", ""],
       [skCustomer.map(skLink), ["Small car", "Medium SUV"], "Oct 29, 10:00 AM", "Oct 29, 12:00 p.m.", "Oct 30, 12:00 AM",
         skEl("div", { className: "readyStatusWrap" }, skB("button", "aiControl", "Reached", 1, { marginRight: "6px" }), skB("button", "aiControl", "No reply", 2, { marginRight: "6px" })),
         skEl(React.Fragment, null, skB("button", "aiControl", "Customer is coming", 1, { marginRight: "6px" }), skB("button", "aiControl", "Cancel", 2, { marginRight: "6px" }))]))),
@@ -2774,7 +2774,7 @@ const PAGE_SKELETONS = {
       .map(([title, key]) => skStep(title, key))),
 
   "/audit-log": () => skEl("div", { className: "page" },
-    skTitle("Audit Log"),
+    skTitle("Audit log"),
     skEl("div", { className: "resvSearchBar auditFilterBar" },
       skEl("select", { className: "resvSearchInput auditFilterSelect", tabIndex: -1 }, skEl("option", null, "All actors")),
       skEl("select", { className: "resvSearchInput auditFilterSelect", tabIndex: -1 }, skEl("option", null, "All actions")),
@@ -2808,18 +2808,18 @@ const PAGE_SKELETONS = {
   },
 
   "/account": () => skEl("div", { className: "page companySetup" },
-    skEl("h1", { className: "companySetup__title" }, skT("Your Account")),
+    skEl("h1", { className: "companySetup__title" }, skT("Your account")),
     skStep("Who you are", "who", true, [
       skEl("div", { key: "who", style: { fontSize: "0.95rem", lineHeight: "1.9" } },
         skEl("div", null, skT("Username: username")), skEl("div", null, skT("Name: First Last")), skEl("div", null, skT("Role: Agent"))),
     ]),
     skStep("Password", "password"), skStep("PIN", "pin"), skStep("Recovery email", "recovery")),
 
-  "/close-rental": () => skRentalSearch("Close Rental"),
-  "/switch-out": () => skRentalSearch("Switch Out"),
+  "/close-rental": () => skRentalSearch("Close rental"),
+  "/switch-out": () => skRentalSearch("Switch out"),
 
   "/vehicle": () => skEl("div", { className: "page" },
-    skTitle("Vehicle Detail"),
+    skTitle("Vehicle detail"),
     skEl("div", { className: "resvEmpty" }, skT("No vehicle selected."))),
 
   "/customer": ({ openCustomer, reservations, rentalAgreements }) => {
@@ -2831,7 +2831,7 @@ const PAGE_SKELETONS = {
 PAGE_SKELETONS["/"] = PAGE_SKELETONS["/dashboard"];
 PAGE_SKELETONS["/staff"] = PAGE_SKELETONS["/company"];
 PAGE_SKELETONS["/setup"] = PAGE_SKELETONS["/company"];
-PAGE_SKELETONS["/fleet"] = () => skEl("div", { className: "page" }, skTitle("Branch Fleet"), skStep("Vehicle Status", undefined, true,
+PAGE_SKELETONS["/fleet"] = () => skEl("div", { className: "page" }, skTitle("Branch fleet"), skStep("Vehicle status", undefined, true,
   skEl("div", { className: "dashboardSection__body" }, ["Available", "Needs cleaning", "Ready returns", "Preventative maintenance", "Damaged", "On rent"].map((label) =>
     skEl("div", { key: label, className: "fleetGroup" }, skEl("div", { className: "fleetGroupHeader" },
       skEl("span", { className: "fleetGroupChevron" }, "▸"), skEl("span", null, skT(label)), skEl("span", { className: "fleetGroupCount" }, "0")))))));
@@ -2855,7 +2855,7 @@ function skCustomerPage(openCustomer, rentalAgreements) {
       skEl("span", { className: "customerPageMetaCode" }, skT(`${openCustomer?.resCode || skCode} · fleetr.ai`)),
       status && status !== "reservation" && skB("span", raBadgeClass(status, { meta: true }), statusLabel(status))),
     skEl("div", { className: "page__titleUnderline" }),
-    ["Reservation Information", "Vehicles", "Rates & Billing", "Charges & Payments", "Notes", "Rental Agreement Options"].map((t) => skStep(t)));
+    ["Reservation information", "Vehicles", "Rates & billing", "Charges & payments", "Notes", "Rental agreement options"].map((t) => skStep(t)));
 }
 
 // The join code at the top of Staff, for an Admin: their own branch's.
@@ -3261,7 +3261,7 @@ function NotesCell({ noteId, preRentalCheck, notesLog: notesLogRaw, onAddNote })
           React.createElement(
             "button",
             { type: "submit", className: "aiCallButton", style: { width: "100%" } },
-            "Add Note"
+            "Add note"
           )
         )
       )
@@ -3291,6 +3291,8 @@ const EMPTY_RES_FORM = {
 // Card or E-transfer showed there as Credit Card. A saved value off the list
 // (an older "Debit") stays offered, so opening the page never changes it.
 const RESERVATION_PAYMENT_METHODS = ["Credit Card", "Debit Card", "Cash", "E-transfer"];
+// The method as shown in a picker (Nov 26): stored as written above, shown in sentence case.
+const paymentMethodShown = (m) => sentenceStatus(m);
 const paymentMethodOptions = (saved) => (saved && !RESERVATION_PAYMENT_METHODS.includes(saved)
   ? [...RESERVATION_PAYMENT_METHODS, saved] : RESERVATION_PAYMENT_METHODS);
 
@@ -3314,6 +3316,10 @@ const emptyResForm = () => ({
 });
 
 // ─── Status label helper ──────────────────────────────────────────────────────
+
+// A charge line's name as shown (Nov 26): the vehicle line is stored as
+// "Vehicle Cost" and shown in sentence case; every other name as written.
+const chargeLabelShown = (label) => (label === "Vehicle Cost" ? "Vehicle cost" : label);
 
 // A status as people read it, in sentence case (Nov 26): "On Rent" shows as
 // "On rent", "In Review" as "In review". The stored value never changes; a
@@ -3400,10 +3406,10 @@ function manualRaTransition(from, to) {
   }
   if (from === "open_rental_agreement" || from === "customer_return") {
     return { ok: false, error:
-      "This rental has to go through Close Rental. It records the closing mileage and fuel, the damage answer and the vehicle's next status, and it decides whether the agreement can be closed or is held for charges. Open Close Rental for this reservation." };
+      "This rental has to go through Close rental. It records the closing mileage and fuel, the damage answer and the vehicle's next status, and it decides whether the agreement can be closed or is held for charges. Open Close rental for this reservation." };
   }
   return { ok: false, error:
-    "The only rental agreement status that can be changed by hand is a Close Pending one, which can be closed. Everything else is set by opening a rental or by Close Rental." };
+    "The only rental agreement status that can be changed by hand is a Close pending one, which can be closed. Everything else is set by opening a rental or by Close rental." };
 }
 
 // ─── Pages about one record ───────────────────────────────────────────────────
@@ -3625,7 +3631,7 @@ function CancelledReservations() {
     open && (rows === null ? el("p", { className: "closeRentalHint" }, "Loading cancelled bookings\u2026")
       : rows.length === 0 ? el("div", { className: "resvEmpty" }, "No cancelled bookings in the last 60 days.")
       : el("table", { className: "dashboardTable", style: { marginTop: 8 } },
-          el("thead", null, el("tr", null, ["Cancelled", "Res Code", "Customer", "Pickup was", "By"].map((h) => el("th", { key: h }, h)))),
+          el("thead", null, el("tr", null, ["Cancelled", "Res code", "Customer", "Pickup was", "By"].map((h) => el("th", { key: h }, h)))),
           el("tbody", null, rows.map((r) => el("tr", { key: r.id },
             el("td", null, when(r.cancelledAt)),
             el("td", null, r.resCode),
@@ -3647,7 +3653,7 @@ function ReservationsTable({ rows: given }) {
     return Number.isNaN(d.getTime()) ? iso
       : d.toLocaleDateString("en-CA", { month: "short", day: "numeric", year: "numeric" });
   };
-  const cols = ["Date", "Time", "Location", "Res Code", "Customer", "Vehicle class", "Source", "Notes"].filter((c) => !(oneBranch && c === "Location"));
+  const cols = ["Date", "Time", "Location", "Res code", "Customer", "Vehicle class", "Source", "Notes"].filter((c) => !(oneBranch && c === "Location"));
   return rows.length === 0
     ? React.createElement("div", { className: "resvEmpty" }, "No reservations found.")
     : React.createElement(
@@ -3961,33 +3967,33 @@ function ReservationsPage() {
         "div",
         { className: "resModal", onClick: (e) => e.stopPropagation(), role: "dialog", "aria-modal": "true", "aria-labelledby": "newResTitle" },
         React.createElement("div", { className: "resModalHeader" },
-          React.createElement("h2", { id: "newResTitle", className: "resModalTitle" }, "New Reservation"),
+          React.createElement("h2", { id: "newResTitle", className: "resModalTitle" }, "New reservation"),
           React.createElement("button", { type: "button", className: "resModalClose", "aria-label": "Close", onClick: () => setShowModal(false) }, "✕")
         ),
         React.createElement("form", { className: "resModalForm", onSubmit: handleSubmit, noValidate: true },
           React.createElement("div", { className: "resModalBody" },
-            React.createElement("div", { className: "cdetailSubGroup" }, "Customer Information"),
+            React.createElement("div", { className: "cdetailSubGroup" }, "Customer information"),
             React.createElement("div", { className: "resFormRow" },
               React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Res Code"),
+                React.createElement("span", { className: "resFormLabel" }, "Res code"),
                 React.createElement("input", { className: "resFormInput", type: "text", readOnly: true, value: "Assigned on save", style: { background: "#f7f7f7", color: "#aaa", cursor: "default" } })
               ),
-              tf("First Name", "firstName", "First name"),
-              tf("Last Name", "lastName", "Last name")
+              tf("First name", "firstName", "First name"),
+              tf("Last name", "lastName", "Last name")
             ),
             React.createElement("div", { className: "resFormRow" },
               tf("Phone", "phone", "(xxx) xxx-xxxx"),
               tf("Email", "email", "email@example.com")
             ),
-            React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & Return"),
+            React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & return"),
             React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
               React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Pickup Date"),
+                React.createElement("span", { className: "resFormLabel" }, "Pickup date"),
                 React.createElement(DateField, { className: "resFormInput", value: form.date, ariaLabel: "Pickup date", onChange: (v) => updateForm("date", v) }),
                 fieldErr("date")
               ),
               React.createElement("label", { className: "resFormGroup resFormGroup--time" },
-                React.createElement("span", { className: "resFormLabel" }, "Pickup Time"),
+                React.createElement("span", { className: "resFormLabel" }, "Pickup time"),
                 React.createElement(QuarterTimePicker, { ...time24Parts(form.time), className: "resFormInput", label: "Pickup time",
                   onChange: (h, m, mer) => updateForm("time", partsTime24(h, m, mer)) }),
                 fieldErr("time")
@@ -3995,16 +4001,16 @@ function ReservationsPage() {
             ),
             React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
               React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Return Date"),
+                React.createElement("span", { className: "resFormLabel" }, "Return date"),
                 React.createElement(DateField, { className: "resFormInput", value: form.returnDate, ariaLabel: "Return date", onChange: (v) => updateForm("returnDate", v) })
               ),
               React.createElement("label", { className: "resFormGroup resFormGroup--time" },
-                React.createElement("span", { className: "resFormLabel" }, "Return Time"),
+                React.createElement("span", { className: "resFormLabel" }, "Return time"),
                 React.createElement(QuarterTimePicker, { ...time24Parts(form.returnTime), className: "resFormInput", label: "Return time",
                   onChange: (h, m, mer) => updateForm("returnTime", partsTime24(h, m, mer)) })
               )
             ),
-            React.createElement("div", { className: "cdetailSubGroup" }, "Reservation Details"),
+            React.createElement("div", { className: "cdetailSubGroup" }, "Reservation details"),
             React.createElement("div", { className: "resFormRow" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Location"),
@@ -4014,14 +4020,14 @@ function ReservationsPage() {
                 fieldErr("location")
               ),
               React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Vehicle Class"),
+                React.createElement("span", { className: "resFormLabel" }, "Vehicle class"),
                 React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => setForm((p) => withDailyRate({ ...p, vehicleClass: e.target.value })) },
                   bookableClassOptions(form.vehicleClass, fleet, currentUser?.locationId).map((c) => React.createElement("option", { key: c, value: c }, c))
                 ),
                 fieldErr("vehicleClass")
               )
             ),
-            React.createElement("div", { className: "cdetailSubGroup" }, "Rates & Billing"),
+            React.createElement("div", { className: "cdetailSubGroup" }, "Rates & billing"),
             React.createElement("div", { className: "resFormRow" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Source"),
@@ -4031,7 +4037,7 @@ function ReservationsPage() {
                 )
               ),
               form.source && (sourceCatsFor(form.source)[form.source] || []).length > 0 && React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Specific Source"),
+                React.createElement("span", { className: "resFormLabel" }, "Specific source"),
                 React.createElement("select", { className: "resFormInput", value: form.sourceDetail, onChange: (e) => updateForm("sourceDetail", e.target.value) },
                   React.createElement("option", { value: "" }, "Select…"),
                   sourceCatsFor(form.source)[form.source].map((s) => React.createElement("option", { key: s, value: s }, s))
@@ -4039,26 +4045,26 @@ function ReservationsPage() {
               )
             ),
             React.createElement("div", { className: "resFormRow" },
-              tf("Daily Rate ($)", "dailyRate", "0.00")
+              tf("Daily rate ($)", "dailyRate", "0.00")
             ),
             React.createElement(RateBreakdownNote, { price: formPrice }),
             ...(() => {
               if (sourceBillingType(form.source) === "insurance") return [
-                React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Adjuster Name", "adjusterName", "Adjuster name"), tf("Claim Number", "claimNumber", "Claim #")),
-                React.createElement("div", { className: "resFormRow", key: "rb2" }, tf("File Number", "fileNumber", "File #"), tf("Authorization Number", "authNumber", "Auth #")),
+                React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Adjuster name", "adjusterName", "Adjuster name"), tf("Claim number", "claimNumber", "Claim #")),
+                React.createElement("div", { className: "resFormRow", key: "rb2" }, tf("File number", "fileNumber", "File #"), tf("Authorization number", "authNumber", "Auth #")),
               ];
               if (sourceBillingType(form.source) === "bodyshop_dealership") return [
-                React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Claim Number", "claimNumber", "Claim #"), tf("Authorization Number", "authNumber", "Auth #")),
+                React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Claim number", "claimNumber", "Claim #"), tf("Authorization number", "authNumber", "Auth #")),
               ];
               if (sourceBillingType(form.source) === "corporate") return [
-                React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("PO Number", "poNumber", "PO #")),
+                React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("PO number", "poNumber", "PO #")),
               ];
               if (sourceBillingType(form.source) === "retail") return [
                 React.createElement("div", { className: "resFormRow", key: "rb1" },
                   React.createElement("label", { className: "resFormGroup" },
-                    React.createElement("span", { className: "resFormLabel" }, "Payment Method"),
+                    React.createElement("span", { className: "resFormLabel" }, "Payment method"),
                     React.createElement("select", { className: "resFormInput", value: form.paymentMethod, onChange: (e) => updateForm("paymentMethod", e.target.value) },
-                      RESERVATION_PAYMENT_METHODS.map((m) => React.createElement("option", { key: m, value: m }, m))
+                      RESERVATION_PAYMENT_METHODS.map((m) => React.createElement("option", { key: m, value: m }, paymentMethodShown(m)))
                     )
                   )
                 ),
@@ -4074,7 +4080,7 @@ function ReservationsPage() {
           ),
           React.createElement("div", { className: "resModalActions" },
             React.createElement("button", { type: "button", className: "resModalCancel", onClick: () => setShowModal(false) }, "Cancel"),
-            React.createElement("button", { type: "submit", className: "resModalSubmit", disabled: saving }, saving ? "Saving\u2026" : "Add Reservation")
+            React.createElement("button", { type: "submit", className: "resModalSubmit", disabled: saving }, saving ? "Saving\u2026" : "Add reservation")
           )
         )
       )
@@ -4212,7 +4218,7 @@ function NonDriveIntakeSection({ standalone }) {
   const todayIso = isoOffset(0);
 
   const sectionEl = React.createElement(
-    CompanyStep, { title: "Non-Drive Intake", open: !collapsed, onToggle: () => setCollapsed((c) => !c) },
+    CompanyStep, { title: "Non-drive intake", open: !collapsed, onToggle: () => setCollapsed((c) => !c) },
     !collapsed &&
       React.createElement(
         "div",
@@ -4224,7 +4230,7 @@ function NonDriveIntakeSection({ standalone }) {
             "thead",
             null,
             React.createElement("tr", null, [
-              "Res Code",
+              "Res code",
               "Customer",
               "Source",
               "Waiting",
@@ -4265,7 +4271,7 @@ function NonDriveIntakeSection({ standalone }) {
                     ? React.createElement(
                         "div",
                         { className: "aiCallAgentWrap" },
-                        React.createElement("div", { className: "aiCallAgentText" }, "Agent Requested"),
+                        React.createElement("div", { className: "aiCallAgentText" }, "Agent requested"),
                         row.phone &&
                           React.createElement("div", { className: "aiCallAgentPhone" }, row.phone),
                         React.createElement(
@@ -4373,7 +4379,7 @@ function NonDriveIntakeSection({ standalone }) {
                             title: "Request an agent call and start the SLA clock",
                             onClick: () => handleRequestCall(row.id),
                           },
-                          "Request Call"
+                          "Request call"
                         ),
                         React.createElement(
                           "button",
@@ -4383,7 +4389,7 @@ function NonDriveIntakeSection({ standalone }) {
                             title: "The customer is booked: turn this into a reservation",
                             onClick: () => handleMarkBooked(row.id),
                           },
-                          "Mark as Booked"
+                          "Mark as booked"
                         )
                       )
                 ),
@@ -4398,7 +4404,7 @@ function NonDriveIntakeSection({ standalone }) {
     return React.createElement(
       "div",
       { className: "page" },
-      React.createElement("h1", { className: "page__title" }, "Non-Drive Intake"),
+      React.createElement("h1", { className: "page__title" }, "Non-drive intake"),
       React.createElement("div", { className: "page__titleUnderline" }),
       sectionEl
     );
@@ -4513,7 +4519,7 @@ function ReturnsCurveCard({ days, upcoming, onOpen }) {
   return el("div", { className: `statCard statCard--wide${seen ? " statCard--seen" : ""}`, ref },
     el("div", { className: "statCard__split" },
       el("div", { className: "statCard__chartSide" },
-        el("button", { type: "button", className: "statCard__head", onClick: onOpen, "aria-label": "Returns due, open Rental Agreements" },
+        el("button", { type: "button", className: "statCard__head", onClick: onOpen, "aria-label": "Returns due, open rental agreements" },
           el("span", { className: "statCard__title" }, "Returns due, next 14 days"),
           el("span", { className: "statCard__chevron", "aria-hidden": "true" }, "\u203a")),
         el("div", { className: "statCard__big" }, el(CountUp, { value: total })),
@@ -4885,7 +4891,7 @@ function NeedsYou() {
             el("span", { className: "needsYou__chevron", "aria-hidden": "true" }, isOpen ? "\u25be" : "\u25b8")),
           isOpen && el("ul", { className: "needsYou needsYou--inner" }, g.list.map(row),
             g.kind === "damage" && el("li", { className: "needsYou__more" },
-              el("button", { type: "button", className: "homeToday__link", onClick: () => navigate("/fleet/damage-claims") }, "Open Damage Claims"))))];
+              el("button", { type: "button", className: "homeToday__link", onClick: () => navigate("/fleet/damage-claims") }, "Open damage claims"))))];
       })),
       el(FieldError, { text: error })));
 }
@@ -5213,10 +5219,10 @@ function DashboardPage() {
       actions: [
         React.createElement("button", {
           key: "close", type: "button", className: "closeRentalCta homeToday__cta", onClick: () => navigate("/close-rental"),
-        }, "Close Rental"),
+        }, "Close rental"),
         React.createElement("button", {
           key: "switch", type: "button", className: "closeRentalCta homeToday__cta homeToday__cta--quiet", onClick: () => navigate("/switch-out"),
-        }, "Switch Out"),
+        }, "Switch out"),
       ],
     }),
     !isMobile && React.createElement(VehicleStatusStep),
@@ -5228,33 +5234,33 @@ function DashboardPage() {
         "div",
         { className: "resModal", onClick: (e) => e.stopPropagation(), role: "dialog", "aria-modal": "true", "aria-labelledby": "newResTitle" },
         React.createElement("div", { className: "resModalHeader" },
-          React.createElement("h2", { id: "newResTitle", className: "resModalTitle" }, "New Reservation"),
+          React.createElement("h2", { id: "newResTitle", className: "resModalTitle" }, "New reservation"),
           React.createElement("button", { type: "button", className: "resModalClose", "aria-label": "Close", onClick: () => setShowModal(false) }, "✕")
         ),
         React.createElement("form", { className: "resModalForm", onSubmit: handleSubmit, noValidate: true },
           React.createElement("div", { className: "resModalBody" },
-            React.createElement("div", { className: "cdetailSubGroup" }, "Customer Information"),
+            React.createElement("div", { className: "cdetailSubGroup" }, "Customer information"),
             React.createElement("div", { className: "resFormRow" },
               React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Res Code"),
+                React.createElement("span", { className: "resFormLabel" }, "Res code"),
                 React.createElement("input", { className: "resFormInput", type: "text", readOnly: true, value: "Assigned on save", style: { background: "#f7f7f7", color: "#aaa", cursor: "default" } })
               ),
-              tf("First Name", "firstName", "First name"),
-              tf("Last Name", "lastName", "Last name")
+              tf("First name", "firstName", "First name"),
+              tf("Last name", "lastName", "Last name")
             ),
             React.createElement("div", { className: "resFormRow" },
               tf("Phone", "phone", "(xxx) xxx-xxxx"),
               tf("Email", "email", "email@example.com")
             ),
-            React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & Return"),
+            React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & return"),
             React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
               React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Pickup Date"),
+                React.createElement("span", { className: "resFormLabel" }, "Pickup date"),
                 React.createElement(DateField, { className: "resFormInput", value: form.date, ariaLabel: "Pickup date", onChange: (v) => updateForm("date", v) }),
                 fieldErr("date")
               ),
               React.createElement("label", { className: "resFormGroup resFormGroup--time" },
-                React.createElement("span", { className: "resFormLabel" }, "Pickup Time"),
+                React.createElement("span", { className: "resFormLabel" }, "Pickup time"),
                 React.createElement(QuarterTimePicker, { ...time24Parts(form.time), className: "resFormInput", label: "Pickup time",
                   onChange: (h, m, mer) => updateForm("time", partsTime24(h, m, mer)) }),
                 fieldErr("time")
@@ -5262,16 +5268,16 @@ function DashboardPage() {
             ),
             React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
               React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Return Date"),
+                React.createElement("span", { className: "resFormLabel" }, "Return date"),
                 React.createElement(DateField, { className: "resFormInput", value: form.returnDate, ariaLabel: "Return date", onChange: (v) => updateForm("returnDate", v) })
               ),
               React.createElement("label", { className: "resFormGroup resFormGroup--time" },
-                React.createElement("span", { className: "resFormLabel" }, "Return Time"),
+                React.createElement("span", { className: "resFormLabel" }, "Return time"),
                 React.createElement(QuarterTimePicker, { ...time24Parts(form.returnTime), className: "resFormInput", label: "Return time",
                   onChange: (h, m, mer) => updateForm("returnTime", partsTime24(h, m, mer)) })
               )
             ),
-            React.createElement("div", { className: "cdetailSubGroup" }, "Reservation Details"),
+            React.createElement("div", { className: "cdetailSubGroup" }, "Reservation details"),
             React.createElement("div", { className: "resFormRow" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Location"),
@@ -5281,14 +5287,14 @@ function DashboardPage() {
                 fieldErr("location")
               ),
               React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Vehicle Class"),
+                React.createElement("span", { className: "resFormLabel" }, "Vehicle class"),
                 React.createElement("select", { className: "resFormInput", value: form.vehicleClass, onChange: (e) => setForm((p) => withDailyRate({ ...p, vehicleClass: e.target.value })) },
                   bookableClassOptions(form.vehicleClass, fleet, currentUser?.locationId).map((c) => React.createElement("option", { key: c, value: c }, c))
                 ),
                 fieldErr("vehicleClass")
               )
             ),
-            React.createElement("div", { className: "cdetailSubGroup" }, "Rates & Billing"),
+            React.createElement("div", { className: "cdetailSubGroup" }, "Rates & billing"),
             React.createElement("div", { className: "resFormRow" },
               React.createElement("label", { className: "resFormGroup" },
                 React.createElement("span", { className: "resFormLabel" }, "Source"),
@@ -5298,7 +5304,7 @@ function DashboardPage() {
                 )
               ),
               form.source && (sourceCatsFor(form.source)[form.source] || []).length > 0 && React.createElement("label", { className: "resFormGroup" },
-                React.createElement("span", { className: "resFormLabel" }, "Specific Source"),
+                React.createElement("span", { className: "resFormLabel" }, "Specific source"),
                 React.createElement("select", { className: "resFormInput", value: form.sourceDetail, onChange: (e) => updateForm("sourceDetail", e.target.value) },
                   React.createElement("option", { value: "" }, "Select…"),
                   sourceCatsFor(form.source)[form.source].map((s) => React.createElement("option", { key: s, value: s }, s))
@@ -5306,26 +5312,26 @@ function DashboardPage() {
               )
             ),
             React.createElement("div", { className: "resFormRow" },
-              tf("Daily Rate ($)", "dailyRate", "0.00")
+              tf("Daily rate ($)", "dailyRate", "0.00")
             ),
             React.createElement(RateBreakdownNote, { price: formPrice }),
             ...(() => {
               if (sourceBillingType(form.source) === "insurance") return [
-                React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Adjuster Name", "adjusterName", "Adjuster name"), tf("Claim Number", "claimNumber", "Claim #")),
-                React.createElement("div", { className: "resFormRow", key: "rb2" }, tf("File Number", "fileNumber", "File #"), tf("Authorization Number", "authNumber", "Auth #")),
+                React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Adjuster name", "adjusterName", "Adjuster name"), tf("Claim number", "claimNumber", "Claim #")),
+                React.createElement("div", { className: "resFormRow", key: "rb2" }, tf("File number", "fileNumber", "File #"), tf("Authorization number", "authNumber", "Auth #")),
               ];
               if (sourceBillingType(form.source) === "bodyshop_dealership") return [
-                React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Claim Number", "claimNumber", "Claim #"), tf("Authorization Number", "authNumber", "Auth #")),
+                React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("Claim number", "claimNumber", "Claim #"), tf("Authorization number", "authNumber", "Auth #")),
               ];
               if (sourceBillingType(form.source) === "corporate") return [
-                React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("PO Number", "poNumber", "PO #")),
+                React.createElement("div", { className: "resFormRow", key: "rb1" }, tf("PO number", "poNumber", "PO #")),
               ];
               if (sourceBillingType(form.source) === "retail") return [
                 React.createElement("div", { className: "resFormRow", key: "rb1" },
                   React.createElement("label", { className: "resFormGroup" },
-                    React.createElement("span", { className: "resFormLabel" }, "Payment Method"),
+                    React.createElement("span", { className: "resFormLabel" }, "Payment method"),
                     React.createElement("select", { className: "resFormInput", value: form.paymentMethod, onChange: (e) => updateForm("paymentMethod", e.target.value) },
-                      RESERVATION_PAYMENT_METHODS.map((m) => React.createElement("option", { key: m, value: m }, m))
+                      RESERVATION_PAYMENT_METHODS.map((m) => React.createElement("option", { key: m, value: m }, paymentMethodShown(m)))
                     )
                   )
                 ),
@@ -5341,7 +5347,7 @@ function DashboardPage() {
           ),
           React.createElement("div", { className: "resModalActions" },
             React.createElement("button", { type: "button", className: "resModalCancel", onClick: () => setShowModal(false) }, "Cancel"),
-            React.createElement("button", { type: "submit", className: "resModalSubmit", disabled: saving }, saving ? "Saving\u2026" : "Add Reservation")
+            React.createElement("button", { type: "submit", className: "resModalSubmit", disabled: saving }, saving ? "Saving\u2026" : "Add reservation")
           )
         )
       )
@@ -5516,7 +5522,7 @@ function NoShowsPage() {
     guardAction("noShow.confirmPickup", () => run(`${row.resCode}:coming`, "confirm_no_show", { p_code: row.resCode, p_pickup: pickup }, refreshReservations), {
       tableName: "reservations", recordId: row.resCode,
       description: `Moved ${row.resCode}'s pickup to ${pickup} after a missed pickup.`,
-      warning: `Move ${row.customer || row.resCode}'s pickup to ${fmtBranchStamp(pickup.replace(" ", "T"))}? The return moves by the same amount, and the reservation leaves No Shows.`,
+      warning: `Move ${row.customer || row.resCode}'s pickup to ${fmtBranchStamp(pickup.replace(" ", "T"))}? The return moves by the same amount, and the reservation leaves No shows.`,
     });
 
   const cancel = (row) =>
@@ -5563,7 +5569,7 @@ function NoShowsPage() {
         outcome && btn("Change", () => setOutcome(row, null), working, "Clear what was recorded"))),
       React.createElement("td", null, picking === row.resCode
         ? React.createElement(NewPickupPicker, {
-            initial: row.defaultPickup, label: "Move Pickup", busy: working,
+            initial: row.defaultPickup, label: "Move pickup", busy: working,
             onSave: (pickup) => coming(row, pickup), onClose: () => setPicking(""),
           })
         : React.createElement(React.Fragment, null,
@@ -5596,14 +5602,14 @@ function NoShowsPage() {
   const tabRows = rows.filter((r) => r.section === activeTab);
   const activeTabObj = TABS.find((t) => t.key === activeTab);
   const columns = activeTab === "missed"
-    ? ["Customer", "Vehicle Class", "Pickup", "Missed Pickup Text", "Cutoff", "Outcome", ""]
-    : ["Customer", "Vehicle Class", "Pickup", "Cancelled", ""];
+    ? ["Customer", "Vehicle class", "Pickup", "Missed pickup text", "Cutoff", "Outcome", ""]
+    : ["Customer", "Vehicle class", "Pickup", "Cancelled", ""];
 
   if (!loaded) return React.createElement(PageSkeleton, { path: "/no-shows" });
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement(PageHead, { title: "No Shows", lead: "Renters who missed their pickup, from the text to the decision." }),
+    React.createElement(PageHead, { title: "No shows", lead: "Renters who missed their pickup, from the text to the decision." }),
     React.createElement(StatusTabs, {
       label: "No-show sections", value: activeTab, onChange: (v) => { setActiveTab(v); setPicking(""); },
       tabs: TABS.map(({ key, label }) => ({ value: key, label, count: rows.filter((r) => r.section === key).length })),
@@ -5705,7 +5711,7 @@ function OverdueRentalsPage() {
       React.createElement(
         "thead", null,
         React.createElement("tr", null,
-          ["Res Code", "Customer", "Phone", "Plate", "Due Date", lastColHeader].map((col) =>
+          ["Res code", "Customer", "Phone", "Plate", "Due date", lastColHeader].map((col) =>
             React.createElement("th", { key: col }, col)
           )
         )
@@ -5724,7 +5730,7 @@ function OverdueRentalsPage() {
             React.createElement(
               "td", null,
               isManual
-                ? React.createElement("span", { className: "overdueManual" }, "Manual Follow-Up Required")
+                ? React.createElement("span", { className: "overdueManual" }, "Manual follow-up required")
                 : row.callStatus === "Reached"
                   ? React.createElement("span", { className: "preRentalCheckDone" }, "Reached")
                   : row.callStatus === "LM"
@@ -5751,8 +5757,8 @@ function OverdueRentalsPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement(PageHead, { title: "Overdue Rentals",
-      lead: `${rows.length === 0 ? "Nothing overdue" : `${rows.length} past ${rows.length === 1 ? "its" : "their"} return time`}. The renter gets a text automatically; anyone who doesn't answer moves to Manual Follow-Up.` }),
+    React.createElement(PageHead, { title: "Overdue rentals",
+      lead: `${rows.length === 0 ? "Nothing overdue" : `${rows.length} past ${rows.length === 1 ? "its" : "their"} return time`}. The renter gets a text automatically; anyone who doesn't answer moves to Manual follow-up.` }),
     React.createElement(
       "section",
       { className: "dashboardSection" },
@@ -5784,7 +5790,7 @@ function OverdueRentalsPage() {
           React.createElement(
             "div",
             { className: "dashboardSection__headerRow" },
-            React.createElement("span", null, "Manual Follow-Up")
+            React.createElement("span", null, "Manual follow-up")
           )
         ),
         React.createElement(
@@ -6029,7 +6035,7 @@ function VehicleDetailPage() {
     );
 
   if (!plate) {
-    return React.createElement(NotFoundState, { title: "Vehicle Detail", text: "No vehicle selected.", backTo: "/fleet/vehicles", backLabel: "Vehicles" });
+    return React.createElement(NotFoundState, { title: "Vehicle detail", text: "No vehicle selected.", backTo: "/fleet/vehicles", backLabel: "Vehicles" });
   }
   // A plate that is not in the fleet showed an empty vehicle ("Not read
   // yet", "Nobody") as if it existed (found on staging, overnight-nov17).
@@ -6071,21 +6077,21 @@ function VehicleDetailPage() {
           sub ? React.createElement("span", { className: "custFacts__sub" }, sub) : null))),
 
     // \u2500\u2500 Section 1: Vehicle Information \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    mkSection("info", "Vehicle Information",
+    mkSection("info", "Vehicle information",
       React.createElement(React.Fragment, null,
         detailRow("Plate", plate.replace(/-/g, "")),
-        detailRow("Province / State", vehicle.province),
-        detailRow("Year / Make / Model", [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(" ") || "\u00b7"),
+        detailRow("Province / state", vehicle.province),
+        detailRow("Year / make / model", [vehicle.year, vehicle.make, vehicle.model].filter(Boolean).join(" ") || "\u00b7"),
         detailRow("Colour", vehicle.colour),
         detailRow("VIN", vehicle.vin),
         detailRow("Odometer", latestRa?.mileage != null
           ? fmtDistance(latestRa.mileage)
           : vehicle.currentOdometer != null ? fmtDistance(vehicle.currentOdometer) : "\u00b7"),
-        detailRow("Fuel Level", fuelText(latestRa?.fuelAtPickup || vehicle.currentFuelLevel)),
+        detailRow("Fuel level", fuelText(latestRa?.fuelAtPickup || vehicle.currentFuelLevel)),
         // An electric vehicle has no tank to size.
         !vehicleIsElectric(vehicle) && React.createElement(
           "div", { className: "vehicleDetailRow" },
-          React.createElement("span", { className: "vehicleDetailLabel" }, "Tank Size"),
+          React.createElement("span", { className: "vehicleDetailLabel" }, "Tank size"),
           React.createElement("span", { className: "vehicleDetailControl" },
             React.createElement("input", {
               type: "text", inputMode: "decimal", maxLength: 5, className: "tankSizeInput",
@@ -6105,11 +6111,11 @@ function VehicleDetailPage() {
     ),
 
     // ── Preventative Maintenance ──────────────────────────────────────────────
-    mkSection("pm", "Preventative Maintenance",
+    mkSection("pm", "Preventative maintenance",
       React.createElement(React.Fragment, null,
         React.createElement(
           "div", { className: "vehicleDetailRow" },
-          React.createElement("span", { className: "vehicleDetailLabel" }, "Needs PM Every"),
+          React.createElement("span", { className: "vehicleDetailLabel" }, "Needs PM every"),
           React.createElement("span", { className: "vehicleDetailControl" },
             React.createElement("input", {
               type: "text", inputMode: "numeric", maxLength: 6, className: "tankSizeInput",
@@ -6125,18 +6131,18 @@ function VehicleDetailPage() {
           )
         ),
         numberErr.column === "pmIntervalKm" && React.createElement(FieldError, { text: numberErr.text }),
-        detailRow("Current Odometer", vehicle.currentOdometer != null
+        detailRow("Current odometer", vehicle.currentOdometer != null
           ? `${Number(toDisplayUnits(vehicle.currentOdometer, pmUnit)).toLocaleString()} ${pmUnit}`
           : "Not recorded yet"),
-        detailRow("Odometer at Last PM", vehicle.lastPmOdometer != null
+        detailRow("Odometer at last PM", vehicle.lastPmOdometer != null
           ? `${Number(toDisplayUnits(vehicle.lastPmOdometer, pmUnit)).toLocaleString()} ${pmUnit}`
           : "No PM on record"),
-        detailRow("Since Last PM", kmSincePm != null
+        detailRow("Since last PM", kmSincePm != null
           ? `${Number(toDisplayUnits(kmSincePm, pmUnit)).toLocaleString()} ${pmUnit}`
           : "Not enough data"),
         React.createElement(
           "div", { className: "vehicleDetailRow" },
-          React.createElement("span", { className: "vehicleDetailLabel" }, "PM Due"),
+          React.createElement("span", { className: "vehicleDetailLabel" }, "PM due"),
           React.createElement("span", { className: "vehicleDetailControl" },
             vehicle.needsPm
               ? React.createElement("span", { className: "pmDueBadge pmDueBadge--due" },
@@ -6160,13 +6166,13 @@ function VehicleDetailPage() {
                 ? "This vehicle is not currently due for preventative maintenance."
                 : "Record that PM was performed at the current odometer reading",
             onClick: completePm,
-          }, "PM Complete")
+          }, "PM complete")
         )
       )
     ),
 
     // \u2500\u2500 Section 2: Current Status \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    mkSection("status", "Current Status",
+    mkSection("status", "Current status",
       React.createElement(React.Fragment, null,
         React.createElement(
           "div", { className: "vehicleDetailRow" },
@@ -6197,17 +6203,17 @@ function VehicleDetailPage() {
               .map((opt) => React.createElement("option", { key: opt.value, value: opt.value, disabled: opt.value === "In Transit" }, opt.label))
           )
         ),
-        (vehicle.status === "On Rent" || activeRa) && detailRow("Current Customer", activeRa?.customer || vehicle.currentRenter),
-        (vehicle.status === "On Rent" || activeRa) && detailRow("Res Code", activeRa?.resCode || currentRes?.resCode || "\u00b7"),
-        (vehicle.status === "On Rent" || activeRa) && detailRow("Expected Return", fmtDate(activeRa?.returnDate || vehicle.dueBack)),
-        subHdr("Rental History"),
+        (vehicle.status === "On Rent" || activeRa) && detailRow("Current customer", activeRa?.customer || vehicle.currentRenter),
+        (vehicle.status === "On Rent" || activeRa) && detailRow("Res code", activeRa?.resCode || currentRes?.resCode || "\u00b7"),
+        (vehicle.status === "On Rent" || activeRa) && detailRow("Expected return", fmtDate(activeRa?.returnDate || vehicle.dueBack)),
+        subHdr("Rental history"),
         rentalHistory.length === 0
           ? React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "12px 0" } }, "No rental history on record.")
           : React.createElement(
               "table", { className: "dashboardTable" },
               React.createElement("thead", null,
                 React.createElement("tr", null,
-                  ["Customer", "Res Code", "Pickup", "Return"].map((col) =>
+                  ["Customer", "Res code", "Pickup", "Return"].map((col) =>
                     React.createElement("th", { key: col }, col)
                   )
                 )
@@ -6229,16 +6235,16 @@ function VehicleDetailPage() {
     // \u2500\u2500 Section 3: Condition \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     mkSection("condition", "Condition",
       React.createElement(React.Fragment, null,
-        subHdr("Existing Damage"),
+        subHdr("Existing damage"),
         React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "12px 0" } }, "No damage on record."),
-        subHdr("Last Inspection Photos"),
+        subHdr("Last inspection photos"),
         React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "12px 0" } }, "No inspection photos available."),
-        detailRow("Last Inspection Date", "\u00b7")
+        detailRow("Last inspection date", "\u00b7")
       )
     ),
 
     // \u2500\u2500 Section 5: Ongoing Damage Claims \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    mkSection("damageClaims", "Ongoing Damage Claims", (() => {
+    mkSection("damageClaims", "Ongoing damage claims", (() => {
       const claims = damageClaims
         .filter((c) => (c.plate || "") === plate && c.status !== "resolved")
         .map((c) => enrichDamageClaim(c, rentalAgreements, reservations, fleet));
@@ -6247,7 +6253,7 @@ function VehicleDetailPage() {
         "table", { className: "dashboardTable" },
         React.createElement("thead", null,
           React.createElement("tr", null,
-            ["Customer", "Res Code", "Damage Description", "Status", "Rentable"].map((col) =>
+            ["Customer", "Res code", "Damage description", "Status", "Rentable"].map((col) =>
               React.createElement("th", { key: col }, col)
             )
           )
@@ -6268,7 +6274,7 @@ function VehicleDetailPage() {
     })()),
 
     // \u2500\u2500 Section 7: Inspection History \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    mkSection("inspections", "Inspection History",
+    mkSection("inspections", "Inspection history",
       React.createElement(React.Fragment, null,
         React.createElement("p", { className: "aiTabDesc" }, "The two most recent inspections appear here, each showing the pickup and return walkaround separately. Data is pulled from PWA submission records in Supabase."),
         React.createElement("div", { className: "resvEmpty", style: { textAlign: "left", padding: "12px 0" } }, "No inspection records found.")
@@ -6334,16 +6340,16 @@ function useVehicleStatusDrag() {
 
   // Why this vehicle cannot be moved at all, or null.
   const lockOf = (v) => {
-    if (v.status === "On Rent") return "On Rent changes only at pickup and return.";
+    if (v.status === "On Rent") return "On rent changes only at pickup and return.";
     const ra = (live.current.rentalAgreements || []).find((a) => a.plate === v.plate && RA_LOCKS_VEHICLE_STATUS.includes(a.rentalAgreementStatus));
     if (ra) return ra.rentalAgreementStatus === "customer_return"
-      ? "Its return is not processed yet. Finish it in Close Rental."
+      ? "Its return is not processed yet. Finish it in Close rental."
       : "Its rental is still open.";
     return null;
   };
   // Why no vehicle can be dropped on this status, or null.
-  const refusal = (to) => (to === "On Rent" ? "Only a pickup puts a vehicle On Rent."
-    : to === "Ready Returns" ? "Only a return puts a vehicle in Ready Returns." : null);
+  const refusal = (to) => (to === "On Rent" ? "Only a pickup puts a vehicle On rent."
+    : to === "Ready Returns" ? "Only a return puts a vehicle in Ready returns." : null);
 
   // Saves a move, or an undo, and offers Undo after a move.
   const apply = (v, to, undo) => {
@@ -6534,7 +6540,7 @@ function VehicleStatusStep() {
     setFleetGroupCollapsed((prev) => ({ ...prev, [key]: !prev[key] }));
 
   return React.createElement(
-      CompanyStep, { title: "Vehicle Status", open: !collapsed, onToggle: () => setCollapsed((c) => !c) },
+      CompanyStep, { title: "Vehicle status", open: !collapsed, onToggle: () => setCollapsed((c) => !c) },
       !collapsed &&
         React.createElement(
           "div",
@@ -6650,7 +6656,7 @@ function FleetPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement(PageHead, { title: "Branch Fleet" }),
+    React.createElement(PageHead, { title: "Branch fleet" }),
     React.createElement(VehicleStatusStep),
     React.createElement(VehicleTransfers, { fleet, setFleet })
   );
@@ -6664,7 +6670,7 @@ function FleetPage() {
 // fleetr-infra, which also writes each one to the audit log).
 const TRANSFER_REASONS = {
   not_found:       "That vehicle or transfer is not at this branch.",
-  not_on_lot:      "Only a vehicle on the lot, Available or Needs Cleaning, can be sent.",
+  not_on_lot:      "Only a vehicle on the lot, Available or Needs cleaning, can be sent.",
   bad_destination: "Pick another branch to send it to.",
   no_route:        "These branches are not set up to transfer to each other. An Exec sets that on the Company page.",
   not_in_transit:  "That transfer is already finished.",
@@ -6852,7 +6858,7 @@ function TORPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement(PageHead, { title: "Unknown Repair Date", lead: `${rows.length === 0 ? "No replacement rentals" : `${rows.length} replacement rental${rows.length === 1 ? "" : "s"}`} waiting on a repair date. Set it as soon as the shop knows.` }),
+    React.createElement(PageHead, { title: "Unknown repair date", lead: `${rows.length === 0 ? "No replacement rentals" : `${rows.length} replacement rental${rows.length === 1 ? "" : "s"}`} waiting on a repair date. Set it as soon as the shop knows.` }),
     React.createElement(
       "section",
       { className: "dashboardSection" },
@@ -6862,7 +6868,7 @@ function TORPage() {
         React.createElement(
           "div",
           { className: "dashboardSection__headerRow" },
-          React.createElement("span", null, "Awaiting Confirmed Repair Date"),
+          React.createElement("span", null, "Awaiting confirmed repair date"),
           rows.length > 0 &&
             React.createElement(
               "span",
@@ -6889,7 +6895,7 @@ function TORPage() {
                 React.createElement(
                   "tr",
                   null,
-                  ["Customer", "Res Code", "Bodyshop / Dealership", "Confirm Repair Date"].map(
+                  ["Customer", "Res code", "Bodyshop / dealership", "Confirm repair date"].map(
                     (col) => React.createElement("th", { key: col }, col)
                   )
                 )
@@ -6925,7 +6931,7 @@ function TORPage() {
 // ─── Fleet filter constants ────────────────────────────────────────────────────
 
 const PROV_STATE_LIST = [
-  { value: "All", label: "All Provinces / States" },
+  { value: "All", label: "All provinces / states" },
   // Canadian provinces
   { value: "NL", label: "NL - Newfoundland and Labrador" },
   { value: "NS", label: "NS - Nova Scotia" },
@@ -7093,15 +7099,15 @@ function actualReturnDay(ra) {
 // command bar cannot disagree about what a complete vehicle looks like.
 // Accepts canonical values: tankSizeLiters in litres, pmIntervalKm in km.
 const VEHICLE_REQUIRED_FIELDS = [
-  ["Plate Number",     "plate"],
-  ["Province / State", "province"],
+  ["Plate number",     "plate"],
+  ["Province / state", "province"],
   ["Year",             "year"],
   ["Make",             "make"],
   ["Model",            "model"],
   ["Colour",           "colour"],
-  ["Tank Size",        "tankSizeLiters"],
-  ["Needs PM Every",   "pmIntervalKm"],
-  ["Vehicle Class",    "vehicleClass"],
+  ["Tank size",        "tankSizeLiters"],
+  ["Needs PM every",   "pmIntervalKm"],
+  ["Vehicle class",    "vehicleClass"],
   ["VIN",              "vin"],
 ];
 
@@ -7303,7 +7309,7 @@ function validateVehicle(v) {
   const tank = parseFloat(v.tankSizeLiters);
   const pm   = parseFloat(v.pmIntervalKm);
   if (!electric && (!Number.isFinite(tank) || tank <= 0)) return { ok: false, missing: [], error: "Tank size must be a positive number." };
-  if (!Number.isFinite(pm)   || pm   <= 0) return { ok: false, missing: [], error: "Needs PM Every must be a positive number." };
+  if (!Number.isFinite(pm)   || pm   <= 0) return { ok: false, missing: [], error: "Needs PM every must be a positive number." };
 
   // Same rule the edit path applies, so the form and the AI cannot disagree
   // about what a VIN looks like.
@@ -7317,7 +7323,7 @@ function validateVehicle(v) {
 // reason; a bare delete loses all of that, so both paths require them.
 function validateRetirement(r) {
   const missing = [
-    ["Disposal Date", "disposalDate"],
+    ["Disposal date", "disposalDate"],
     ["Reason",        "reason"],
   ].filter(([, key]) => String(r?.[key] ?? "").trim() === "").map(([label]) => label);
   return missing.length
@@ -7330,10 +7336,10 @@ function validateRetirement(r) {
 // makes a row findable and actionable rather than everything on the form.
 const RESERVATION_REQUIRED_FIELDS = [
   ["Customer",      "customer"],
-  ["Pickup Date",   "date"],
-  ["Pickup Time",   "time"],
+  ["Pickup date",   "date"],
+  ["Pickup time",   "time"],
   ["Location",      "location"],
-  ["Vehicle Class", "vehicleClass"],
+  ["Vehicle class", "vehicleClass"],
 ];
 
 // What the New Reservation form shows under each required field left empty.
@@ -7380,8 +7386,8 @@ function validateReservation(r) {
 // than demanding the whole vehicle. Values arriving here are already canonical
 // (litres / kilometres); the unit conversion happens before this.
 const FLEET_NUMERIC_FIELDS = [
-  ["Tank Size",      "tankSizeLiters"],
-  ["Needs PM Every", "pmIntervalKm"],
+  ["Tank size",      "tankSizeLiters"],
+  ["Needs PM every", "pmIntervalKm"],
 ];
 
 function validateFleetNumerics(data) {
@@ -7539,13 +7545,13 @@ function FleetFilterBar({ filterState }) {
         value: makeFilt,
         onChange: (e) => { setMakeFilt(e.target.value); setModelFilt("All"); },
       },
-      React.createElement("option", { value: "All" }, "All Makes"),
+      React.createElement("option", { value: "All" }, "All makes"),
       allMakes.map((m) => React.createElement("option", { key: m, value: m }, m))
     ),
     makeFilt !== "All" && React.createElement(
       "select",
       { className: "fleetFilterSelect", value: modelFilt, onChange: (e) => setModelFilt(e.target.value) },
-      React.createElement("option", { value: "All" }, "All Models"),
+      React.createElement("option", { value: "All" }, "All models"),
       allModels.map((m) => React.createElement("option", { key: m, value: m }, m))
     )
   );
@@ -7616,8 +7622,8 @@ function FleetVehiclesPage() {
         noTank.length > 0 && ["tank", `${cars(noTank.length)} missing a tank size`, `: gas charges can't be worked out for ${them(noTank.length)}.`, noTank],
         noPm.length > 0 && ["pmint", `${cars(noPm.length)} missing a PM interval`, `: maintenance won't be flagged for ${them(noPm.length)}.`, noPm],
         duePm.length > 0 && ["pmdue", `${cars(duePm.length)} due for maintenance`, duePm.length === 1
-          ? ". " + "It keeps its current status until moved on, then switches to PM automatically. Use PM Complete on its detail page once serviced."
-          : ". " + "They keep their current status until moved on, then switch to PM automatically. Use PM Complete on each one's detail page once serviced.", duePm],
+          ? ". " + "It keeps its current status until moved on, then switches to PM automatically. Use PM complete on its detail page once serviced."
+          : ". " + "They keep their current status until moved on, then switch to PM automatically. Use PM complete on each one's detail page once serviced.", duePm],
       ].filter(Boolean);
       if (!lines.length) return null;
       return React.createElement("section", { className: "fleetNotes", "aria-label": "Vehicles missing details" },
@@ -8395,10 +8401,10 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
   }, ...children);
   return React.createElement(
     "div", { className: "page companySetup" },
-    React.createElement("h1", { className: "companySetup__title" }, "Additions and Deletions"),
+    React.createElement("h1", { className: "companySetup__title" }, "Additions and deletions"),
     React.createElement(FleetFilterBar, { filterState }),
-    card("add", "Add Vehicle to Fleet", React.createElement(AddVehicleForm, null)),
-    card("retire", "Retire Vehicle",
+    card("add", "Add vehicle to fleet", React.createElement(AddVehicleForm, null)),
+    card("retire", "Retire vehicle",
             React.createElement("form", { className: "addVehicleForm", onSubmit: handleRetireSubmit },
             React.createElement("div", { className: "addVehicleGrid" },
               React.createElement("div", { className: "addVehicleField" },
@@ -8413,7 +8419,7 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
                 retireError.field === "plateId" && React.createElement(FieldError, { text: retireError.text })
               ),
               React.createElement("div", { className: "addVehicleField" },
-                React.createElement("label", { className: "addVehicleLabel" }, "Disposal Date"),
+                React.createElement("label", { className: "addVehicleLabel" }, "Disposal date"),
                 React.createElement(DateField, {
                   className: "addVehicleInput", value: retireForm.disposalDate, ariaLabel: "Disposal date",
                   invalid: retireError.field === "disposalDate",
@@ -8422,7 +8428,7 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
                 retireError.field === "disposalDate" && React.createElement(FieldError, { text: retireError.text })
               ),
               React.createElement("div", { className: "addVehicleField addVehicleField--full" },
-                React.createElement("label", { className: "addVehicleLabel" }, "Reason for Retirement (optional)"),
+                React.createElement("label", { className: "addVehicleLabel" }, "Reason for retirement (optional)"),
                 React.createElement("input", {
                   type: "text", className: "addVehicleInput", placeholder: "e.g. High mileage, Collision write-off",
                   value: retireForm.reason,
@@ -8431,13 +8437,13 @@ function FleetAdditionsPage({ embedded, onAdded } = {}) {
               )
             ),
             React.createElement("div", { className: "closeRentalActions" },
-              React.createElement("button", { type: "submit", className: "resModalSubmit" }, "Retire Vehicle"))
+              React.createElement("button", { type: "submit", className: "resModalSubmit" }, "Retire vehicle"))
           )),
-    archivedVehicles.length > 0 && card("archived", "Archived Vehicles",
+    archivedVehicles.length > 0 && card("archived", "Archived vehicles",
             React.createElement("table", { className: "dashboardTable" },
             React.createElement("thead", null,
               React.createElement("tr", null,
-                ["Plate", "Make", "Model", "Year", "Disposal Date", "Reason"].map((col) => React.createElement("th", { key: col }, col))
+                ["Plate", "Make", "Model", "Year", "Disposal date", "Reason"].map((col) => React.createElement("th", { key: col }, col))
               )
             ),
             React.createElement("tbody", null,
@@ -8502,7 +8508,7 @@ function FleetDamageClaimsPage() {
           React.createElement("col", { key: k, className: `claimsTable__${k}` }))),
       React.createElement("thead", null,
         React.createElement("tr", null,
-          ["Plate", "Vehicle", "Customer", "Res Code", "Description", "Status", "Rentable", showResolve ? "Action" : ""].map((col, i) =>
+          ["Plate", "Vehicle", "Customer", "Res code", "Description", "Status", "Rentable", showResolve ? "Action" : ""].map((col, i) =>
             React.createElement("th", { key: `${i}:${col}` }, col)
           )
         )
@@ -8538,7 +8544,7 @@ function FleetDamageClaimsPage() {
                 type: "button",
                 className: "resolveClaimBtn",
                 onClick: () => handleResolve(c),
-              }, "Mark as Resolved")
+              }, "Mark as resolved")
             )
           )
         )
@@ -8547,13 +8553,13 @@ function FleetDamageClaimsPage() {
 
   return React.createElement(
     "div", { className: "page" },
-    React.createElement(PageHead, { title: "Ongoing Damage Claims", lead: `${openClaims.length === 0 ? "No claims open" : `${openClaims.length} open`}. Each one stays here until it is settled.` }),
+    React.createElement(PageHead, { title: "Ongoing damage claims", lead: `${openClaims.length === 0 ? "No claims open" : `${openClaims.length} open`}. Each one stays here until it is settled.` }),
     React.createElement("div", { className: "listTools" }, React.createElement(FleetFilterBar, { filterState })),
     React.createElement(
       "section", { className: "dashboardSection" },
       React.createElement("div", { className: "dashboardSection__header" },
         React.createElement("div", { className: "dashboardSection__headerRow" },
-          React.createElement("span", null, "Active Claims"),
+          React.createElement("span", null, "Active claims"),
           React.createElement("span", { className: "aiTabDesc", style: { marginBottom: 0, marginLeft: 8 } }, `${openClaims.length} active`)
         )
       ),
@@ -8566,7 +8572,7 @@ function FleetDamageClaimsPage() {
     closedClaims.length > 0 && React.createElement(
       "section", { className: "dashboardSection", style: { marginTop: "20px" } },
       React.createElement("div", { className: "dashboardSection__header" },
-        React.createElement("div", { className: "dashboardSection__headerRow" }, React.createElement("span", null, "Settled / Closed"))
+        React.createElement("div", { className: "dashboardSection__headerRow" }, React.createElement("span", null, "Settled / closed"))
       ),
       React.createElement("div", { className: "dashboardSection__body" }, renderTable(closedClaims, false))
     )
@@ -8700,7 +8706,7 @@ function GasCollectionsPage() {
   };
 
   return React.createElement("div", { className: "page" },
-    React.createElement(PageHead, { title: "Gas Collections", lead: rows.length === 0 ? "Nothing owing for gas." : `${rows.length} rental${rows.length === 1 ? "" : "s"} still owing for gas.` }),
+    React.createElement(PageHead, { title: "Gas collections", lead: rows.length === 0 ? "Nothing owing for gas." : `${rows.length} rental${rows.length === 1 ? "" : "s"} still owing for gas.` }),
     React.createElement("section", { className: "dashboardSection" },
       React.createElement("div", { className: "dashboardSection__header" },
         React.createElement("div", { className: "dashboardSection__headerRow" },
@@ -8714,7 +8720,7 @@ function GasCollectionsPage() {
           : React.createElement("table", { className: "dashboardTable" },
               React.createElement("thead", null,
                 React.createElement("tr", null,
-                  ["Customer", "Res Code", "Plate", "Gas owed", "Payment status"].map((col) =>
+                  ["Customer", "Res code", "Plate", "Gas owed", "Payment status"].map((col) =>
                     React.createElement("th", { key: col }, col)
                   )
                 )
@@ -9364,7 +9370,7 @@ function AccountPage() {
   if (!account && !loadErr) return React.createElement(PageSkeleton, { path: "/account" });
   return React.createElement(
     "div", { className: "page companySetup" },
-    React.createElement("h1", { className: "companySetup__title" }, "Your Account"),
+    React.createElement("h1", { className: "companySetup__title" }, "Your account"),
     loadErr && React.createElement("div", { className: "loginError" }, loadErr),
 
     card("who", "Who you are",
@@ -15312,7 +15318,7 @@ function StaffPage({ embedded, onChanged } = {}) {
       loading && React.createElement(SkeletonFrame, null, skStaffTable()),
       !loading && staff.length === 0 && React.createElement("div", { className: "resvEmpty" }, "Nobody else has joined yet."),
       !loading && staff.length > 0 && React.createElement(
-        "div", { style: { overflowX: "auto" } },
+        "div", { className: "staffTableWrap", style: { overflowX: "auto" } },
         React.createElement(
         "table", { className: "dashboardTable staffTable", style: { minWidth: "760px" } },
         React.createElement("thead", null, React.createElement("tr", null,
@@ -15320,9 +15326,28 @@ function StaffPage({ embedded, onChanged } = {}) {
             React.createElement("th", { key: h }, h)))),
         React.createElement("tbody", null, staff.map((row) => {
           const isSelf = row.id === currentUser?.id;
+          // Moving someone to another branch: the picker and Move. They sit in
+          // the row when it has room, and on their own line under the name
+          // when it does not, so the picker never cuts off a branch's name
+          // (Nov 26). Both are drawn; the stylesheet shows one (staffMove).
+          const moveControls = (where) => !isSelf && row.role !== "Exec" && branches.length > 1 && React.createElement(
+            "span", { className: `staffMove staffMove--${where}` },
+            React.createElement("select", {
+              className: "resFormInput",
+              style: { width: "auto", padding: "5px" },
+              "aria-label": `Branch to move ${who(row)} to`,
+              value: moveTo[row.id] || homeBranch || "",
+              onChange: (e) => setMoveTo((p) => ({ ...p, [row.id]: e.target.value })),
+            }, branches.map((b) => React.createElement("option", { key: b.id, value: b.id }, b.name))),
+            React.createElement("button", {
+              className: "loginBtn",
+              style: { width: "auto", padding: "6px 10px" },
+              disabled: busyId === row.id,
+              onClick: () => reassign(row),
+            }, "Move"));
           return React.createElement("tr", { key: row.id, style: row.active ? null : { opacity: 0.5 } },
             React.createElement("td", null, row.username),
-            React.createElement("td", null, row.name),
+            React.createElement("td", { className: "staffNameCell" }, React.createElement("span", null, row.name), moveControls("name")),
             React.createElement("td", null, row.role),
             // An Exec has no branch at all, which is the point of the role, so
             // it reads as such rather than as a missing value.
@@ -15372,20 +15397,7 @@ function StaffPage({ embedded, onChanged } = {}) {
                       onClick: () => resetPin(row),
                     }, "Reset PIN"),
                     // An Exec belongs to no branch, so there is nothing to move.
-                    row.role !== "Exec" && branches.length > 1 && React.createElement(
-                      "span", { style: { whiteSpace: "nowrap" } },
-                      React.createElement("select", {
-                        className: "resFormInput",
-                        style: { width: "auto", padding: "5px" },
-                        value: moveTo[row.id] || homeBranch || "",
-                        onChange: (e) => setMoveTo((p) => ({ ...p, [row.id]: e.target.value })),
-                      }, branches.map((b) => React.createElement("option", { key: b.id, value: b.id }, b.name))),
-                      React.createElement("button", {
-                        className: "loginBtn",
-                        style: { width: "auto", padding: "6px 10px" },
-                        disabled: busyId === row.id,
-                        onClick: () => reassign(row),
-                      }, "Move"))))));
+                    moveControls("row")))));
         }))
       ))
     )
@@ -15490,7 +15502,7 @@ function AuditLogPage() {
   if (loading) return React.createElement(PageSkeleton, { path: "/audit-log" });
   return React.createElement(
     "div", { className: "page" },
-    React.createElement(PageHead, { title: "Audit Log", lead: "Every change anyone made, newest first." }),
+    React.createElement(PageHead, { title: "Audit log", lead: "Every change anyone made, newest first." }),
     React.createElement("div", { className: "resvSearchBar auditFilterBar" },
       select("Actor",  actorFilt,  setActorFilt,  "All actors",  actors.map((a) => [a, a])),
       select("Action", actionFilt, setActionFilt, "All actions", actions.map((a) => [a, a])),
@@ -15620,7 +15632,7 @@ function MobileNav() {
           className: "mobileTopbar__signOut",
           onClick: signOut,
         },
-        "Sign Out"
+        "Sign out"
       )
     ),
     open && React.createElement(
@@ -15956,7 +15968,7 @@ function Topbar() {
         letterSpacing: "0.02em",
         whiteSpace: "nowrap",
       },
-    }, "Sign Out")
+    }, "Sign out")
   );
 }
 
@@ -16027,7 +16039,7 @@ function NavUser({ onNavigate, className }) {
   const { currentUser } = React.useContext(AppContext);
   const el = React.createElement;
   const name = actorName(currentUser);
-  return el(NavLink, { to: "/account", className: className || "navUser", onClick: onNavigate, title: "Your Account" },
+  return el(NavLink, { to: "/account", className: className || "navUser", onClick: onNavigate, title: "Your account" },
     el("span", { className: "navUser__avatar", "aria-hidden": "true" }, initialsOf(name)),
     el("span", { className: "navUser__text" },
       el("span", { className: "navUser__name" }, name),
@@ -16571,7 +16583,7 @@ function FleetrCommandBar() {
     // baseline is always the odometer actually on file.
     let pmVehicle = null;
     if (operation === "pmComplete") {
-      if (table !== "fleet") return fail("PM Complete only applies to a vehicle.");
+      if (table !== "fleet") return fail("PM complete only applies to a vehicle.");
       pmVehicle = fleet.find((v) => Object.entries(match || {}).every(([k, val]) =>
         k === "plate" ? normalizePlate(v.plate) === normalizePlate(val) : String(v[k]) === String(val)
       ));
@@ -17157,7 +17169,7 @@ function PreRentalCheckPage() {
   return React.createElement(
     "div",
     { className: "page" },
-    React.createElement(PageHead, { title: "Pre-Rental Check", lead: "Each renter gets a text the business day before pickup. Nothing to do unless one needs you." }),
+    React.createElement(PageHead, { title: "Pre-rental check", lead: "Each renter gets a text the business day before pickup. Nothing to do unless one needs you." }),
     React.createElement(
       "section",
       { className: "dashboardSection" },
@@ -17167,7 +17179,7 @@ function PreRentalCheckPage() {
         React.createElement(
           "div",
           { className: "dashboardSection__headerRow" },
-          React.createElement("span", null, "Tomorrow\u2019s Pickups \u00b7 ",
+          React.createElement("span", null, "Tomorrow\u2019s pickups \u00b7 ",
             React.createElement("strong", null, tomorrowLabel)
           )
         )
@@ -17186,7 +17198,7 @@ function PreRentalCheckPage() {
                 React.createElement(
                   "tr",
                   null,
-                  ["Time", "Location", "Res Code", "Customer", "Vehicle Class", "Text Status"].map((col) =>
+                  ["Time", "Location", "Res code", "Customer", "Vehicle class", "Text status"].map((col) =>
                     React.createElement("th", { key: col }, col)
                   )
                 )
@@ -17844,7 +17856,7 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
         type: "button", className: "addPaymentBtn",
         style: { whiteSpace: "nowrap", flexShrink: 0 },
         onClick: handleAddNote,
-      }, "Save Note")
+      }, "Save note")
     )
   );
 
@@ -17858,15 +17870,15 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
     ),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement(NameMismatchWarning, { rentalAgreementId: rentalAgreement.raId }),
-    section("resInfo", "Reservation Information",
+    section("resInfo", "Reservation information",
       React.createElement("div", { className: "rentalAgreementFields" },
-        field("Res Code", rentalAgreement.resCode),
+        field("Res code", rentalAgreement.resCode),
         field("Customer", rentalAgreement.customer),
         field("Status", statusLabel(rentalAgreement.status)),
         field("Vehicle", rentalAgreement.vehicle),
-        field("Vehicle Class", rentalAgreement.vehicleClass),
-        field("Pickup Date", pickupDateDisplay),
-        pickupTimeDisplay ? field("Pickup Time", pickupTimeDisplay) : null
+        field("Vehicle class", rentalAgreement.vehicleClass),
+        field("Pickup date", pickupDateDisplay),
+        pickupTimeDisplay ? field("Pickup time", pickupTimeDisplay) : null
       )
     ),
     section("vehicles", "Vehicles",
@@ -17882,33 +17894,33 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
     raRecord?.acknowledgementId && section("acknowledgements", "Acknowledgements",
       React.createElement(ContractAcknowledgementRecord, { rentalAgreementId: rentalAgreement.raId })
     ),
-    section("photos", "Photos & Signatures",
+    section("photos", "Photos & signatures",
       React.createElement(RentalPhotosAndSignatures, { rentalAgreementId: rentalAgreement.raId })
     ),
-    section("datesRates", "Dates & Rates",
+    section("datesRates", "Dates & rates",
       React.createElement("div", { className: "rentalAgreementFields" },
         ...rentalStageTimes(raRecord).map(([label, at]) => field(label, branchMoment(at, timeZone))),
-        field("Return Date", returnDateDisplay),
-        field("Daily Rate", res.dailyRate ? money(res.dailyRate) : "·"),
+        field("Return date", returnDateDisplay),
+        field("Daily rate", res.dailyRate ? money(res.dailyRate) : "·"),
         field("Duration", days ? `${days} day${days === 1 ? "" : "s"}` : "·")
       )
     ),
-    section("billTo", "Bill-To Information",
+    section("billTo", "Bill-to information",
       React.createElement("div", { className: "rentalAgreementFields" },
-        field("Bill To", billToName),
-        field("PO Number", res.poNumber),
+        field("Bill to", billToName),
+        field("PO number", res.poNumber),
         field("Authorization #", res.authNumber),
         field("Insurance Co.", insuranceCo)
       )
     ),
-    section("charges", "Charges & Payments",
+    section("charges", "Charges & payments",
       React.createElement("div", { className: "rentalAgreementFields" },
-        field("Base Charge", charges ? money(charges.base) : "·"),
-        field("Additional Charges", charges ? money(charges.additional) : "·"),
-        field("Taxes & Fees", charges ? money(charges.taxes) : "·"),
+        field("Base charge", charges ? money(charges.base) : "·"),
+        field("Additional charges", charges ? money(charges.additional) : "·"),
+        field("Taxes & fees", charges ? money(charges.taxes) : "·"),
         field("Total", charges ? money(charges.total) : "·"),
-        field("Amount Paid", charges ? money(charges.paid) : "·"),
-        field("Balance Due", charges ? money(charges.owing) : "·")
+        field("Amount paid", charges ? money(charges.paid) : "·"),
+        field("Balance due", charges ? money(charges.owing) : "·")
       )
     ),
     section("notes", "Notes", notesContent)
@@ -17966,8 +17978,8 @@ function RentalAgreementsPage() {
 
   const selectedRes = selectedId ? reservations.find((r) => r.resCode === selectedId) : null;
   if (selectedId && !selectedRes) {
-    return React.createElement(NotFoundState, { title: "Rental Agreement", text: "This rental agreement could not be found. It may have been removed, or it belongs to another branch.",
-      backTo: "/rental-agreements", backLabel: "Rental Agreements" });
+    return React.createElement(NotFoundState, { title: "Rental agreement", text: "This rental agreement could not be found. It may have been removed, or it belongs to another branch.",
+      backTo: "/rental-agreements", backLabel: "Rental agreements" });
   }
   if (selectedRes) {
     const matchingRa = rentalAgreements.find((ra) => ra.resCode === selectedRes.resCode);
@@ -18085,7 +18097,7 @@ function RentalAgreementsPage() {
     // Rental Agreements, rebuilt (overnight-nov17): one search, the two
     // dates as filters, the statuses as tabs.
     React.createElement("header", { className: "listHead" },
-      React.createElement("h1", { className: "page__title" }, "Rental Agreements")),
+      React.createElement("h1", { className: "page__title" }, "Rental agreements")),
     React.createElement("div", { className: "listTools" },
       React.createElement("div", { className: "listSearch" },
         React.createElement(Icon, { name: "search", size: 18, className: "listSearch__icon" }),
@@ -18109,7 +18121,7 @@ function RentalAgreementsPage() {
           : React.createElement("table", { className: "dashboardTable" },
               React.createElement("thead", null,
                 React.createElement("tr", null,
-                  ["Res Code", "Customer", "Vehicle", "Pickup Date", "Status"].map((col) =>
+                  ["Res code", "Customer", "Vehicle", "Pickup date", "Status"].map((col) =>
                     React.createElement("th", { key: col }, col)
                   )
                 )
@@ -18180,7 +18192,7 @@ const fuelText = (v) => (v == null ? v : String(v).replace(/[⅛¼⅜½⅝¾⅞]
 // an earlier typo can make a correct reading look low, so staff confirm it
 // and carry on.
 const CLOSE_READINGS_LABELS = {
-  pageTitle:      "Close Rental",
+  pageTitle:      "Close rental",
   stepTitle:      "Closing mileage and gas",
   mileageLabel:   "Closing mileage",
   mileageMissing: "Enter the closing mileage.",
@@ -18399,7 +18411,7 @@ function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, photos, setPh
     }, label);
 
   return React.createElement("div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, pageTitle || "Close Rental"),
+    React.createElement("h1", { className: "page__title" }, pageTitle || "Close rental"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement("div", { className: "closeRentalSummary" },
       React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
@@ -18435,7 +18447,7 @@ function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, photos, setPh
         rentableBtn("unrentable", "Unrentable")
       ),
       React.createElement("div", { className: "closeRentalHint" },
-        "Rentable sends it to Needs Cleaning, or to PM if it is due for service. Unrentable sends it to Damaged."),
+        "Rentable sends it to Needs cleaning, or to PM if it is due for service. Unrentable sends it to Damaged."),
       attempted && rentableError && React.createElement("div", { className: "closeRentalError" }, rentableError)
     ),
     React.createElement("div", { className: "closeRentalActions" },
@@ -18921,7 +18933,7 @@ function OpenRentalSearch({ rows, onSelect, byNameOrCode = false }) {
               React.createElement("table", { className: "dashboardTable" },
                 React.createElement("thead", null,
                   React.createElement("tr", null,
-                    ["Plate", "Customer", "Vehicle", "Pickup Date"].map((col) => React.createElement("th", { key: col }, col))
+                    ["Plate", "Customer", "Vehicle", "Pickup date"].map((col) => React.createElement("th", { key: col }, col))
                   )
                 ),
                 React.createElement("tbody", null,
@@ -19114,7 +19126,7 @@ function CloseChargesSummary({ charges }) {
     row("Total", money(totals.grandTotal), { strong: true }),
     el("div", { className: "closeCharges__rule" }),
     row("Paid", money(totals.totalPaid)),
-    !retail && row("Bill-To owes", money(Math.max(0, totals.billToBalance))),
+    !retail && row("Bill-to owes", money(Math.max(0, totals.billToBalance))),
     !retail && row("Customer owes", money(Math.max(0, totals.customerBalance))),
     row("Balance owing", money(owingAll), { strong: true }),
     owingAll > 0 && el("div", { className: "closeRentalWarning", style: { marginTop: 10 } },
@@ -19533,7 +19545,7 @@ function CloseRentalPage() {
     const line = (label, value) =>
       React.createElement("p", { className: "page__body" }, `${label} `, React.createElement("strong", null, value));
     return closeStepped(4, React.createElement("div", { className: "page" },
-      React.createElement("h1", { className: "page__title" }, "Close Rental"),
+      React.createElement("h1", { className: "page__title" }, "Close rental"),
       React.createElement("div", { className: "page__titleUnderline" }),
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Rental closed"),
       done.resCode && line("Rental agreement", done.resCode),
@@ -19551,12 +19563,12 @@ function CloseRentalPage() {
       !done.plate && React.createElement("div", { className: "closeRentalWarning" },
         "This agreement has no vehicle on file, so no vehicle status was changed. Check the fleet by hand."),
       !done.gasSaved && React.createElement("div", { className: "closeRentalWarning" },
-        `The gas charge of $${done.gasOwed} could not be saved, so this rental is not on Gas Collections. Enter it there by hand.`),
+        `The gas charge of $${done.gasOwed} could not be saved, so this rental is not on Gas collections. Enter it there by hand.`),
       done.gasUncharged && React.createElement("div", { className: "closeRentalWarning" },
         "The vehicle came back with less fuel, but the charge could not be worked out: the vehicle needs a tank size and its " +
         "region needs a fuel price. Enter the amount by hand on Gas Collections."),
       !done.claimSaved && React.createElement("div", { className: "closeRentalWarning" },
-        "The damage claim could not be saved, so this damage is not in Ongoing Damage Claims. " +
+        "The damage claim could not be saved, so this damage is not in Ongoing damage claims. " +
         "Flag it by hand from the customer's page before anyone is billed."),
       !done.legSaved && React.createElement("div", { className: "closeRentalWarning" },
         "The vehicle's return record could not be saved. The agreement and the vehicle were still updated. Tell support before this vehicle goes out again."),
@@ -19573,7 +19585,7 @@ function CloseRentalPage() {
   // Any step, once the selected rental turns out to have a pickup pending.
   if (selectedId && pendingPickup) {
     return React.createElement(PendingPickupRefusal, {
-      pageTitle: "Close Rental", message: closeRentalPendingMessage(pendingPickup.plate), onBack: resetFlow,
+      pageTitle: "Close rental", message: closeRentalPendingMessage(pendingPickup.plate), onBack: resetFlow,
     });
   }
 
@@ -19588,7 +19600,7 @@ function CloseRentalPage() {
         type: "button", className: "rentalAgreementBackBtn", disabled: busy,
         onClick: () => { setFinal(null); setReview(null); },
       }, "← Back to damage review"),
-      React.createElement("h1", { className: "page__title" }, "Close Rental"),
+      React.createElement("h1", { className: "page__title" }, "Close rental"),
       React.createElement("div", { className: "page__titleUnderline" }),
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Confirm the close"),
       line("Rental agreement", ra?.resCode || "·"),
@@ -19621,7 +19633,7 @@ function CloseRentalPage() {
         }, "Back"),
         React.createElement("button", { type: "button", className: "resModalSubmit", onClick: completeClose, disabled: busy || chargesPending,
           title: chargesPending ? "Working out the final charges" : undefined },
-          busy ? "Closing\u2026" : "Complete Close")
+          busy ? "Closing\u2026" : "Complete close")
       )
     ));
   }
@@ -19657,7 +19669,7 @@ function CloseRentalPage() {
   const waitingCount = openRows.filter((row) => row.selfReturn).length;
   return closeStepped(0, React.createElement("div", { className: "page" },
     React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate("/dashboard") }, "\u2190 Home"),
-    React.createElement("h1", { className: "page__title" }, "Close Rental"),
+    React.createElement("h1", { className: "page__title" }, "Close rental"),
     React.createElement("p", { className: "flowLead" }, waitingCount
       ? `${waitingCount} rental${waitingCount === 1 ? " is" : "s are"} back from the renter and waiting. Pick one below, or find any open rental.`
       : `${openRows.length} rental${openRows.length === 1 ? "" : "s"} out. Find the one coming back by plate, name or code.`),
@@ -19759,7 +19771,7 @@ function SwitchOutVehicleStep({ row, onBack, onNext }) {
           );
 
   return React.createElement("div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Switch Out"),
+    React.createElement("h1", { className: "page__title" }, "Switch out"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement("div", { className: "closeRentalSummary" },
       React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.vehicle : "Rental agreement"),
@@ -19793,7 +19805,7 @@ function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, oldVeh
   const describe = (v) => [v.year, v.make, v.model].filter(Boolean).join(" ") || v.vehicleClass || "-";
 
   return React.createElement("div", { className: "page" },
-    React.createElement("h1", { className: "page__title" }, "Switch Out"),
+    React.createElement("h1", { className: "page__title" }, "Switch out"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement("div", { className: "closeRentalSummary" },
       React.createElement("div", { className: "closeRentalSummary__main" }, row ? row.customer : "Rental agreement"),
@@ -19826,7 +19838,7 @@ function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, oldVeh
     React.createElement("div", { className: "closeRentalActions" },
       React.createElement("button", { type: "button", className: "resModalCancel", onClick: onBack, disabled: busy }, "Back"),
       React.createElement("button", { type: "button", className: "resModalSubmit", onClick: onComplete, disabled: busy },
-        busy ? "Switching..." : "Complete Switch")
+        busy ? "Switching..." : "Complete switch")
     )
   );
 }
@@ -20073,7 +20085,7 @@ function SwitchOutPage() {
     const line = (label, value) =>
       React.createElement("p", { className: "page__body" }, `${label} `, React.createElement("strong", null, value));
     return React.createElement("div", { className: "page" },
-      React.createElement("h1", { className: "page__title" }, "Switch Out"),
+      React.createElement("h1", { className: "page__title" }, "Switch out"),
       React.createElement("div", { className: "page__titleUnderline" }),
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Switch complete"),
       done.resCode && line("Rental agreement", done.resCode),
@@ -20087,7 +20099,7 @@ function SwitchOutPage() {
         `The customer must now pick up ${done.newPlate} in the customer app, which records its starting mileage and gas. ` +
         "Until they do, this rental cannot be closed or switched again."),
       !done.claimSaved && React.createElement("div", { className: "closeRentalWarning" },
-        "The damage claim could not be saved, so this damage is not in Ongoing Damage Claims. " +
+        "The damage claim could not be saved, so this damage is not in Ongoing damage claims. " +
         "Flag it by hand from the customer's page before anyone is billed."),
       !done.oldVehicleSaved && React.createElement("div", { className: "closeRentalWarning" },
         `${done.oldPlate || "The vehicle coming back"} could not be moved to ${done.oldStatus}. Set its status by hand on the fleet page.`),
@@ -20111,7 +20123,7 @@ function SwitchOutPage() {
   // Any step, once the selected rental turns out to have a pickup pending.
   if (selectedId && pendingPickup) {
     return React.createElement(PendingPickupRefusal, {
-      pageTitle: "Switch Out", message: switchOutPendingMessage(pendingPickup.plate), onBack: resetFlow,
+      pageTitle: "Switch out", message: switchOutPendingMessage(pendingPickup.plate), onBack: resetFlow,
     });
   }
 
@@ -20138,7 +20150,7 @@ function SwitchOutPage() {
   if (closing) {
     return React.createElement(CloseRentalDamageStep, {
       row,
-      damageDraft, setDamageDraft, photos, setPhotos, pageTitle: "Switch Out",
+      damageDraft, setDamageDraft, photos, setPhotos, pageTitle: "Switch out",
       onBack: () => setClosing(null),
       onNext: (answer) => {
         setReview({ ...closing, ...answer });
@@ -20152,7 +20164,7 @@ function SwitchOutPage() {
     return React.createElement(CloseRentalReadingsStep, {
       row, rentalAgreementId: selectedId,
       readings, setReadings,
-      labels: { pageTitle: "Switch Out" },
+      labels: { pageTitle: "Switch out" },
       onBack: resetFlow,
       onNext: setClosing,
     });
@@ -20161,7 +20173,7 @@ function SwitchOutPage() {
   // Step 1: find the open rental.
   return React.createElement("div", { className: "page" },
     React.createElement("button", { type: "button", className: "rentalAgreementBackBtn", onClick: () => navigate("/dashboard") }, "\u2190 Home"),
-    React.createElement("h1", { className: "page__title" }, "Switch Out"),
+    React.createElement("h1", { className: "page__title" }, "Switch out"),
     React.createElement("div", { className: "page__titleUnderline" }),
     React.createElement(OpenRentalSearch, { rows: openRows, onSelect: setSelectedId })
   );
@@ -20691,7 +20703,7 @@ function StripePayLink({ agreementId, unsaved, retail, owes, saveLines, billToNa
   return el("div", { className: "paymentsTotals" },
     el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
       retail ? btn("Customer", "Card payment link")
-        : [btn("Customer", "Customer payment link"), btn("Bill-To", "Bill-To payment link")]),
+        : [btn("Customer", "Customer payment link"), btn("Bill-To", "Bill-to payment link")]),
     notYet ? el("p", { className: "closeRentalHint" }, notYet)
       : unsaved && el("p", { className: "closeRentalHint" }, "Save the charges first: the link asks for what is saved."),
     link && el("div", { style: { display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap", marginTop: "8px" } },
@@ -21155,14 +21167,14 @@ function CustomerPageView({ onDiscard }) {
         runWrite(supabase.from("damage_claims").insert(claim), "damage_claims insert");
       }, { tableName: "damage_claims", recordId: resCode, description: `Damage flagged${ra?.plate ? ` on ${ra.plate}` : ""}: ${description || "no description given"}.` });
     },
-  }, isDamaged ? "Damage Flagged" : "Flag Damage");
+  }, isDamaged ? "Damage flagged" : "Flag damage");
 
   // Hands the agreement across, so Close Rental opens on this rental rather
   // than on its search step with the person retyping what they just clicked.
   const closeRentalBtn = React.createElement("button", {
     type: "button", className: "customerRentalAgreementBtn customerRentalAgreementBtn--pending",
     onClick: () => navigate("/close-rental", { state: { rentalAgreementId: ra?.id || null } }),
-  }, "Close Rental");
+  }, "Close rental");
 
   const rentalAgreementOptionsBody = () => {
     if (rentalAgreementStatus === "reservation") {
@@ -21186,7 +21198,7 @@ function CustomerPageView({ onDiscard }) {
         React.createElement("button", {
           type: "button", className: "customerRentalAgreementBtn customerRentalAgreementBtn--close",
           onClick: () => updateRentalAgreementStatus("closed"),
-        }, "Close Rental Agreement"),
+        }, "Close rental agreement"),
         flagDamageBtn,
         deleteBtn
       );
@@ -21357,13 +21369,13 @@ function CustomerPageView({ onDiscard }) {
   const rentalVehicleHasData = rentalVehicle.make || rentalVehicle.plate || rentalVehicle.mileage;
 
   const vehiclesBody = React.createElement("div", { className: "cdetailForm" },
-    React.createElement("div", { className: "cdetailSubGroup" }, "Customer Vehicle"),
+    React.createElement("div", { className: "cdetailSubGroup" }, "Customer vehicle"),
     React.createElement("div", { className: "resFormRow" },
       cvField("Year",  "year",  "e.g. 2021"),
       cvField("Make",  "make",  "e.g. Honda"),
       cvField("Model", "model", "e.g. Civic")
     ),
-    React.createElement("div", { className: "cdetailSubGroup" }, "Rental Vehicle"),
+    React.createElement("div", { className: "cdetailSubGroup" }, "Rental vehicle"),
     rentalVehicleHasData
       ? React.createElement("div", null,
           React.createElement("div", { className: "resFormRow" },
@@ -21373,22 +21385,22 @@ function CustomerPageView({ onDiscard }) {
           ),
           React.createElement("div", { className: "resFormRow" },
             rvField("Plate",            (rentalVehicle.plate || "").replace(/-/g, "")),
-            rvField("Vehicle Class",    rentalVehicle.vehicleClass),
-            rvField("Province / State", rentalVehicle.province),
-            rvField("Starting Fuel",    fuelText(rentalVehicle.fuelLevel))
+            rvField("Vehicle class",    rentalVehicle.vehicleClass),
+            rvField("Province / state", rentalVehicle.province),
+            rvField("Starting fuel",    fuelText(rentalVehicle.fuelLevel))
           ),
           React.createElement("div", { className: "resFormRow" },
             rvField("Colour",   rentalVehicle.colour),
             rvField("VIN",      rentalVehicle.vin, true)
           ),
           React.createElement("div", { className: "resFormRow" },
-            rvField("Starting Mileage",
+            rvField("Starting mileage",
               rentalVehicle.mileage
                 ? fmtDistance(parseInt(rentalVehicle.mileage)) ?? ""
                 : "")
           ),
           React.createElement("div", { className: "resFormRow" },
-            rvField("Previous Damage", rentalVehicle.damage || "None documented", true)
+            rvField("Previous damage", rentalVehicle.damage || "None documented", true)
           )
         )
       : React.createElement("div", { className: "customerPlaceholder" },
@@ -21404,7 +21416,7 @@ function CustomerPageView({ onDiscard }) {
     contractDrivers(ra) && React.createElement(ContractDriversList, { rentalAgreementId: ra.id }),
     ra?.acknowledgementId && React.createElement("div", { className: "cdetailSubGroup" }, "Acknowledgements"),
     ra?.acknowledgementId && React.createElement(ContractAcknowledgementRecord, { rentalAgreementId: ra.id }),
-    React.createElement("div", { className: "cdetailSubGroup" }, "Photos & Signatures"),
+    React.createElement("div", { className: "cdetailSubGroup" }, "Photos & signatures"),
     React.createElement(RentalPhotosAndSignatures, { rentalAgreementId: ra?.id || null })
   );
 
@@ -21449,7 +21461,7 @@ function CustomerPageView({ onDiscard }) {
         value: billToForm[key],
         onChange: (e) => updateBillTo(key, e.target.value),
       },
-        options.map((o) => React.createElement("option", { key: o, value: o }, o))
+        options.map((o) => React.createElement("option", { key: o, value: o }, key === "paymentMethod" ? paymentMethodShown(o) : o))
       )
     );
 
@@ -21462,35 +21474,35 @@ function CustomerPageView({ onDiscard }) {
   const dynamicBillingRows = (() => {
     if (btSrcCat === "Insurance") return [
       React.createElement("div", { className: "resFormRow", key: "b1" },
-        btReadOnly("Insurance Company", btSrcName),
-        btText("Adjuster Name", "adjusterName", "Adjuster name"),
-        btText("Claim Number",  "claimNumber",  "Claim #")
+        btReadOnly("Insurance company", btSrcName),
+        btText("Adjuster name", "adjusterName", "Adjuster name"),
+        btText("Claim number",  "claimNumber",  "Claim #")
       ),
       React.createElement("div", { className: "resFormRow", key: "b2" },
-        btText("File Number",          "fileNumber", "File #"),
-        btText("Authorization Number", "authNumber", "Auth #")
+        btText("File number",          "fileNumber", "File #"),
+        btText("Authorization number", "authNumber", "Auth #")
       ),
     ];
     if (btSrcCat === "Bodyshop/Dealership") return [
       React.createElement("div", { className: "resFormRow", key: "b1" },
         btReadOnly("Bodyshop",      btSrcName),
-        btText("Adjuster Name", "adjusterName", "Adjuster name"),
-        btText("File Number",   "fileNumber",   "File #")
+        btText("Adjuster name", "adjusterName", "Adjuster name"),
+        btText("File number",   "fileNumber",   "File #")
       ),
       React.createElement("div", { className: "resFormRow", key: "b2" },
-        btText("Claim Number",         "claimNumber", "Claim #"),
-        btText("Authorization Number", "authNumber",  "Auth #")
+        btText("Claim number",         "claimNumber", "Claim #"),
+        btText("Authorization number", "authNumber",  "Auth #")
       ),
     ];
     if (btSrcCat === "Corporate") return [
       React.createElement("div", { className: "resFormRow", key: "b1" },
         btReadOnly("Company", btSrcName),
-        btText("PO Number",   "poNumber", "PO #")
+        btText("PO number",   "poNumber", "PO #")
       ),
     ];
     if (btSrcCat === "Retail") return [
       React.createElement("div", { className: "resFormRow", key: "b1" },
-        btSelect("Payment Method", "paymentMethod", paymentMethodOptions(billToForm.paymentMethod))
+        btSelect("Payment method", "paymentMethod", paymentMethodOptions(billToForm.paymentMethod))
       ),
     ];
     return [];
@@ -21499,12 +21511,12 @@ function CustomerPageView({ onDiscard }) {
   const ratesBillingBody = React.createElement("div", { className: "cdetailForm" },
     React.createElement("div", { className: "resFormRow" },
       twoLevelPicker("Source",        "source",       sourceCatsFor(ratesForm.source), "Select source"),
-      twoLevelPicker("Vehicle Class", "vehicleClass",
+      twoLevelPicker("Vehicle class", "vehicleClass",
         Object.fromEntries(vehicleClassOptions(ratesForm.vehicleClass).map((c) => [c, []])),
         "Select class")
     ),
     React.createElement("div", { className: "resFormRow" },
-      btDollar("Daily Rate", "dailyRate")
+      btDollar("Daily rate", "dailyRate")
     ),
     React.createElement(RateBreakdownNote, { price: rentalPrice }),
     ...dynamicBillingRows
@@ -21590,7 +21602,7 @@ function CustomerPageView({ onDiscard }) {
   const OTHER_PAYMENT_TYPES = ["Cheque", "E-transfer", "Bank transfer (EFT)"];
 
   const fmtPayment = (p) => {
-    const card = p.type === "Stripe" ? (p.last4 ? `Card Ending in ${p.last4}, paid online` : "Card, paid online")
+    const card = p.type === "Stripe" ? (p.last4 ? `Card ending in ${p.last4}, paid online` : "Card, paid online")
       : isCardType(p.type) && p.last4 ? `${p.type} Ending in ${p.last4}` : p.type;
     // Paid through a Bill-To link: the bill-to's, not the name on the card.
     const payer = p.type === "Stripe" && p.paidBy === "Bill-To" && btSrcCat && btSrcCat !== "Retail" && btSrcName ? btSrcName : p.cardholderName;
@@ -21617,10 +21629,10 @@ function CustomerPageView({ onDiscard }) {
                   checked: item.coveredByBillTo || false, disabled: chargesFinal,
                   onChange: (e) => updateLineItem(item.key, "coveredByBillTo", e.target.checked),
                 }),
-                "Covered by Bill-To"
+                "Covered by bill-to"
               )
             )
-          : item.label
+          : chargeLabelShown(item.label)
       ),
       React.createElement("td", { className: "chargesTd chargesTd--qty" },
         React.createElement("div", { className: "chargesQtyWrap" },
@@ -21662,7 +21674,7 @@ function CustomerPageView({ onDiscard }) {
             React.createElement("th", { className: "chargesTh" }, "Item"),
             React.createElement("th", { className: "chargesTh chargesTh--qty" }, "Qty"),
             React.createElement("th", { className: "chargesTh chargesTh--amt" }, "Rate"),
-            React.createElement("th", { className: "chargesTh chargesTh--total" }, "Total Cost")
+            React.createElement("th", { className: "chargesTh chargesTh--total" }, "Total cost")
           )
         ),
         React.createElement("tbody", null, items.map(renderChargesRow))
@@ -21695,15 +21707,15 @@ function CustomerPageView({ onDiscard }) {
       // Info row
       React.createElement("div", { className: "chargesInfoRow" },
         React.createElement("div", { className: "chargesInfoItem" },
-          React.createElement("span", { className: "chargesInfoLabel" }, "Billed To"),
+          React.createElement("span", { className: "chargesInfoLabel" }, "Billed to"),
           React.createElement("span", { className: "chargesInfoValue" }, billedToName || "·")
         ),
         React.createElement("div", { className: "chargesInfoItem" },
-          React.createElement("span", { className: "chargesInfoLabel" }, "Daily Rate"),
+          React.createElement("span", { className: "chargesInfoLabel" }, "Daily rate"),
           React.createElement("span", { className: "chargesInfoValue" }, dailyRateNum ? fmtMoney(dailyRateNum) : "·")
         ),
         React.createElement("div", { className: "chargesInfoItem" },
-          React.createElement("span", { className: "chargesInfoLabel" }, "Total Days"),
+          React.createElement("span", { className: "chargesInfoLabel" }, "Total days"),
           React.createElement("span", { className: "chargesInfoValue" }, totalDays || "·")
         )
       ),
@@ -21711,12 +21723,12 @@ function CustomerPageView({ onDiscard }) {
       // The split is kept only when someone else pays.
       btSrcCat === "Retail"
         ? renderChargesSection("Charges", lineItems, subTotal, allTaxLines)
-        : renderChargesSection("Bill-To Charges", billToItems, billToTotal, billToTaxLines),
+        : renderChargesSection("Bill-to charges", billToItems, billToTotal, billToTaxLines),
       // Additional Charges section, what the customer pays themselves
-      btSrcCat !== "Retail" && customerItems.length > 0 && renderChargesSection("Additional Charges", customerItems, customerTotal, customerTaxLines),
+      btSrcCat !== "Retail" && customerItems.length > 0 && renderChargesSection("Additional charges", customerItems, customerTotal, customerTaxLines),
       // Grand Total
       React.createElement("div", { className: "chargesTotalRow chargesTotalRow--grand" },
-        React.createElement("span", { className: "chargesTotalLabel" }, "Grand Total"),
+        React.createElement("span", { className: "chargesTotalLabel" }, "Grand total"),
         React.createElement("span", { className: "chargesTotalValue" }, totalMoney(grandTotal))
       )
     ),
@@ -21735,11 +21747,11 @@ function CustomerPageView({ onDiscard }) {
           )
         : React.createElement("div", { className: "chargesInfoRow" },
             React.createElement("div", { className: "chargesInfoItem" },
-              React.createElement("span", { className: "chargesInfoLabel" }, "Bill-To Owes"),
+              React.createElement("span", { className: "chargesInfoLabel" }, "Bill-to owes"),
               React.createElement("span", { className: "chargesInfoValue" }, totalMoney(Math.max(0, billToBalance)))
             ),
             React.createElement("div", { className: "chargesInfoItem" },
-              React.createElement("span", { className: "chargesInfoLabel" }, "Customer Owes"),
+              React.createElement("span", { className: "chargesInfoLabel" }, "Customer owes"),
               React.createElement("span", { className: "chargesInfoValue" }, totalMoney(Math.max(0, customerBalance)))
             )
           ),
@@ -21762,7 +21774,7 @@ function CustomerPageView({ onDiscard }) {
                   },
                     // Fuel paid on Gas Collections shows as such.
                     [...["Visa", "Mastercard", "Amex", "Debit", "Cash"], ...OTHER_PAYMENT_TYPES, ...(p.type === FUEL_PAYMENT_TYPE ? [FUEL_PAYMENT_TYPE] : [])].map((t) =>
-                      React.createElement("option", { key: t, value: t }, t)
+                      React.createElement("option", { key: t, value: t }, sentenceStatus(t))
                     )
                   ),
                   isCardType(p.type) && React.createElement("input", {
@@ -21824,11 +21836,11 @@ function CustomerPageView({ onDiscard }) {
       ),
       btSrcCat !== "Retail" && React.createElement("div", { className: "paymentsTotals" },
         React.createElement("div", { className: "chargesTotalRow" },
-          React.createElement("span", { className: "chargesTotalLabel" }, "Bill-To Paid"),
+          React.createElement("span", { className: "chargesTotalLabel" }, "Bill-to paid"),
           React.createElement("span", { className: "chargesTotalValue" }, totalMoney(billToPaid))
         ),
         React.createElement("div", { className: "chargesTotalRow chargesTotalRow--balance" },
-          React.createElement("span", { className: "chargesTotalLabel" }, "Bill-To Balance"),
+          React.createElement("span", { className: "chargesTotalLabel" }, "Bill-to balance"),
           React.createElement("span", {
             className: billToBalance > 0 ? "chargesTotalValue chargesTotalValue--owing"
               : billToBalance < 0 ? "chargesTotalValue chargesTotalValue--credit"
@@ -21836,11 +21848,11 @@ function CustomerPageView({ onDiscard }) {
           }, totalMoney(Math.abs(billToBalance), billToBalance < 0 ? " CR" : billToBalance > 0 ? " owing" : ""))
         ),
         React.createElement("div", { className: "chargesTotalRow" },
-          React.createElement("span", { className: "chargesTotalLabel" }, "Customer Paid"),
+          React.createElement("span", { className: "chargesTotalLabel" }, "Customer paid"),
           React.createElement("span", { className: "chargesTotalValue" }, totalMoney(customerPaid))
         ),
         React.createElement("div", { className: "chargesTotalRow chargesTotalRow--balance" },
-          React.createElement("span", { className: "chargesTotalLabel" }, "Customer Balance"),
+          React.createElement("span", { className: "chargesTotalLabel" }, "Customer balance"),
           React.createElement("span", {
             className: customerBalance > 0 ? "chargesTotalValue chargesTotalValue--owing"
               : customerBalance < 0 ? "chargesTotalValue chargesTotalValue--credit"
@@ -21856,7 +21868,7 @@ function CustomerPageView({ onDiscard }) {
     { className: "cdetailForm" },
     React.createElement("div", { className: "resFormRow" },
       React.createElement("label", { className: "resFormGroup" },
-        React.createElement("span", { className: "resFormLabel" }, "Res Code"),
+        React.createElement("span", { className: "resFormLabel" }, "Res code"),
         React.createElement("input", {
           className: "resFormInput", type: "text", readOnly: true,
           value: resCode || "·",
@@ -21864,41 +21876,41 @@ function CustomerPageView({ onDiscard }) {
         })
       )
     ),
-    React.createElement("div", { className: "cdetailSubGroup" }, "Customer Information"),
+    React.createElement("div", { className: "cdetailSubGroup" }, "Customer information"),
     React.createElement("div", { className: "resFormRow" },
-      textField("First Name",   "firstName",  "First name"),
-      textField("Last Name",    "lastName",   "Last name")
+      textField("First name",   "firstName",  "First name"),
+      textField("Last name",    "lastName",   "Last name")
     ),
     React.createElement("div", { className: "resFormRow" },
-      textField("Phone Number", "phone",       "Phone number"),
+      textField("Phone number", "phone",       "Phone number"),
       emailField("Email",       "email")
     ),
-    React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & Return"),
+    React.createElement("div", { className: "cdetailSubGroup" }, "Pickup & return"),
     React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
       ra?.inspectedAt
         ? React.createElement("label", { className: "resFormGroup" },
-            React.createElement("span", { className: "resFormLabel" }, "Pickup Date"),
+            React.createElement("span", { className: "resFormLabel" }, "Pickup date"),
             React.createElement("input", {
               className: "resFormInput", type: "text", readOnly: true,
               value: new Date(ra.inspectedAt).toLocaleDateString("en-CA", { month: "long", day: "numeric", year: "numeric" }),
               style: { color: "#6B6A66", background: "#F1F0EC" },
             })
           )
-        : datePickerField("Pickup Date", "pickupDate"),
+        : datePickerField("Pickup date", "pickupDate"),
       ra?.inspectedAt
         ? React.createElement("label", { className: "resFormGroup" },
-            React.createElement("span", { className: "resFormLabel" }, "Pickup Time"),
+            React.createElement("span", { className: "resFormLabel" }, "Pickup time"),
             React.createElement("input", {
               className: "resFormInput", type: "text", readOnly: true,
               value: new Date(ra.inspectedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true }),
               style: { color: "#6B6A66", background: "#F1F0EC" },
             })
           )
-        : timePickerField("Pickup Time", "pickupTime", "pickupMeridiem")
+        : timePickerField("Pickup time", "pickupTime", "pickupMeridiem")
     ),
     React.createElement("div", { className: "resFormRow resFormRow--dateTime" },
-      datePickerField("Return Date", "returnDate"),
-      timePickerField("Return Time", "returnTime", "returnMeridiem")
+      datePickerField("Return date", "returnDate"),
+      timePickerField("Return time", "returnTime", "returnMeridiem")
     ),
     // When the rental went through each stage, on the branch's clock, each
     // only once it has happened.
@@ -21911,12 +21923,12 @@ function CustomerPageView({ onDiscard }) {
           style: { color: "#6B6A66", background: "#F1F0EC" },
         })))
     ),
-    React.createElement("div", { className: "cdetailSubGroup" }, "Driver's License"),
+    React.createElement("div", { className: "cdetailSubGroup" }, "Driver's license"),
     React.createElement("div", { className: "resFormRow" },
-      textField("License Number",   "licenseNumber",  "License #"),
+      textField("License number",   "licenseNumber",  "License #"),
       textField("Country",          "licenseCountry", "Country"),
-      textField("State / Province", "licenseState",   "State or province"),
-      datePickerField("Expiry Date", "licenseExpiry")
+      textField("State / province", "licenseState",   "State or province"),
+      datePickerField("Expiry date", "licenseExpiry")
     )
   );
 
@@ -21980,10 +21992,10 @@ function CustomerPageView({ onDiscard }) {
     React.createElement("div", { className: "custLayoutWrap" },
     React.createElement("div", { className: "custLayout" },
       React.createElement("div", { className: "custMain" },
-        makeSection("charges", "Charges & Payments",   chargesBody),
-        makeSection("resInfo",      "Reservation Information", resInfoBody),
+        makeSection("charges", "Charges & payments",   chargesBody),
+        makeSection("resInfo",      "Reservation information", resInfoBody),
         makeSection("vehicles",     "Vehicles",               vehiclesBody),
-        makeSection("ratesBilling", "Rates & Billing",        ratesBillingBody)),
+        makeSection("ratesBilling", "Rates & billing",        ratesBillingBody)),
       React.createElement("aside", { className: "custSide" },
         React.createElement("section", { className: "flCard custNotes", "aria-label": "Notes" },
           React.createElement("h2", { className: "custNotes__title" }, "Notes"),
@@ -22001,7 +22013,7 @@ function CustomerPageView({ onDiscard }) {
               onChange: (e) => setCustomerNoteInput(e.target.value),
               onKeyDown: (e) => { if (e.key === "Enter") { e.preventDefault(); handleAddCustomerNote(); } },
             }),
-            React.createElement(Button, { variant: "secondary", onClick: handleAddCustomerNote, disabled: !customerNoteInput.trim() }, "Save Note"))))))
+            React.createElement(Button, { variant: "secondary", onClick: handleAddCustomerNote, disabled: !customerNoteInput.trim() }, "Save note"))))))
   );
 }
 
@@ -28534,6 +28546,24 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
   .customerRentalAgreementBtnRow > .customerRentalAgreementClosed{ flex: 1 1 100%; }
   .customerRentalAgreementBtnRow > .customerRentalAgreementBtn{ flex: 1 1 0; min-width: max-content; }
   .custFacts__main{ text-wrap: pretty; }
+}
+/* Company > Staff: the branch picker and Move sit in the row when the table
+   has room for them whole, and otherwise on their own line under the name,
+   so the picker never cuts off a branch's name. */
+.staffTableWrap{ container: stafftable / inline-size; }
+.staffMove{ display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; max-width: 100%; }
+.staffMove select{ min-width: 0; max-width: none !important; }
+.staffMove--row{ display: none; }
+.staffNameCell > .staffMove--name{ display: flex; margin-top: 8px; }
+@container stafftable (min-width: 1200px){
+  .staffMove--row{ display: inline-flex; }
+  .staffNameCell > .staffMove--name{ display: none; }
+}
+@media (max-width: 767px){
+  .dashboardTable td.staffNameCell{ display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; align-items: center; }
+  .dashboardTable td.staffNameCell::before{ grid-row: 1 / span 2; align-self: start; }
+  .staffNameCell > span{ grid-column: 2; }
+  .staffNameCell > .staffMove--name{ grid-column: 2; justify-self: end; }
 }
 /* end design layer, meta-design-test */
 `;
