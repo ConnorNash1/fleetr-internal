@@ -2766,7 +2766,7 @@ const PAGE_SKELETONS = {
       ["Customer", "Vehicle Class", "Pickup", "Missed Pickup Text", "Cutoff", "Outcome", ""],
       [skCustomer.map(skLink), ["Small car", "Medium SUV"], "Oct 29, 10:00 AM", "Oct 29, 12:00 p.m.", "Oct 30, 12:00 AM",
         skEl("div", { className: "readyStatusWrap" }, skB("button", "aiControl", "Reached", 1, { marginRight: "6px" }), skB("button", "aiControl", "No reply", 2, { marginRight: "6px" })),
-        skEl(React.Fragment, null, skB("button", "aiControl", "Customer Is Coming", 1, { marginRight: "6px" }), skB("button", "aiControl", "Cancel", 2, { marginRight: "6px" }))]))),
+        skEl(React.Fragment, null, skB("button", "aiControl", "Customer is coming", 1, { marginRight: "6px" }), skB("button", "aiControl", "Cancel", 2, { marginRight: "6px" }))]))),
 
   "/reports": () => skEl("div", { className: "page companySetup" },
     skTitle("Reports"),
@@ -5567,7 +5567,7 @@ function NoShowsPage() {
             onSave: (pickup) => coming(row, pickup), onClose: () => setPicking(""),
           })
         : React.createElement(React.Fragment, null,
-            btn("Customer Is Coming", () => { setError(""); setErrorRow(""); setPicking(row.resCode); }, working),
+            btn("Customer is coming", () => { setError(""); setErrorRow(""); setPicking(row.resCode); }, working),
             btn("Cancel", () => cancel(row), working)),
         errorRow === row.resCode && React.createElement(FieldError, { text: error }))
     );
@@ -8905,7 +8905,21 @@ function ReportKpi({ title, value, change, note }) {
 function ReportTrend({ series, prevSeries, valueKey, format, label }) {
   const el = React.createElement;
   const [hover, setHover] = React.useState(null);
-  const W = 640, H = 180, PL = 44, PR = 12, PT = 10, PB = 24;
+  // Drawn at the width it is shown (Nov 26), so its 11px labels stay 11px
+  // instead of growing with a stretched 640-wide drawing on a wide screen.
+  const [shownW, setShownW] = React.useState(640);
+  const seen = React.useRef(null);
+  const measure = React.useCallback((node) => {
+    if (seen.current) { seen.current.disconnect(); seen.current = null; }
+    if (!node || typeof ResizeObserver !== "function") return;
+    const ro = new ResizeObserver((entries) => {
+      const w = Math.round(entries[0].contentRect.width);
+      if (w > 0) setShownW(Math.max(320, w));
+    });
+    ro.observe(node);
+    seen.current = ro;
+  }, []);
+  const W = shownW, H = Math.round(Math.min(240, Math.max(180, shownW * 0.22))), PL = 44, PR = 12, PT = 10, PB = 24;
   const now = (series || []).map((p) => Number(p[valueKey]) || 0);
   const prev = (prevSeries || []).map((p) => Number(p[valueKey]) || 0);
   const n = Math.max(now.length, prev.length, 2);
@@ -8921,7 +8935,7 @@ function ReportTrend({ series, prevSeries, valueKey, format, label }) {
     setHover(i >= 0 && i < n ? i : null);
   };
   if (!now.length) return el("p", { className: "closeRentalHint" }, "Nothing in these dates yet.");
-  return el("div", { className: "reportChart" },
+  return el("div", { className: "reportChart", ref: measure },
     el("div", { className: "reportLegend" },
       el("span", null, el("span", { className: "reportLegend__line" }), "This period"),
       el("span", null, el("span", { className: "reportLegend__line reportLegend__line--prev" }), "Previous period")),
@@ -8996,7 +9010,7 @@ function ReportRecommendations({ items, here }) {
               el("span", { className: "needsYou__tag" }, "Sell"),
               el("span", { className: "needsYou__who" }, `${r.plate}${r.vehicle ? ` · ${r.vehicle}` : ""}${r.branch ? ` · ${r.branch}` : ""}`),
               el("span", { className: "needsYou__what" }, `Renting it out is ${reportMoney(Math.abs(r.margin))} a month short of the value it loses.`)),
-            el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px", flexShrink: 0 },
+            el("button", { type: "button", className: "flBtn flBtn--secondary", style: { flexShrink: 0 },
               onClick: () => navigate(vehiclePath(r.plate)) }, "Open vehicle"))))),
     el(FieldError, { text: error }));
 }
@@ -13713,9 +13727,10 @@ function CompanySection({ id, title, style, children, defaultOpen, done, default
       style: { cursor: "pointer", userSelect: "none" },
       onClick: toggle,
       onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } },
-    }, `${open ? "▾" : "▸"} ${title}`,
+    }, title,
       done && defaults && React.createElement("span", { className: "companyDefaults" }, "Ready, using defaults"),
-      done && !defaults && React.createElement("span", { className: "companySection__done", role: "img", "aria-label": "Done" }, "\u2713")),
+      done && !defaults && React.createElement("span", { className: "companySection__done", role: "img", "aria-label": "Done" }, "\u2713"),
+      React.createElement("span", { className: "companyStep__chevron companySection__chevron", "aria-hidden": "true" })),
     open && children
   );
 }
@@ -15249,8 +15264,7 @@ function StaffPage({ embedded, onChanged } = {}) {
             style: { fontSize: "1.4rem", letterSpacing: "0.15em", padding: "8px 14px", borderRadius: "6px", background: "rgba(244, 132, 95,0.12)" },
           }, fmtJoinCode(c.code)),
           React.createElement("button", {
-            type: "button", className: "loginBtn",
-            style: { width: "auto", padding: "8px 14px" },
+            type: "button", className: "flBtn flBtn--secondary",
             onClick: () => copyCode(c),
           }, copied === c.locationId ? "Copied" : "Copy")
         ),
@@ -28401,12 +28415,64 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
   .loginBtn, .customerPageSaveBtn, .resModalSubmit, .resModalCancel, .resModalSave, .appDialog__main, .appDialog__cancel,
   .unsavedBar__save, .unsavedBar__discard{ min-height: var(--fl-control); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; }
   td .loginBtn{ min-height: 32px; }
+  /* The list search shares the row's height with the date pickers and tabs. */
+  .listSearch .listSearch__input{ min-height: var(--fl-control); height: var(--fl-control); }
   .content{ padding: var(--fl-space-7) var(--fl-space-8) var(--fl-space-9); }
 }
 /* By eye (Nov 26): the agent's clean-next rows keep their chip or plates
    in one column at the right, so a long line under a class never pushes its
    chip onto a line of its own. */
 .agentCard__queue li{ display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+/* Show cancelled sits inside the table's card with the card's own inset,
+   not flush against its corner; so do its loading and empty lines. */
+.cancelledReservations > button{ margin-left: var(--fl-space-4); margin-bottom: var(--fl-space-4); }
+.cancelledReservations > p, .cancelledReservations > .resvEmpty{ padding: 0 var(--fl-space-4) var(--fl-space-4); }
+/* Vehicles, desktop: the stacked group tables share one set of columns, so
+   Class, Details and Status line up from group to group. */
+@media (min-width: 768px){
+  table.fleetTable{ table-layout: fixed; }
+  table.fleetTable th:nth-child(4){ width: 30%; }
+}
+/* A picker inside a Company step or a staff page keeps its arrow: the
+   card-colour background set there with the shorthand had wiped it, so
+   Transfers' two pickers read as text fields. */
+.companyStep__body select.resFormInput, .staffPage select.resFormInput{
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238A8984' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 9px center; background-size: 14px;
+}
+/* Section and group arrows are drawn, not ▸ and ▾ text: the same chevron
+   everywhere, pointing right when shut and down when open, turning with a
+   short ease (the check-in app draws them the same way). */
+.companyStep__chevron, .fleetGroupChevron, .needsYou__chevron, .damageSection__chevron{
+  font-size: 0; flex: none; width: 8px; height: 8px; margin: 0 4px; box-sizing: border-box;
+  border-right: 2px solid currentColor; border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg); transition: transform var(--fl-dur) var(--fl-ease-out);
+}
+[aria-expanded="true"] > :is(.companyStep__chevron, .needsYou__chevron, .damageSection__chevron),
+[aria-expanded="true"] .fleetGroupChevron{ transform: rotate(45deg); }
+.skelPage :is(.companyStep__chevron, .fleetGroupChevron){ transform: none; }
+.damageSection__head > .damageSection__chevron{ margin-left: auto; margin-right: 4px; }
+/* Text and callback statuses (Queued, Reached, No reply, Not reached) are
+   badges like every other status, not bold coloured words. */
+.preRentalCheckDone, .preRentalCheckLm, .preRentalCheckNot{ display: inline-flex; align-items: center; min-height: 22px; padding: 0 var(--fl-space-2); border-radius: var(--fl-radius-pill); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.preRentalCheckDone{ background: var(--fl-brand-soft); color: var(--fl-brand-text); }
+.preRentalCheckLm{ background: var(--fl-warning-soft); color: var(--fl-warning); }
+.preRentalCheckNot{ background: var(--fl-danger-soft); color: var(--fl-danger); }
+/* Reports: the branch picker is as wide as a branch name, not the page. */
+@media (min-width: 768px){ .reports__tools .reports__branch{ width: auto; flex: 0 1 360px; max-width: 360px; } }
+@media (min-width: 1024px) and (pointer: fine){ .reports__branch{ min-height: var(--fl-control); } }
+/* Report bars: each on a faint full-length track, with room between rows,
+   so a class's share reads against the whole and rows do not crowd. */
+.reportBars{ gap: 10px; }
+.reportBars__track{ height: 12px; border-radius: 4px; background: var(--fl-sunken); }
+.reportBars__bar{ border-radius: 4px; }
+/* A section inside a Company step: its title, any tick, then the drawn
+   chevron at the right; a quiet card with an edge, like every other. */
+.dashboardSection > h2[aria-expanded]{ display: flex; align-items: center; gap: var(--fl-space-2); }
+.dashboardSection > h2[aria-expanded] > .companySection__chevron{ margin-left: auto; color: var(--fl-ink-3); }
+/* Cards inside a Company step or a staff page lose the heavy drop shadow an
+   older, more specific rule gave them: an edge, no shadow, like every card. */
+.companyStep__body .dashboardSection, .staffPage .dashboardSection{ box-shadow: none; border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); }
 /* end design layer, meta-design-test */
 `;
 document.head.appendChild(style);
