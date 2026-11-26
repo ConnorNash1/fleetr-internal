@@ -242,4 +242,9 @@ textarea.input{ min-height: 88px; padding: var(--fl-space-3); line-height: var(-
   .sheet::before{ display: none; }
   .sheet{ padding-top: var(--fl-space-5); }
 }
+/* Phones: one booking button, not two. Where the bottom bar has Book a
+   replacement rental (in thumb reach), the header's Book a rental steps back. */
+@media (max-width: 767px){
+  .pp:has(.foot .btn--primary) .pp__book{ display: none; }
+}
 /* end design layer, meta-design-test */
