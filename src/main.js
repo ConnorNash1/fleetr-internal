@@ -19109,7 +19109,7 @@ function CloseChargesSummary({ charges }) {
   const shown = lines.filter((it) => it.applies && lineItemAmount(it) !== 0);
   const unit = (it) => { const u = chargeQtyUnit(it); return u === "days" ? ` day${Number(it.qty) === 1 ? "" : "s"}` : u ? ` ${u}` : ""; };
   const lineLabel = (it) => (it.key === "vehicle:cap" ? it.label
-    : `${it.label} \u00b7 ${it.qty}${unit(it)} \u00d7 ${rateDayMoney(Number(it.amount))}`);
+    : `${chargeLabelShown(it.label)} \u00b7 ${it.qty}${unit(it)} \u00d7 ${rateDayMoney(Number(it.amount))}`);
   const due = dueDate ? new Date(`${dueDate}T12:00:00`).toLocaleDateString("en-CA", { month: "short", day: "numeric" }) : "";
   const retail = billToCategory === "Retail";
   return el("div", { className: "closeCharges" },
@@ -19130,7 +19130,7 @@ function CloseChargesSummary({ charges }) {
     !retail && row("Customer owes", money(Math.max(0, totals.customerBalance))),
     row("Balance owing", money(owingAll), { strong: true }),
     owingAll > 0 && el("div", { className: "closeRentalWarning", style: { marginTop: 10 } },
-      `${money(owingAll)} is still owing on this rental. Completing the close does not take payment: record it under Charges & Payments on the reservation.`));
+      `${money(owingAll)} is still owing on this rental. Completing the close does not take payment: record it under Charges & payments on the reservation.`));
 }
 
 // Close Rental's steps, shown above each one (overnight-nov17), so staff
@@ -19558,7 +19558,7 @@ function CloseRentalPage() {
       done.agreementReason && CLOSE_RENTAL_REASONS[done.agreementReason] &&
         line("Reason", CLOSE_RENTAL_REASONS[done.agreementReason]),
       done.gasOwed && line("Gas owed", `$${done.gasOwed}`),
-      done.vehicleStatus && line("Vehicle status", done.vehicleStatus),
+      done.vehicleStatus && line("Vehicle status", sentenceStatus(done.vehicleStatus)),
       done.forcedMessage && React.createElement("div", { className: "closeRentalWarning" }, done.forcedMessage),
       !done.plate && React.createElement("div", { className: "closeRentalWarning" },
         "This agreement has no vehicle on file, so no vehicle status was changed. Check the fleet by hand."),
@@ -19622,7 +19622,7 @@ function CloseRentalPage() {
         React.createElement("div", { className: "closeRentalWarning" },
           "The vehicle came back with less fuel, but the charge cannot be worked out: the vehicle needs a tank size and its " +
           "region needs a fuel price. It will have to be entered by hand on Gas Collections."),
-      vehicle && line("Vehicle moves to", vehicleStatus.status),
+      vehicle && line("Vehicle moves to", sentenceStatus(vehicleStatus.status)),
       vehicle && vehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, vehicleStatus.message),
       React.createElement(CloseChargesSummary, { charges: closeChargesShown }),
       refusal && React.createElement("div", { className: "closeRentalWarning" }, refusal),
@@ -19819,7 +19819,7 @@ function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, oldVeh
     review.newDamageFound && review.newDamageNote && line("New damage notes", review.newDamageNote),
     review.newDamageFound && line("Vehicle", vehicleRentableLabel(review.vehicleRentable)),
     review.newDamageFound && line("New damage photos", String(photos.length)),
-    line("Its new status", oldVehicleStatus.status),
+    line("Its new status", sentenceStatus(oldVehicleStatus.status)),
     oldVehicleStatus.forced && React.createElement("div", { className: "closeRentalWarning" }, oldVehicleStatus.message),
     // An accident or a breakdown goes on Home's Needs you list.
     React.createElement("label", { className: "resFormGroup", style: { maxWidth: 320 } },
@@ -20089,12 +20089,12 @@ function SwitchOutPage() {
       React.createElement("div", { className: "page__titleUnderline" }),
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Switch complete"),
       done.resCode && line("Rental agreement", done.resCode),
-      done.oldPlate && line("Came back", `${done.oldPlate}${done.oldStatus ? `, now ${done.oldStatus}` : ""}`),
+      done.oldPlate && line("Came back", `${done.oldPlate}${done.oldStatus ? `, now ${sentenceStatus(done.oldStatus)}` : ""}`),
       done.oldDamageFound && line("New damage found", `Yes, ${vehicleRentableLabel(done.oldVehicleRentable).toLowerCase()}`),
       !done.oldStatus && React.createElement("div", { className: "closeRentalWarning" },
         "The vehicle coming back is not in the fleet list under that plate, so its status was left alone. Check it by hand."),
       done.forcedMessage && React.createElement("div", { className: "closeRentalWarning" }, done.forcedMessage),
-      line("Replacement", `${done.newPlate}, Ready for Pickup`),
+      line("Replacement", `${done.newPlate}, Ready for pickup`),
       React.createElement("p", { className: "page__body" },
         `The customer must now pick up ${done.newPlate} in the customer app, which records its starting mileage and gas. ` +
         "Until they do, this rental cannot be closed or switched again."),
