@@ -9368,10 +9368,10 @@ function AccountPage() {
     loadErr && React.createElement("div", { className: "loginError" }, loadErr),
 
     card("who", "Who you are",
-      React.createElement("div", { style: { fontSize: "0.95rem", lineHeight: "1.9" } },
-        React.createElement("div", null, `Username: ${account ? account.username : "…"}`),
-        React.createElement("div", null, `Name: ${account ? account.name : "…"}`),
-        React.createElement("div", null, `Role: ${account ? account.role : "…"}`))),
+      React.createElement("dl", { className: "accountFacts" },
+        [["Username", account ? account.username : "…"], ["Name", account ? account.name : "…"], ["Role", account ? account.role : "…"]]
+          .map(([label, value]) => React.createElement("div", { key: label, className: "accountFacts__row" },
+            React.createElement("dt", null, label), React.createElement("dd", null, value))))),
 
     card("password", "Password", React.createElement(ChangePassword)),
     card("pin", account && account.hasPin ? "PIN" : "Set a PIN",
@@ -21192,7 +21192,7 @@ function CustomerPageView({ onDiscard }) {
       );
     }
     return React.createElement("div", { className: "customerRentalAgreementBtnRow" },
-      React.createElement("span", { className: "customerRentalAgreementClosed" }, "Rental Agreement Closed"),
+      React.createElement("span", { className: "customerRentalAgreementClosed" }, "Rental agreement closed"),
       flagDamageBtn,
       deleteBtn
     );
@@ -28364,6 +28364,9 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
 @media (max-width: 767px){
   /* Table cards: an edge, no shadow; column names in sentence case. */
   .dashboardTable tbody tr{ box-shadow: none; }
+  /* Card cells keep the card's own inset; the desktop cell padding stays out. */
+  .dashboardTable td, .dashboardTable td:first-child, .dashboardTable td:last-child,
+  .companyStep__body .dashboardTable td, .staffPage .dashboardTable td{ padding: 8px 0; }
   .dashboardTable td::before{ font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--fl-ink-3); }
   /* A value with a detail line under it: the two stack beside the label. */
   .dashboardTable td:has(> .closeRentalHint){ display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; align-items: start; }
@@ -28423,6 +28426,7 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
    in one column at the right, so a long line under a class never pushes its
    chip onto a line of its own. */
 .agentCard__queue li{ display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+@media (max-width: 767px){ .agentCard__queue li{ grid-template-columns: minmax(0, 1fr); row-gap: 6px; } .agentCard__plates{ justify-self: start; } }
 /* Show cancelled sits inside the table's card with the card's own inset,
    not flush against its corner; so do its loading and empty lines. */
 .cancelledReservations > button{ margin-left: var(--fl-space-4); margin-bottom: var(--fl-space-4); }
@@ -28473,6 +28477,51 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
 /* Cards inside a Company step or a staff page lose the heavy drop shadow an
    older, more specific rule gave them: an edge, no shadow, like every card. */
 .companyStep__body .dashboardSection, .staffPage .dashboardSection{ box-shadow: none; border: 1px solid var(--fl-line); border-radius: var(--fl-radius-lg); }
+/* Your Account, who you are: label and value rows, the label quiet. */
+.accountFacts{ margin: 0; display: grid; }
+.accountFacts__row{ display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: var(--fl-space-3); padding: 8px 0; border-top: 1px solid var(--fl-line-soft); }
+.accountFacts__row:first-child{ border-top: 0; }
+.accountFacts dt{ color: var(--fl-ink-3); }
+.accountFacts dd{ margin: 0; font-weight: 500; overflow-wrap: anywhere; }
+/* A charge's quantity box is wide enough for its hint (Kilometres) whole. */
+.chargesQtyInput{ width: 96px; }
+/* In a form, a date button and the time dropdowns are fields like the
+   others: the same height and text size, and the date as wide as its column. */
+.resFormGroup .aiControl{ font-size: 13px; }
+.resFormGroup .aiControl--dateButton{ width: 100%; }
+@media (min-width: 1024px) and (pointer: fine){ .resFormGroup .aiControl{ min-height: var(--fl-control); box-sizing: border-box; } }
+/* Home, Pickups today and Due back today: the card adds no padding of its
+   own, so its heading and rows sit 16px in, like every other card. */
+.homeToday > .flCard{ padding: var(--fl-space-2) 0; }
+/* The greeting's date never leaves one word alone on its last line. */
+.homeHead__day{ text-wrap: pretty; }
+/* Phones, Needs you: a group's tag above its line, the chevron beside both,
+   instead of the line squeezed into three short lines beside the tag. */
+@media (max-width: 767px){
+  .needsYou__groupHead{ display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--fl-space-3); row-gap: 6px; }
+  .needsYou__groupHead > :not(.needsYou__chevron){ grid-column: 1; justify-self: start; }
+  .needsYou__groupHead > .needsYou__chevron{ grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+}
+/* Home lists: a time and a button label each keep one line; on a phone the
+   time column is wide enough for "12:00 PM", so every row lines up. */
+.homeToday__time, .homeToday__cta{ white-space: nowrap; }
+@media (max-width: 767px){
+  .homeToday__row{ grid-template-columns: 72px minmax(0, 1fr) auto; }
+  .homeToday__actions > .homeToday__cta{ flex: 1 1 auto; }
+}
+/* Phones: a page's main button spans the width under its title, as Home's
+   New reservation does, in easy reach of a thumb. */
+@media (max-width: 767px){ .listHead > .flBtn--primary{ width: 100%; } }
+/* Fleet filters: the same line chevron as every other picker, not a solid
+   blue-grey triangle; on a phone each filter spans the row, so the three are
+   even instead of three ragged widths. */
+.fleetFilterSelect{
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238A8984' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-size: 14px; background-position: right 9px center; background-repeat: no-repeat;
+}
+@media (max-width: 767px){
+  .fleetFilterBar > .fleetFilterInput, .fleetFilterBar > .fleetFilterSelect{ flex: 1 1 100%; width: 100%; }
+}
 /* end design layer, meta-design-test */
 `;
 document.head.appendChild(style);
