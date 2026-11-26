@@ -4561,7 +4561,8 @@ function AvailGrid({ data, from = 0, days, onPick, label }) {
   const stocked = data.classes.filter((c) => !availNoVehicles(c));
   const empty = data.classes.filter(availNoVehicles);
   const isMobile = useMobile();
-  const dayMin = isMobile ? 30 : 28;
+  // A day is a finger wide on a phone (44px, the touch control size); the grid scrolls.
+  const dayMin = isMobile ? 44 : 28;
   const grid = { gridTemplateColumns: `minmax(112px, 156px) repeat(${count}, minmax(${dayMin}px, 1fr))`, minWidth: `${(isMobile ? 132 : 112) + count * dayMin}px` };
   const month = (d) => new Date(`${d}T12:00:00Z`).toLocaleDateString("en-CA", { month: "short", timeZone: "UTC" }).replace(".", "");
   return el("div", { className: "agrid" },
@@ -6051,7 +6052,7 @@ function VehicleDetailPage() {
           vehicle.vehicleClass && React.createElement(Chip, null, vehicle.vehicleClass))),
       activeRa && React.createElement("div", { className: "custHead__actions" },
         React.createElement(Button, { variant: "secondary", onClick: () => navigate(customerPath(activeRa.resCode)) }, `Open ${activeRa.customer || "the renter"}'s rental`))),
-    React.createElement("div", { className: "custFacts" },
+    React.createElement("div", { className: "custFacts custFacts--vehicle" },
       [["Odometer", latestRa?.mileage != null ? fmtDistance(latestRa.mileage) : vehicle.currentOdometer != null ? fmtDistance(vehicle.currentOdometer) : "Not read yet", ""],
        ["Fuel", fuelText(latestRa?.fuelAtPickup || vehicle.currentFuelLevel) || "Not read yet", ""],
        ["With", activeRa ? (activeRa.customer || "A renter") : "Nobody", activeRa ? (activeRa.returnDate ? `Due back ${shortDay(activeRa.returnDate)}` : "Return date not set") : "On the lot"],
@@ -28244,6 +28245,157 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
   .reportBars__name{ grid-column: 1 / -1; white-space: normal; overflow: visible; text-overflow: clip; }
 }
 /* end fleetr design system 1.0 */
+
+/* ── Design layer, meta-design-test (Nov 25) ─────────────────────────────────
+   Approach adapted from Astryx (github.com/meta/astryx, MIT licence,
+   Copyright (c) 2026 Meta Platforms, Inc.): its design principles and token
+   roles, rebuilt here in fleetr's own CSS with fleetr's colours. No Astryx
+   code is included. What it takes:
+   - spacing on a 4px grid, gaps growing from local (4 to 8) to group (12 to
+     16) to section (24 to 32), and space before boxes;
+   - corners by role: inner 6, control 10, container 12;
+   - one edge language per surface: a quiet border, no shadow, on cards;
+     shadows only for things that float;
+   - type roles: page heading, section heading, body, label, supporting text,
+     semibold not heavy, sentence case, no shouted labels;
+   - controls of one height in a row: 36px with a mouse, 44px to a finger;
+   - scarce emphasis: terracotta for the one primary action, neutral tints for
+     hover and selection, status colours unchanged;
+   - focus as an outline, never a shadow;
+   - motion that settles (fast 125ms, medium 300ms, no bounce), and none at all
+     under reduced motion.
+   The logo and the brand terracotta are unchanged. */
+:root{
+  --fl-radius-lg: 12px;
+  --fl-line: rgba(31, 30, 29, 0.10); --fl-line-soft: rgba(31, 30, 29, 0.06);
+  --fl-tint-hover: rgba(31, 30, 29, 0.04); --fl-tint-press: rgba(31, 30, 29, 0.08);
+  --fl-shadow-xs: none;
+  --fl-shadow-sm: 0 2px 4px rgba(31, 30, 29, 0.05), 0 4px 8px rgba(31, 30, 29, 0.08);
+  --fl-shadow-md: 0 2px 4px rgba(31, 30, 29, 0.05), 0 4px 12px rgba(31, 30, 29, 0.10);
+  --fl-shadow-lg: 0 4px 6px rgba(31, 30, 29, 0.10), 0 12px 24px rgba(31, 30, 29, 0.15);
+  --fl-ease-out: cubic-bezier(0.24, 1, 0.4, 1); --fl-ease-in: cubic-bezier(0.3, 0, 0.6, 0.6);
+  --fl-dur-fast: 125ms; --fl-dur: 200ms; --fl-dur-slow: 300ms;
+  --fl-control: 36px;
+}
+@media (prefers-reduced-motion: reduce){
+  :root{ --fl-dur-fast: 0ms; --fl-dur: 0ms; --fl-dur-slow: 0ms; }
+  *, *::before, *::after{ animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+/* Focus: an outline that traces the control, distinct from any shadow. */
+[data-keys] :focus-visible{ box-shadow: none; outline: 2px solid var(--fl-brand-press); outline-offset: 2px; }
+
+/* Type roles. */
+.page__title{ font-size: 26px; line-height: 32px; font-weight: 600; letter-spacing: -0.015em; }
+.page__titleUnderline{ margin: 0 0 var(--fl-space-6); }
+.companyStep__title, .dashboardSection__header, .resModalTitle, .appDialog__title{ font-weight: 600; letter-spacing: -0.01em; }
+.companyStep__title{ font-size: 17px; line-height: 24px; }
+.dashboardSection__header{ font-size: 15px; line-height: 22px; }
+
+/* Cards: a quiet border, container corners, no shadow; sections apart. */
+.companyStep, .dashboardSection, .statCard, .flCard{ border-radius: var(--fl-radius-lg); box-shadow: none; }
+.companyStep{ margin-bottom: var(--fl-space-4); }
+.companyStep--current{ box-shadow: 0 0 0 1px var(--cs-terra); }
+.companyStep__head:hover{ background: var(--fl-tint-hover); }
+
+/* Tables: sentence-case labels, 12px sides, a neutral hover. */
+.dashboardTable th{ font-size: 13px; font-weight: 600; color: var(--fl-ink-3); text-transform: none; letter-spacing: 0; padding: 10px var(--fl-space-3); }
+.dashboardTable td{ padding: 11px var(--fl-space-3); }
+.dashboardTable th:first-child, .dashboardTable td:first-child{ padding-left: var(--fl-space-4); }
+.dashboardTable th:last-child, .dashboardTable td:last-child{ padding-right: var(--fl-space-4); }
+.dashboardTable tbody tr:hover{ background: var(--fl-tint-hover); }
+/* The same header type inside a Company step or a staff page, where an
+   older, more specific rule set it in spaced capitals; its spacing stays. */
+.companyStep__body .dashboardTable th, .staffPage .dashboardTable th{ font-size: 13px; font-weight: 600; color: var(--fl-ink-3); text-transform: none; letter-spacing: 0; }
+.companyStep__body .dashboardTable tbody tr:hover, .staffPage .dashboardTable tbody tr:hover{ background: var(--fl-tint-hover); }
+
+/* Chips and badges: 20px pills, supporting size, medium weight. */
+.flChip{ min-height: 22px; padding: 0 var(--fl-space-2); font-size: 12px; font-weight: 500; }
+
+/* Buttons: hover and press as tints over the surface, not new colours. */
+.flBtn--secondary:hover:not(:disabled), .resModalCancel:hover, .appDialog__cancel:hover, .unsavedBar__discard:hover{ background: var(--fl-surface); background-image: linear-gradient(var(--fl-tint-hover), var(--fl-tint-hover)); }
+.flBtn--quiet:hover:not(:disabled){ background: var(--fl-tint-hover); }
+.flBtn:active:not(:disabled), .flPress:active{ transform: none; filter: brightness(0.96); }
+
+/* Navigation: 260px, items as soft pills; the selected one a tint that
+   follows its corners, its icon terracotta, no stripe against the curve. */
+@media (min-width: 901px){
+  .app:not(.app--rail){ grid-template-columns: 260px 1fr; }
+  .app:not(.app--rail) .sidebar{ width: 260px; }
+}
+.nav__item{ min-height: 36px; padding: 8px var(--fl-space-3); }
+.nav__item--active{ box-shadow: none; }
+.nav__marker{ border-left: 0; border-radius: var(--fl-radius); background: rgba(244, 132, 95, 0.18); }
+
+/* Type roles, the last labels still in spaced capitals: section heads at
+   13px semibold, field labels at 12px, badges at 12px medium, as written. */
+.cdetailSubGroup, .chargesSectionHeader, .gasSettingSubhead, .vehicleDetailSubHeader{ font-size: 13px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+.chargesInfoLabel, .chargesTh{ font-size: 12px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--fl-ink-3); }
+.chargesTotalLabel{ font-weight: 600; letter-spacing: 0; text-transform: none; }
+.claimStatus, .pmDueBadge{ font-size: 12px; font-weight: 500; line-height: 18px; letter-spacing: 0; text-transform: none; }
+.mobileNavSectionHeader{ font-size: var(--fl-text-xs); font-weight: 500; text-transform: none; letter-spacing: 0; color: rgba(249, 249, 247, 0.46); }
+
+/* A partner's name and email keep the line; the chip and Turn off move
+   under them when the row is too narrow, so the email never splits. */
+.partners__person{ flex: 1 1 auto; }
+
+/* Phones. */
+@media (max-width: 767px){
+  /* Table cards: an edge, no shadow; column names in sentence case. */
+  .dashboardTable tbody tr{ box-shadow: none; }
+  .dashboardTable td::before{ font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--fl-ink-3); }
+  /* A value with a detail line under it: the two stack beside the label. */
+  .dashboardTable td:has(> .closeRentalHint){ display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; align-items: start; }
+  .dashboardTable td:has(> .closeRentalHint)::before{ grid-row: 1 / span 2; }
+  .dashboardTable td > .closeRentalHint{ grid-column: 2; overflow-wrap: normal; }
+  /* Charges: each line two rows, item and total, then quantity and rate,
+     inside the card instead of running past its edge. */
+  .chargesTable tr:has(> th){ display: none; }
+  .chargesTable, .chargesTable tbody{ display: block; }
+  .chargesRow{ display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 6px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--fl-line-soft); }
+  .chargesRow > .chargesTd{ padding: 0; border-bottom: 0; }
+  .chargesRow > .chargesTd--check{ grid-column: 1; grid-row: 1 / span 2; align-self: start; padding-top: 2px; }
+  .chargesRow > .chargesTd--label{ grid-column: 2; grid-row: 1; }
+  .chargesRow > .chargesTd--total{ grid-column: 3; grid-row: 1; }
+  .chargesRow > .chargesTd--qty{ grid-column: 2; grid-row: 2; }
+  .chargesRow > .chargesTd--amt{ grid-column: 3; grid-row: 2; }
+  /* Search bars: a search field takes the row; two date pickers share it
+     evenly, edge to edge. */
+  .resvSearchBar > input.resvSearchInput{ flex: 1 1 100%; width: auto; min-width: 0; }
+  .resvSearchBar > .resvDatePickerWrap{ flex: 1 1 0; min-width: 0; }
+  .resvSearchBar > .resvDatePickerWrap > .resvDateBtn{ width: 100%; min-width: 0; }
+  /* The renter's email gets the whole width, so it stays in one piece, and
+     so does the fact before it, so no cell is left empty beside it. */
+  .custFacts__item:has(a[href^="mailto:"]),
+  .custFacts__item:has(+ .custFacts__item a[href^="mailto:"]){ grid-column: 1 / -1; border-left: 0; }
+  /* A fact too long for its half wraps at a space instead of being cut off. */
+  .custFacts__main, .custFacts__sub{ white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: break-word; }
+  /* A vehicle: odometer and fuel side by side, then who has it and the
+     province with the VIN each across the card, so the VIN is never cut. */
+  .custFacts--vehicle .custFacts__item:nth-child(n+3){ grid-column: 1 / -1; border-left: 0; }
+}
+/* Touch: availability days are a finger wide and tall (the grid scrolls),
+   and the new-version card's Refresh is a full-size target. */
+@media (max-width: 767px), (pointer: coarse){
+  .agrid__cell, .agrid__class{ min-height: var(--fl-tap); }
+  .updateCard__refresh{ min-height: var(--fl-tap); padding: 0 var(--fl-space-2); }
+}
+/* Refresh reads as a link in the darker brand text colour. */
+.updateCard__refresh{ color: var(--fl-brand-text); }
+
+/* A text link beside a button sits on the button's centre line. */
+.customerPageTopBar .rentalAgreementBackBtn{ align-self: center; }
+
+/* Desktop with a mouse: controls in a row share one height. */
+@media (min-width: 1024px) and (pointer: fine){
+  .flBtn{ min-height: var(--fl-control); padding: 0 var(--fl-space-4); }
+  .flInput, .resFormInput, .resvSearchInput, .fleetFilterInput, .fleetFilterSelect{ min-height: var(--fl-control); box-sizing: border-box; }
+  input.resFormInput:not([type=checkbox]):not([type=radio]), select.resFormInput{ height: var(--fl-control); padding-top: 0; padding-bottom: 0; }
+  .loginBtn, .customerPageSaveBtn, .resModalSubmit, .resModalCancel, .resModalSave, .appDialog__main, .appDialog__cancel,
+  .unsavedBar__save, .unsavedBar__discard{ min-height: var(--fl-control); box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; }
+  td .loginBtn{ min-height: 32px; }
+  .content{ padding: var(--fl-space-7) var(--fl-space-8) var(--fl-space-9); }
+}
+/* end design layer, meta-design-test */
 `;
 document.head.appendChild(style);
 

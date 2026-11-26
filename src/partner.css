@@ -190,3 +190,44 @@ textarea.input{ min-height: 88px; padding: var(--fl-space-3); line-height: var(-
 .input[type="date"]{ position: relative; padding-right: 40px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238A8984' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2'/%3E%3Cpath d='M16 2v4M8 2v4M3 10h18'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right 12px center; background-size: 16px; }
 .input[type="date"]::-webkit-calendar-picker-indicator{ position: absolute; inset: 0; width: auto; height: auto; opacity: 0; cursor: pointer; }
+
+/* ── Design layer, meta-design-test (Nov 25) ─────────────────────────────────
+   Approach adapted from Astryx (github.com/meta/astryx, MIT licence,
+   Copyright (c) 2026 Meta Platforms, Inc.): principles and token roles rebuilt
+   in fleetr's own CSS, no Astryx code. Corners by role (control 10, card 12),
+   one edge language per surface, type roles in sentence case, hover and press
+   as tints, focus as an outline, motion that settles; controls 36px with a
+   mouse on a desk, 44px to a finger. The logo and terracotta are unchanged. */
+:root{
+  --fl-tint-hover: rgba(31, 30, 29, 0.04); --fl-tint-press: rgba(31, 30, 29, 0.08);
+  --fl-ease-out: cubic-bezier(0.24, 1, 0.4, 1); --fl-dur-fast: 125ms; --fl-dur: 200ms; --fl-dur-slow: 300ms;
+  --fl-shadow-lg: 0 4px 6px rgba(31, 30, 29, 0.10), 0 12px 24px rgba(31, 30, 29, 0.15);
+}
+:focus-visible{ box-shadow: none; outline: 2px solid var(--fl-brand-press); outline-offset: 2px; }
+.input:focus{ box-shadow: 0 0 0 1px var(--fl-brand-press); border-color: var(--fl-brand-press); }
+/* Type roles. */
+.pp__h1, .auth__title{ letter-spacing: -0.015em; line-height: 1.25; }
+.pp__h2, .book__h{ font-size: 17px; line-height: 24px; letter-spacing: -0.01em; }
+.chip{ min-height: 22px; padding: 0 8px; font-size: 12px; font-weight: 500; }
+/* Buttons: flat, the press a tint; secondary hover a tint over its surface. */
+.btn:active:not(:disabled){ transform: none; filter: brightness(0.96); }
+.btn--primary{ box-shadow: none; }
+.btn--secondary{ border-color: var(--fl-line-strong); }
+.btn--secondary:hover:not(:disabled){ background: var(--fl-surface); background-image: linear-gradient(var(--fl-tint-hover), var(--fl-tint-hover)); }
+.btn--quiet:hover:not(:disabled), .pp__bell:hover{ background: var(--fl-tint-hover); }
+/* Cards and sections: a quiet border; the "more" box a lighter dashed edge
+   rather than a second background. */
+.card, .book__sec{ border-color: var(--fl-line); border-radius: 12px; }
+.book__sec--more{ background: var(--fl-surface); }
+.match{ border-radius: 12px; }
+/* The tab underline sits in the terracotta of the one thing selected. */
+.pp__tab:hover{ color: var(--fl-ink); }
+/* A desk with a mouse: controls in a row share one height. */
+@media (min-width: 1024px) and (pointer: fine){
+  .btn{ min-height: 36px; padding: 0 var(--fl-space-4); }
+  .btn--lg{ min-height: 44px; }
+  .input{ min-height: 40px; font-size: 15px; }
+  .pp__tab{ min-height: 40px; }
+  .book .segs button{ min-height: 32px; }
+}
+/* end design layer, meta-design-test */
