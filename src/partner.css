@@ -230,4 +230,16 @@ textarea.input{ min-height: 88px; padding: var(--fl-space-3); line-height: var(-
   .pp__tab{ min-height: 40px; }
   .book .segs button{ min-height: 32px; }
 }
+/* By eye (Nov 26): headings and short leads break into even lines, so a
+   company name never leaves "(Demo)" alone; an empty state's line too. */
+.pp__h1, .join h1, h1{ text-wrap: balance; }
+.empty p, .pp__lead{ text-wrap: pretty; }
+.empty p{ text-wrap: balance; }
+/* The optional-details row's plus or minus reads at the size of its label. */
+.book__more > span[aria-hidden="true"]{ font-size: 20px; line-height: 1; color: var(--fl-ink-2); }
+/* On a desktop a sheet is a dialog in the middle, so it has no drag handle. */
+@media (min-width: 768px){
+  .sheet::before{ display: none; }
+  .sheet{ padding-top: var(--fl-space-5); }
+}
 /* end design layer, meta-design-test */

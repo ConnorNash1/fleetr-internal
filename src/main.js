@@ -1490,7 +1490,7 @@ function vehicleForPlate(fleet, plate) {
 // and customer/resCode are derived by joining rentalAgreements/reservations here so
 // every view renders claims the same way.
 
-const DAMAGE_CLAIM_STATUS_LABEL = { open: "Open", in_review: "In Review", resolved: "Settled" };
+const DAMAGE_CLAIM_STATUS_LABEL = { open: "Open", in_review: "In review", resolved: "Settled" };
 const damageClaimStatusLabel = (status) => DAMAGE_CLAIM_STATUS_LABEL[status] || status || "Open";
 
 function enrichDamageClaim(claim, rentalAgreements, reservations, fleet = []) {
@@ -2697,7 +2697,7 @@ const PAGE_SKELETONS = {
     skEl("div", { className: "resvSearchBar" },
       skDateBtn("Pickup date"), skDateBtn("Return date"),
       skSearchInputs(["First name", "Last name", "Phone number", "Res Code"])),
-    skTabs(["Open", "Customer Return", "Close Pending", "Closed"]),
+    skTabs(["Open", "Customer return", "Close pending", "Closed"]),
     skSection(null, skTable(
       ["Res Code", "Customer", "Vehicle", "Pickup Date", "Status"],
       [skLink(skCode), skCustomer.map(skLink), skPlate, skDay, skB("span", "rentalAgreementBadge rentalAgreementBadge--open", "Open")]))),
@@ -2706,7 +2706,7 @@ const PAGE_SKELETONS = {
     skTitle("Vehicles"),
     skFleetFilter(),
     skStep("Vehicle Status", undefined, true, skEl("div", { className: "dashboardSection__body" },
-      ["Available", "Needs Cleaning", "Ready Returns", "Preventative Maintenance", "Damaged", "On Rent"].map((label) =>
+      ["Available", "Needs cleaning", "Ready returns", "Preventative maintenance", "Damaged", "On rent"].map((label) =>
         skEl("div", { key: label, className: "fleetGroup" },
           skEl("div", { className: "fleetGroupHeader" },
             skEl("span", { className: "fleetGroupChevron" }, "▸"),
@@ -2749,7 +2749,7 @@ const PAGE_SKELETONS = {
     skSection(skHead("Overdue", "Reminders are texted automatically", "autoTextNote"), skTable(
       ["Res Code", "Customer", "Phone", "Plate", "Due Date", "Status"],
       [skLink(skCode), skCustomer.map(skLink), "709 555 0110", skPlate, skDay,
-        skEl("div", { className: "readyStatusWrap" }, skB("button", "aiControl", "Reached", 1), skB("button", "aiControl", "No Reply", 2, { marginLeft: "6px" }))]))),
+        skEl("div", { className: "readyStatusWrap" }, skB("button", "aiControl", "Reached", 1), skB("button", "aiControl", "No reply", 2, { marginLeft: "6px" }))]))),
 
   "/time-of-repair": () => skEl("div", { className: "page" },
     skTitle("Unknown Repair Date"),
@@ -2760,12 +2760,12 @@ const PAGE_SKELETONS = {
 
   "/no-shows": () => skEl("div", { className: "page" },
     skTitle("No Shows"),
-    skTabs(["Missed Pickup", "Cancelled"]),
+    skTabs(["Missed pickup", "Cancelled"]),
     skEl("p", { className: "aiTabDesc" }, skT("The customer had not arrived 2 hours after pickup. The missed pickup text goes out automatically, with a link to change the pickup time. Not picked up or moved by the cutoff, the reservation is cancelled and the customer is texted.")),
-    skSection(skHead("Missed Pickup", "Texts go out automatically", "autoTextNote"), skTable(
+    skSection(skHead("Missed pickup", "Texts go out automatically", "autoTextNote"), skTable(
       ["Customer", "Vehicle Class", "Pickup", "Missed Pickup Text", "Cutoff", "Outcome", ""],
       [skCustomer.map(skLink), ["Small car", "Medium SUV"], "Oct 29, 10:00 AM", "Oct 29, 12:00 p.m.", "Oct 30, 12:00 AM",
-        skEl("div", { className: "readyStatusWrap" }, skB("button", "aiControl", "Reached", 1, { marginRight: "6px" }), skB("button", "aiControl", "No Reply", 2, { marginRight: "6px" })),
+        skEl("div", { className: "readyStatusWrap" }, skB("button", "aiControl", "Reached", 1, { marginRight: "6px" }), skB("button", "aiControl", "No reply", 2, { marginRight: "6px" })),
         skEl(React.Fragment, null, skB("button", "aiControl", "Customer Is Coming", 1, { marginRight: "6px" }), skB("button", "aiControl", "Cancel", 2, { marginRight: "6px" }))]))),
 
   "/reports": () => skEl("div", { className: "page companySetup" },
@@ -2832,7 +2832,7 @@ PAGE_SKELETONS["/"] = PAGE_SKELETONS["/dashboard"];
 PAGE_SKELETONS["/staff"] = PAGE_SKELETONS["/company"];
 PAGE_SKELETONS["/setup"] = PAGE_SKELETONS["/company"];
 PAGE_SKELETONS["/fleet"] = () => skEl("div", { className: "page" }, skTitle("Branch Fleet"), skStep("Vehicle Status", undefined, true,
-  skEl("div", { className: "dashboardSection__body" }, ["Available", "Needs Cleaning", "Ready Returns", "Preventative Maintenance", "Damaged", "On Rent"].map((label) =>
+  skEl("div", { className: "dashboardSection__body" }, ["Available", "Needs cleaning", "Ready returns", "Preventative maintenance", "Damaged", "On rent"].map((label) =>
     skEl("div", { key: label, className: "fleetGroup" }, skEl("div", { className: "fleetGroupHeader" },
       skEl("span", { className: "fleetGroupChevron" }, "▸"), skEl("span", null, skT(label)), skEl("span", { className: "fleetGroupCount" }, "0")))))));
 
@@ -3315,10 +3315,18 @@ const emptyResForm = () => ({
 
 // ─── Status label helper ──────────────────────────────────────────────────────
 
+// A status as people read it, in sentence case (Nov 26): "On Rent" shows as
+// "On rent", "In Review" as "In review". The stored value never changes; a
+// short all-capitals word (PM) stays as it is.
+function sentenceStatus(s) {
+  return String(s ?? "").split(" ")
+    .map((w, i) => (i === 0 || (w.length > 1 && w === w.toUpperCase()) ? w : w.toLowerCase())).join(" ");
+}
+
 function statusLabel(s) {
   if (s === "open_rental_agreement") return "Open";
-  if (s === "customer_return")       return "Customer Return";
-  if (s === "close_pending")         return "Close Pending";
+  if (s === "customer_return")       return "Customer return";
+  if (s === "close_pending")         return "Close pending";
   if (s === "closed")                return "Closed";
   if (s === "reservation")           return "Reservation";
   return s || "";
@@ -5436,7 +5444,7 @@ function NoShowsPage() {
   const { setReservations, guardAction } = React.useContext(AppContext);
 
   const TABS = [
-    { key: "missed",    label: "Missed Pickup", desc: "The customer had not arrived 2 hours after pickup. The missed pickup text goes out automatically, with a link to change the pickup time. Not picked up or moved by the cutoff, the reservation is cancelled and the customer is texted." },
+    { key: "missed",    label: "Missed pickup", desc: "The customer had not arrived 2 hours after pickup. The missed pickup text goes out automatically, with a link to change the pickup time. Not picked up or moved by the cutoff, the reservation is cancelled and the customer is texted." },
     { key: "cancelled", label: "Cancelled",     desc: "No-shows cancelled in the last 7 days, at the cutoff or by staff. Restore brings one back at its original rates." },
   ];
   const HOW = { automatic: "Automatically, at the cutoff", staff: "By staff", moved: "Moved before this change" };
@@ -5551,7 +5559,7 @@ function NoShowsPage() {
       React.createElement("td", null, React.createElement("div", { className: "readyStatusWrap" },
         outcome,
         !outcome && btn("Reached", () => setOutcome(row, "reached"), working, "The customer replied or we spoke to them"),
-        !outcome && btn("No Reply", () => setOutcome(row, "no_reply"), working, "We tried and could not reach them"),
+        !outcome && btn("No reply", () => setOutcome(row, "no_reply"), working, "We tried and could not reach them"),
         outcome && btn("Change", () => setOutcome(row, null), working, "Clear what was recorded"))),
       React.createElement("td", null, picking === row.resCode
         ? React.createElement(NewPickupPicker, {
@@ -5732,7 +5740,7 @@ function OverdueRentalsPage() {
                           style: { marginLeft: "6px" },
                           title: "No reply to the automatic reminder",
                           onClick: () => recordOutcome(row, "LM"),
-                        }, "No Reply")
+                        }, "No reply")
                       )
             )
           )
@@ -6048,7 +6056,7 @@ function VehicleDetailPage() {
             const st = vehicle.status;
             return st === "Available" ? "fleetStatus--available" : st === "Needs Cleaning" ? "fleetStatus--cleaning" : st === "PM" ? "fleetStatus--pm"
               : st === "Damaged" ? "fleetStatus--damaged" : st === "On Rent" ? "fleetStatus--onRent" : "flChip";
-          })() }, vehicle.status),
+          })() }, sentenceStatus(vehicle.status)),
           vehicle.vehicleClass && React.createElement(Chip, null, vehicle.vehicleClass))),
       activeRa && React.createElement("div", { className: "custHead__actions" },
         React.createElement(Button, { variant: "secondary", onClick: () => navigate(customerPath(activeRa.resCode)) }, `Open ${activeRa.customer || "the renter"}'s rental`))),
@@ -6185,7 +6193,7 @@ function VehicleDetailPage() {
             },
             // In Transit is set and cleared by a transfer, never picked here.
             [...FLEET_STATUS_OPTS.filter((o) => o.value !== "All"),
-             ...(vehicle.status === "In Transit" ? [{ value: "In Transit", label: "In Transit (being transferred)" }] : [])]
+             ...(vehicle.status === "In Transit" ? [{ value: "In Transit", label: "In transit (being transferred)" }] : [])]
               .map((opt) => React.createElement("option", { key: opt.value, value: opt.value, disabled: opt.value === "In Transit" }, opt.label))
           )
         ),
@@ -6354,7 +6362,7 @@ function useVehicleStatusDrag() {
       }
       showToast(undo
         ? { text: `Moved back to ${patch.status}` }
-        : { text: `Moved to ${pm.status}`, note: pm.forced ? "It is due for preventative maintenance." : null,
+        : { text: `Moved to ${sentenceStatus(pm.status)}`, note: pm.forced ? "It is due for preventative maintenance." : null,
             undo: { id: v.id, status: pm.status, restore: before } });
     }, {
       tableName: "fleet", recordId: v.plate,
@@ -6564,7 +6572,7 @@ function VehicleStatusStep() {
                           React.createElement("td", null, React.createElement(PlateLink, { plate: v.plate })),
                           React.createElement("td", null, `${v.make} ${v.model}`),
                           React.createElement("td", null, v.vehicleClass),
-                          ...(showStatus ? [React.createElement("td", null, React.createElement("span", { className: statusClass }, v.status))] : [])
+                          ...(showStatus ? [React.createElement("td", null, React.createElement("span", { className: statusClass }, sentenceStatus(v.status)))] : [])
                         );
                       })
                 )
@@ -6592,11 +6600,11 @@ function VehicleStatusStep() {
 
             return React.createElement(React.Fragment, null,
               group("Available", "available", "available", avail, false),
-              group("Needs Cleaning", "cleaning", "needsCleaning", cleaning, false),
-              readyPickup.length > 0 && group("Ready for Pickup", "readyPickup", "readyPickup", readyPickup, false),
+              group("Needs cleaning", "cleaning", "needsCleaning", cleaning, false),
+              readyPickup.length > 0 && group("Ready for pickup", "readyPickup", "readyPickup", readyPickup, false),
               React.createElement("div", { className: "fleetGroup" },
                 React.createElement("div", { className: "fleetGroupHeader fleetGroupHeader--readyReturns", ...barToggle(() => toggleFleetGroup("readyReturns"), !fleetGroupCollapsed.readyReturns) },
-                  React.createElement("span", null, "Ready Returns"),
+                  React.createElement("span", null, "Ready returns"),
                   React.createElement("div", { className: "fleetGroupHeaderRight" },
                     React.createElement("span", { className: "fleetGroupCount" }, readyReturns.length),
                     React.createElement("span", { className: "fleetGroupChevron", "aria-hidden": "true" }, fleetGroupCollapsed.readyReturns ? "\u25b8" : "\u25be")
@@ -6628,9 +6636,9 @@ function VehicleStatusStep() {
                   ),
                 ] : [])
               ),
-              group("Preventative Maintenance", "pm", "pm", pm, false),
+              group("Preventative maintenance", "pm", "pm", pm, false),
               group("Damaged", "damaged", "damaged", damaged, false),
-              group("On Rent", "onRent", "onRent", onRent, true)
+              group("On rent", "onRent", "onRent", onRent, true)
             );
           })()
         )
@@ -7437,16 +7445,16 @@ function validateRaStatus(status) {
 }
 
 const FLEET_STATUS_OPTS = [
-  { value: "All",             label: "All Statuses",    bg: null,      fg: null      },
+  { value: "All",             label: "All statuses",    bg: null,      fg: null      },
   { value: "Available",       label: "Available",        bg: "#d1fae5", fg: "#065f46" },
-  { value: "Needs Cleaning",  label: "Needs Cleaning",   bg: "#fef3c7", fg: "#92400e" },
-  { value: "Ready for Pickup",label: "Ready for Pickup", bg: "#fed7aa", fg: "#7c2d12" },
+  { value: "Needs Cleaning",  label: "Needs cleaning",   bg: "#fef3c7", fg: "#92400e" },
+  { value: "Ready for Pickup",label: "Ready for pickup", bg: "#fed7aa", fg: "#7c2d12" },
   // A returned vehicle not looked at yet. Missing here, a Ready Returns
   // vehicle's status picker showed Available.
-  { value: "Ready Returns",   label: "Ready Returns",    bg: "#fde68a", fg: "#78350f" },
+  { value: "Ready Returns",   label: "Ready returns",    bg: "#fde68a", fg: "#78350f" },
   { value: "PM",              label: "PM",               bg: "#ede9fe", fg: "#4c1d95" },
   { value: "Damaged",         label: "Damaged",          bg: "#fee2e2", fg: "#991b1b" },
-  { value: "On Rent",         label: "On Rent",          bg: "#dbeafe", fg: "#1e3a8a" },
+  { value: "On Rent",         label: "On rent",          bg: "#dbeafe", fg: "#1e3a8a" },
 ];
 
 // ─── useFleetFilter hook ───────────────────────────────────────────────────────
@@ -8459,7 +8467,7 @@ function FleetDamageClaimsPage() {
 
   const CLAIM_CLS = {
     "Open":      "claimStatus claimStatus--open",
-    "In Review": "claimStatus claimStatus--inReview",
+    "In review": "claimStatus claimStatus--inReview",
     "Settled":   "claimStatus claimStatus--settled",
     "Closed":    "claimStatus claimStatus--settled",
   };
@@ -17901,8 +17909,8 @@ function RentalAgreementsPage() {
   const location = useLocation();
   const TABS = [
     { label: "Open",          value: "open_rental_agreement" },
-    { label: "Customer Return", value: "customer_return" },
-    { label: "Close Pending", value: "close_pending" },
+    { label: "Customer return", value: "customer_return" },
+    { label: "Close pending", value: "close_pending" },
     { label: "Closed",        value: "closed" },
   ];
   const [activeTab, setActiveTab]   = React.useState("open_rental_agreement");
@@ -19796,7 +19804,7 @@ function SwitchOutConfirmStep({ row, closing, review, photos, newVehicle, oldVeh
         React.createElement("option", { value: "breakdown" }, "Breakdown"))),
     React.createElement("h2", { className: "closeRentalStepTitle", style: { marginTop: 18 } }, "Picked up next"),
     line("Replacement vehicle", `${describe(newVehicle)} (${newVehicle.plate})`),
-    line("Its new status", "Ready for Pickup"),
+    line("Its new status", "Ready for pickup"),
     React.createElement("p", { className: "page__body" },
       `The customer must now pick up ${newVehicle.plate} in the customer app, which records its starting mileage and gas. ` +
       "Until they do, this rental cannot be closed or switched again."),
@@ -28395,6 +28403,10 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
   td .loginBtn{ min-height: 32px; }
   .content{ padding: var(--fl-space-7) var(--fl-space-8) var(--fl-space-9); }
 }
+/* By eye (Nov 26): the agent's clean-next rows keep their chip or plates
+   in one column at the right, so a long line under a class never pushes its
+   chip onto a line of its own. */
+.agentCard__queue li{ display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
 /* end design layer, meta-design-test */
 `;
 document.head.appendChild(style);
