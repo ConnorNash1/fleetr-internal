@@ -14782,7 +14782,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
         if (d != null && w != null && w > d) warn.push(`${c.name}: the weekly daily rate is higher than the normal daily rate.`);
         if (w != null && m != null && m > w) warn.push(`${c.name}: the monthly daily rate is higher than the weekly daily rate.`);
       });
-      const picker = (text, value, onChange, options) => el("label", { style: { display: "inline-flex", gap: "6px", alignItems: "center" } },
+      const picker = (text, value, onChange, options) => el("label", { className: "ratesPicker", style: { display: "inline-flex", gap: "6px", alignItems: "center" } },
         el("span", { style: { fontWeight: 600 } }, text),
         el("select", { className: "resFormInput", style: { width: "auto" }, value, onChange: (e) => onChange(e.target.value) },
           options.map(([v, l]) => el("option", { key: v, value: v }, l))));
@@ -28364,6 +28364,8 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
 @media (max-width: 767px){
   /* Table cards: an edge, no shadow; column names in sentence case. */
   .dashboardTable tbody tr{ box-shadow: none; }
+  /* A card row holding a field: its name sits on the field's centre line. */
+  .dashboardTable td:has(input, select){ align-items: center; }
   /* Card cells keep the card's own inset; the desktop cell padding stays out. */
   .dashboardTable td, .dashboardTable td:first-child, .dashboardTable td:last-child,
   .companyStep__body .dashboardTable td, .staffPage .dashboardTable td{ padding: 8px 0; }
@@ -28511,7 +28513,7 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
 }
 /* Phones: a page's main button spans the width under its title, as Home's
    New reservation does, in easy reach of a thumb. */
-@media (max-width: 767px){ .listHead > .flBtn--primary{ width: 100%; } }
+@media (max-width: 767px){ .listHead > .flBtn--primary, .partners__head > .flBtn--primary{ width: 100%; } }
 /* Fleet filters: the same line chevron as every other picker, not a solid
    blue-grey triangle; on a phone each filter spans the row, so the three are
    even instead of three ragged widths. */
@@ -28521,6 +28523,17 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
 }
 @media (max-width: 767px){
   .fleetFilterBar > .fleetFilterInput, .fleetFilterBar > .fleetFilterSelect{ flex: 1 1 100%; width: 100%; }
+}
+/* Rates' source picker never runs past its card on a narrow screen. */
+.ratesPicker{ max-width: 100%; }
+.ratesPicker > select{ min-width: 0; flex: 1 1 auto; }
+/* Phones, a rental's header: the closed note on its own line, then its
+   buttons sharing the next row evenly; a date and time break before the
+   time, never leaving "AM" alone. */
+@media (max-width: 767px){
+  .customerRentalAgreementBtnRow > .customerRentalAgreementClosed{ flex: 1 1 100%; }
+  .customerRentalAgreementBtnRow > .customerRentalAgreementBtn{ flex: 1 1 0; min-width: max-content; }
+  .custFacts__main{ text-wrap: pretty; }
 }
 /* end design layer, meta-design-test */
 `;
