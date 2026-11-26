@@ -607,7 +607,17 @@ function rateStamp(date, time, meridiem, isReturn) {
   return `${date} ${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}`;
 }
 
-const rateMoney = (n) => `$${Number(n).toFixed(2)}`;
+// Every dollar amount the staff app shows, in one format (Nov 26):
+// "$1,064.00", with the thousands separator, never "$1064.00".
+const staffMoney = (n) => `$${Number(n || 0).toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+// A rate entered in whole dollars stays whole ("$69", "$1,200"); one with
+// cents shows them, as staffMoney.
+const staffRate = (v) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return `$${v}`;
+  return Number.isInteger(n) ? `$${n.toLocaleString("en-CA")}` : staffMoney(n);
+};
+const rateMoney = (n) => staffMoney(n);
 
 // One line of a price_rental breakdown, in words.
 // A breakdown's lines put together by rate: one { days, perDay, amount } for
@@ -625,7 +635,7 @@ function rateGroups(price) {
 }
 
 // One group in words: "31 days × $69".
-const rateDayMoney = (n) => (Number.isInteger(Number(n)) ? `$${Number(n)}` : rateMoney(n));
+const rateDayMoney = (n) => staffRate(n);
 const rateLineText = (g) => `${g.days} day${g.days === 1 ? "" : "s"} × ${rateDayMoney(g.perDay)}`;
 const rateCapText = (cap) => `Capped at the ${cap.days >= 28 ? "monthly" : "weekly"} price`;
 
@@ -3329,6 +3339,14 @@ function sentenceStatus(s) {
     .map((w, i) => (i === 0 || (w.length > 1 && w === w.toUpperCase()) ? w : w.toLowerCase())).join(" ");
 }
 
+// The same status mid-sentence (Nov 26): "now needs cleaning", "moved to on
+// rent". A short all-capitals word (PM) stays as it is.
+function midSentenceStatus(s) {
+  const t = sentenceStatus(s);
+  const first = t.split(" ")[0];
+  return first.length > 1 && first === first.toUpperCase() ? t : t.charAt(0).toLowerCase() + t.slice(1);
+}
+
 function statusLabel(s) {
   if (s === "open_rental_agreement") return "Open";
   if (s === "customer_return")       return "Customer return";
@@ -4666,7 +4684,7 @@ function HomeAvailability({ title = "Availability, next 30 days" } = {}) {
 // they are dealt with; a payment problem or an incident is marked dealt with
 // here.
 const NEEDS_YOU_POLL_MS = 60 * 1000;
-const needsMoney = (n) => (n == null ? "" : `$${Number(n).toFixed(2)}`);
+const needsMoney = (n) => (n == null ? "" : staffMoney(n));
 function needsYouText(i) {
   switch (i.kind) {
     case "disputed":   return ["Disputed charge", `${needsMoney(i.amount)} card payment disputed${i.detail ? ` (${String(i.detail).replace(/_/g, " ")})` : ""}`];
@@ -6367,8 +6385,8 @@ function useVehicleStatusDrag() {
         throw new Error(error.message);
       }
       showToast(undo
-        ? { text: `Moved back to ${patch.status}` }
-        : { text: `Moved to ${sentenceStatus(pm.status)}`, note: pm.forced ? "It is due for preventative maintenance." : null,
+        ? { text: `Moved back to ${midSentenceStatus(patch.status)}` }
+        : { text: `Moved to ${midSentenceStatus(pm.status)}`, note: pm.forced ? "It is due for preventative maintenance." : null,
             undo: { id: v.id, status: pm.status, restore: before } });
     }, {
       tableName: "fleet", recordId: v.plate,
@@ -7057,7 +7075,7 @@ function resolvePmStatus(vehicle, requestedStatus, { before = false } = {}) {
   return {
     status: "PM",
     forced: true,
-    message: `${vehicle.plate} is due for preventative maintenance, so it ${before ? "will go" : "has been set"} to PM instead of ${requestedStatus}. Use PM Complete on its detail page once serviced.`,
+    message: `${vehicle.plate} is due for preventative maintenance, so it ${before ? "will go" : "has been set"} to PM instead of ${midSentenceStatus(requestedStatus)}. Use PM Complete on its detail page once serviced.`,
   };
 }
 
@@ -8677,7 +8695,7 @@ function GasCollectionsPage() {
   const codeOf = (id) => (rows.find((a) => a.id === id) || {}).resCode || "this rental";
 
   const handleGasChange = (id, value) => {
-    updateRow(id, { gasOwed: value }, "gas.amount", `Change the gas owed on ${codeOf(id)} to $${value || 0}?`);
+    updateRow(id, { gasOwed: value }, "gas.amount", `Change the gas owed on ${codeOf(id)} to ${staffRate(value || 0)}?`);
   };
 
   const handleStatusChange = (id, value) => {
@@ -10182,7 +10200,7 @@ function GuidedSetup() {
           el("div", { className: "gsGridWrap" }, el("table", { className: "gsGrid" },
             el("thead", null, el("tr", null, el("th", null, "Class"), el("th", null, "Daily"), el("th", null, "Weekly, a day"), el("th", null, "Monthly, a day"))),
             el("tbody", null, classes().map((c) => el("tr", { key: c.id },
-              el("th", { scope: "row" }, c.name), el("td", { className: "gsGrid__daily" }, `$${(d.rates || {})[c.name] || "0"}`),
+              el("th", { scope: "row" }, c.name), el("td", { className: "gsGrid__daily" }, staffRate((d.rates || {})[c.name] || 0)),
               cell(c, "week"), cell(c, "month")))))));
       }
       case "dates": return el("div", { className: "gsStack" },
@@ -10190,7 +10208,7 @@ function GuidedSetup() {
         field("seasonName", "Name", { maxLength: 40 }),
         el("div", { className: "gsRow" }, monthDay("seasonFrom", "From"), monthDay("seasonTo", "To")),
         el("div", { className: "gsRateList" }, classes().map((c) => el("label", { key: c.id, className: "gsRateRow", htmlFor: `season-${c.id}` },
-          el("span", { className: "gsRateRow__name" }, c.name, el("small", null, `Usually $${(d.rates || {})[c.name] || "0"}`)),
+          el("span", { className: "gsRateRow__name" }, c.name, el("small", null, `Usually ${staffRate((d.rates || {})[c.name] || 0)}`)),
           el("span", { className: "gsRateRow__input" }, money(seasonRate(c), (v) => set("seasonRates", { ...d.seasonRates, [c.name]: v }), `${c.name} rate in this period`, `season-${c.id}`),
             el("small", null, "a day"))))));
       case "protection": return el("div", { className: "gsStack" },
@@ -10470,7 +10488,7 @@ function PartnersPage() {
             el(Button, { variant: "secondary", onClick: () => act(`ext:${x.id}`, "decide_partner_extension", { p_id: x.id, p_approve: false }) }, "Decline"),
             el(Button, { loading: busy === `ext:${x.id}`, onClick: () => act(`ext:${x.id}`, "decide_partner_extension", { p_id: x.id, p_approve: true }, () => flash("Extended. The return date is moved.")) }, "Approve")))),
         data.transfers.map((t) => el("div", { key: t.id, className: "partners__row" },
-          el("div", { className: "partners__rowMain" }, el("strong", null, `${t.partner} sent a $${Number(t.amount).toFixed(2)} bank transfer`),
+          el("div", { className: "partners__rowMain" }, el("strong", null, `${t.partner} sent a ${staffMoney(t.amount)} bank transfer`),
             el("span", null, `${t.reference ? `Reference ${t.reference}. ` : ""}When it arrives, record it on the rental as Bank transfer (EFT), then mark it here.`),
             el(FieldError, { text: error[`tr:${t.id}`] })),
           el("div", { className: "partners__rowActions" },
@@ -11106,7 +11124,7 @@ function CardOnFilePanel({ resCode, agreementId, status }) {
   const held = holds.find((h) => h.status === "held");
   const settled = holds.find((h) => ["captured", "charged"].includes(h.status));
   const failed = holds.find((h) => h.status === "failed");
-  const money = (n) => `$${Number(n || 0).toFixed(2)}`;
+  const money = staffMoney;
   const run = async (key, route) => {
     setBusy(key); setMsg("");
     try {
@@ -11393,7 +11411,7 @@ const fuelRateToLitre = (perUnit) =>
 const fuelRateUnit = () => (fuelUnit() === "gal" ? "gallon" : "litre");
 const fuelRateText = (perLitre) => {
   const n = fuelRateForDisplay(perLitre);
-  return n == null ? null : `$${n.toFixed(2)} per ${fuelRateUnit()}`;
+  return n == null ? null : `${staffMoney(n)} per ${fuelRateUnit()}`;
 };
 
 // A typed rate as autosave compares it with the saved one: 1.50 is 1.5.
@@ -14841,7 +14859,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
         const p = fai && periodRates[fai.name] && periodRates[fai.name][c.name];
         if (amount == null || !normal || !p) return null;
         const at = (tier) => (p[tier] != null ? Math.round((amount * Number(p[tier])) / normal) : null);
-        return [at("week") != null && `Weekly $${at("week")}/day`, at("month") != null && `Monthly $${at("month")}/day`].filter(Boolean).join(" \u00b7 ") || null;
+        return [at("week") != null && `Weekly ${staffRate(at("week"))}/day`, at("month") != null && `Monthly ${staffRate(at("month"))}/day`].filter(Boolean).join(" \u00b7 ") || null;
       };
       const rateAt = (x, c) => `seasons:rate:${x.id}:${c.id}`;
       const ratesOf = (x) => el("tr", { key: `${x.id}:rates`, style: x.active ? null : { opacity: 0.5 } },
@@ -14858,7 +14876,7 @@ function CompanyListsSections({ branches, layout, onChanged, openSections, ownIn
                       const note = tierNote(c, x.rates[c.id] != null ? x.rates[c.id] : null);
                       return el("tr", { key: c.id },
                         el("td", { className: "datePricing__class" }, c.name),
-                        el("td", { className: "datePricing__normal" }, normal != null ? `$${normal}/day` : "No rate yet"),
+                        el("td", { className: "datePricing__normal" }, normal != null ? `${staffRate(normal)}/day` : "No rate yet"),
                         // Never disabled while saving, so Enter and the arrow
                         // keys keep the field they move to (gridKey).
                         el("td", null, el(ListPriceCell, {
@@ -17271,7 +17289,7 @@ function ProtectionChoicesList({ rentalAgreementId }) {
       ? ampm(d.toLocaleString("en-CA", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))
       : "-";
   };
-  const fmtPrice = (n) => (Number.isFinite(Number(n)) ? `$${Number(n).toFixed(2)}` : "-");
+  const fmtPrice = (n) => (Number.isFinite(Number(n)) ? staffMoney(n) : "-");
   return el("div", { style: { overflowX: "auto" } },
     el("table", { className: "dashboardTable", style: { minWidth: "520px" } },
       el("thead", null, el("tr", null,
@@ -17798,7 +17816,7 @@ function RentalAgreementDetail({ rentalAgreement, onBack, setRentalAgreements })
   const days = chargeDays(pickupStamp, returnedStamp(raRecord, timeZone) || rateStamp(res.returnDate, res.returnTime, res.returnMeridiem, true));
   const money = (v) => {
     const n = typeof v === "number" ? v : parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, ""));
-    return Number.isFinite(n) ? `$${n.toFixed(2)}` : "·";
+    return Number.isFinite(n) ? staffMoney(n) : "·";
   };
   const sourceLabel = res.sourceDetail ? `${res.source}${LIST_SEP}${res.sourceDetail}` : (res.source || "");
   const billToCategory = billToCategoryOf(sourceLabel);
@@ -18447,7 +18465,7 @@ function CloseRentalDamageStep({ row, damageDraft, setDamageDraft, photos, setPh
         rentableBtn("unrentable", "Unrentable")
       ),
       React.createElement("div", { className: "closeRentalHint" },
-        "Rentable sends it to Needs cleaning, or to PM if it is due for service. Unrentable sends it to Damaged."),
+        "Rentable sends it to needs cleaning, or to PM if it is due for service. Unrentable sends it to damaged."),
       attempted && rentableError && React.createElement("div", { className: "closeRentalError" }, rentableError)
     ),
     React.createElement("div", { className: "closeRentalActions" },
@@ -19096,7 +19114,7 @@ async function pendingPickupRefusal(rentalAgreementId, fleet, messageFor) {
 // Complete Close.
 function CloseChargesSummary({ charges }) {
   const el = React.createElement;
-  const money = (n) => `$${(Math.round(n * 100) / 100).toFixed(2)}`;
+  const money = (n) => staffMoney(Math.round(n * 100) / 100);
   const row = (label, value, opts = {}) => el("div", { key: opts.key || label, className: `closeCharges__row${opts.strong ? " closeCharges__row--strong" : ""}` },
     el("span", null, label), el("span", null, value));
   if (!charges) {
@@ -19534,7 +19552,7 @@ function CloseRentalPage() {
       description: `Closed rental agreement ${ra.resCode || ra.id}: ${row?.plate || "vehicle"} back at ` +
         `${fmtDistance(final.closingMileage)}, gas ${fuelText(final.closingGasLevel)}, ` +
         (final.newDamageFound ? `new damage reported (${final.newDamageNote})` : "no new damage") +
-        (gasCharge ? `, gas charge $${gasCharge}` : "") + ".",
+        (gasCharge ? `, gas charge ${staffMoney(gasCharge)}` : "") + ".",
     });
   };
 
@@ -19557,13 +19575,13 @@ function CloseRentalPage() {
       line("Agreement status", statusLabel(done.agreementStatus)),
       done.agreementReason && CLOSE_RENTAL_REASONS[done.agreementReason] &&
         line("Reason", CLOSE_RENTAL_REASONS[done.agreementReason]),
-      done.gasOwed && line("Gas owed", `$${done.gasOwed}`),
+      done.gasOwed && line("Gas owed", staffMoney(done.gasOwed)),
       done.vehicleStatus && line("Vehicle status", sentenceStatus(done.vehicleStatus)),
       done.forcedMessage && React.createElement("div", { className: "closeRentalWarning" }, done.forcedMessage),
       !done.plate && React.createElement("div", { className: "closeRentalWarning" },
         "This agreement has no vehicle on file, so no vehicle status was changed. Check the fleet by hand."),
       !done.gasSaved && React.createElement("div", { className: "closeRentalWarning" },
-        `The gas charge of $${done.gasOwed} could not be saved, so this rental is not on Gas collections. Enter it there by hand.`),
+        `The gas charge of ${staffMoney(done.gasOwed)} could not be saved, so this rental is not on Gas collections. Enter it there by hand.`),
       done.gasUncharged && React.createElement("div", { className: "closeRentalWarning" },
         "The vehicle came back with less fuel, but the charge could not be worked out: the vehicle needs a tank size and its " +
         "region needs a fuel price. Enter the amount by hand on Gas Collections."),
@@ -19617,7 +19635,7 @@ function CloseRentalPage() {
       line("Agreement moves to", statusLabel(agreementOutcome.status)),
       agreementOutcome.reason && CLOSE_RENTAL_REASONS[agreementOutcome.reason] &&
         line("Reason", CLOSE_RENTAL_REASONS[agreementOutcome.reason]),
-      gasCharge && line("Gas owed", `$${gasCharge}`),
+      gasCharge && line("Gas owed", staffMoney(gasCharge)),
       agreementOutcome.reason === "fuel_short" && !gasCharge && branchRate !== undefined &&
         React.createElement("div", { className: "closeRentalWarning" },
           "The vehicle came back with less fuel, but the charge cannot be worked out: the vehicle needs a tank size and its " +
@@ -20089,12 +20107,12 @@ function SwitchOutPage() {
       React.createElement("div", { className: "page__titleUnderline" }),
       React.createElement("h2", { className: "closeRentalStepTitle" }, "Switch complete"),
       done.resCode && line("Rental agreement", done.resCode),
-      done.oldPlate && line("Came back", `${done.oldPlate}${done.oldStatus ? `, now ${sentenceStatus(done.oldStatus)}` : ""}`),
+      done.oldPlate && line("Came back", `${done.oldPlate}${done.oldStatus ? `, now ${midSentenceStatus(done.oldStatus)}` : ""}`),
       done.oldDamageFound && line("New damage found", `Yes, ${vehicleRentableLabel(done.oldVehicleRentable).toLowerCase()}`),
       !done.oldStatus && React.createElement("div", { className: "closeRentalWarning" },
         "The vehicle coming back is not in the fleet list under that plate, so its status was left alone. Check it by hand."),
       done.forcedMessage && React.createElement("div", { className: "closeRentalWarning" }, done.forcedMessage),
-      line("Replacement", `${done.newPlate}, Ready for pickup`),
+      line("Replacement", `${done.newPlate}, ready for pickup`),
       React.createElement("p", { className: "page__body" },
         `The customer must now pick up ${done.newPlate} in the customer app, which records its starting mileage and gas. ` +
         "Until they do, this rental cannot be closed or switched again."),
@@ -20102,9 +20120,9 @@ function SwitchOutPage() {
         "The damage claim could not be saved, so this damage is not in Ongoing damage claims. " +
         "Flag it by hand from the customer's page before anyone is billed."),
       !done.oldVehicleSaved && React.createElement("div", { className: "closeRentalWarning" },
-        `${done.oldPlate || "The vehicle coming back"} could not be moved to ${done.oldStatus}. Set its status by hand on the fleet page.`),
+        `${done.oldPlate || "The vehicle coming back"} could not be moved to ${midSentenceStatus(done.oldStatus)}. Set its status by hand on the fleet page.`),
       !done.newVehicleSaved && React.createElement("div", { className: "closeRentalWarning" },
-        `${done.newPlate} could not be moved to Ready for Pickup. Set its status by hand on the fleet page.`),
+        `${done.newPlate} could not be moved to ready for pickup. Set its status by hand on the fleet page.`),
       !done.agreementSaved && React.createElement("div", { className: "closeRentalWarning" },
         `The rental agreement could not be moved onto ${done.newPlate}, so it still shows ${done.oldPlate || "the old vehicle"}. Tell support before the customer arrives.`),
       done.photosTaken > 0 && line("Damage photos uploaded", `${done.photosUploaded} of ${done.photosTaken}`),
@@ -20710,7 +20728,7 @@ function StripePayLink({ agreementId, unsaved, retail, owes, saveLines, billToNa
       el("input", { className: "resFormInput", readOnly: true, value: link.url, style: { flex: "1 1 240px" }, onFocus: (e) => e.target.select() }),
       el("button", { type: "button", className: "loginBtn", style: { width: "auto", padding: "6px 10px" }, onClick: copy }, copied ? "Copied" : "Copy"),
       el("a", { href: link.url, target: "_blank", rel: "noopener", className: "loginBtn", style: { width: "auto", padding: "6px 10px", textDecoration: "none" } }, "Open"),
-      el("span", { className: "closeRentalHint" }, `$${Number(link.amount).toFixed(2)} for the ${link.paidBy === "Bill-To" ? "bill-to" : "renter"}`
+      el("span", { className: "closeRentalHint" }, `${staffMoney(link.amount)} for the ${link.paidBy === "Bill-To" ? "bill-to" : "renter"}`
         + (link.replaced ? ". The earlier link was switched off: less is owed now." : ""))),
     el(FieldError, { text: error }));
 }
@@ -21099,7 +21117,7 @@ function CustomerPageView({ onDiscard }) {
       // Closed: the final total goes on the card on file, if there is one.
       if (status === "closed" && ra && ra.id) Promise.resolve(synced).then(() => chargeCardOnFile(ra.id));
     }, { tableName: "reservations", recordId: resCode, description: `Rental agreement status ${rentalAgreementStatus} -> ${status}.`,
-         warning: `Change ${resCode} from ${statusLabel(rentalAgreementStatus)} to ${statusLabel(status)}?` });
+         warning: `Change ${resCode} from ${midSentenceStatus(statusLabel(rentalAgreementStatus))} to ${midSentenceStatus(statusLabel(status))}?` });
   };
 
   const handleDeleteReservation = () => {
@@ -21531,7 +21549,7 @@ function CustomerPageView({ onDiscard }) {
   const lineItemAmt = lineItemAmount;
   const totalCharges  = lineItems.reduce((s, it) => s + (it.applies ? lineItemAmt(it) : 0), 0);
 
-  const fmtMoney = (n) => `$${n.toFixed(2)}`;
+  const fmtMoney = staffMoney;
 
   const updateLineItem = (key, field, value) => {
     setChargesEdited(true);
