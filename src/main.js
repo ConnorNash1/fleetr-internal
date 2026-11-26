@@ -28560,10 +28560,11 @@ button.agrid__cell--sold:hover{ background: #ECEBE7; }
   .staffNameCell > .staffMove--name{ display: none; }
 }
 @media (max-width: 767px){
-  .dashboardTable td.staffNameCell{ display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; align-items: center; }
-  .dashboardTable td.staffNameCell::before{ grid-row: 1 / span 2; align-self: start; }
-  .staffNameCell > span{ grid-column: 2; }
-  .staffNameCell > .staffMove--name{ grid-column: 2; justify-self: end; }
+  .dashboardTable td.staffNameCell{ flex-wrap: wrap; row-gap: 8px; }
+  .staffNameCell > .staffMove--name{ flex: 1 1 100%; margin-top: 0; }
+  /* Too narrow for both whole on one line: the picker, then Move, each across. */
+  .staffNameCell > .staffMove--name{ flex-wrap: wrap; }
+  .staffNameCell > .staffMove--name select, .staffNameCell > .staffMove--name button{ flex: 1 1 100%; width: 100% !important; }
 }
 /* end design layer, meta-design-test */
 `;
